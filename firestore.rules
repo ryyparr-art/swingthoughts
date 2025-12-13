@@ -1,0 +1,205 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* =====================================================
+       🔐 HELPERS (SAFE)
+       ===================================================== */
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasUserDoc() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userDoc() {
+      return hasUserDoc()
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data
+        : null;
+    }
+
+    function isAdmin() {
+      return isSignedIn()
+        && hasUserDoc()
+        && request.auth.uid == "DbnGP8iHXwbztZmy0Pc1XIwdou33"
+        && userDoc().role == "admin";
+    }
+
+    /* =====================================================
+       ✍️ WRITE PERMISSIONS
+       ===================================================== */
+
+    function canWrite() {
+      return isSignedIn() && hasUserDoc() && (
+        (
+          (userDoc().userType == "Golfer"
+            || userDoc().userType == "Junior")
+          && userDoc().acceptedTerms == true
+        )
+        ||
+        (
+          (userDoc().userType == "Course"
+            || userDoc().userType == "PGA Professional")
+          && userDoc().verification.status == "approved"
+        )
+      );
+    }
+
+    function canPostScores() {
+      return isSignedIn() && hasUserDoc() && (
+        (
+          (userDoc().userType == "Golfer"
+            || userDoc().userType == "Junior")
+          && userDoc().acceptedTerms == true
+        )
+        ||
+        (
+          userDoc().userType == "PGA Professional"
+          && userDoc().verification.status == "approved"
+        )
+      );
+    }
+
+    /* =====================================================
+       👤 USERS
+       ===================================================== */
+
+    match /users/{userId} {
+
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && request.auth.uid == userId;
+
+      allow update: if isSignedIn()
+        && request.auth.uid == userId
+        && canWrite();
+
+      allow delete: if isAdmin();
+    }
+
+    /* =====================================================
+       📝 THOUGHTS (CLUBHOUSE FEED)
+       ===================================================== */
+
+    match /thoughts/{thoughtId} {
+
+      // Feed visibility
+      allow read: if isSignedIn();
+
+      // Create own posts
+      allow create: if canWrite()
+        && request.resource.data.userId == request.auth.uid;
+
+      // Edit/delete own posts
+      allow update, delete: if isSignedIn()
+        && request.auth.uid == resource.data.userId
+        && canWrite();
+
+      // Safe counter updates (likes/comments)
+      allow update: if isSignedIn()
+        && canWrite()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["likes", "likedBy", "comments"]);
+
+      // Admin override
+      allow update, delete: if isAdmin();
+
+      /* -------- COMMENTS -------- */
+
+      match /comments/{commentId} {
+
+        allow read: if isSignedIn();
+
+        allow create: if canWrite();
+
+        allow update, delete: if isSignedIn()
+          && request.auth.uid == resource.data.userId
+          && canWrite();
+
+        allow delete: if isAdmin();
+      }
+    }
+
+    /* =====================================================
+       🏌️ SCORES (ANTI-SPOOFING)
+       ===================================================== */
+
+    match /scores/{scoreId} {
+
+      allow read: if isSignedIn();
+
+      allow create: if canPostScores()
+        && request.resource.data.userId == request.auth.uid;
+
+      allow update, delete: if isSignedIn()
+        && request.auth.uid == resource.data.userId
+        && canPostScores();
+
+      allow delete: if isAdmin();
+    }
+
+    /* =====================================================
+       🏆 COURSE LEADERS (LOWMAN CACHE)
+       ===================================================== */
+
+    match /course_leaders/{courseId} {
+
+      // Public leaderboard visibility
+      allow read: if isSignedIn();
+
+      // ❌ Clients may never write
+      allow write: if false;
+
+      // ✅ Admin / tooling override only
+      allow write: if isAdmin();
+    }
+
+    /* =====================================================
+       🗺️ COURSES (API CACHE)
+       ===================================================== */
+
+    match /courses/{courseId} {
+
+      allow read: if isSignedIn();
+
+      // One-time cache creation
+      allow create: if isSignedIn()
+        && !exists(/databases/$(database)/documents/courses/$(courseId));
+
+      // Prevent client edits
+      allow update, delete: if false;
+
+      allow update, delete: if isAdmin();
+    }
+
+    /* =====================================================
+       💬 MESSAGES
+       ===================================================== */
+
+    match /messages/{messageId} {
+
+      allow read: if isSignedIn()
+        && (
+          request.auth.uid == resource.data.senderId
+          || request.auth.uid == resource.data.receiverId
+        );
+
+      allow create: if canWrite();
+
+      allow delete: if isAdmin();
+    }
+
+    /* =====================================================
+       🚫 DEFAULT DENY
+       ===================================================== */
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
