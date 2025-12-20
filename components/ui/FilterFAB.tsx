@@ -13,16 +13,20 @@ export default function FilterFAB({ onPress, hasFilters = false }: Props) {
   };
 
   return (
-    <TouchableOpacity 
-      style={styles.fab} 
-      onPress={handlePress} 
+    <TouchableOpacity
+      style={styles.fab}
+      onPress={handlePress}
       activeOpacity={0.7}
     >
       <Image
         source={require("@/assets/icons/Leaderboard Sort.png")}
-        style={styles.icon}
         resizeMode="contain"
+        style={[
+          styles.icon,
+          { tintColor: hasFilters ? "#FFD700" : "#FFFFFF" } // ✅ ONLY CHANGE
+        ]}
       />
+
       {hasFilters && (
         <View style={styles.badge}>
           <View style={styles.badgeDot} />
@@ -35,13 +39,13 @@ export default function FilterFAB({ onPress, hasFilters = false }: Props) {
 const styles = StyleSheet.create({
   fab: {
     position: "absolute",
-    bottom: 120, 
+    bottom: 120,
     right: 20,
     width: 62,
     height: 62,
     borderRadius: 31,
     backgroundColor: "#0D5C3A",
-    opacity: 0.85, // Changed from 0.4 to 0.85 for darker appearance
+    opacity: 0.85,
     alignItems: "center",
     justifyContent: "center",
     zIndex: 999,
@@ -49,7 +53,7 @@ const styles = StyleSheet.create({
   icon: {
     width: 28,
     height: 28,
-    tintColor: "#FFFFFF",
+    tintColor: "#FFFFFF", // default
   },
   badge: {
     position: "absolute",
@@ -69,3 +73,5 @@ const styles = StyleSheet.create({
     backgroundColor: "#FF6B00",
   },
 });
+
+

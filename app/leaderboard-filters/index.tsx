@@ -1,14 +1,11 @@
+import LocationPickerModal from "@/components/modals/LocationPickerModal";
 import { auth, db } from "@/constants/firebaseConfig";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import * as Location from "expo-location";
 import { useRouter } from "expo-router";
-import { doc, updateDoc } from "firebase/firestore";
-import React, { useState } from "react";
+import { doc, getDoc } from "firebase/firestore";
+import React, { useEffect, useState } from "react";
 import {
-  ActivityIndicator,
-  Alert,
-  Platform,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -18,70 +15,61 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function LeaderboardFiltersScreen() {
   const router = useRouter();
-  const [filterType, setFilterType] = useState<"all" | "nearMe" | "course" | "player">("all");
-  const [loadingLocation, setLoadingLocation] = useState(false);
+  const [filterType, setFilterType] = useState<"nearMe" | "course" | "player">("nearMe");
+  const [locationModalVisible, setLocationModalVisible] = useState(false);
+  const [cachedLocation, setCachedLocation] = useState<string>("Loading...");
 
-  const handleSelectFilterType = (type: "all" | "nearMe" | "course" | "player") => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setFilterType(type);
+  useEffect(() => {
+    loadCachedLocation();
+  }, []);
+
+  const loadCachedLocation = async () => {
+    try {
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      const userDoc = await getDoc(doc(db, "users", uid));
+      if (userDoc.exists()) {
+        const location = userDoc.data().location;
+        if (location?.city && location?.state) {
+          setCachedLocation(`${location.city}, ${location.state}`);
+        } else {
+          setCachedLocation("No location set");
+        }
+      }
+    } catch (error) {
+      console.error("Error loading location:", error);
+      setCachedLocation("No location set");
+    }
   };
 
-  const handleNearMeRequest = async () => {
-    setLoadingLocation(true);
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
-        if (Platform.OS === 'web') {
-          alert("Location permission denied. Please enable location access in your browser settings.");
-        } else {
-          Alert.alert(
-            "Location Permission Denied",
-            "Please enable location access in your device settings."
-          );
-        }
-        setLoadingLocation(false);
-        setFilterType("all");
-        return;
-      }
-
-      // Get location and save to user profile
-      const location = await Location.getCurrentPositionAsync({});
-      const { latitude, longitude } = location.coords;
-
-      const geocode = await Location.reverseGeocodeAsync({ latitude, longitude });
-      
-      const userId = auth.currentUser?.uid;
-      if (userId) {
-        const userRef = doc(db, "users", userId);
-        await updateDoc(userRef, {
-          location: {
-            type: "gps",
-            latitude: latitude,
-            longitude: longitude,
-            city: geocode[0]?.city || null,
-            state: geocode[0]?.region || null,
-            lastUpdated: new Date(),
-          },
-        });
-      }
-
-      setLoadingLocation(false);
-    } catch (error) {
-      console.error("Location error:", error);
-      setLoadingLocation(false);
-      setFilterType("all");
+  const handleSelectFilterType = (type: "nearMe" | "course" | "player") => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
+    if (type === "nearMe") {
+      // Open LocationPickerModal immediately
+      setLocationModalVisible(true);
+    } else {
+      setFilterType(type);
     }
+  };
+
+  const handleLocationSet = async (location: {
+    city: string;
+    state: string;
+    latitude?: number;
+    longitude?: number;
+  }) => {
+    // Location is cached in modal, update display
+    setCachedLocation(`${location.city}, ${location.state}`);
+    setFilterType("nearMe");
+    setLocationModalVisible(false);
   };
 
   const handleApplyFilter = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    if (filterType === "all") {
-      router.push({
-        pathname: "/leaderboard",
-        params: { filterType: "all" },
-      });
-    } else if (filterType === "nearMe") {
+    if (filterType === "nearMe") {
       router.push({
         pathname: "/leaderboard",
         params: { filterType: "nearMe" },
@@ -97,13 +85,14 @@ export default function LeaderboardFiltersScreen() {
 
   const handleClearFilter = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setFilterType("nearMe");
     router.push({
       pathname: "/leaderboard",
-      params: { filterType: "clear" },
+      params: { filterType: "nearMe" },
     });
   };
 
-  const canApplyFilter = filterType === "all" || filterType === "nearMe" || filterType === "course" || filterType === "player";
+  const canApplyFilter = filterType === "nearMe" || filterType === "course" || filterType === "player";
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
@@ -123,36 +112,10 @@ export default function LeaderboardFiltersScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Show Scores From</Text>
 
-          {/* All Courses */}
-          <TouchableOpacity
-            style={[styles.filterOption, filterType === "all" && styles.filterOptionActive]}
-            onPress={() => handleSelectFilterType("all")}
-          >
-            <View style={styles.filterOptionLeft}>
-              <Ionicons
-                name="globe-outline"
-                size={24}
-                color={filterType === "all" ? "#0D5C3A" : "#666"}
-              />
-              <View style={styles.filterOptionText}>
-                <Text style={[styles.filterOptionTitle, filterType === "all" && styles.filterOptionTitleActive]}>
-                  All Courses
-                </Text>
-                <Text style={styles.filterOptionDescription}>Show all leaderboard scores</Text>
-              </View>
-            </View>
-            <View style={[styles.radio, filterType === "all" && styles.radioActive]}>
-              {filterType === "all" && <View style={styles.radioDot} />}
-            </View>
-          </TouchableOpacity>
-
           {/* Near Me */}
           <TouchableOpacity
             style={[styles.filterOption, filterType === "nearMe" && styles.filterOptionActive]}
-            onPress={() => {
-              handleSelectFilterType("nearMe");
-              handleNearMeRequest();
-            }}
+            onPress={() => handleSelectFilterType("nearMe")}
           >
             <View style={styles.filterOptionLeft}>
               <Ionicons
@@ -164,16 +127,15 @@ export default function LeaderboardFiltersScreen() {
                 <Text style={[styles.filterOptionTitle, filterType === "nearMe" && styles.filterOptionTitleActive]}>
                   Near Me
                 </Text>
-                <Text style={styles.filterOptionDescription}>Courses within 50 miles</Text>
+                <Text style={styles.filterOptionDescription}>
+                  📍 {cachedLocation}
+                </Text>
+                <Text style={styles.filterOptionHint}>Tap to change location</Text>
               </View>
             </View>
-            {loadingLocation ? (
-              <ActivityIndicator size="small" color="#0D5C3A" />
-            ) : (
-              <View style={[styles.radio, filterType === "nearMe" && styles.radioActive]}>
-                {filterType === "nearMe" && <View style={styles.radioDot} />}
-              </View>
-            )}
+            <View style={[styles.radio, filterType === "nearMe" && styles.radioActive]}>
+              {filterType === "nearMe" && <View style={styles.radioDot} />}
+            </View>
           </TouchableOpacity>
 
           {/* Search Course */}
@@ -243,6 +205,13 @@ export default function LeaderboardFiltersScreen() {
           </Text>
         </TouchableOpacity>
       </View>
+
+      {/* Location Picker Modal */}
+      <LocationPickerModal
+        visible={locationModalVisible}
+        onClose={() => setLocationModalVisible(false)}
+        onLocationSet={handleLocationSet}
+      />
     </SafeAreaView>
   );
 }
@@ -334,6 +303,14 @@ const styles = StyleSheet.create({
   filterOptionDescription: {
     fontSize: 13,
     color: "#666",
+    marginTop: 2,
+  },
+
+  filterOptionHint: {
+    fontSize: 11,
+    color: "#999",
+    fontStyle: "italic",
+    marginTop: 2,
   },
 
   radio: {

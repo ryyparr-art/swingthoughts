@@ -63,6 +63,34 @@ service cloud.firestore {
       );
     }
 
+    // ✅ UPDATED: Allow onboarding updates (ADDED lockerCompleted)
+    function isOnboardingUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly([
+          'userType',
+          'displayName',
+          'handicap',
+          'homeClub',
+          'city',
+          'state',
+          'location',
+          'lockerCompleted',      // ✅ REQUIRED FIX
+          'acceptedTerms',
+          'acceptedPrivacy',
+          'termsAcceptedAt',
+          'privacyAcceptedAt',
+          'updatedAt',
+          'verification',
+          'userId',
+          'email',
+          'createdAt',
+          'badges',
+          'avatar',
+          'cachedCourses',
+          'cacheUpdatedAt'
+        ]);
+    }
+
     /* =====================================================
        👤 USERS
        ===================================================== */
@@ -74,11 +102,25 @@ service cloud.firestore {
       allow create: if isSignedIn()
         && request.auth.uid == userId;
 
+      // ✅ Allow onboarding updates OR normal updates with canWrite()
       allow update: if isSignedIn()
         && request.auth.uid == userId
-        && canWrite();
+        && (canWrite() || isOnboardingUpdate());
 
       allow delete: if isAdmin();
+
+      /* -------- CACHED COURSES -------- */
+
+      match /cachedCourses/{courseId} {
+        allow read: if isSignedIn()
+          && request.auth.uid == userId;
+
+        allow write: if isSignedIn()
+          && request.auth.uid == userId;
+
+        allow delete: if isSignedIn()
+          && request.auth.uid == userId;
+      }
     }
 
     /* =====================================================
@@ -87,28 +129,21 @@ service cloud.firestore {
 
     match /thoughts/{thoughtId} {
 
-      // Feed visibility
       allow read: if isSignedIn();
 
-      // Create own posts
       allow create: if canWrite()
         && request.resource.data.userId == request.auth.uid;
 
-      // Edit/delete own posts
       allow update, delete: if isSignedIn()
         && request.auth.uid == resource.data.userId
         && canWrite();
 
-      // Safe counter updates (likes/comments)
       allow update: if isSignedIn()
         && canWrite()
         && request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(["likes", "likedBy", "comments"]);
 
-      // Admin override
       allow update, delete: if isAdmin();
-
-      /* -------- COMMENTS -------- */
 
       match /comments/{commentId} {
 
@@ -148,13 +183,10 @@ service cloud.firestore {
 
     match /course_leaders/{courseId} {
 
-      // Public leaderboard visibility
       allow read: if isSignedIn();
 
-      // ❌ Clients may never write
       allow write: if false;
 
-      // ✅ Admin / tooling override only
       allow write: if isAdmin();
     }
 
@@ -166,11 +198,8 @@ service cloud.firestore {
 
       allow read: if isSignedIn();
 
-      // One-time cache creation
-      allow create: if isSignedIn()
-        && !exists(/databases/$(database)/documents/courses/$(courseId));
+      allow create: if isSignedIn();
 
-      // Prevent client edits
       allow update, delete: if false;
 
       allow update, delete: if isAdmin();
@@ -202,4 +231,5 @@ service cloud.firestore {
     }
   }
 }
+
 

@@ -3,6 +3,7 @@ import LowmanCarousel from "@/components/navigation/LowmanCarousel";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
+import { getPostTypeLabel } from "@/constants/postTypes";
 
 import {
   arrayRemove,
@@ -15,7 +16,7 @@ import {
   orderBy,
   query,
   updateDoc,
-  where
+  where,
 } from "firebase/firestore";
 
 import * as Haptics from "expo-haptics";
@@ -32,7 +33,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import CommentsModal from "@/components/ui/CommentsModal";
+import CommentsModal from "@/components/modals/CommentsModal";
 import FilterBottomSheet from "@/components/ui/FilterBottomSheet";
 import FilterFAB from "@/components/ui/FilterFAB";
 
@@ -50,6 +51,7 @@ interface Thought {
   comments?: number;
   displayName?: string;
   courseName?: string;
+  avatarUrl?: string; // ✅ Add avatar URL
 }
 
 export default function ClubhouseScreen() {
@@ -113,7 +115,8 @@ export default function ClubhouseScreen() {
 
       if (filters.type) conditions.push(where("postType", "==", filters.type));
       if (filters.user) conditions.push(where("displayName", "==", filters.user));
-      if (filters.course) conditions.push(where("courseName", "==", filters.course));
+      if (filters.course)
+        conditions.push(where("courseName", "==", filters.course));
 
       if (conditions.length > 0) q = query(q, ...conditions);
       q = query(q, orderBy("createdAt", "desc"));
@@ -131,9 +134,12 @@ export default function ClubhouseScreen() {
 
         try {
           const userDoc = await getDoc(doc(db, "users", thought.userId));
-          thought.displayName = userDoc.exists()
-            ? userDoc.data().displayName
-            : "Anonymous";
+          if (userDoc.exists()) {
+            thought.displayName = userDoc.data().displayName || "Anonymous";
+            thought.avatarUrl = userDoc.data().avatar || undefined; // ✅ Get avatar URL
+          } else {
+            thought.displayName = "Anonymous";
+          }
         } catch {
           thought.displayName = "Anonymous";
         }
@@ -154,12 +160,12 @@ export default function ClubhouseScreen() {
     if (!canWrite) {
       return Alert.alert(
         "Verification Required",
-        "You’ll be able to interact once your account is verified."
+        "You'll be able to interact once your account is verified."
       );
     }
 
     if (thought.userId === currentUserId) {
-      return Alert.alert("You can’t like your own post");
+      return Alert.alert("You can't like your own post");
     }
 
     try {
@@ -207,6 +213,14 @@ export default function ClubhouseScreen() {
     setCommentsModalVisible(true);
   };
 
+  // ✅ Check if any filters are active
+  const hasActiveFilters = !!(
+    activeFilters.type || 
+    activeFilters.user || 
+    activeFilters.course
+  );
+
+  // ✅ Optimistic comment count (restored & correct)
   const handleCommentAdded = () => {
     if (!selectedThought) return;
 
@@ -222,11 +236,32 @@ export default function ClubhouseScreen() {
   /* ------------------ RENDER ------------------ */
   const renderThought = ({ item }: { item: Thought }) => {
     const hasLiked = item.likedBy?.includes(currentUserId);
+    const hasComments = !!item.comments && item.comments > 0;
 
     return (
       <View style={styles.thoughtCard}>
         <View style={styles.cardHeader}>
-          <Text style={styles.displayName}>{item.displayName}</Text>
+          <View style={styles.headerLeft}>
+            {/* Avatar from Firebase */}
+            <Image
+              source={{ uri: item.avatarUrl }}
+              style={styles.avatar}
+            />
+            <View style={styles.headerInfo}>
+              <Text style={styles.displayName}>{item.displayName}</Text>
+              <Text style={styles.timestamp}>
+                {item.createdAt?.toDate
+                  ? item.createdAt.toDate().toLocaleDateString()
+                  : ""}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.thoughtTypeBadge}>
+            <Text style={styles.thoughtTypeText}>
+              {getPostTypeLabel(item.postType)}
+            </Text>
+          </View>
         </View>
 
         {item.imageUrl && (
@@ -245,7 +280,7 @@ export default function ClubhouseScreen() {
                 source={require("@/assets/icons/Throw Darts.png")}
                 style={[
                   styles.actionIcon,
-                  hasLiked && styles.actionIconActive,
+                  hasLiked && styles.actionIconLiked,
                 ]}
               />
               <Text style={styles.actionText}>{item.likes}</Text>
@@ -257,7 +292,10 @@ export default function ClubhouseScreen() {
             >
               <Image
                 source={require("@/assets/icons/Comments.png")}
-                style={styles.actionIcon}
+                style={[
+                  styles.actionIcon,
+                  hasComments && styles.actionIconCommented,
+                ]}
               />
               <Text style={styles.actionText}>{item.comments || 0}</Text>
             </TouchableOpacity>
@@ -291,7 +329,10 @@ export default function ClubhouseScreen() {
         />
       )}
 
-      <FilterFAB onPress={() => setFilterSheetVisible(true)} />
+      <FilterFAB 
+        onPress={() => setFilterSheetVisible(true)} 
+        hasFilters={hasActiveFilters}
+      />
 
       <FilterBottomSheet
         visible={filterSheetVisible}
@@ -302,10 +343,11 @@ export default function ClubhouseScreen() {
         }}
       />
 
+      {/* ✅ Instagram-style comments */}
       <CommentsModal
         visible={commentsModalVisible}
         thoughtId={selectedThought?.id || ""}
-        thoughtContent={selectedThought?.content || ""}
+        postContent={selectedThought?.content || ""}
         onClose={() => {
           setCommentsModalVisible(false);
           setSelectedThought(null);
@@ -332,18 +374,67 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 16,
     elevation: 3,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
   },
-  cardHeader: { padding: 12 },
-  displayName: { fontWeight: "700", color: "#0D5C3A" },
+  cardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F0F0F0",
+  },
+  headerLeft: { 
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  avatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+  headerInfo: {
+    flex: 1,
+  },
+  displayName: {
+    fontWeight: "700",
+    color: "#0D5C3A",
+    fontSize: 16,
+  },
+  timestamp: {
+    fontSize: 12,
+    color: "#999",
+    marginTop: 4,
+  },
+  thoughtTypeBadge: {
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  thoughtTypeText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#FFFFFF",
+  },
   thoughtImage: { width: "100%", height: 300 },
   contentContainer: { padding: 16 },
-  content: { fontSize: 16, marginBottom: 12 },
+  content: { fontSize: 16, marginBottom: 12, color: "#333" },
   footer: { flexDirection: "row", gap: 20 },
   actionButton: { flexDirection: "row", alignItems: "center", gap: 6 },
   actionIcon: { width: 20, height: 20, tintColor: "#666" },
-  actionIconActive: { tintColor: "#0D5C3A" },
-  actionText: { fontSize: 14, color: "#666" },
+  actionIconLiked: { tintColor: "#FF3B30" },
+  actionIconCommented: { tintColor: "#FFD700" },
+  actionText: { fontSize: 14, color: "#666", fontWeight: "600" },
 });
+
+
+
 
 
 

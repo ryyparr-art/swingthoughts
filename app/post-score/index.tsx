@@ -1,4 +1,5 @@
 import { auth, db } from "@/constants/firebaseConfig";
+import { checkAndAwardBadges } from "@/utils/badgeUtils";
 import { canPostScores } from "@/utils/canPostScores";
 import { BlurView } from "expo-blur";
 import * as Haptics from "expo-haptics";
@@ -106,6 +107,9 @@ export default function PostScoreScreen() {
   const [par, setPar] = useState<number | null>(null);
   const [grossScore, setGrossScore] = useState("");
   const [netScore, setNetScore] = useState<number | null>(null);
+  
+  // ✅ NEW: Hole-in-One tracking
+  const [hadHoleInOne, setHadHoleInOne] = useState(false);
 
 /* ========================= LOAD USER ========================= */
 
@@ -478,18 +482,41 @@ export default function PostScoreScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
 
     try {
+      // 1. Post the score
       await addDoc(collection(db, "scores"), {
         userId: auth.currentUser!.uid,
+        userName: userData?.displayName || "Player",
         courseId: selectedCourse.id,
         courseName: selectedCourse.course_name,
         grossScore: Number(grossScore),
         netScore,
         par,
         tee,
+        location: userData?.location ?? null,
+        hadHoleInOne,
         createdAt: serverTimestamp(),
       });
 
-      router.back();
+      // 2. Check and award badges
+      const newBadges = await checkAndAwardBadges(
+        auth.currentUser!.uid,
+        selectedCourse.id,
+        selectedCourse.course_name,
+        Number(grossScore),
+        hadHoleInOne
+      );
+
+      // 3. Show success message with badges earned
+      if (newBadges.length > 0) {
+        const badgeNames = newBadges.map(b => b.displayName).join(", ");
+        Alert.alert(
+          "🏆 Badges Earned!",
+          `Congratulations! You earned: ${badgeNames}`,
+          [{ text: "Awesome!", onPress: () => router.back() }]
+        );
+      } else {
+        router.back();
+      }
     } catch (error) {
       console.error("Error posting score:", error);
       Alert.alert("Error", "Failed to post score. Please try again.");
@@ -518,11 +545,6 @@ export default function PostScoreScreen() {
   };
 
 /* ========================= UI ========================= */
-
-  const getCourseCardColor = (index: number) => {
-    const colors = ["#E8F5E9", "#FFF3E0", "#E3F2FD"];
-    return colors[index % 3];
-  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -727,6 +749,29 @@ export default function PostScoreScreen() {
               {netScore !== null && (
                 <Text style={styles.net}>Net Score: {netScore}</Text>
               )}
+
+              {/* ✅ NEW: HOLE-IN-ONE CHECKBOX */}
+              <View style={styles.holeInOneContainer}>
+                <TouchableOpacity 
+                  onPress={() => {
+                    setHadHoleInOne(!hadHoleInOne);
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  }}
+                  style={styles.holeInOneRow}
+                >
+                  <View style={[
+                    styles.checkbox,
+                    hadHoleInOne && styles.checkboxChecked
+                  ]}>
+                    {hadHoleInOne && (
+                      <Text style={styles.checkmark}>✓</Text>
+                    )}
+                  </View>
+                  <Text style={styles.holeInOneText}>
+                    I got a hole-in-one! ⛳
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </>
           )}
           </ScrollView>
@@ -947,13 +992,57 @@ const styles = StyleSheet.create({
   net: { 
     textAlign: "center", 
     marginTop: 8,
-    marginBottom: 24,
+    marginBottom: 16,
     fontSize: 18,
     fontWeight: "700",
     color: "#333",
   },
-});
 
+  // ✅ NEW: Hole-in-One styles
+  holeInOneContainer: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+
+  holeInOneRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 16,
+    backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.5)",
+  },
+
+  checkbox: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: "#0D5C3A",
+    marginRight: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "transparent",
+  },
+
+  checkboxChecked: {
+    backgroundColor: "#0D5C3A",
+  },
+
+  checkmark: {
+    color: "#FFFFFF",
+    fontSize: 18,
+    fontWeight: "900",
+  },
+
+  holeInOneText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#333",
+  },
+});
 
 
 

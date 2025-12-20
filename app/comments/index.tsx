@@ -1,33 +1,29 @@
+import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
 import { auth, db } from "@/constants/firebaseConfig";
 import * as Haptics from "expo-haptics";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import {
-    addDoc,
-    collection,
-    doc,
-    getDoc,
-    getDocs,
-    increment,
-    orderBy,
-    query,
-    updateDoc,
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  increment,
+  orderBy,
+  query,
+  updateDoc,
 } from "firebase/firestore";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    Animated,
-    Image,
-    KeyboardAvoidingView,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Image,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 
 interface Comment {
   commentId: string;
@@ -35,33 +31,40 @@ interface Comment {
   displayName: string;
   content: string;
   createdAt: any;
+  taggedPartners?: { userId: string; displayName: string }[];
+  taggedCourses?: { courseId: number; courseName: string }[];
 }
 
-export default function CommentsScreen() {
-  const params = useLocalSearchParams();
+interface CommentsScreenProps {
+  thoughtId: string;
+  postContent: string;
+  onClose: () => void;
+  onCommentAdded?: () => void;
+}
+
+export default function CommentsScreen({
+  thoughtId,
+  postContent,
+  onClose,
+  onCommentAdded,
+}: CommentsScreenProps) {
   const router = useRouter();
-  const thoughtId = params.thoughtId as string;
-  const postContent = params.postContent as string;
 
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
   const [newComment, setNewComment] = useState("");
   const [posting, setPosting] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string>("");
-  const [currentUserName, setCurrentUserName] = useState<string>("");
 
-  // Animation value for slide-in effect (from BOTTOM to TOP)
-  const slideAnim = useState(new Animated.Value(1000))[0];
+  const [taggedPartners, setTaggedPartners] = useState<{ userId: string; displayName: string }[]>([]);
+  const [taggedCourses, setTaggedCourses] = useState<{ courseId: number; courseName: string }[]>([]);
+  const [showAutocomplete, setShowAutocomplete] = useState(false);
+  const [autocompleteType, setAutocompleteType] = useState<"partner" | "course" | null>(null);
+  const [autocompleteResults, setAutocompleteResults] = useState<any[]>([]);
+  const [currentMention, setCurrentMention] = useState("");
+  const [allPartners, setAllPartners] = useState<{ userId: string; displayName: string }[]>([]);
 
-  useEffect(() => {
-    // Slide up animation from bottom
-    Animated.spring(slideAnim, {
-      toValue: 0,
-      useNativeDriver: true,
-      tension: 65,
-      friction: 11,
-    }).start();
-  }, []);
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
@@ -70,11 +73,25 @@ export default function CommentsScreen() {
         try {
           const userDoc = await getDoc(doc(db, "users", user.uid));
           if (userDoc.exists()) {
-            setCurrentUserName(userDoc.data().displayName || "Anonymous");
+            // Load user's partners for tagging
+            const partners = userDoc.data()?.partners || [];
+            if (partners.length > 0) {
+              const partnerDocs = await Promise.all(
+                partners.map((partnerId: string) => getDoc(doc(db, "users", partnerId)))
+              );
+              
+              const partnerList = partnerDocs
+                .filter((d) => d.exists())
+                .map((d) => ({
+                  userId: d.id,
+                  displayName: d.data()?.displayName || "Unknown",
+                }));
+              
+              setAllPartners(partnerList);
+            }
           }
         } catch (error) {
           console.error("Error fetching user data:", error);
-          setCurrentUserName("Anonymous");
         }
       }
     });
@@ -101,7 +118,6 @@ export default function CommentsScreen() {
         const commentData = docSnap.data() as Comment;
         commentData.commentId = docSnap.id;
 
-        // Fetch user display name
         try {
           const userDoc = await getDoc(doc(db, "users", commentData.userId));
           commentData.displayName = userDoc.exists()
@@ -122,6 +138,214 @@ export default function CommentsScreen() {
     }
   };
 
+  const formatTimestamp = (timestamp: any) => {
+    if (!timestamp) return "";
+    
+    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+    
+    if (minutes < 1) return "Just now";
+    if (minutes < 60) return `${minutes}m ago`;
+    if (hours < 24) return `${hours}h ago`;
+    if (days < 7) return `${days}d ago`;
+    
+    return date.toLocaleDateString();
+  };
+
+  /* ------------------ AUTOCOMPLETE LOGIC ------------------ */
+  const handleCommentChange = (text: string) => {
+    setNewComment(text);
+
+    const lastAtIndex = text.lastIndexOf("@");
+    if (lastAtIndex === -1) {
+      setShowAutocomplete(false);
+      return;
+    }
+
+    const afterAt = text.slice(lastAtIndex + 1);
+    
+    if (afterAt.includes(" ")) {
+      setShowAutocomplete(false);
+      return;
+    }
+
+    setCurrentMention(afterAt);
+
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+
+    debounceRef.current = setTimeout(() => {
+      if (afterAt.length >= 2) {
+        searchMentions(afterAt);
+      }
+    }, 300);
+  };
+
+  const searchMentions = async (searchText: string) => {
+    try {
+      const partnerResults = allPartners.filter((p) =>
+        p.displayName.toLowerCase().includes(searchText.toLowerCase())
+      );
+
+      if (partnerResults.length > 0) {
+        setAutocompleteType("partner");
+        setAutocompleteResults(partnerResults);
+        setShowAutocomplete(true);
+        return;
+      }
+
+      searchCourses(searchText);
+    } catch (err) {
+      console.error("Search error:", err);
+    }
+  };
+
+  const searchCourses = async (searchText: string) => {
+    try {
+      const coursesQuery = query(collection(db, "courses"));
+      const coursesSnap = await getDocs(coursesQuery);
+      
+      const cachedCourses: any[] = [];
+      coursesSnap.forEach((doc) => {
+        const data = doc.data();
+        const courseName = data.course_name || data.courseName || "";
+        
+        if (courseName.toLowerCase().includes(searchText.toLowerCase())) {
+          cachedCourses.push({
+            courseId: data.id,
+            courseName: courseName,
+            location: data.location 
+              ? `${data.location.city}, ${data.location.state}`
+              : "",
+          });
+        }
+      });
+
+      if (cachedCourses.length > 0) {
+        setAutocompleteType("course");
+        setAutocompleteResults(cachedCourses);
+        setShowAutocomplete(true);
+        return;
+      }
+
+      const res = await fetch(
+        `${GOLF_COURSE_API_URL}/search?search_query=${encodeURIComponent(searchText)}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Key ${GOLF_COURSE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (!res.ok) return;
+
+      const data = await res.json();
+      const courses = data.courses || [];
+
+      if (courses.length > 0) {
+        setAutocompleteType("course");
+        setAutocompleteResults(
+          courses.map((c: any) => ({
+            courseId: c.id,
+            courseName: c.course_name,
+            location: `${c.location.city}, ${c.location.state}`,
+          }))
+        );
+        setShowAutocomplete(true);
+      }
+    } catch (err) {
+      console.error("Course search error:", err);
+    }
+  };
+
+  const handleSelectMention = (item: any) => {
+    if (autocompleteType === "partner") {
+      if (taggedPartners.find((p) => p.userId === item.userId)) {
+        setShowAutocomplete(false);
+        return;
+      }
+
+      const lastAtIndex = newComment.lastIndexOf("@");
+      const beforeAt = newComment.slice(0, lastAtIndex);
+      const afterMention = newComment.slice(lastAtIndex + 1 + currentMention.length);
+      
+      setNewComment(`${beforeAt}@${item.displayName}${afterMention}`);
+      setTaggedPartners([...taggedPartners, { userId: item.userId, displayName: item.displayName }]);
+    } else if (autocompleteType === "course") {
+      if (taggedCourses.find((c) => c.courseId === item.courseId)) {
+        setShowAutocomplete(false);
+        return;
+      }
+
+      const lastAtIndex = newComment.lastIndexOf("@");
+      const beforeAt = newComment.slice(0, lastAtIndex);
+      const afterMention = newComment.slice(lastAtIndex + 1 + currentMention.length);
+      
+      const courseTag = item.courseName.replace(/\s+/g, "");
+      
+      setNewComment(`${beforeAt}@${courseTag}${afterMention}`);
+      setTaggedCourses([...taggedCourses, { courseId: item.courseId, courseName: item.courseName }]);
+    }
+
+    setShowAutocomplete(false);
+  };
+
+  /* ------------------ RENDER CLICKABLE TAGS ------------------ */
+  const renderCommentWithTags = (comment: Comment) => {
+    const { content, taggedPartners = [], taggedCourses = [] } = comment;
+    
+    const tagMap = new Map();
+    taggedPartners.forEach((p) => {
+      tagMap.set(`@${p.displayName}`, { type: 'partner', data: p });
+    });
+    taggedCourses.forEach((c) => {
+      const tag = `@${c.courseName.replace(/\s+/g, "")}`;
+      tagMap.set(tag, { type: 'course', data: c });
+    });
+
+    const parts = content.split(/(@\w+)/g);
+    
+    return (
+      <Text style={styles.commentContent}>
+        {parts.map((part, index) => {
+          const tagInfo = tagMap.get(part);
+          
+          if (tagInfo) {
+            return (
+              <Text
+                key={index}
+                style={styles.commentTag}
+                onPress={() => handleTagPress(tagInfo)}
+              >
+                {part}
+              </Text>
+            );
+          }
+          
+          return <Text key={index}>{part}</Text>;
+        })}
+      </Text>
+    );
+  };
+
+  const handleTagPress = (tagInfo: any) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
+    if (tagInfo.type === 'partner') {
+      router.push(`/locker/${tagInfo.data.userId}`);
+    } else if (tagInfo.type === 'course') {
+      router.push(`/course/${tagInfo.data.courseId}`);
+    }
+  };
+
   const handlePostComment = async () => {
     if (!newComment.trim() || !currentUserId) return;
 
@@ -129,20 +353,23 @@ export default function CommentsScreen() {
       setPosting(true);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-      // Add comment to subcollection
       await addDoc(collection(db, "thoughts", thoughtId, "comments"), {
         userId: currentUserId,
         content: newComment.trim(),
+        taggedPartners: taggedPartners,
+        taggedCourses: taggedCourses,
         createdAt: new Date(),
       });
 
-      // Increment comment count on the thought
       await updateDoc(doc(db, "thoughts", thoughtId), {
         comments: increment(1),
       });
 
       setNewComment("");
+      setTaggedPartners([]);
+      setTaggedCourses([]);
       await fetchComments();
+      onCommentAdded?.();
       setPosting(false);
     } catch (error) {
       console.error("Error posting comment:", error);
@@ -150,234 +377,198 @@ export default function CommentsScreen() {
     }
   };
 
-  const handleClose = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    // Slide down animation
-    Animated.timing(slideAnim, {
-      toValue: 1000,
-      duration: 250,
-      useNativeDriver: true,
-    }).start(() => {
-      router.back();
-    });
-  };
-
   return (
-    <View style={styles.backdrop}>
-      {/* Transparent touchable area to close */}
-      <Pressable style={styles.touchableBackdrop} onPress={handleClose} />
+    <View style={styles.container}>
+      {/* HEADER */}
+      <View style={styles.header}>
+        <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+          <Image
+            source={require("@/assets/icons/Close.png")}
+            style={styles.closeIcon}
+            resizeMode="contain"
+          />
+        </TouchableOpacity>
 
-      <Animated.View
-        style={[
-          styles.container,
-          {
-            transform: [{ translateY: slideAnim }],
-          },
-        ]}
+        <View style={styles.headerContent}>
+          <Text style={styles.headerTitle}>Comments</Text>
+        </View>
+
+        <View style={styles.closeButton} />
+      </View>
+
+      {/* COMMENTS LIST */}
+      <ScrollView
+        style={styles.commentsContainer}
+        contentContainerStyle={styles.commentsContent}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
       >
-        <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
-          <KeyboardAvoidingView
-            style={styles.keyboardView}
-            behavior={Platform.OS === "ios" ? "padding" : "height"}
-            keyboardVerticalOffset={0}
-          >
-            {/* Header */}
-            <View style={styles.header}>
-              <View style={styles.headerContent}>
-                <Text style={styles.headerTitle}>Comments</Text>
-                <Text style={styles.headerSubtitle} numberOfLines={2}>
-                  {postContent}
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#0D5C3A" />
+            <Text style={styles.loadingText}>Loading comments...</Text>
+          </View>
+        ) : comments.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyIcon}>💬</Text>
+            <Text style={styles.emptyText}>
+              No comments yet. Be the first to share your thoughts!
+            </Text>
+          </View>
+        ) : (
+          comments.map((comment) => (
+            <View key={comment.commentId} style={styles.commentCard}>
+              <View style={styles.commentHeader}>
+                <Text style={styles.commentAuthor}>
+                  {comment.displayName}
+                </Text>
+                <Text style={styles.commentDate}>
+                  {formatTimestamp(comment.createdAt)}
                 </Text>
               </View>
-              <TouchableOpacity
-                onPress={handleClose}
-                style={styles.closeButton}
-                activeOpacity={0.7}
-              >
-                <Image
-                  source={require("@/assets/icons/Close.png")}
-                  style={styles.closeIcon}
-                  resizeMode="contain"
-                />
-              </TouchableOpacity>
+              {renderCommentWithTags(comment)}
             </View>
+          ))
+        )}
+      </ScrollView>
 
-            {/* Comments List - Lighter Green Background */}
-            <ScrollView
-              style={styles.commentsContainer}
-              contentContainerStyle={styles.commentsContent}
+      {/* INPUT AREA */}
+      <View style={styles.inputContainer}>
+        <View style={styles.inputWrapper}>
+          <TextInput
+            style={styles.input}
+            placeholder="Add your comment..."
+            placeholderTextColor="#999"
+            value={newComment}
+            onChangeText={handleCommentChange}
+            multiline
+            maxLength={500}
+            autoFocus={false}
+            blurOnSubmit={false}
+          />
+
+          <TouchableOpacity
+            onPress={handlePostComment}
+            style={[
+              styles.postButton,
+              (!newComment.trim() || posting) &&
+                styles.postButtonDisabled,
+            ]}
+            disabled={!newComment.trim() || posting}
+            activeOpacity={0.7}
+          >
+            {posting ? (
+              <ActivityIndicator size="small" color="#FFF" />
+            ) : (
+              <Image
+                source={require("@/assets/icons/Post Score.png")}
+                style={styles.postIcon}
+                resizeMode="contain"
+              />
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* AUTOCOMPLETE DROPDOWN */}
+        {showAutocomplete && (
+          <View style={styles.autocompleteContainer}>
+            <ScrollView 
+              keyboardShouldPersistTaps="handled"
+              style={styles.autocompleteScroll}
             >
-              {loading ? (
-                <View style={styles.loadingContainer}>
-                  <ActivityIndicator size="large" color="#0D5C3A" />
-                  <Text style={styles.loadingText}>Loading comments...</Text>
-                </View>
-              ) : comments.length === 0 ? (
-                <View style={styles.emptyContainer}>
-                  <Text style={styles.emptyText}>
-                    🏌️ No comments yet. Be the first to share your thoughts!
-                  </Text>
-                </View>
-              ) : (
-                comments.map((comment) => (
-                  <View key={comment.commentId} style={styles.commentCard}>
-                    <View style={styles.commentHeader}>
-                      <Text style={styles.commentAuthor}>
-                        {comment.displayName}
-                      </Text>
-                      <Text style={styles.commentDate}>
-                        {comment.createdAt?.toDate?.()?.toLocaleDateString() ||
-                          "Today"}
-                      </Text>
-                    </View>
-                    <Text style={styles.commentContent}>{comment.content}</Text>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-
-            {/* Fairway-Inspired Input Area - Darker Green */}
-            <View style={styles.inputContainer}>
-              {/* Grass texture top border */}
-              <View style={styles.grassBorder} />
-
-              <View style={styles.inputWrapper}>
-                <View style={styles.flagContainer}>
-                  <View style={styles.flagPole} />
-                  <View style={styles.flag} />
-                </View>
-
-                <TextInput
-                  style={styles.input}
-                  placeholder="Add your comment..."
-                  placeholderTextColor="#999"
-                  value={newComment}
-                  onChangeText={setNewComment}
-                  multiline
-                  maxLength={500}
-                />
-
+              {autocompleteResults.map((item, idx) => (
                 <TouchableOpacity
-                  onPress={handlePostComment}
-                  style={[
-                    styles.postButton,
-                    (!newComment.trim() || posting) &&
-                      styles.postButtonDisabled,
-                  ]}
-                  disabled={!newComment.trim() || posting}
-                  activeOpacity={0.7}
+                  key={`${item.userId || item.courseId}-${idx}`}
+                  style={styles.autocompleteItem}
+                  onPress={() => handleSelectMention(item)}
                 >
-                  {posting ? (
-                    <ActivityIndicator size="small" color="#FFF" />
-                  ) : (
-                    <Image
-                      source={require("@/assets/icons/Post Score.png")}
-                      style={styles.postIcon}
-                      resizeMode="contain"
-                    />
+                  <Text style={styles.autocompleteName}>
+                    {autocompleteType === "partner"
+                      ? `@${item.displayName}`
+                      : `@${item.courseName.replace(/\s+/g, "")}`}
+                  </Text>
+                  {autocompleteType === "course" && (
+                    <Text style={styles.autocompleteLocation}>{item.location}</Text>
                   )}
                 </TouchableOpacity>
-              </View>
+              ))}
+            </ScrollView>
+          </View>
+        )}
 
-              {/* Character count */}
-              <Text style={styles.charCount}>{newComment.length}/500</Text>
-            </View>
-          </KeyboardAvoidingView>
-        </SafeAreaView>
-      </Animated.View>
+        <Text style={styles.charCount}>{newComment.length}/500</Text>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    flexDirection: "row",
-  },
-
-  touchableBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.3)",
-  },
-
   container: {
-    position: "absolute",
-    bottom: 0,
-    right: 0,
-    left: 0,
-    height: "40%",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 10,
-  },
-
-  safeArea: {
     flex: 1,
-    backgroundColor: "#A5D6A7", // Light green for comments area
-  },
-
-  keyboardView: {
-    flex: 1,
+    backgroundColor: "#F0F8F0", // Match modal background (not transparent)
   },
 
   header: {
-    backgroundColor: "#0D5C3A",
-    padding: 16,
-    paddingBottom: 20,
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     justifyContent: "space-between",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 3,
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+
+  closeButton: {
+    width: 40,
+    alignItems: "flex-start",
+  },
+
+  closeIcon: {
+    width: 28,
+    height: 28,
+    tintColor: "#FFFFFF",
   },
 
   headerContent: {
     flex: 1,
-    marginRight: 12,
+    alignItems: "center",
   },
 
   headerTitle: {
-    fontSize: 22,
+    color: "#FFFFFF",
     fontWeight: "700",
-    color: "#FFF",
+    fontSize: 18,
+    textAlign: "center",
+  },
+
+  postPreview: {
+    backgroundColor: "#E8DCC3",
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#D6C9A8",
+  },
+
+  postPreviewLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#0D5C3A",
     marginBottom: 4,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   },
 
-  headerSubtitle: {
+  postPreviewText: {
     fontSize: 13,
-    color: "#B8D4C6",
-    lineHeight: 17,
-  },
-
-  closeButton: {
-    padding: 8,
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
-    borderRadius: 8,
-  },
-
-  closeIcon: {
-    width: 22,
-    height: 22,
-    tintColor: "#FFF",
+    color: "#666",
+    lineHeight: 18,
   },
 
   commentsContainer: {
     flex: 1,
-    backgroundColor: "#A5D6A7", // Light green
   },
 
   commentsContent: {
-    padding: 12,
-    paddingBottom: 24,
+    padding: 16,
+    paddingBottom: 200, // Large padding so content scrolls above keyboard
   },
 
   loadingContainer: {
@@ -402,24 +593,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
 
+  emptyIcon: {
+    fontSize: 48,
+    marginBottom: 12,
+  },
+
   emptyText: {
     fontSize: 15,
-    color: "#0D5C3A",
+    color: "#666",
     textAlign: "center",
     lineHeight: 22,
-    fontWeight: "500",
   },
 
   commentCard: {
     backgroundColor: "#FFF",
     borderRadius: 12,
     padding: 14,
-    marginBottom: 10,
-    borderLeftWidth: 3,
-    borderLeftColor: "#0D5C3A",
+    marginBottom: 12,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.1,
     shadowRadius: 3,
     elevation: 2,
   },
@@ -428,18 +621,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 6,
+    marginBottom: 8,
   },
 
   commentAuthor: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "700",
     color: "#0D5C3A",
   },
 
   commentDate: {
-    fontSize: 11,
-    color: "#666",
+    fontSize: 12,
+    color: "#999",
   },
 
   commentContent: {
@@ -448,99 +641,104 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 
-  inputContainer: {
-    backgroundColor: "#66BB6A", // Darker green for input area
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: -3 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    elevation: 8,
+  commentTag: {
+    color: "#0D5C3A",
+    fontWeight: "700",
+    textDecorationLine: "underline",
   },
 
-  grassBorder: {
-    height: 6,
-    backgroundColor: "#558B5A",
+  inputContainer: {
+    backgroundColor: "#E8DCC3",
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#D6C9A8",
+  },
+
+  autocompleteContainer: {
+    backgroundColor: "#FFF",
+    marginHorizontal: 16,
+    marginBottom: 8,
+    borderRadius: 8,
+    maxHeight: 150,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+
+  autocompleteScroll: {
+    maxHeight: 150,
+  },
+
+  autocompleteItem: {
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F0F0F0",
+  },
+
+  autocompleteName: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#0D5C3A",
+  },
+
+  autocompleteLocation: {
+    fontSize: 12,
+    color: "#666",
+    marginTop: 2,
   },
 
   inputWrapper: {
     flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    gap: 10,
-  },
-
-  flagContainer: {
-    position: "relative",
-    width: 20,
-    height: 36,
-    justifyContent: "flex-end",
-    alignItems: "center",
-  },
-
-  flagPole: {
-    width: 2,
-    height: 32,
-    backgroundColor: "#333",
-    position: "absolute",
-    bottom: 0,
-  },
-
-  flag: {
-    width: 10,
-    height: 8,
-    backgroundColor: "#FF5252",
-    position: "absolute",
-    top: 2,
-    left: 2,
-    borderTopRightRadius: 2,
-    borderBottomRightRadius: 2,
+    alignItems: "flex-end",
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    gap: 12,
   },
 
   input: {
     flex: 1,
     backgroundColor: "#FFF",
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     fontSize: 14,
     color: "#333",
-    maxHeight: 90,
-    borderWidth: 2,
-    borderColor: "#0D5C3A",
+    maxHeight: 100,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+    textAlignVertical: "top",
   },
 
   postButton: {
     backgroundColor: "#0D5C3A",
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     justifyContent: "center",
     alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 4,
   },
 
   postButtonDisabled: {
-    backgroundColor: "#999",
-    opacity: 0.5,
+    opacity: 0.4,
   },
 
   postIcon: {
-    width: 22,
-    height: 22,
+    width: 28,
+    height: 28,
     tintColor: "#FFF",
   },
 
   charCount: {
-    fontSize: 10,
-    color: "#FFF",
+    fontSize: 11,
+    color: "#999",
     textAlign: "right",
     paddingHorizontal: 16,
     paddingBottom: 8,
     fontWeight: "600",
   },
 });
+

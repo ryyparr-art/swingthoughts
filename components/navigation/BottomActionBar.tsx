@@ -1,6 +1,6 @@
 import * as Haptics from "expo-haptics";
-import { useRouter, useSegments } from "expo-router";
-import { useEffect, useState } from "react";
+import { useLocalSearchParams, useRouter, useSegments } from "expo-router";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, Image, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 import { auth, db } from "@/constants/firebaseConfig";
@@ -11,10 +11,22 @@ import { doc, getDoc } from "firebase/firestore";
 export default function BottomActionBar() {
   const segments = useSegments();
   const router = useRouter();
+  const params = useLocalSearchParams();
 
   const current = segments[0] ?? "clubhouse";
 
   const [userData, setUserData] = useState<any>(null);
+
+  /* ---------------- CHECK IF FILTERS ARE ACTIVE ---------------- */
+  const hasActiveFilter = useMemo(() => {
+    if (current !== "leaderboard") return false;
+
+    const filterType = params?.filterType;
+    
+    // Filter is active if it's anything other than "nearMe" (default)
+    // Or if it's "nearMe" but was explicitly set (not default load)
+    return filterType && filterType !== "nearMe";
+  }, [current, params?.filterType]);
 
   /* ---------------- LOAD USER ONCE ---------------- */
   useEffect(() => {
@@ -121,10 +133,18 @@ export default function BottomActionBar() {
             >
               <Image
                 source={require("@/assets/icons/Leaderboard Filter.png")}
-                style={styles.icon}
+                style={[
+                  styles.icon,
+                  hasActiveFilter && styles.iconActive, // ✅ Gold when active
+                ]}
                 resizeMode="contain"
               />
-              <Text style={styles.label}>Filter</Text>
+              <Text style={[
+                styles.label,
+                hasActiveFilter && styles.labelActive, // ✅ Gold text when active
+              ]}>
+                Filter
+              </Text>
             </TouchableOpacity>
           </>
         );
@@ -171,7 +191,7 @@ export default function BottomActionBar() {
   return <View style={styles.container}>{renderActions()}</View>;
 }
 
-/* ---------------- STYLES (UNCHANGED) ---------------- */
+/* ---------------- STYLES ---------------- */
 
 const styles = StyleSheet.create({
   container: {
@@ -192,11 +212,17 @@ const styles = StyleSheet.create({
     height: 24,
     tintColor: "#FFFFFF",
   },
+  iconActive: {
+    tintColor: "#FFD700", // ✅ Bold gold color when filter is active
+  },
   label: {
     color: "#FFFFFF",
     fontSize: 10,
     marginTop: 2,
     fontWeight: "600",
+  },
+  labelActive: {
+    color: "#FFD700", // ✅ Gold text to match icon
   },
 });
 

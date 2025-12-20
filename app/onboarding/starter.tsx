@@ -1,23 +1,20 @@
 import { auth, db } from "@/constants/firebaseConfig";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { deleteUser, signOut } from "firebase/auth";
-import { deleteDoc, doc, setDoc } from "firebase/firestore";
+import { doc, setDoc } from "firebase/firestore";
 import React, { useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Image,
-    Linking,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Image,
+  Linking,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import CloseIcon from "@/assets/icons/Close.png";
 import StarterImage from "@/assets/images/StarterImage.png";
 
 export default function Starter() {
@@ -27,43 +24,6 @@ export default function Starter() {
   const [acceptedPrivacy, setAcceptedPrivacy] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-
-  const handleCancel = () => {
-    Alert.alert(
-      "Cancel Setup?",
-      "If you cancel now, your account will be deleted and you'll need to start over.",
-      [
-        { text: "Continue Setup", style: "cancel" },
-        {
-          text: "Cancel & Delete Account",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              const user = auth.currentUser;
-              if (!user) {
-                router.replace("/");
-                return;
-              }
-
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-
-              await deleteDoc(doc(db, "users", user.uid));
-              await deleteUser(user);
-              await signOut(auth);
-
-              router.replace("/");
-            } catch (err) {
-              console.error("Cancel failed:", err);
-              Alert.alert(
-                "Error",
-                "We couldn't fully delete your account. Please try again."
-              );
-            }
-          },
-        },
-      ]
-    );
-  };
 
   const handleContinue = async () => {
     if (!acceptedTerms || !acceptedPrivacy) {
@@ -90,6 +50,7 @@ export default function Starter() {
         { merge: true }
       );
 
+      // ✅ Everyone goes to clubhouse after accepting terms
       router.replace("/clubhouse");
     } catch (err) {
       console.error(err);
@@ -100,15 +61,6 @@ export default function Starter() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Close */}
-      <TouchableOpacity
-        style={styles.closeButton}
-        onPress={handleCancel}
-        hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
-      >
-        <Image source={CloseIcon} style={styles.closeIcon} />
-      </TouchableOpacity>
-
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -129,7 +81,7 @@ export default function Starter() {
           />
         </View>
 
-        {/* ETIQUETTE BOX (RESTORED FULLY) */}
+        {/* ETIQUETTE BOX */}
         <View style={styles.termsSection}>
           <Text style={styles.termsTitle}>
             Swing Thoughts Community Etiquette
@@ -143,7 +95,7 @@ export default function Starter() {
               Treat everyone as you would on the first tee.{"\n"}
               • Be courteous, supportive, and respectful.{"\n"}
               • No harassment, bullying, or abusive behavior.{"\n"}
-              • Celebrate others’ progress and stories.{"\n\n"}
+              • Celebrate others' progress and stories.{"\n\n"}
 
               <Text style={styles.bold}>
                 2. Play at a Good Pace{"\n"}
@@ -271,18 +223,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#F4EED8",
-  },
-
-  closeButton: {
-    position: "absolute",
-    top: 48,
-    left: 20,
-    zIndex: 1000,
-  },
-
-  closeIcon: {
-    width: 28,
-    height: 28,
   },
 
   scrollContent: {

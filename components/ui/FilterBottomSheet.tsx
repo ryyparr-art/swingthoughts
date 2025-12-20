@@ -1,15 +1,19 @@
 import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
+import { getAllThoughtTypes } from "@/constants/postTypes";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    FlatList,
-    Image,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  FlatList,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 interface GolfCourse {
@@ -42,6 +46,8 @@ export default function FilterBottomSheet({
   const [loadingCourses, setLoadingCourses] = useState(false);
 
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
+
+  const allThoughtTypes = getAllThoughtTypes();
 
   // Search courses from API
   const searchCourses = async (query: string) => {
@@ -126,6 +132,7 @@ export default function FilterBottomSheet({
 
   // Clear all filters
   const handleClearFilters = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setType(null);
     setUser("");
     setCourseSearch("");
@@ -137,6 +144,7 @@ export default function FilterBottomSheet({
 
   // Apply filters
   const handleApplyFilters = () => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     onApplyFilters({
       type: type || undefined,
       user: user || undefined,
@@ -146,7 +154,7 @@ export default function FilterBottomSheet({
     onClose();
   };
 
-  // Handle close with haptic feedback
+  // Handle close
   const handleClose = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     onClose();
@@ -162,154 +170,162 @@ export default function FilterBottomSheet({
         onPress={handleClose}
       />
       
-      <View style={styles.sheet}>
-        {/* CLOSE BUTTON */}
-        <TouchableOpacity 
-          style={styles.closeButton} 
-          onPress={handleClose}
-          activeOpacity={0.7}
+      <View style={styles.modalContainer}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={styles.keyboardView}
         >
-          <Image
-            source={require("@/assets/icons/Close.png")}
-            style={styles.closeIcon}
-          />
-        </TouchableOpacity>
-
-        <Text style={styles.title}>Filter Clubhouse</Text>
-
-        {/* TYPE FILTER */}
-        <Text style={styles.label}>Thought Type</Text>
-        <View style={styles.typeButtons}>
-          {["swing-thought", "question", "general", "meme", "witb"].map((t) => (
-            <TouchableOpacity
-              key={t}
-              style={[styles.typeButton, type === t && styles.typeSelected]}
-              onPress={() => setType(t)}
-              activeOpacity={0.7}
-            >
-              <Text
-                style={[
-                  styles.typeButtonText,
-                  type === t && styles.typeButtonTextSelected,
-                ]}
-              >
-                {t}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        {/* USER FILTER */}
-        <Text style={styles.label}>User</Text>
-        <TextInput
-          placeholder="Enter name"
-          placeholderTextColor="#999"
-          value={user}
-          onChangeText={setUser}
-          style={styles.input}
-        />
-
-        {/* COURSE FILTER WITH AUTOCOMPLETE */}
-        <Text style={styles.label}>Course</Text>
-        <View style={styles.autocompleteContainer}>
-          <View style={styles.inputContainer}>
-            <TextInput
-              placeholder="Enter course name"
-              placeholderTextColor="#999"
-              value={courseSearch}
-              onChangeText={handleCourseSearchChange}
-              style={styles.input}
-            />
-            {loadingCourses && (
-              <ActivityIndicator 
-                size="small" 
-                color="#0D5C3A" 
-                style={styles.searchSpinner} 
+          {/* HEADER - Inside modal container */}
+          <View style={styles.header}>
+            <TouchableOpacity onPress={handleClose} style={styles.closeButton}>
+              <Image
+                source={require("@/assets/icons/Close.png")}
+                style={styles.closeIcon}
+                resizeMode="contain"
               />
-            )}
+            </TouchableOpacity>
+
+            <Text style={styles.headerTitle}>Filter Clubhouse</Text>
+
+            <View style={styles.closeButton} />
           </View>
 
-          {/* Selected Course Display */}
-          {selectedCourse && !showCourseDropdown && (
-            <View style={styles.selectedCourseCard}>
-              <View style={styles.selectedCourseInfo}>
-                <Text style={styles.selectedCourseName}>
-                  {selectedCourse.course_name}
-                </Text>
-                <Text style={styles.selectedCourseLocation}>
-                  {selectedCourse.location.city}, {selectedCourse.location.state}
-                </Text>
-              </View>
-              <TouchableOpacity 
-                onPress={() => {
-                  setSelectedCourse(null);
-                  setCourseSearch("");
-                }}
-              >
-                <Text style={styles.removeText}>✕</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {/* DROPDOWN LIST */}
-          {showCourseDropdown && (
-            <View style={styles.dropdown}>
-              {loadingCourses ? (
-                <View style={styles.loadingContainer}>
-                  <ActivityIndicator color="#0D5C3A" />
-                  <Text style={styles.loadingText}>Searching courses...</Text>
-                </View>
-              ) : courseResults.length > 0 ? (
-                <FlatList
-                  data={courseResults}
-                  keyExtractor={(item) => item.id.toString()}
-                  renderItem={({ item }) => (
-                    <TouchableOpacity
-                      style={styles.dropdownItem}
-                      onPress={() => handleSelectCourse(item)}
-                      activeOpacity={0.7}
+          <ScrollView 
+            style={styles.content} 
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {/* THOUGHT TYPE SELECTOR - Matches create screen cards */}
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>Thought Type</Text>
+              <View style={styles.typeGrid}>
+                {allThoughtTypes.map((t) => (
+                  <TouchableOpacity
+                    key={t.id}
+                    style={[
+                      styles.typeCard,
+                      type === t.id && styles.typeCardActive,
+                    ]}
+                    onPress={() => setType(t.id)}
+                  >
+                    <Text
+                      style={[
+                        styles.typeCardText,
+                        type === t.id && styles.typeCardTextActive,
+                      ]}
                     >
-                      <View style={styles.dropdownItemContent}>
-                        <Text style={styles.dropdownItemName}>
-                          {item.course_name}
-                        </Text>
-                        <Text style={styles.dropdownItemLocation}>
-                          {item.location.city}, {item.location.state}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  )}
-                  style={styles.dropdownList}
-                  keyboardShouldPersistTaps="handled"
-                  nestedScrollEnabled
+                      {t.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            {/* USER FILTER */}
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>User</Text>
+              <TextInput
+                placeholder="Enter display name..."
+                placeholderTextColor="#999"
+                value={user}
+                onChangeText={setUser}
+                style={styles.textInput}
+              />
+            </View>
+
+            {/* COURSE FILTER */}
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>Course</Text>
+              <TextInput
+                placeholder="Search for a course..."
+                placeholderTextColor="#999"
+                value={courseSearch}
+                onChangeText={handleCourseSearchChange}
+                style={styles.textInput}
+              />
+
+              {loadingCourses && (
+                <ActivityIndicator 
+                  size="small" 
+                  color="#0D5C3A" 
+                  style={styles.searchSpinner} 
                 />
-              ) : (
-                <View style={styles.noResultsContainer}>
-                  <Text style={styles.noResultsText}>No courses found</Text>
+              )}
+
+              {/* Selected Course Chip */}
+              {selectedCourse && !showCourseDropdown && (
+                <View style={styles.selectedCourseContainer}>
+                  <View style={styles.tagChip}>
+                    <Text style={styles.tagText}>{selectedCourse.course_name}</Text>
+                    <TouchableOpacity 
+                      onPress={() => {
+                        setSelectedCourse(null);
+                        setCourseSearch("");
+                      }}
+                    >
+                      <Text style={styles.tagRemove}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <Text style={styles.courseLocation}>
+                    {selectedCourse.location.city}, {selectedCourse.location.state}
+                  </Text>
+                </View>
+              )}
+
+              {/* Autocomplete Dropdown - Matches create screen */}
+              {showCourseDropdown && (
+                <View style={styles.autocompleteContainer}>
+                  {loadingCourses ? (
+                    <View style={styles.autocompleteItem}>
+                      <Text style={styles.autocompleteLoadingText}>Searching...</Text>
+                    </View>
+                  ) : courseResults.length > 0 ? (
+                    <FlatList
+                      data={courseResults}
+                      keyExtractor={(item) => item.id.toString()}
+                      scrollEnabled={false}
+                      renderItem={({ item }) => (
+                        <TouchableOpacity
+                          style={styles.autocompleteItem}
+                          onPress={() => handleSelectCourse(item)}
+                        >
+                          <Text style={styles.autocompleteName}>
+                            {item.course_name}
+                          </Text>
+                          <Text style={styles.autocompleteLocation}>
+                            {item.location.city}, {item.location.state}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    />
+                  ) : courseSearch.length >= 2 ? (
+                    <View style={styles.autocompleteItem}>
+                      <Text style={styles.autocompleteEmptyText}>No courses found</Text>
+                    </View>
+                  ) : null}
                 </View>
               )}
             </View>
-          )}
-        </View>
+          </ScrollView>
 
-        {/* BUTTONS */}
-        <View style={styles.buttonRow}>
-          <TouchableOpacity
-            style={styles.clearButton}
-            onPress={handleClearFilters}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.clearText}>Clear Filters</Text>
-          </TouchableOpacity>
+          {/* ACTION BUTTONS - Matches create screen style */}
+          <View style={styles.actionButtons}>
+            <TouchableOpacity
+              style={styles.clearButton}
+              onPress={handleClearFilters}
+            >
+              <Text style={styles.clearButtonText}>Clear Filters</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.applyButton}
-            onPress={handleApplyFilters}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.applyText}>Apply</Text>
-          </TouchableOpacity>
-        </View>
+            <TouchableOpacity
+              style={styles.applyButton}
+              onPress={handleApplyFilters}
+            >
+              <Text style={styles.applyButtonText}>Apply</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
       </View>
     </View>
   );
@@ -322,199 +338,238 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     top: 0,
-    backgroundColor: "rgba(0,0,0,0.3)",
+    backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "flex-end",
     zIndex: 999,
   },
   overlayTouchable: {
     flex: 1,
   },
-  sheet: {
-    backgroundColor: "#FFFFFF",
-    padding: 20,
+  modalContainer: {
+    backgroundColor: "#F4EED8",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: "80%",
+    height: "85%", // Fixed height instead of maxHeight
   },
-  closeButton: {
-    position: "absolute",
-    right: 20,
-    top: 20,
-    padding: 8,
-    zIndex: 1001,
-  },
-  closeIcon: {
-    width: 22,
-    height: 22,
-    tintColor: "#0D5C3A",
-  },
-  title: {
-    fontSize: 22,
-    fontWeight: "700",
-    color: "#0D5C3A",
-    marginBottom: 20,
-    marginTop: 10,
-  },
-  label: {
-    fontSize: 16,
-    fontWeight: "600",
-    marginTop: 15,
-    color: "#333",
-  },
-  typeButtons: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    marginTop: 10,
-    marginBottom: 20,
-  },
-  typeButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: "#EEE",
-    borderRadius: 8,
-    marginRight: 8,
-    marginBottom: 8,
-  },
-  typeSelected: {
-    backgroundColor: "#0D5C3A",
-  },
-  typeButtonText: {
-    color: "#333",
-    fontWeight: "600",
-  },
-  typeButtonTextSelected: {
-    color: "#FFF",
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: "#CCC",
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 8,
-    color: "#333",
-    backgroundColor: "#FFF",
-  },
-  autocompleteContainer: {
-    position: "relative",
-    zIndex: 100,
-    marginBottom: 10,
-  },
-  inputContainer: {
-    position: "relative",
-  },
-  searchSpinner: {
-    position: "absolute",
-    right: 10,
-    top: 18,
-  },
-  selectedCourseCard: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 12,
-    marginTop: 8,
-    backgroundColor: "#0D5C3A",
-    borderRadius: 8,
-  },
-  selectedCourseInfo: {
+  keyboardView: {
     flex: 1,
   },
-  selectedCourseName: {
+
+  // Header - Matches create screen
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+  },
+
+  closeButton: {
+    width: 40,
+    alignItems: "flex-start",
+  },
+
+  closeIcon: {
+    width: 28,
+    height: 28,
+    tintColor: "#FFFFFF",
+  },
+
+  headerTitle: { 
+    color: "#FFFFFF", 
+    fontWeight: "700", 
+    fontSize: 18,
+    flex: 1,
+    textAlign: "center",
+  },
+
+  content: {
+    flex: 1,
+    padding: 16,
+  },
+
+  scrollContent: {
+    paddingBottom: 100, // Extra padding so content is visible above keyboard
+  },
+
+  section: {
+    marginBottom: 24,
+  },
+
+  sectionLabel: {
     fontSize: 14,
     fontWeight: "700",
-    color: "#FFFFFF",
+    color: "#0D5C3A",
+    marginBottom: 12,
   },
-  selectedCourseLocation: {
-    fontSize: 12,
-    color: "#FFD700",
-    marginTop: 2,
+
+  // Type Cards - Matches create screen
+  typeGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
   },
-  removeText: {
-    fontSize: 20,
-    color: "#FFFFFF",
-    fontWeight: "600",
-    paddingHorizontal: 8,
-  },
-  dropdown: {
-    position: "absolute",
-    top: "100%",
-    left: 0,
-    right: 0,
+
+  typeCard: {
+    flex: 1,
+    minWidth: "45%",
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+    borderRadius: 12,
     backgroundColor: "#FFF",
+    borderWidth: 2,
+    borderColor: "#E0E0E0",
+    alignItems: "center",
+  },
+
+  typeCardActive: {
+    backgroundColor: "#0D5C3A",
+    borderColor: "#0D5C3A",
+  },
+
+  typeCardText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#666",
+  },
+
+  typeCardTextActive: {
+    color: "#FFF",
+  },
+
+  // Text Input - Matches create screen
+  textInput: {
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    padding: 16,
+    fontSize: 16,
     borderWidth: 1,
-    borderColor: "#CCC",
-    borderTopWidth: 0,
-    borderBottomLeftRadius: 8,
-    borderBottomRightRadius: 8,
-    maxHeight: 200,
-    zIndex: 1000,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 5,
+    borderColor: "#E0E0E0",
+  },
+
+  searchSpinner: {
+    position: "absolute",
+    right: 16,
+    top: 55,
+  },
+
+  // Selected Course - Matches create screen tags
+  selectedCourseContainer: {
+    marginTop: 12,
+  },
+
+  tagChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#0D5C3A",
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    gap: 6,
+    alignSelf: "flex-start",
+  },
+
+  tagText: {
+    color: "#FFF",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+
+  tagRemove: {
+    color: "#FFF",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+
+  courseLocation: {
+    fontSize: 12,
+    color: "#666",
+    marginTop: 4,
+    marginLeft: 4,
+  },
+
+  // Autocomplete - Matches create screen
+  autocompleteContainer: {
+    backgroundColor: "#FFF",
+    borderRadius: 8,
     marginTop: 8,
-  },
-  dropdownList: {
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
     maxHeight: 200,
   },
-  dropdownItem: {
+
+  autocompleteItem: {
     padding: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "#EEE",
+    borderBottomColor: "#F0F0F0",
   },
-  dropdownItemContent: {
-    flex: 1,
-  },
-  dropdownItemName: {
-    fontSize: 15,
+
+  autocompleteName: {
+    fontSize: 14,
     fontWeight: "600",
-    color: "#333",
+    color: "#0D5C3A",
   },
-  dropdownItemLocation: {
-    fontSize: 13,
+
+  autocompleteLocation: {
+    fontSize: 12,
     color: "#666",
     marginTop: 2,
   },
-  loadingContainer: {
-    padding: 20,
+
+  autocompleteLoadingText: {
+    fontSize: 14,
+    color: "#999",
+    textAlign: "center",
+  },
+
+  autocompleteEmptyText: {
+    fontSize: 14,
+    color: "#999",
+    textAlign: "center",
+  },
+
+  // Action Buttons - Matches create screen
+  actionButtons: {
+    flexDirection: "row",
+    padding: 16,
+    gap: 12,
+    backgroundColor: "#FFFFFF",
+    borderTopWidth: 1,
+    borderTopColor: "#E0E0E0",
+  },
+
+  clearButton: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "#0D5C3A",
+    backgroundColor: "#F4EED8",
     alignItems: "center",
     justifyContent: "center",
   },
-  loadingText: {
-    marginTop: 8,
-    color: "#666",
-    fontSize: 14,
-  },
-  noResultsContainer: {
-    padding: 20,
-    alignItems: "center",
-  },
-  noResultsText: {
-    color: "#999",
-    fontSize: 14,
-  },
-  buttonRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 25,
-  },
-  clearButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-  },
-  clearText: {
-    color: "#666",
-    fontWeight: "600",
-  },
-  applyButton: {
-    backgroundColor: "#0D5C3A",
-    paddingVertical: 12,
-    paddingHorizontal: 25,
-    borderRadius: 8,
-  },
-  applyText: {
-    color: "#FFF",
+
+  clearButtonText: {
+    fontSize: 16,
     fontWeight: "700",
+    color: "#0D5C3A",
+  },
+
+  applyButton: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: 12,
+    backgroundColor: "#0D5C3A",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  applyButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFFFFF",
   },
 });

@@ -1,54 +1,38 @@
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
-
 import { auth, db } from "@/constants/firebaseConfig";
-import {
-  arePartnersAlready,
-  checkExistingRequest,
-  sendPartnerRequest,
-} from "@/utils/partnerUtils";
 
 import { Ionicons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
-import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { doc, onSnapshot } from "firebase/firestore";
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   ImageBackground,
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function LockerScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams();
   const currentUserId = auth.currentUser?.uid;
-
-  const viewingUserId = (params.id as string) || currentUserId;
-  const isOwnLocker = viewingUserId === currentUserId;
 
   const [profile, setProfile] = useState<any>(null);
   const [clubs, setClubs] = useState<any>(null);
   const [badges, setBadges] = useState<any[]>([]);
-  const [partnershipStatus, setPartnershipStatus] =
-    useState<"none" | "pending" | "partners">("none");
   const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState(false);
 
   /* ========================= LOAD USER ========================= */
 
   useFocusEffect(
     useCallback(() => {
-      if (!viewingUserId) return;
+      if (!currentUserId) return;
 
-      const userRef = doc(db, "users", viewingUserId);
+      const userRef = doc(db, "users", currentUserId);
 
       const unsubscribe = onSnapshot(
         userRef,
@@ -57,68 +41,77 @@ export default function LockerScreen() {
             const data = snap.data();
             setProfile(data);
             setClubs(data.clubs || {});
-            setBadges(data.Badges || []);
+            
+            // Parse badges from Firestore structure
+            const badgesData = data.Badges || [];
+            console.log("Raw badges data:", badgesData);
+            
+            // Filter out empty/invalid badges
+            const validBadges = badgesData.filter((badge: any) => {
+              if (!badge) return false;
+              if (typeof badge === "string" && badge.trim() === "") return false;
+              return true;
+            });
+            
+            setBadges(validBadges);
           }
           setLoading(false);
         },
         () => setLoading(false)
       );
 
-      if (!isOwnLocker && currentUserId) {
-        checkPartnershipStatus();
-      }
-
       return () => unsubscribe();
-    }, [viewingUserId, currentUserId, isOwnLocker])
+    }, [currentUserId])
   );
 
-  const checkPartnershipStatus = async () => {
-    if (!currentUserId || !viewingUserId) return;
+  /* ========================= HELPERS ========================= */
 
-    if (await arePartnersAlready(currentUserId, viewingUserId)) {
-      setPartnershipStatus("partners");
-      return;
-    }
-
-    if (await checkExistingRequest(currentUserId, viewingUserId)) {
-      setPartnershipStatus("pending");
-      return;
-    }
-
-    setPartnershipStatus("none");
-  };
-
-  /* ========================= ACTIONS ========================= */
-
-  const handlePartnerUp = async () => {
-    if (!currentUserId || !viewingUserId) return;
-
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setActionLoading(true);
-
+  const formatBadgeDate = (timestamp: any) => {
+    if (!timestamp) return "";
+    
     try {
-      await sendPartnerRequest(viewingUserId);
-      setPartnershipStatus("pending");
-      Alert.alert("Request Sent", "Your partner request is pending.");
-    } catch (e: any) {
-      Alert.alert("Error", e.message);
-    } finally {
-      setActionLoading(false);
+      // Handle Firestore Timestamp
+      const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+      return date.toLocaleDateString("en-US", { 
+        month: "short", 
+        day: "numeric", 
+        year: "numeric" 
+      });
+    } catch {
+      return "";
     }
   };
 
-  const handleFanmail = () => {
-    if (partnershipStatus !== "partners") {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-      Alert.alert(
-        "Fanmail Locked",
-        `Notes in the locker aren’t available until ${profile?.displayName} accepts your Partner invitation.`
-      );
-      return;
+  const parseBadge = (badge: any) => {
+    // Handle different badge structures
+    
+    // If it's a string, return basic structure
+    if (typeof badge === "string") {
+      return { label: badge, courseName: null, date: null };
     }
 
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push(`/messages/${viewingUserId}`);
+    // Check if badge has a nested structure (like lowman)
+    const badgeKeys = Object.keys(badge || {});
+    const nestedBadgeKey = badgeKeys.find(key => 
+      badge[key] && typeof badge[key] === 'object' && badge[key].displayName
+    );
+
+    if (nestedBadgeKey) {
+      // Badge type is the key (e.g., "lowman")
+      const badgeData = badge[nestedBadgeKey];
+      return {
+        label: nestedBadgeKey.charAt(0).toUpperCase() + nestedBadgeKey.slice(1),
+        courseName: badge.courseName || null,
+        date: badgeData.achievedAt || null,
+      };
+    }
+
+    // Standard structure
+    return {
+      label: badge.displayName || badge.label || "Achievement",
+      courseName: badge.courseName || null,
+      date: badge.achievedAt || null,
+    };
   };
 
   /* ========================= UI ========================= */
@@ -154,46 +147,21 @@ export default function LockerScreen() {
               Handicap: {profile?.handicap ?? "N/A"}
             </Text>
 
-            {/* ACTION BUTTONS */}
-            {!isOwnLocker && (
-              <View style={styles.actionRow}>
-                <TouchableOpacity
-                  disabled={partnershipStatus !== "none" || actionLoading}
-                  onPress={handlePartnerUp}
-                  style={[
-                    styles.actionButton,
-                    partnershipStatus === "pending" && styles.pendingButton,
-                    partnershipStatus === "partners" && styles.disabledButton,
-                  ]}
-                >
-                  <Ionicons
-                    name={
-                      partnershipStatus === "pending"
-                        ? "time-outline"
-                        : "people"
-                    }
-                    size={18}
-                    color="#fff"
-                  />
-                  <Text style={styles.actionText}>
-                    {partnershipStatus === "none"
-                      ? "Partner Up"
-                      : partnershipStatus === "pending"
-                      ? "Pending"
-                      : "Partners"}
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={handleFanmail}
-                  style={[
-                    styles.actionButton,
-                    partnershipStatus !== "partners" && styles.fanmailLocked,
-                  ]}
-                >
-                  <Ionicons name="mail" size={18} color="#fff" />
-                  <Text style={styles.actionText}>Fanmail</Text>
-                </TouchableOpacity>
+            {/* HOME COURSE & GAME IDENTITY */}
+            {(profile?.homeCourse || profile?.gameIdentity) && (
+              <View style={styles.identityContainer}>
+                {profile?.homeCourse && (
+                  <View style={styles.identityRow}>
+                    <Ionicons name="flag" size={16} color="rgba(255,255,255,0.9)" />
+                    <Text style={styles.identityText}>{profile.homeCourse}</Text>
+                  </View>
+                )}
+                {profile?.gameIdentity && (
+                  <View style={styles.identityRow}>
+                    <Ionicons name="chatbubble-ellipses" size={16} color="rgba(255,255,255,0.9)" />
+                    <Text style={styles.identityText}>"{profile.gameIdentity}"</Text>
+                  </View>
+                )}
               </View>
             )}
 
@@ -205,14 +173,30 @@ export default function LockerScreen() {
                 <Text style={styles.noBadges}>No badges earned yet</Text>
               ) : (
                 <View style={styles.badgesRow}>
-                  {badges.slice(0, 3).map((badge, i) => (
-                    <View key={i} style={styles.badge}>
-                      <Ionicons name="trophy" size={16} color="#FFD700" />
-                      <Text style={styles.badgeText}>
-                        {typeof badge === "string" ? badge : badge.label}
-                      </Text>
-                    </View>
-                  ))}
+                  {badges.slice(0, 3).map((badge, i) => {
+                    const parsed = parseBadge(badge);
+                    
+                    return (
+                      <View key={i} style={styles.badge}>
+                        <View style={styles.badgeHeader}>
+                          <Ionicons name="trophy" size={16} color="#FFD700" />
+                          <Text style={styles.badgeText}>{parsed.label}</Text>
+                        </View>
+                        {(parsed.courseName || parsed.date) && (
+                          <View style={styles.badgeDetails}>
+                            {parsed.courseName && (
+                              <Text style={styles.badgeDetailText}>{parsed.courseName}</Text>
+                            )}
+                            {parsed.date && (
+                              <Text style={styles.badgeDetailText}>
+                                {formatBadgeDate(parsed.date)}
+                              </Text>
+                            )}
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })}
                 </View>
               )}
             </View>
@@ -220,9 +204,7 @@ export default function LockerScreen() {
 
           {/* CLUBS */}
           <View style={styles.clubsSection}>
-            <Text style={styles.sectionTitle}>
-              {isOwnLocker ? "My Clubs" : "Their Clubs"}
-            </Text>
+            <Text style={styles.sectionTitle}>My Clubs</Text>
 
             {["driver", "irons", "wedges", "putter", "ball"].map((type) => {
               const val = clubs?.[type];
@@ -272,33 +254,30 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "600",
     color: "rgba(255,255,255,0.95)",
+    marginBottom: 12,
+  },
+
+  identityContainer: {
+    backgroundColor: "rgba(0,0,0,0.25)",
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     marginBottom: 18,
+    gap: 8,
+    alignItems: "center",
   },
 
-  actionRow: {
-    flexDirection: "row",
-    gap: 12,
-    marginBottom: 24,
-  },
-
-  actionButton: {
+  identityRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "#0D5C3A",
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 14,
   },
 
-  pendingButton: { backgroundColor: "#888" },
-  disabledButton: { backgroundColor: "#555" },
-  fanmailLocked: { backgroundColor: "#999" },
-
-  actionText: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "700",
+  identityText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.95)",
+    fontStyle: "italic",
   },
 
   badgesWrapper: { width: "100%", alignItems: "center" },
@@ -310,18 +289,44 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
 
-  badgesRow: { flexDirection: "row", gap: 12 },
+  badgesRow: { 
+    flexDirection: "row", 
+    gap: 12,
+    flexWrap: "wrap",
+    justifyContent: "center",
+  },
 
   badge: {
-    flexDirection: "row",
-    gap: 8,
     backgroundColor: "rgba(0,0,0,0.4)",
     paddingVertical: 10,
     paddingHorizontal: 16,
     borderRadius: 12,
+    minWidth: 100,
   },
 
-  badgeText: { color: "white", fontWeight: "700" },
+  badgeHeader: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+    marginBottom: 4,
+  },
+
+  badgeText: { 
+    color: "white", 
+    fontWeight: "700",
+    fontSize: 14,
+  },
+
+  badgeDetails: {
+    marginTop: 4,
+    gap: 2,
+  },
+
+  badgeDetailText: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 11,
+    fontWeight: "500",
+  },
 
   noBadges: {
     color: "rgba(255,255,255,0.6)",
@@ -354,7 +359,6 @@ const styles = StyleSheet.create({
     color: "white",
   },
 });
-
 
 
 

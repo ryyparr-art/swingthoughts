@@ -13,11 +13,9 @@ export default function SignupScreen() {
   const handleSignup = async () => {
     try {
       await createUserWithEmailAndPassword(auth, email, password);
-      console.log("🔥 User created, navigating to user-type");
-      router.push("/auth/user-type");
+      router.push("/auth/user-type"); // ✅ preserve history
     } catch (err: any) {
       setError(err.message);
-      console.error("❌ Signup error:", err);
     }
   };
 
@@ -58,20 +56,20 @@ export default function SignupScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    justifyContent: "center", 
+  container: {
+    flex: 1,
+    justifyContent: "center",
     padding: 20,
     backgroundColor: "#F4EED8",
   },
-  title: { 
-    fontSize: 32, 
-    fontWeight: "bold", 
+  title: {
+    fontSize: 32,
+    fontWeight: "bold",
     marginBottom: 20,
     color: "#0D5C3A",
   },
-  error: { 
-    color: "#e74c3c", 
+  error: {
+    color: "#e74c3c",
     marginBottom: 10,
     backgroundColor: "#FFFFFF",
     padding: 10,
@@ -93,14 +91,15 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 20,
   },
-  buttonText: { 
-    color: "white", 
-    textAlign: "center", 
-    fontWeight: "600" 
+  buttonText: {
+    color: "white",
+    textAlign: "center",
+    fontWeight: "600",
   },
-  link: { 
-    color: "#0D5C3A", 
+  link: {
+    color: "#0D5C3A",
     textAlign: "center",
     fontWeight: "600",
   },
 });
+

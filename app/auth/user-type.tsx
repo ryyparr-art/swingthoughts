@@ -1,11 +1,12 @@
 import { BlurView } from "expo-blur";
 import * as Haptics from "expo-haptics";
-import * as Location from "expo-location";
 import { useRouter } from "expo-router";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { deleteUser } from "firebase/auth";
+import { deleteDoc, doc, getDoc, setDoc } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   Image,
   ImageBackground,
@@ -15,8 +16,7 @@ import {
   View,
 } from "react-native";
 
-import BackIcon from "@/assets/icons/Back.png"; // back icon
-import LocationInputModal from "../../components/LocationInputModal";
+import BackIcon from "@/assets/icons/Back.png";
 import { auth, db } from "../../constants/firebaseConfig";
 
 type UserType =
@@ -29,10 +29,7 @@ export default function UserTypeScreen() {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
-  const [savingLocation, setSavingLocation] = useState(false);
-  const [showLocationModal, setShowLocationModal] = useState(false);
-  const [selectedType, setSelectedType] =
-    useState<UserType | null>(null);
+  const [savingType, setSavingType] = useState(false);
 
   // Animations
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -68,7 +65,6 @@ export default function UserTypeScreen() {
 
     try {
       const snap = await getDoc(doc(db, "users", user.uid));
-
       if (!snap.exists()) {
         setLoading(false);
         return;
@@ -87,90 +83,73 @@ export default function UserTypeScreen() {
       }
 
       setLoading(false);
-    } catch (error) {
-      console.error(error);
+    } catch {
       setLoading(false);
     }
   };
 
-  const requestLocationPermission = async (): Promise<boolean> => {
-    try {
-      const { status } =
-        await Location.requestForegroundPermissionsAsync();
+  /* =======================
+     BACK → START FRESH CONFIRMATION
+     ======================= */
+  const handleBack = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-      if (status !== "granted") return false;
-
-      const location =
-        await Location.getCurrentPositionAsync({});
-      const { latitude, longitude } = location.coords;
-
-      const geocode = await Location.reverseGeocodeAsync({
-        latitude,
-        longitude,
-      });
-
-      const user = auth.currentUser;
-      if (!user) return false;
-
-      await setDoc(
-        doc(db, "users", user.uid),
+    Alert.alert(
+      "Start Fresh?",
+      "Going back will delete your account so you can start over. You'll need to sign up again.",
+      [
+        { 
+          text: "Cancel", 
+          style: "cancel" 
+        },
         {
-          location: {
-            type: "gps",
-            latitude,
-            longitude,
-            city: geocode[0]?.city || null,
-            state: geocode[0]?.region || null,
-            lastUpdated: new Date(),
+          text: "Start Fresh",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              setSavingType(true);
+              const user = auth.currentUser;
+              
+              if (user) {
+                // Delete Firestore document
+                try {
+                  await deleteDoc(doc(db, "users", user.uid));
+                  console.log("✅ Deleted Firestore document");
+                } catch (err) {
+                  console.log("⚠️ No Firestore doc to delete or error:", err);
+                }
+
+                // Delete Auth user
+                try {
+                  await deleteUser(user);
+                  console.log("✅ Deleted Auth user");
+                } catch (err: any) {
+                  console.error("❌ Delete user error:", err);
+                  
+                  // If requires recent login, just sign out
+                  if (err.code === "auth/requires-recent-login") {
+                    console.log("⚠️ Requires recent login, signing out instead");
+                    await auth.signOut();
+                  }
+                }
+              }
+
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              
+              // Return to hero page
+              router.replace("/");
+            } catch (err) {
+              console.warn("Start fresh failed:", err);
+              router.replace("/");
+            }
           },
         },
-        { merge: true }
-      );
-
-      return true;
-    } catch (error) {
-      console.error(error);
-      return false;
-    }
-  };
-
-  const routeAfterTypeSelection = (type: UserType) => {
-    if (type === "PGA Professional" || type === "Course") {
-      router.replace("/onboarding/verification");
-    } else {
-      router.replace("/onboarding/setup-profile");
-    }
-  };
-
-  const handleManualLocation = async (
-    city: string,
-    state: string,
-    zip: string
-  ) => {
-    const user = auth.currentUser;
-    if (!user || !selectedType) return;
-
-    await setDoc(
-      doc(db, "users", user.uid),
-      {
-        location: {
-          type: "manual",
-          city,
-          state,
-          zip: zip || null,
-          lastUpdated: new Date(),
-        },
-      },
-      { merge: true }
+      ]
     );
-
-    setShowLocationModal(false);
-    routeAfterTypeSelection(selectedType);
   };
 
   const handleSelectType = async (type: UserType) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setSelectedType(type);
 
     const user = auth.currentUser;
     if (!user) {
@@ -179,7 +158,7 @@ export default function UserTypeScreen() {
     }
 
     try {
-      setSavingLocation(true);
+      setSavingType(true);
 
       const ref = doc(db, "users", user.uid);
       const snap = await getDoc(ref);
@@ -195,38 +174,46 @@ export default function UserTypeScreen() {
           badges: [],
           avatar: null,
           acceptedTerms: false,
+          ...(type === "PGA Professional" || type === "Course"
+            ? {
+                verification: {
+                  required: true,
+                  status: "pending",
+                },
+              }
+            : {}),
         });
       } else {
         await setDoc(
           ref,
-          { userType: type },
+          {
+            userType: type,
+            ...(type === "PGA Professional" || type === "Course"
+              ? {
+                  verification: {
+                    required: true,
+                    status: "pending",
+                  },
+                }
+              : {}),
+          },
           { merge: true }
         );
       }
 
-      const locationGranted =
-        await requestLocationPermission();
-
-      if (!locationGranted) {
-        setSavingLocation(false);
-        setShowLocationModal(true);
-      } else {
-        routeAfterTypeSelection(type);
-      }
+      router.replace("/onboarding/setup-profile");
     } catch (error) {
-      console.error(error);
-      setSavingLocation(false);
+      console.error("Error saving user type:", error);
+      setSavingType(false);
     }
   };
 
-  if (loading || savingLocation) {
+  if (loading || savingType) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#0D5C3A" />
         <Text style={styles.loadingText}>
-          {savingLocation
-            ? "Setting up your profile..."
-            : "Loading..."}
+          {savingType ? "Setting up your account..." : "Loading..."}
         </Text>
       </View>
     );
@@ -238,20 +225,9 @@ export default function UserTypeScreen() {
       style={styles.background}
       resizeMode="cover"
     >
-      {/* ===== Back Button ===== */}
       <View style={styles.topNav}>
-        <TouchableOpacity
-          onPress={() => {
-            Haptics.impactAsync(
-              Haptics.ImpactFeedbackStyle.Light
-            );
-            router.replace("/");
-          }}
-        >
-          <Image
-            source={BackIcon}
-            style={styles.navIcon}
-          />
+        <TouchableOpacity onPress={handleBack}>
+          <Image source={BackIcon} style={styles.navIcon} />
         </TouchableOpacity>
       </View>
 
@@ -263,72 +239,36 @@ export default function UserTypeScreen() {
             transform: [{ translateY: slideAnim }],
           }}
         >
-          <Text style={styles.title}>
-            Select your golfer type
-          </Text>
+          <Text style={styles.title}>Select your golfer type</Text>
 
           {[
             { label: "GOLFER", value: "Golfer" },
             { label: "JUNIOR", value: "Junior" },
-            {
-              label: "PGA PRO",
-              value: "PGA Professional",
-            },
+            { label: "PGA PRO", value: "PGA Professional" },
             { label: "COURSE", value: "Course" },
           ].map((item) => (
             <TouchableOpacity
               key={item.value}
               activeOpacity={0.85}
-              onPress={() =>
-                handleSelectType(item.value as UserType)
-              }
+              onPress={() => handleSelectType(item.value as UserType)}
               style={styles.buttonWrapper}
             >
-              <BlurView
-                intensity={45}
-                tint="dark"
-                style={styles.blurButton}
-              >
-                <Text style={styles.typeButtonText}>
-                  {item.label}
-                </Text>
+              <BlurView intensity={45} tint="dark" style={styles.blurButton}>
+                <Text style={styles.typeButtonText}>{item.label}</Text>
               </BlurView>
             </TouchableOpacity>
           ))}
         </Animated.View>
-
-        <LocationInputModal
-          visible={showLocationModal}
-          onSubmit={handleManualLocation}
-          onCancel={() => {
-            setShowLocationModal(false);
-            if (selectedType) {
-              routeAfterTypeSelection(selectedType);
-            }
-          }}
-        />
       </View>
     </ImageBackground>
   );
 }
 
+/* -------- STYLES -------- */
 const styles = StyleSheet.create({
   background: { flex: 1 },
-
-  topNav: {
-    position: "absolute",
-    top: 48,
-    left: 20,
-    zIndex: 10,
-  },
-
-  navIcon: {
-    width: 28,
-    height: 28,
-  },
-
-  /* your other styles remain unchanged */
-
+  topNav: { position: "absolute", top: 48, left: 20, zIndex: 10 },
+  navIcon: { width: 28, height: 28 },
   overlay: {
     flex: 1,
     justifyContent: "center",
@@ -336,25 +276,19 @@ const styles = StyleSheet.create({
     padding: 20,
     backgroundColor: "rgba(0,0,0,0.25)",
   },
-
   title: {
     fontSize: 22,
     fontWeight: "bold",
     marginBottom: 28,
     color: "#FFFFFF",
     textAlign: "center",
-    textShadowColor: "rgba(0,0,0,0.6)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
   },
-
   buttonWrapper: {
     width: "100%",
     marginBottom: 14,
     borderRadius: 14,
     overflow: "hidden",
   },
-
   blurButton: {
     paddingVertical: 16,
     alignItems: "center",
@@ -362,25 +296,25 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.25)",
   },
-
   typeButtonText: {
     fontSize: 18,
     fontWeight: "700",
     color: "#FFFFFF",
     letterSpacing: 1,
   },
-
   loadingContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#F4EED8",
   },
-
   loadingText: {
     marginTop: 16,
     fontSize: 16,
     color: "#0D5C3A",
   },
 });
+
+
+
 

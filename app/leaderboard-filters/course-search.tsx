@@ -1,16 +1,18 @@
 import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
+import { auth, db } from "@/constants/firebaseConfig";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
+import { collection, doc, getDocs, query, setDoc, where } from "firebase/firestore";
 import React, { useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    FlatList,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  FlatList,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -21,7 +23,11 @@ interface GolfCourse {
   location: {
     city: string;
     state: string;
+    latitude?: number;
+    longitude?: number;
+    address?: string;
   };
+  tees?: any;
 }
 
 export default function CourseSearchScreen() {
@@ -92,17 +98,63 @@ export default function CourseSearchScreen() {
     setSelectedCourse(course);
   };
 
-  const handleApply = () => {
+  const saveCourseToFirestore = async (course: GolfCourse) => {
+    try {
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      // Save with userId_courseId format to track who added it
+      const docId = `${uid}_${course.id}`;
+      
+      const courseData = {
+        id: course.id,
+        club_name: course.club_name,
+        course_name: course.course_name,
+        location: course.location,
+        tees: course.tees || null,
+        cachedAt: new Date().toISOString(),
+      };
+
+      await setDoc(doc(db, "courses", docId), courseData, { merge: true });
+      console.log("💾 Saved course to Firestore:", course.course_name);
+    } catch (error) {
+      console.error("❌ Error saving course:", error);
+    }
+  };
+
+  const handleApply = async () => {
     if (!selectedCourse) return;
     
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    router.push({
-      pathname: "/leaderboard",
-      params: { 
-        filterType: "course",
-        courseName: selectedCourse.course_name,
-      },
-    });
+    try {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      // Check if course exists in Firestore
+      const coursesQuery = query(
+        collection(db, "courses"),
+        where("id", "==", selectedCourse.id)
+      );
+      const coursesSnap = await getDocs(coursesQuery);
+
+      if (coursesSnap.empty) {
+        // Course not cached - save it
+        console.log("🔍 Course not cached, saving to Firestore...");
+        await saveCourseToFirestore(selectedCourse);
+      } else {
+        console.log("✅ Course already cached");
+      }
+
+      // Navigate to leaderboard with filter
+      router.push({
+        pathname: "/leaderboard",
+        params: { 
+          filterType: "course",
+          courseId: selectedCourse.id.toString(),
+          courseName: selectedCourse.course_name,
+        },
+      });
+    } catch (error) {
+      console.error("Error applying course filter:", error);
+    }
   };
 
   return (

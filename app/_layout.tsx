@@ -14,31 +14,64 @@ export default function RootLayout() {
         const { doc, getDoc } = await import("firebase/firestore");
 
         const unsubscribe = onAuthStateChanged(auth, async (user) => {
-          const publicRoutes = ["/", "/index"];
-          const isPublicRoute = publicRoutes.includes(pathname);
+          console.log("🔍 Auth state changed. User:", user?.email || "none", "Path:", pathname);
+
+          const isPublicRoute = pathname === "/" || pathname === "/index";
           const isAuthRoute = pathname.startsWith("/auth");
           const isOnboardingRoute = pathname.startsWith("/onboarding");
+          
+          // 🔑 Treat /auth/user-type as part of onboarding flow
+          const isInOnboardingFlow = isOnboardingRoute || pathname === "/auth/user-type";
 
-          // 🚪 No user
+          /* =====================================================
+             🚪 NO USER (LOGGED OUT)
+             ===================================================== */
           if (!user) {
-            if (isPublicRoute || isAuthRoute) {
+            console.log("❌ No user logged in");
+            
+            // Allowed when logged out:
+            // - Hero page
+            // - Auth flows (login/signup pages only, NOT user-type)
+            if (isPublicRoute || (isAuthRoute && pathname !== "/auth/user-type")) {
               setInitializing(false);
               return;
             }
+
+            // Block access to onboarding / app / user-type
+            console.log("🔄 Redirecting to hero page");
             router.replace("/");
             setInitializing(false);
             return;
           }
 
-          // 👤 User
-          const userSnap = await getDoc(doc(db, "users", user.uid));
+          /* =====================================================
+             👤 USER EXISTS
+             ===================================================== */
+          console.log("✅ User logged in:", user.email);
+
+          const userRef = doc(db, "users", user.uid);
+          const userSnap = await getDoc(userRef);
+
+          // User exists in Auth but not Firestore yet
           if (!userSnap.exists()) {
-            router.replace("/auth/user-type");
+            console.log("📝 No Firestore doc, redirecting to user-type");
+            
+            // Only redirect if not already on user-type page
+            if (pathname !== "/auth/user-type") {
+              router.replace("/auth/user-type");
+            }
             setInitializing(false);
             return;
           }
 
           const userData = userSnap.data();
+          console.log("📄 User data:", {
+            userType: userData.userType,
+            displayName: userData.displayName,
+            handicap: userData.handicap,
+            lockerCompleted: userData.lockerCompleted,
+            hasAcceptedTerms: userData.acceptedTerms,
+          });
 
           const hasUserType =
             typeof userData.userType === "string" &&
@@ -50,55 +83,86 @@ export default function RootLayout() {
             userData.handicap !== null &&
             userData.handicap !== undefined;
 
+          const hasLocker = userData.lockerCompleted === true;
+
           const hasAcceptedTerms = userData.acceptedTerms === true;
+
+          /* =====================================================
+             🧭 ONBOARDING GATE (ENTRY ONLY)
+             ===================================================== */
+
+          // ⛔ If already inside onboarding flow, DO NOT redirect
+          if (isInOnboardingFlow) {
+            console.log("🚧 Already in onboarding flow, staying put");
+            setInitializing(false);
+            return;
+          }
 
           // 1️⃣ User type
           if (!hasUserType) {
+            console.log("🔄 No user type, redirecting to user-type");
             router.replace("/auth/user-type");
             setInitializing(false);
             return;
           }
 
-          // 2️⃣ Verification (SHOW ONCE ONLY)
-          const shouldShowVerification =
-            (userData.userType === "PGA Professional" ||
-              userData.userType === "Course") &&
-            userData.verification?.status == null &&
-            pathname === "/auth/user-type";
-
-          if (shouldShowVerification) {
-            router.replace("/onboarding/verification");
-            setInitializing(false);
-            return;
-          }
-
-          // 3️⃣ Profile
+          // 2️⃣ Profile (displayName + handicap)
           if (!hasProfile) {
+            console.log("🔄 No profile, redirecting to setup-profile");
             router.replace("/onboarding/setup-profile");
             setInitializing(false);
             return;
           }
 
-          // 4️⃣ Starter / terms
+          // 3️⃣ Locker (optional but required to proceed)
+          if (!hasLocker) {
+            console.log("🔄 Locker not completed, redirecting to setup-locker");
+            router.replace("/onboarding/setup-locker");
+            setInitializing(false);
+            return;
+          }
+
+          // 4️⃣ Verification (PGA / Course only)
+          const needsVerification =
+            (userData.userType === "PGA Professional" ||
+              userData.userType === "Course") &&
+            !userData.verification?.submittedAt;
+
+          if (needsVerification) {
+            console.log("🔄 Needs verification, redirecting");
+            router.replace("/onboarding/verification");
+            setInitializing(false);
+            return;
+          }
+
+          // 5️⃣ Terms / Starter
           if (!hasAcceptedTerms) {
+            console.log("🔄 No terms accepted, redirecting to starter");
             router.replace("/onboarding/starter");
             setInitializing(false);
             return;
           }
 
-          // ✅ Done
-          if (isPublicRoute || isAuthRoute || isOnboardingRoute) {
+          /* =====================================================
+             ✅ ONBOARDING COMPLETE
+             ===================================================== */
+          console.log("✅ Onboarding complete!");
+
+          // Prevent auth / onboarding / hero access once complete
+          if (isPublicRoute || isAuthRoute) {
+            console.log("🔄 Redirecting to clubhouse");
             router.replace("/clubhouse");
             setInitializing(false);
             return;
           }
 
+          console.log("✅ User is in correct location");
           setInitializing(false);
         });
 
         return () => unsubscribe();
       } catch (err) {
-        console.error("Auth init error:", err);
+        console.error("❌ Auth init error:", err);
         setInitializing(false);
       }
     };
@@ -117,6 +181,10 @@ export default function RootLayout() {
 
   return <Slot />;
 }
+
+
+
+
 
 
 

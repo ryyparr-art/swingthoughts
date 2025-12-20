@@ -57,7 +57,19 @@ export default function LockerUserScreen() {
             const data = snap.data();
             setProfile(data);
             setClubs(data.clubs || {});
-            setBadges(data.Badges || []);
+            
+            // Parse badges from Firestore structure
+            const badgesData = data.Badges || [];
+            console.log("Raw badges data:", badgesData);
+            
+            // Filter out empty/invalid badges
+            const validBadges = badgesData.filter((badge: any) => {
+              if (!badge) return false;
+              if (typeof badge === "string" && badge.trim() === "") return false;
+              return true;
+            });
+            
+            setBadges(validBadges);
           }
           setLoading(false);
         },
@@ -88,6 +100,56 @@ export default function LockerUserScreen() {
     setPartnershipStatus("none");
   };
 
+  /* ========================= HELPERS ========================= */
+
+  const formatBadgeDate = (timestamp: any) => {
+    if (!timestamp) return "";
+    
+    try {
+      // Handle Firestore Timestamp
+      const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+      return date.toLocaleDateString("en-US", { 
+        month: "short", 
+        day: "numeric", 
+        year: "numeric" 
+      });
+    } catch {
+      return "";
+    }
+  };
+
+  const parseBadge = (badge: any) => {
+    // Handle different badge structures
+    
+    // If it's a string, return basic structure
+    if (typeof badge === "string") {
+      return { label: badge, courseName: null, date: null };
+    }
+
+    // Check if badge has a nested structure (like lowman)
+    const badgeKeys = Object.keys(badge || {});
+    const nestedBadgeKey = badgeKeys.find(key => 
+      badge[key] && typeof badge[key] === 'object' && badge[key].displayName
+    );
+
+    if (nestedBadgeKey) {
+      // Badge type is the key (e.g., "lowman")
+      const badgeData = badge[nestedBadgeKey];
+      return {
+        label: nestedBadgeKey.charAt(0).toUpperCase() + nestedBadgeKey.slice(1),
+        courseName: badge.courseName || null,
+        date: badgeData.achievedAt || null,
+      };
+    }
+
+    // Standard structure
+    return {
+      label: badge.displayName || badge.label || "Achievement",
+      courseName: badge.courseName || null,
+      date: badge.achievedAt || null,
+    };
+  };
+
   /* ========================= ACTIONS ========================= */
 
   const handlePartnerUp = async () => {
@@ -112,7 +174,7 @@ export default function LockerUserScreen() {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       Alert.alert(
         "Fanmail Locked",
-        `Notes in the locker aren’t available until ${profile?.displayName} accepts your Partner invitation.`
+        `Notes in the locker aren't available until ${profile?.displayName} accepts your Partner invitation.`
       );
       return;
     }
@@ -153,6 +215,24 @@ export default function LockerUserScreen() {
             <Text style={styles.handicap}>
               Handicap: {profile?.handicap ?? "N/A"}
             </Text>
+
+            {/* HOME COURSE & GAME IDENTITY */}
+            {(profile?.homeCourse || profile?.gameIdentity) && (
+              <View style={styles.identityContainer}>
+                {profile?.homeCourse && (
+                  <View style={styles.identityRow}>
+                    <Ionicons name="flag" size={16} color="rgba(255,255,255,0.9)" />
+                    <Text style={styles.identityText}>{profile.homeCourse}</Text>
+                  </View>
+                )}
+                {profile?.gameIdentity && (
+                  <View style={styles.identityRow}>
+                    <Ionicons name="chatbubble-ellipses" size={16} color="rgba(255,255,255,0.9)" />
+                    <Text style={styles.identityText}>"{profile.gameIdentity}"</Text>
+                  </View>
+                )}
+              </View>
+            )}
 
             {/* ACTION BUTTONS */}
             {!isOwnLocker && (
@@ -205,14 +285,30 @@ export default function LockerUserScreen() {
                 <Text style={styles.noBadges}>No badges earned yet</Text>
               ) : (
                 <View style={styles.badgesRow}>
-                  {badges.slice(0, 3).map((badge, i) => (
-                    <View key={i} style={styles.badge}>
-                      <Ionicons name="trophy" size={16} color="#FFD700" />
-                      <Text style={styles.badgeText}>
-                        {typeof badge === "string" ? badge : badge.label}
-                      </Text>
-                    </View>
-                  ))}
+                  {badges.slice(0, 3).map((badge, i) => {
+                    const parsed = parseBadge(badge);
+                    
+                    return (
+                      <View key={i} style={styles.badge}>
+                        <View style={styles.badgeHeader}>
+                          <Ionicons name="trophy" size={16} color="#FFD700" />
+                          <Text style={styles.badgeText}>{parsed.label}</Text>
+                        </View>
+                        {(parsed.courseName || parsed.date) && (
+                          <View style={styles.badgeDetails}>
+                            {parsed.courseName && (
+                              <Text style={styles.badgeDetailText}>{parsed.courseName}</Text>
+                            )}
+                            {parsed.date && (
+                              <Text style={styles.badgeDetailText}>
+                                {formatBadgeDate(parsed.date)}
+                              </Text>
+                            )}
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })}
                 </View>
               )}
             </View>
@@ -220,7 +316,9 @@ export default function LockerUserScreen() {
 
           {/* CLUBS */}
           <View style={styles.clubsSection}>
-            <Text style={styles.sectionTitle}>Clubs</Text>
+            <Text style={styles.sectionTitle}>
+              {isOwnLocker ? "My Clubs" : "Their Clubs"}
+            </Text>
 
             {["driver", "irons", "wedges", "putter", "ball"].map((type) => {
               const val = clubs?.[type];
@@ -270,7 +368,30 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "600",
     color: "rgba(255,255,255,0.95)",
+    marginBottom: 12,
+  },
+
+  identityContainer: {
+    backgroundColor: "rgba(0,0,0,0.25)",
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     marginBottom: 18,
+    gap: 8,
+    alignItems: "center",
+  },
+
+  identityRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  identityText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.95)",
+    fontStyle: "italic",
   },
 
   actionRow: {
@@ -308,18 +429,44 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
 
-  badgesRow: { flexDirection: "row", gap: 12 },
+  badgesRow: { 
+    flexDirection: "row", 
+    gap: 12,
+    flexWrap: "wrap",
+    justifyContent: "center",
+  },
 
   badge: {
-    flexDirection: "row",
-    gap: 8,
     backgroundColor: "rgba(0,0,0,0.4)",
     paddingVertical: 10,
     paddingHorizontal: 16,
     borderRadius: 12,
+    minWidth: 100,
   },
 
-  badgeText: { color: "white", fontWeight: "700" },
+  badgeHeader: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+    marginBottom: 4,
+  },
+
+  badgeText: { 
+    color: "white", 
+    fontWeight: "700",
+    fontSize: 14,
+  },
+
+  badgeDetails: {
+    marginTop: 4,
+    gap: 2,
+  },
+
+  badgeDetailText: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 11,
+    fontWeight: "500",
+  },
 
   noBadges: {
     color: "rgba(255,255,255,0.6)",
