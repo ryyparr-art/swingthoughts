@@ -77,14 +77,7 @@
         }
       ],
       "expo-font",
-      "expo-web-browser",
-      [
-        "sentry-expo",
-        {
-          "organization": "swing-thoughts",
-          "project": "swing-thoughts-mobile"
-        }
-      ]
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true
