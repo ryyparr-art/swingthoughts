@@ -4,6 +4,8 @@ import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
 import { getCachedCourses } from "@/utils/courseCache";
+import { soundPlayer } from "@/utils/soundPlayer";
+const LowLeaderTrophy = require("@/assets/icons/LowLeaderTrophy.png");
 
 import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
 
@@ -36,6 +38,7 @@ interface Score {
   createdAt: any;
   userName?: string;
   userAvatar?: string | null;
+  hadHoleInOne?: boolean;
 }
 
 interface UserProfile {
@@ -70,7 +73,7 @@ export default function LeaderboardScreen() {
   const filterType = useMemo(() => {
     let raw = params?.filterType;
     if (Array.isArray(raw)) raw = raw[0];
-    return (raw as "nearMe" | "course" | "player") || "nearMe";
+    return (raw as "nearMe" | "course" | "player" | "partnersOnly") || "nearMe";
   }, [params?.filterType]);
 
   const filterCourseId = useMemo(() => {
@@ -98,28 +101,83 @@ export default function LeaderboardScreen() {
     return raw as string || null;
   }, [params?.playerName]);
 
+  // ✅ HIGHLIGHT PARAMS (from notifications)
+  const highlightCourseId = useMemo(() => {
+    let raw = params?.highlightCourseId;
+    if (Array.isArray(raw)) raw = raw[0];
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }, [params?.highlightCourseId]);
+
+  const highlightUserId = useMemo(() => {
+    let raw = params?.highlightUserId;
+    if (Array.isArray(raw)) raw = raw[0];
+    return raw as string || null;
+  }, [params?.highlightUserId]);
+
+  const highlightScoreId = useMemo(() => {
+    let raw = params?.highlightScoreId;
+    if (Array.isArray(raw)) raw = raw[0];
+    return raw as string || null;
+  }, [params?.highlightScoreId]);
+
   // ✅ CAROUSEL NAVIGATION PARAMS (separate from filter)
   const targetCourseId = useMemo(() => {
+    // Prefer highlight params from notifications
+    if (highlightCourseId) return highlightCourseId;
+    
     // Only use for carousel navigation, not for filter
     if (filterType === "course" && filterCourseId) return null;
     let raw = params?.courseId;
     if (Array.isArray(raw)) raw = raw[0];
     const n = Number(raw);
     return Number.isFinite(n) ? n : null;
-  }, [params?.courseId, filterType, filterCourseId]);
+  }, [params?.courseId, filterType, filterCourseId, highlightCourseId]);
 
   const targetPlayerId = useMemo(() => {
-    // Only use for carousel navigation, not for filter
-    if (filterType === "player" && filterPlayerId) return null;
+    console.log("🔍 targetPlayerId calculation:", {
+      highlightUserId,
+      paramsPlayerId: params?.playerId,
+      filterType,
+      filterPlayerId,
+    });
+    
+    // Prefer highlight params from notifications
+    if (highlightUserId) {
+      console.log("✅ Using highlightUserId:", highlightUserId);
+      return highlightUserId;
+    }
+    
+    // Get playerId from params (carousel navigation)
     let playerId = params?.playerId;
     if (Array.isArray(playerId)) playerId = playerId[0];
+    
+    console.log("📝 Extracted playerId from params:", playerId);
+    
+    // Don't use as target if it's being used as a filter
+    if (filterType === "player" && filterPlayerId === playerId) {
+      console.log("⚠️ Not using as target - it's a filter");
+      return null;
+    }
+    
+    console.log("✅ Final targetPlayerId:", playerId || null);
     return (playerId as string) || null;
-  }, [params?.playerId, filterType, filterPlayerId]);
+  }, [params?.playerId, filterType, filterPlayerId, highlightUserId]);
 
-  const shouldHighlight = !!(targetCourseId && targetPlayerId);
+  const shouldHighlight = !!(targetCourseId && targetPlayerId) || !!(highlightCourseId && highlightScoreId);
 
   console.log("✨ Filter type:", filterType);
-  console.log("✨ shouldHighlight:", shouldHighlight, { targetCourseId, targetPlayerId });
+  console.log("✨ shouldHighlight:", shouldHighlight, { 
+    targetCourseId, 
+    targetPlayerId,
+    highlightCourseId,
+    highlightUserId,
+    highlightScoreId,
+    calculation: {
+      fromCarousel: !!(targetCourseId && targetPlayerId),
+      fromNotification: !!(highlightCourseId && highlightScoreId)
+    }
+  });
 
   const listRef = useRef<FlatList<CourseBoard>>(null);
   const hasReordered = useRef(false);
@@ -129,26 +187,76 @@ export default function LeaderboardScreen() {
   useEffect(() => {
     hasReordered.current = false;
     console.log("🔄 Reset reorder flag - new navigation params");
-  }, [targetCourseId, targetPlayerId]);
+  }, [targetCourseId, targetPlayerId, highlightCourseId, highlightScoreId]);
 
   /* ---------------------- LOAD USER LOCATION ---------------------- */
 
   useEffect(() => {
     const loadLocation = async () => {
+      // Set label based on filter type
+      if (filterType === "partnersOnly") {
+        setLocationLabel("Partners");
+        return;
+      }
+      
       const uid = auth.currentUser?.uid;
       if (!uid) return;
 
       const snap = await getDoc(doc(db, "users", uid));
       if (snap.exists()) {
-        const loc = snap.data().location;
-        if (loc?.city && loc?.state) {
-          setLocationLabel(`${loc.city}, ${loc.state}`);
+        const userData = snap.data();
+        
+        // Use currentCity/currentState (dynamic location for leaderboards)
+        // Fall back to city/state for users not migrated yet
+        const city = userData.currentCity || userData.city;
+        const state = userData.currentState || userData.state;
+        
+        if (city && state) {
+          setLocationLabel(`${city}, ${state}`);
         }
       }
     };
 
     loadLocation();
-  }, []);
+  }, [filterType]);
+
+/* ---------------------- LOAD PARTNER USER IDS ---------------------- */
+
+const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
+  try {
+    const partnersQuery1 = query(
+      collection(db, "partners"),
+      where("user1Id", "==", userId)
+    );
+    const partnersQuery2 = query(
+      collection(db, "partners"),
+      where("user2Id", "==", userId)
+    );
+
+    const [snap1, snap2] = await Promise.all([
+      getDocs(partnersQuery1),
+      getDocs(partnersQuery2),
+    ]);
+
+    const partnerIds = new Set<string>();
+
+    snap1.forEach((doc) => {
+      const data = doc.data();
+      partnerIds.add(data.user2Id);
+    });
+
+    snap2.forEach((doc) => {
+      const data = doc.data();
+      partnerIds.add(data.user1Id);
+    });
+
+    return Array.from(partnerIds);
+  } catch (error) {
+    console.error("Error loading partners:", error);
+    soundPlayer.play('error');
+    return [];
+  }
+};
 
   /* ---------------------- FETCH LEADERBOARDS ---------------------- */
 
@@ -164,12 +272,14 @@ export default function LeaderboardScreen() {
 
       if (!uid) {
         console.log("❌ No user authenticated");
+        soundPlayer.play('error');
         setLoading(false);
         return;
       }
 
       let coursesToShow: any[] = [];
       let displayedIds: number[] = [];
+      let allPartnerScoreDocs: any[] = [];
 
       // ============================================================
       // HANDLE DIFFERENT FILTER TYPES
@@ -186,6 +296,57 @@ export default function LeaderboardScreen() {
         }];
         
         displayedIds = [filterCourseId];
+        
+      } else if (filterType === "partnersOnly") {
+        // ✅ PARTNERS ONLY FILTER
+        console.log("🔍 Filter: Partners Only");
+        
+        // Get current user's partner IDs
+        const partnerIds = await loadPartnerUserIds(uid);
+        
+        if (partnerIds.length === 0) {
+          console.log("⚠️ User has no partners");
+          setBoards([]);
+          setDisplayedCourseIds([]);
+          setLoading(false);
+          return;
+        }
+        
+        console.log(`📊 User has ${partnerIds.length} partners`);
+        
+        // Fetch scores from all partners (batch if >10 partners)
+        allPartnerScoreDocs = [];
+        
+        for (let i = 0; i < partnerIds.length; i += 10) {
+          const batch = partnerIds.slice(i, i + 10);
+          const batchQuery = query(
+            collection(db, "scores"),
+            where("userId", "in", batch)
+          );
+          const batchSnap = await getDocs(batchQuery);
+          batchSnap.forEach(doc => allPartnerScoreDocs.push(doc));
+        }
+        
+        console.log(`📊 Fetched ${allPartnerScoreDocs.length} scores from partners`);
+        
+        // Extract unique courses
+        const partnerCourses = new Map<number, string>();
+        allPartnerScoreDocs.forEach((doc) => {
+          const data = doc.data();
+          if (!partnerCourses.has(data.courseId)) {
+            partnerCourses.set(data.courseId, data.courseName);
+          }
+        });
+        
+        coursesToShow = Array.from(partnerCourses.entries()).map(([courseId, courseName]) => ({
+          courseId,
+          courseName,
+          distance: 0
+        }));
+        
+        displayedIds = Array.from(partnerCourses.keys());
+        
+        console.log("📊 Partners have scores at", displayedIds.length, "courses");
         
       } else if (filterType === "player" && filterPlayerId) {
         // ✅ SPECIFIC PLAYER FILTER
@@ -222,10 +383,12 @@ export default function LeaderboardScreen() {
         
         const cachedCourses = await getCachedCourses(uid);
         
-        // Handle carousel navigation (keep existing logic)
+        // Handle carousel navigation and highlight params
         coursesToShow = cachedCourses.slice(0, 3);
         
-        if (targetCourseId && !coursesToShow.find(c => c.courseId === targetCourseId)) {
+        const highlightTarget = highlightCourseId || targetCourseId;
+        
+        if (highlightTarget && !coursesToShow.find(c => c.courseId === highlightTarget)) {
           console.log("🎯 Target course not in cached courses, fetching it...");
           
           const allScoresSnap = await getDocs(query(collection(db, "scores")));
@@ -233,13 +396,13 @@ export default function LeaderboardScreen() {
           
           allScoresSnap.forEach((d) => {
             const data = d.data();
-            if (data.courseId === targetCourseId && data.courseName) {
+            if (data.courseId === highlightTarget && data.courseName) {
               targetCourseName = data.courseName;
             }
           });
           
           coursesToShow = [
-            { courseId: targetCourseId, courseName: targetCourseName, distance: 0 },
+            { courseId: highlightTarget, courseName: targetCourseName, distance: 0 },
             ...coursesToShow.slice(0, 2)
           ];
           
@@ -264,29 +427,48 @@ export default function LeaderboardScreen() {
       // LOAD SCORES
       // ============================================================
       
-      const scoresQuery = filterType === "player" && filterPlayerId
-        ? query(collection(db, "scores"), where("userId", "==", filterPlayerId))
-        : query(collection(db, "scores"));
-        
-      const scoresSnap = await getDocs(scoresQuery);
-
       const scores: Score[] = [];
       const userIds = new Set<string>();
 
-      scoresSnap.forEach((d) => {
-        const data = d.data();
-        scores.push({
-          scoreId: d.id,
-          userId: data.userId,
-          courseId: data.courseId,
-          courseName: data.courseName,
-          grossScore: data.grossScore,
-          netScore: data.netScore,
-          par: data.par,
-          createdAt: data.createdAt,
+      if (filterType === "partnersOnly") {
+        // Use the partner scores we already fetched
+        allPartnerScoreDocs.forEach((d) => {
+          const data = d.data();
+          scores.push({
+            scoreId: d.id,
+            userId: data.userId,
+            courseId: data.courseId,
+            courseName: data.courseName,
+            grossScore: data.grossScore,
+            netScore: data.netScore,
+            par: data.par,
+            createdAt: data.createdAt,
+          });
+          if (data.userId) userIds.add(data.userId);
         });
-        if (data.userId) userIds.add(data.userId);
-      });
+      } else {
+        const scoresQuery = filterType === "player" && filterPlayerId
+          ? query(collection(db, "scores"), where("userId", "==", filterPlayerId))
+          : query(collection(db, "scores"));
+          
+        const scoresSnap = await getDocs(scoresQuery);
+
+        scoresSnap.forEach((d) => {
+          const data = d.data();
+          scores.push({
+            scoreId: d.id,
+            userId: data.userId,
+            courseId: data.courseId,
+            courseName: data.courseName,
+            grossScore: data.grossScore,
+            netScore: data.netScore,
+            par: data.par,
+            createdAt: data.createdAt,
+          });
+          if (data.userId) userIds.add(data.userId);
+        });
+      }
+
 
       /* ---- LOAD USER PROFILES ---- */
 
@@ -302,10 +484,12 @@ export default function LeaderboardScreen() {
         });
       }
 
-      /* ---- MERGE + FILTER OUT COURSE ACCOUNTS ---- */
+      /* ---- MERGE + FILTER OUT COURSE ACCOUNTS + HOLE-IN-ONE SCORES ---- */
 
       const merged = scores
         .filter((s) => profiles[s.userId]?.userType !== "Course")
+        .filter((s) => s.hadHoleInOne !== true) // Filter out hole-in-one scores
+        .filter((s) => s.grossScore != null && s.netScore != null) // Ensure scores exist
         .map((s) => ({
           ...s,
           userName: profiles[s.userId]?.displayName || "Player",
@@ -378,6 +562,7 @@ export default function LeaderboardScreen() {
       setLoading(false);
     } catch (e) {
       console.error("Leaderboard error:", e);
+      soundPlayer.play('error');
       setLoading(false);
     }
   };
@@ -385,16 +570,18 @@ export default function LeaderboardScreen() {
   /* ---------------------- REORDER BOARDS WHEN TARGET CHANGES ---------------------- */
 
   useEffect(() => {
-    if (!shouldHighlight || !targetCourseId || !boards.length) return;
+    const highlightTarget = highlightCourseId || targetCourseId;
+    
+    if (!shouldHighlight || !highlightTarget || !boards.length) return;
     if (hasReordered.current) return;
 
-    const targetIdx = boards.findIndex((b) => b.courseId === targetCourseId);
+    const targetIdx = boards.findIndex((b) => b.courseId === highlightTarget);
     
     console.log("🔍 Checking reorder - targetIdx:", targetIdx, "current first:", boards[0]?.courseName);
     
     if (targetIdx < 0) {
       console.log("⚠️ Target course not found in current location's boards");
-      console.log("⚠️ Target courseId:", targetCourseId, "Available:", boards.map(b => b.courseId));
+      console.log("⚠️ Target courseId:", highlightTarget, "Available:", boards.map(b => b.courseId));
       hasReordered.current = true;
       return;
     }
@@ -412,7 +599,7 @@ export default function LeaderboardScreen() {
     console.log("🔄 Reordering boards - moving", targetBoard.courseName, "from index", targetIdx, "to position 0");
     hasReordered.current = true;
     setBoards(reordered);
-  }, [shouldHighlight, targetCourseId, boards]);
+  }, [shouldHighlight, targetCourseId, highlightCourseId, boards]);
 
   /* ---------------------- SCROLL TO TOP AFTER REORDER ---------------------- */
 
@@ -439,16 +626,19 @@ export default function LeaderboardScreen() {
   /* ---------------------- INTERACTIONS ---------------------- */
 
   const goToPlayer = (userId: string) => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/locker/${userId}`);
   };
 
   const goToCourse = (courseId: number) => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push(`/course/${courseId}`);
+    router.push(`/locker/course/${courseId}`);
   };
 
   const goToPostScore = (courseId: number) => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     router.push({
       pathname: "/post-score",
@@ -468,7 +658,7 @@ export default function LeaderboardScreen() {
 
       <TopNavBar />
 
-      {/* LOCATION ROW - Static display, no Change button */}
+      {/* LOCATION ROW */}
       <View style={styles.locationRow}>
         <Image source={LocationIcon} style={styles.locationIcon} />
         <Text style={styles.locationText}>{locationLabel}</Text>
@@ -484,6 +674,8 @@ export default function LeaderboardScreen() {
           <Text style={styles.emptyStateText}>
             {filterType === "player" 
               ? `${filterPlayerName} hasn't posted any scores yet`
+              : filterType === "partnersOnly"
+              ? "You have no partners yet, or your partners haven't posted any scores"
               : "Set your location to see nearby courses and leaderboards"}
           </Text>
         </View>
@@ -494,6 +686,9 @@ export default function LeaderboardScreen() {
           keyExtractor={(b) => String(b.courseId)}
           contentContainerStyle={{ paddingBottom: 140 }}
           renderItem={({ item }) => {
+            const highlightTarget = highlightCourseId || targetCourseId;
+            const isHighlightedBoard = shouldHighlight && item.courseId === highlightTarget;
+            
             return (
               <View style={styles.board}>
                 {/* COURSE HEADER */}
@@ -514,6 +709,7 @@ export default function LeaderboardScreen() {
                   <Text style={styles.colPlayer}>PLAYER</Text>
                   <Text style={styles.colScore}>G</Text>
                   <Text style={styles.colScore}>N</Text>
+                  <Text style={styles.colScore}>PAR</Text>
                   <Text style={styles.colLow}>LOW</Text>
                 </View>
 
@@ -533,16 +729,25 @@ export default function LeaderboardScreen() {
                     const lowNet = Math.min(...item.scores.map((x) => x.netScore));
                     const isLowman = s.netScore === lowNet;
 
+                    if (i === 0) {
+                      console.log(`🏆 ${item.courseName} - Low Net: ${lowNet}, Player: ${s.userName}, Net: ${s.netScore}, isLowman: ${isLowman}`);
+                    }
+
+                    // Highlight logic:
+                    // - If highlightScoreId is provided, only highlight that specific score
+                    // - If highlightUserId is provided on the highlighted board, only highlight if they're in position 1
+                    // - If targetPlayerId is provided on the highlighted board, only highlight if they're in position 1
                     const isTargetRow =
-                      shouldHighlight &&
-                      targetCourseId === item.courseId &&
-                      i === 0;
+                      (highlightScoreId && s.scoreId === highlightScoreId) ||
+                      (highlightUserId && s.userId === highlightUserId && isHighlightedBoard && i === 0) ||
+                      (targetPlayerId && s.userId === targetPlayerId && isHighlightedBoard && i === 0);
 
                     if (isTargetRow) {
-                      console.log("🎯 Highlighting POS 1:", { 
+                      console.log("🎯 Highlighting row:", { 
                         userName: s.userName, 
                         courseId: item.courseId,
-                        position: i + 1
+                        position: i + 1,
+                        reason: highlightScoreId ? 'scoreId' : highlightUserId ? 'userId at pos 1' : 'targetPlayer at pos 1'
                       });
                     }
 
@@ -579,7 +784,15 @@ export default function LeaderboardScreen() {
                         <Text style={[styles.colScore, isLowman && styles.lowNet]}>
                           {s.netScore}
                         </Text>
-                        <Text style={styles.colLow}>{isLowman ? "🏆" : ""}</Text>
+                        <Text style={styles.colScore}>{s.par || 72}</Text>
+                        <View style={styles.colLow}>
+                          {isLowman && (
+                            <Image
+                              source={LowLeaderTrophy}
+                              style={styles.trophyIcon}
+                            />
+                          )}
+                        </View>
                       </View>
                     );
                   })
@@ -684,7 +897,7 @@ const styles = StyleSheet.create({
 
   rowHighlighted: {
     borderWidth: 3,
-    borderColor: "#C9A400",
+    borderColor: "#FFD700",
     borderRadius: 4,
     marginVertical: 2,
     backgroundColor: "#FFFEF5",
@@ -697,8 +910,11 @@ const styles = StyleSheet.create({
   colPos: { width: 40, fontWeight: "800", textAlign: "center" },
   colPlayer: { flex: 1, fontWeight: "800" },
   colScore: { width: 44, textAlign: "center", fontWeight: "700" },
-  colLow: { width: 44, textAlign: "center" },
-
+  colLow: {
+    width: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   playerCell: {
     flex: 1,
     flexDirection: "row",
@@ -718,7 +934,11 @@ const styles = StyleSheet.create({
   playerName: { fontWeight: "700", flexShrink: 1 },
 
   lowNet: { color: "#C9A400", fontWeight: "900" },
-
+trophyIcon: {
+    width: 24,
+    height: 24,
+    resizeMode: "contain",
+  },
   emptyRow: {
     padding: 24,
     alignItems: "center",
@@ -736,4 +956,3 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
 });
-

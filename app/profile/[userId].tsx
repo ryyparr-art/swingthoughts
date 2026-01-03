@@ -1,19 +1,21 @@
+import PartnersModal from "@/components/modals/PartnersModal";
+import BottomActionBar from "@/components/navigation/BottomActionBar";
+import SwingFooter from "@/components/navigation/SwingFooter";
 import { auth, db } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { collection, deleteDoc, doc, getDoc, getDocs, query, where } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    FlatList,
-    Image,
-    Platform,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  FlatList,
+  Image,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -27,7 +29,7 @@ interface UserProfile {
 
 interface Post {
   postId: string;
-  imageUrl: string;
+  imageUrl?: string;
   caption: string;
   createdAt: any;
 }
@@ -46,15 +48,14 @@ export default function ProfileScreen() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [stats, setStats] = useState<Stats>({ swingThoughts: 0, leaderboardScores: 0 });
+  const [partnerCount, setPartnerCount] = useState(0);
+  const [partnersModalVisible, setPartnersModalVisible] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [isPartner, setIsPartner] = useState(false);
 
   useEffect(() => {
     if (userId) {
       fetchProfileData();
-      if (!isOwnProfile) {
-        checkPartnerStatus();
-      }
+      fetchPartnerCount();
     }
   }, [userId]);
 
@@ -81,7 +82,7 @@ export default function ProfileScreen() {
         postsData.push({
           postId: doc.id,
           imageUrl: data.imageUrl,
-          caption: data.caption || "",
+          caption: data.caption || data.content || "",
           createdAt: data.createdAt,
         });
       });
@@ -110,103 +111,90 @@ export default function ProfileScreen() {
       setLoading(false);
     } catch (error) {
       console.error("Error fetching profile data:", error);
+      soundPlayer.play('error');
       setLoading(false);
     }
   };
 
-  const checkPartnerStatus = async () => {
+  const fetchPartnerCount = async () => {
     try {
-      if (!currentUserId) return;
-
-      // Check if already partners
-      const partnersRef = collection(db, "partners");
-      const q1 = query(
-        partnersRef,
-        where("user1Id", "==", currentUserId),
+      // Query where user is user1Id
+      const partnersQuery1 = query(
+        collection(db, "partners"),
+        where("user1Id", "==", userId)
+      );
+      
+      // Query where user is user2Id
+      const partnersQuery2 = query(
+        collection(db, "partners"),
         where("user2Id", "==", userId)
       );
-      const q2 = query(
-        partnersRef,
-        where("user1Id", "==", userId),
-        where("user2Id", "==", currentUserId)
-      );
-
-      const [snap1, snap2] = await Promise.all([getDocs(q1), getDocs(q2)]);
-
-      if (!snap1.empty || !snap2.empty) {
-        setIsPartner(true);
-      }
-    } catch (error) {
-      console.error("Error checking partner status:", error);
-    }
-  };
-
-  const handleDeletePost = async (postId: string) => {
-    const confirmDelete = async () => {
-      if (Platform.OS === 'web') {
-        return window.confirm("Delete this post?");
-      } else {
-        return new Promise<boolean>((resolve) => {
-          Alert.alert(
-            "Delete Post",
-            "Are you sure you want to delete this post?",
-            [
-              { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-              { text: "Delete", style: "destructive", onPress: () => resolve(true) },
-            ]
-          );
-        });
-      }
-    };
-
-    const shouldDelete = await confirmDelete();
-    if (!shouldDelete) return;
-
-    try {
-      await deleteDoc(doc(db, "thoughts", postId));
-      setPosts(posts.filter((p) => p.postId !== postId));
-      setStats({ ...stats, swingThoughts: stats.swingThoughts - 1 });
       
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      const [snap1, snap2] = await Promise.all([
+        getDocs(partnersQuery1),
+        getDocs(partnersQuery2)
+      ]);
+      
+      // Combine results (dedupe by document ID)
+      const partnerDocIds = new Set<string>();
+      snap1.forEach(doc => partnerDocIds.add(doc.id));
+      snap2.forEach(doc => partnerDocIds.add(doc.id));
+      
+      setPartnerCount(partnerDocIds.size);
     } catch (error) {
-      console.error("Error deleting post:", error);
-      if (Platform.OS === 'web') {
-        alert("Failed to delete post");
-      } else {
-        Alert.alert("Error", "Failed to delete post");
-      }
+      console.error("Error fetching partner count:", error);
+      setPartnerCount(0);
     }
   };
 
-  const handleSettings = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push("/profile/settings");
-  };
-
-  const handlePartnerUp = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    // TODO: Implement partner request
-    console.log("Partner up with:", userId);
-  };
-
-  const handleSendMessage = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push(`/messages/${userId}`);
+  const handleEditPost = (postId: string) => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push(`/create?editId=${postId}`);
   };
 
   const renderPost = ({ item }: { item: Post }) => (
     <TouchableOpacity 
       style={styles.postCard}
-      onLongPress={isOwnProfile ? () => handleDeletePost(item.postId) : undefined}
+      onPress={() => {
+        soundPlayer.play('click');
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        router.push(`/post/${item.postId}`);
+      }}
     >
-      <Image source={{ uri: item.imageUrl }} style={styles.postImage} />
-      {isOwnProfile && (
-        <TouchableOpacity 
-          style={styles.deleteIcon}
-          onPress={() => handleDeletePost(item.postId)}
-        >
-          <Ionicons name="close-circle" size={24} color="#FF3B30" />
-        </TouchableOpacity>
+      {item.imageUrl ? (
+        <>
+          <Image source={{ uri: item.imageUrl }} style={styles.postImage} />
+          {isOwnProfile && (
+            <TouchableOpacity 
+              style={styles.editIcon}
+              onPress={(e) => {
+                e.stopPropagation();
+                handleEditPost(item.postId);
+              }}
+            >
+              <Ionicons name="create-outline" size={20} color="#0D5C3A" />
+            </TouchableOpacity>
+          )}
+        </>
+      ) : (
+        // Text-only post card
+        <View style={styles.textOnlyCard}>
+          <Text style={styles.textOnlyContent} numberOfLines={4}>
+            {item.caption}
+          </Text>
+          {isOwnProfile && (
+            <TouchableOpacity 
+              style={styles.editIconText}
+              onPress={(e) => {
+                e.stopPropagation();
+                handleEditPost(item.postId);
+              }}
+            >
+              <Ionicons name="create-outline" size={20} color="#0D5C3A" />
+            </TouchableOpacity>
+          )}
+        </View>
       )}
     </TouchableOpacity>
   );
@@ -235,13 +223,42 @@ export default function ProfileScreen() {
 
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.headerButton}>
-          <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+        <TouchableOpacity 
+          onPress={() => {
+            soundPlayer.play('click');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.back();
+          }} 
+          style={styles.headerButton}
+        >
+          <Image
+            source={require("@/assets/icons/Back.png")}
+            style={styles.backIcon}
+            resizeMode="contain"
+          />
         </TouchableOpacity>
 
         <Text style={styles.headerTitle}>Profile</Text>
 
-        <View style={styles.headerButton} />
+        {isOwnProfile ? (
+          <TouchableOpacity
+            onPress={() => {
+              soundPlayer.play('click');
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              router.push("/profile/settings");
+            }}
+            style={styles.headerButton}
+          >
+            <Ionicons name="settings-outline" size={24} color="#FFFFFF" />
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            disabled={true}
+            style={[styles.headerButton, styles.settingsButtonDisabled]}
+          >
+            <Ionicons name="settings-outline" size={24} color="#999" />
+          </TouchableOpacity>
+        )}
       </View>
 
       <FlatList
@@ -276,45 +293,47 @@ export default function ProfileScreen() {
               </View>
             </View>
 
-            {/* Stats Tiles */}
+            {/* Stats Tiles - NOW 4 TILES */}
             <View style={styles.statsContainer}>
+              {/* Tile 1: Swing Thoughts */}
               <View style={styles.statTile}>
-                <Text style={styles.statValue}>{stats.swingThoughts}</Text>
                 <Text style={styles.statLabel}>Swing Thoughts</Text>
+                <Text style={styles.statValue}>{stats.swingThoughts}</Text>
               </View>
 
+              {/* Tile 2: Handicap */}
               <View style={styles.statTile}>
-                <Text style={styles.statValue}>{profile.handicap}</Text>
                 <Text style={styles.statLabel}>Handicap</Text>
+                <Text style={styles.statValue}>
+                  {profile.handicap || "—"}
+                </Text>
               </View>
 
+              {/* Tile 3: Partners - TAPPABLE with Icons */}
+              <TouchableOpacity 
+                style={styles.statTile}
+                onPress={() => {
+                  soundPlayer.play('click');
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setPartnersModalVisible(true);
+                }}
+              >
+                <View style={styles.statLabelRow}>
+                  <Text style={styles.statLabel}>Partners</Text>
+                  <View style={styles.iconPair}>
+                    <Ionicons name="person" size={12} color="#0D5C3A" />
+                    <Ionicons name="golf" size={12} color="#0D5C3A" />
+                  </View>
+                </View>
+                <Text style={styles.statValue}>{partnerCount}</Text>
+              </TouchableOpacity>
+
+              {/* Tile 4: Scores Posted */}
               <View style={styles.statTile}>
-                <Text style={styles.statValue}>{stats.leaderboardScores}</Text>
                 <Text style={styles.statLabel}>Scores Posted</Text>
+                <Text style={styles.statValue}>{stats.leaderboardScores}</Text>
               </View>
             </View>
-
-            {/* Action Button */}
-            {isOwnProfile ? (
-              <TouchableOpacity style={styles.actionButton} onPress={handleSettings}>
-                <Ionicons name="settings-outline" size={20} color="#FFFFFF" />
-                <Text style={styles.actionButtonText}>Settings</Text>
-              </TouchableOpacity>
-            ) : (
-              <View style={styles.actionButtonsRow}>
-                <TouchableOpacity style={styles.actionButton} onPress={handlePartnerUp}>
-                  <Ionicons name="people-outline" size={20} color="#FFFFFF" />
-                  <Text style={styles.actionButtonText}>Partner Up</Text>
-                </TouchableOpacity>
-
-                {isPartner && (
-                  <TouchableOpacity style={styles.actionButton} onPress={handleSendMessage}>
-                    <Ionicons name="mail-outline" size={20} color="#FFFFFF" />
-                    <Text style={styles.actionButtonText}>Message</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            )}
 
             {/* Posts Header */}
             <View style={styles.postsHeader}>
@@ -329,6 +348,22 @@ export default function ProfileScreen() {
           </View>
         }
       />
+
+      {/* Partners Modal */}
+      {userId && (
+        <PartnersModal
+          visible={partnersModalVisible}
+          onClose={() => {
+            soundPlayer.play('click');
+            setPartnersModalVisible(false);
+          }}
+          userId={Array.isArray(userId) ? userId[0] : (userId || '')}
+          isOwnProfile={isOwnProfile}
+        />
+      )}
+
+      <BottomActionBar />
+      <SwingFooter />
     </View>
   );
 }
@@ -354,6 +389,16 @@ const styles = StyleSheet.create({
 
   headerButton: {
     width: 40,
+  },
+
+  settingsButtonDisabled: {
+    opacity: 0.4,
+  },
+
+  backIcon: {
+    width: 24,
+    height: 24,
+    tintColor: "#FFFFFF",
   },
 
   headerTitle: {
@@ -422,56 +467,47 @@ const styles = StyleSheet.create({
 
   statsContainer: {
     flexDirection: "row",
-    justifyContent: "space-around",
     paddingHorizontal: 16,
     paddingVertical: 20,
-    backgroundColor: "#FFFFFF",
-    marginHorizontal: 16,
+    gap: 8,
     marginBottom: 16,
-    borderRadius: 12,
   },
 
   statTile: {
+    flex: 1,
     alignItems: "center",
+    paddingVertical: 12,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
   },
 
-  statValue: {
-    fontSize: 24,
-    fontWeight: "700",
-    color: "#0D5C3A",
+  statLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
     marginBottom: 4,
   },
 
+  iconPair: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    marginLeft: 2,
+  },
+
   statLabel: {
-    fontSize: 12,
+    fontSize: 11,
+    fontWeight: "600",
     color: "#666",
     textAlign: "center",
   },
 
-  actionButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: "#0D5C3A",
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-    marginHorizontal: 16,
-    marginBottom: 20,
-  },
-
-  actionButtonsRow: {
-    flexDirection: "row",
-    gap: 12,
-    paddingHorizontal: 16,
-    marginBottom: 20,
-  },
-
-  actionButtonText: {
-    fontSize: 16,
+  statValue: {
+    fontSize: 20,
     fontWeight: "700",
-    color: "#FFFFFF",
+    color: "#0D5C3A",
   },
 
   postsHeader: {
@@ -488,29 +524,53 @@ const styles = StyleSheet.create({
   },
 
   postsGrid: {
-    paddingHorizontal: 8,
-    paddingBottom: 20,
+    paddingBottom: 140,
   },
 
   postCard: {
-    flex: 1,
-    margin: 4,
+    width: '33.33%',
     aspectRatio: 1,
-    position: "relative",
+    padding: 1,
   },
 
   postImage: {
     width: "100%",
     height: "100%",
-    borderRadius: 8,
+    backgroundColor: "#E0E0E0",
   },
 
-  deleteIcon: {
+  textOnlyCard: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#0D5C3A",
+    padding: 12,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  textOnlyContent: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#FFFFFF",
+    textAlign: "center",
+  },
+
+  editIcon: {
     position: "absolute",
-    top: 4,
-    right: 4,
-    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    top: 6,
+    right: 6,
+    backgroundColor: "rgba(255, 255, 255, 0.95)",
     borderRadius: 12,
+    padding: 6,
+  },
+
+  editIconText: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    backgroundColor: "rgba(255, 255, 255, 0.95)",
+    borderRadius: 12,
+    padding: 6,
   },
 
   emptyContainer: {

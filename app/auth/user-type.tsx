@@ -1,3 +1,4 @@
+import { soundPlayer } from "@/utils/soundPlayer";
 import { BlurView } from "expo-blur";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
@@ -15,9 +16,9 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-
-import BackIcon from "@/assets/icons/Back.png";
 import { auth, db } from "../../constants/firebaseConfig";
+
+const BackIcon = require("@/assets/icons/Back.png");
 
 type UserType =
   | "Golfer"
@@ -92,6 +93,8 @@ export default function UserTypeScreen() {
      BACK → START FRESH CONFIRMATION
      ======================= */
   const handleBack = () => {
+    // Play click sound + light haptic
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     Alert.alert(
@@ -100,13 +103,22 @@ export default function UserTypeScreen() {
       [
         { 
           text: "Cancel", 
-          style: "cancel" 
+          style: "cancel",
+          onPress: () => {
+            // Play click on cancel
+            soundPlayer.play('click');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }
         },
         {
           text: "Start Fresh",
           style: "destructive",
           onPress: async () => {
             try {
+              // Play error sound for destructive action
+              soundPlayer.play('error');
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
               setSavingType(true);
               const user = auth.currentUser;
               
@@ -134,12 +146,15 @@ export default function UserTypeScreen() {
                 }
               }
 
+              // Play success notification
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               
               // Return to hero page
               router.replace("/");
             } catch (err) {
               console.warn("Start fresh failed:", err);
+              // Play error sound
+              soundPlayer.play('error');
               router.replace("/");
             }
           },
@@ -149,10 +164,14 @@ export default function UserTypeScreen() {
   };
 
   const handleSelectType = async (type: UserType) => {
+    // Play click sound + medium haptic for selection
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     const user = auth.currentUser;
     if (!user) {
+      // Play error sound if no user
+      soundPlayer.play('error');
       router.replace("/");
       return;
     }
@@ -174,6 +193,7 @@ export default function UserTypeScreen() {
           badges: [],
           avatar: null,
           acceptedTerms: false,
+          verified: false,
           ...(type === "PGA Professional" || type === "Course"
             ? {
                 verification: {
@@ -188,6 +208,7 @@ export default function UserTypeScreen() {
           ref,
           {
             userType: type,
+            verified: false,
             ...(type === "PGA Professional" || type === "Course"
               ? {
                   verification: {
@@ -201,9 +222,22 @@ export default function UserTypeScreen() {
         );
       }
 
-      router.replace("/onboarding/setup-profile");
+      // Play success sound after saving
+      soundPlayer.play('postThought');
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+      // ✅ Route based on user type
+      if (type === "Course") {
+        // Courses skip profile/locker and go straight to verification
+        router.replace("/onboarding/verification");
+      } else {
+        // Everyone else goes to setup-profile
+        router.replace("/onboarding/setup-profile");
+      }
     } catch (error) {
       console.error("Error saving user type:", error);
+      // Play error sound on failure
+      soundPlayer.play('error');
       setSavingType(false);
     }
   };
@@ -314,7 +348,6 @@ const styles = StyleSheet.create({
     color: "#0D5C3A",
   },
 });
-
 
 
 

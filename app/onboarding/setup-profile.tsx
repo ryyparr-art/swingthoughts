@@ -1,5 +1,7 @@
 import LocationPickerModal from "@/components/modals/LocationPickerModal";
 import { auth, db } from "@/constants/firebaseConfig";
+import { checkDisplayNameAvailability } from "@/utils/displayNameValidator";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
@@ -21,7 +23,7 @@ import {
 import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import BackIcon from "@/assets/icons/Back.png";
+const BackIcon = require("@/assets/icons/Back.png");
 
 export default function SetupProfile() {
   const router = useRouter();
@@ -39,6 +41,7 @@ export default function SetupProfile() {
    */
   const handleBack = () => {
     if (loading) return;
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.replace("/auth/user-type");
   };
@@ -47,6 +50,7 @@ export default function SetupProfile() {
    * INFO DIALOGS
    */
   const showHandicapInfo = () => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     Alert.alert(
       "About Handicap",
@@ -56,6 +60,7 @@ export default function SetupProfile() {
   };
 
   const showLocationInfo = () => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     Alert.alert(
       "Why We Need Your Location",
@@ -73,12 +78,21 @@ export default function SetupProfile() {
     // Validate display name
     if (!displayName.trim()) {
       setError("Please enter your display name");
+      soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
 
     if (displayName.trim().length < 2) {
       setError("Display name must be at least 2 characters");
+      soundPlayer.play('error');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      return;
+    }
+
+    if (displayName.trim().length > 30) {
+      setError("Display name must be 30 characters or less");
+      soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
@@ -86,6 +100,7 @@ export default function SetupProfile() {
     // Validate handicap
     if (!handicap.trim()) {
       setError("Please enter your handicap");
+      soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
@@ -93,6 +108,7 @@ export default function SetupProfile() {
     const handicapNum = parseFloat(handicap);
     if (isNaN(handicapNum) || handicapNum < -10 || handicapNum > 54) {
       setError("Handicap must be between -10 and 54");
+      soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
@@ -100,21 +116,38 @@ export default function SetupProfile() {
     // Validate location (MANDATORY)
     if (!location) {
       setError("Please set your location preferences");
+      soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
 
+    soundPlayer.play('click');
     setLoading(true);
 
     try {
       const user = auth.currentUser;
       if (!user) throw new Error("No user logged in");
 
-      // Save profile data with location
+      // ✅ CHECK DISPLAY NAME UNIQUENESS
+      console.log("🔍 Checking display name availability:", displayName.trim());
+      const isAvailable = await checkDisplayNameAvailability(displayName.trim());
+      
+      if (!isAvailable) {
+        setError("This display name is already taken. Please choose another one.");
+        soundPlayer.play('error');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        setLoading(false);
+        return;
+      }
+
+      console.log("✅ Display name is available!");
+
+      // Save profile data with location AND displayNameLower for uniqueness
       await setDoc(
         doc(db, "users", user.uid),
         {
           displayName: displayName.trim(),
+          displayNameLower: displayName.trim().toLowerCase(), // For uniqueness checking
           handicap: handicapNum,
           location: location,
           updatedAt: new Date().toISOString(),
@@ -124,10 +157,12 @@ export default function SetupProfile() {
 
       console.log("✅ Profile saved:", { 
         displayName: displayName.trim(), 
+        displayNameLower: displayName.trim().toLowerCase(),
         handicap: handicapNum,
         location 
       });
 
+      soundPlayer.play('postThought');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setLoading(false);
 
@@ -136,6 +171,7 @@ export default function SetupProfile() {
     } catch (err) {
       console.error("❌ Error saving profile:", err);
       setError("Failed to continue. Please try again.");
+      soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setLoading(false);
     }
@@ -146,6 +182,7 @@ export default function SetupProfile() {
    */
   const handleLocationSet = (selectedLocation: any) => {
     console.log("✅ Location set:", selectedLocation);
+    soundPlayer.play('postThought');
     setLocation(selectedLocation);
     setShowLocationModal(false);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -218,6 +255,9 @@ export default function SetupProfile() {
                   maxLength={30}
                 />
               </View>
+              <Text style={styles.helperText}>
+                Choose a unique name (2-30 characters)
+              </Text>
             </View>
 
             {/* Handicap */}
@@ -276,6 +316,7 @@ export default function SetupProfile() {
                   location && styles.locationButtonSet
                 ]}
                 onPress={() => {
+                  soundPlayer.play('click');
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   setShowLocationModal(true);
                 }}
@@ -336,7 +377,10 @@ export default function SetupProfile() {
       {/* Location Modal */}
       <LocationPickerModal
         visible={showLocationModal}
-        onClose={() => setShowLocationModal(false)}
+        onClose={() => {
+          soundPlayer.play('click');
+          setShowLocationModal(false);
+        }}
         onLocationSet={handleLocationSet}
       />
     </SafeAreaView>
@@ -536,7 +580,6 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
 });
-
 
 
 

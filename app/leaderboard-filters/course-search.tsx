@@ -1,5 +1,6 @@
 import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
 import { auth, db } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
@@ -37,7 +38,7 @@ export default function CourseSearchScreen() {
   const [selectedCourse, setSelectedCourse] = useState<GolfCourse | null>(null);
   const [loadingCourses, setLoadingCourses] = useState(false);
   
-  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const searchCourses = async (query: string) => {
     try {
@@ -55,6 +56,7 @@ export default function CourseSearchScreen() {
       );
 
       if (!res.ok) {
+        soundPlayer.play('error');
         setLoadingCourses(false);
         return;
       }
@@ -66,6 +68,7 @@ export default function CourseSearchScreen() {
       setLoadingCourses(false);
     } catch (err) {
       console.error("Course search error:", err);
+      soundPlayer.play('error');
       setLoadingCourses(false);
     }
   };
@@ -94,6 +97,7 @@ export default function CourseSearchScreen() {
   };
 
   const handleSelectCourse = (course: GolfCourse) => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedCourse(course);
   };
@@ -119,6 +123,7 @@ export default function CourseSearchScreen() {
       console.log("💾 Saved course to Firestore:", course.course_name);
     } catch (error) {
       console.error("❌ Error saving course:", error);
+      soundPlayer.play('error');
     }
   };
 
@@ -126,6 +131,7 @@ export default function CourseSearchScreen() {
     if (!selectedCourse) return;
     
     try {
+      soundPlayer.play('click');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       // Check if course exists in Firestore
@@ -154,6 +160,7 @@ export default function CourseSearchScreen() {
       });
     } catch (error) {
       console.error("Error applying course filter:", error);
+      soundPlayer.play('error');
     }
   };
 
@@ -161,7 +168,14 @@ export default function CourseSearchScreen() {
     <SafeAreaView style={styles.container} edges={["top"]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.headerButton}>
+        <TouchableOpacity 
+          onPress={() => {
+            soundPlayer.play('click');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.back();
+          }} 
+          style={styles.headerButton}
+        >
           <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
         </TouchableOpacity>
 

@@ -1,14 +1,14 @@
 import { db } from "@/constants/firebaseConfig";
 import {
-    arrayUnion,
-    collection,
-    doc,
-    getDoc,
-    getDocs,
-    query,
-    setDoc,
-    updateDoc,
-    where,
+  arrayUnion,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  setDoc,
+  updateDoc,
+  where,
 } from "firebase/firestore";
 
 /**
@@ -33,7 +33,8 @@ export async function checkAndAwardBadges(
   courseId: number,
   courseName: string,
   grossScore: number,
-  hadHoleInOne: boolean = false
+  hadHoleInOne: boolean = false,
+  holeNumber?: number
 ): Promise<Badge[]> {
   const newBadges: Badge[] = [];
 
@@ -48,65 +49,79 @@ export async function checkAndAwardBadges(
         displayName: "Hole-in-One",
       };
       
+      // Add to user's badges
       await awardBadge(userId, holeInOneBadge);
       newBadges.push(holeInOneBadge);
+      
+      // ✅ Add to course_leaders collection with hole number
+      await addHoleInOneToCourse(userId, courseId, courseName, holeNumber);
+      
       console.log("🏆 Awarded Hole-in-One badge!");
     }
 
     // 2. Check for Lowman (lowest score on this course)
-    const isLowman = await checkIsLowman(userId, courseId, grossScore);
-    
-    if (isLowman) {
-      console.log("🎯 User got lowman on", courseName);
+    // Skip lowman check if this is a hole-in-one (no gross score)
+    if (!hadHoleInOne && grossScore > 0) {
+      // ✅ WAIT for Cloud Function to update course_leaders
+      console.log("⏳ Waiting 3 seconds for Cloud Function to process...");
+      await new Promise(resolve => setTimeout(resolve, 3000));
       
-      // Update course_leaders
-      await updateCourseLowman(userId, courseId, courseName, grossScore);
+      // ✅ CHECK course_leaders to see if user is now lowman
+      const isLowman = await checkIsLowmanFromCourseLeaders(userId, courseId);
       
-      // Add lowman badge to user
-      const lowmanBadge: Badge = {
-        type: "lowman",
-        courseId,
-        courseName,
-        achievedAt: new Date(),
-        score: grossScore,
-        displayName: "Lowman",
-      };
-      
-      await awardBadge(userId, lowmanBadge);
-      newBadges.push(lowmanBadge);
-      
-      // 3. Check for tier upgrades (Scratch/Ace)
-      const lowmanCount = await getLowmanCount(userId);
-      console.log("📊 User has lowman at", lowmanCount, "courses");
-      
-      if (lowmanCount >= 3) {
-        // Award Ace (3+ courses)
-        const aceBadge: Badge = {
-          type: "ace",
-          courseId: 0, // Not course-specific
-          courseName: "Multiple Courses",
+      if (isLowman) {
+        console.log("🎯 User is now lowman on", courseName);
+        
+        // Add lowman badge to user
+        const lowmanBadge: Badge = {
+          type: "lowman",
+          courseId,
+          courseName,
           achievedAt: new Date(),
-          displayName: "Ace",
+          score: grossScore,
+          displayName: "Lowman",
         };
         
-        await awardBadge(userId, aceBadge);
-        newBadges.push(aceBadge);
-        console.log("🏆 Upgraded to Ace badge!");
+        await awardBadge(userId, lowmanBadge);
+        newBadges.push(lowmanBadge);
         
-      } else if (lowmanCount >= 2) {
-        // Award Scratch (2+ courses)
-        const scratchBadge: Badge = {
-          type: "scratch",
-          courseId: 0, // Not course-specific
-          courseName: "Multiple Courses",
-          achievedAt: new Date(),
-          displayName: "Scratch",
-        };
+        // 3. Check for tier upgrades (Scratch/Ace)
+        const lowmanCount = await getLowmanCount(userId);
+        console.log("📊 User has lowman at", lowmanCount, "courses");
         
-        await awardBadge(userId, scratchBadge);
-        newBadges.push(scratchBadge);
-        console.log("🏆 Upgraded to Scratch badge!");
+        if (lowmanCount >= 3) {
+          // Award Ace (3+ courses)
+          const aceBadge: Badge = {
+            type: "ace",
+            courseId: 0, // Not course-specific
+            courseName: "Multiple Courses",
+            achievedAt: new Date(),
+            displayName: "Ace",
+          };
+          
+          await awardBadge(userId, aceBadge);
+          newBadges.push(aceBadge);
+          console.log("🏆 Upgraded to Ace badge!");
+          
+        } else if (lowmanCount >= 2) {
+          // Award Scratch (2+ courses)
+          const scratchBadge: Badge = {
+            type: "scratch",
+            courseId: 0, // Not course-specific
+            courseName: "Multiple Courses",
+            achievedAt: new Date(),
+            displayName: "Scratch",
+          };
+          
+          await awardBadge(userId, scratchBadge);
+          newBadges.push(scratchBadge);
+          console.log("🏆 Upgraded to Scratch badge!");
+        }
+      } else {
+        console.log("ℹ️ User is not lowman on", courseName);
       }
+    } else if (hadHoleInOne) {
+      console.log("⛳ Skipping lowman check for hole-in-one");
     }
   } catch (error) {
     console.error("❌ Error checking/awarding badges:", error);
@@ -116,7 +131,37 @@ export async function checkAndAwardBadges(
 }
 
 /**
- * Check if this score is the lowest on the course
+ * ✅ NEW: Check if user is lowman by reading course_leaders collection
+ * This runs AFTER the Cloud Function has updated course_leaders
+ */
+async function checkIsLowmanFromCourseLeaders(
+  userId: string,
+  courseId: number
+): Promise<boolean> {
+  try {
+    const courseLeaderRef = doc(db, "course_leaders", courseId.toString());
+    const courseLeaderSnap = await getDoc(courseLeaderRef);
+    
+    if (!courseLeaderSnap.exists()) {
+      console.log("⚠️ No course_leaders document found for course", courseId);
+      return false;
+    }
+    
+    const courseLeaderData = courseLeaderSnap.data();
+    const lowmanUserId = courseLeaderData?.lowman?.userId;
+    
+    console.log(`🔍 Course ${courseId} lowman:`, lowmanUserId, "vs current user:", userId);
+    
+    return lowmanUserId === userId;
+  } catch (error) {
+    console.error("Error checking lowman from course_leaders:", error);
+    return false;
+  }
+}
+
+/**
+ * ❌ DEPRECATED: Old function that checked scores directly
+ * Kept for reference but no longer used
  */
 async function checkIsLowman(
   userId: string,
@@ -157,6 +202,7 @@ async function checkIsLowman(
 
 /**
  * Update the course_leaders collection with new lowman
+ * ❌ NO LONGER NEEDED - Cloud Function handles this now
  */
 async function updateCourseLowman(
   userId: string,
@@ -165,9 +211,36 @@ async function updateCourseLowman(
   grossScore: number
 ): Promise<void> {
   try {
+    // Validate grossScore
+    if (!grossScore || grossScore === 0) {
+      console.error("❌ Invalid grossScore:", grossScore);
+      return;
+    }
+
     // Get user data
     const userDoc = await getDoc(doc(db, "users", userId));
     const userData = userDoc.data();
+    
+    // Parse handicap as number (handle both string and number types)
+    let handicap = 0;
+    if (userData?.handicap) {
+      if (typeof userData.handicap === 'string') {
+        handicap = parseInt(userData.handicap, 10);
+      } else if (typeof userData.handicap === 'number') {
+        handicap = userData.handicap;
+      }
+    }
+    
+    // Validate handicap is a valid number
+    if (isNaN(handicap)) {
+      console.warn("⚠️ Invalid handicap, using 0");
+      handicap = 0;
+    }
+    
+    // Calculate net score
+    const netScore = grossScore - handicap;
+    
+    console.log(`📊 Lowman calculation: gross=${grossScore}, handicap=${handicap}, net=${netScore}`);
     
     const courseLeaderRef = doc(db, "course_leaders", courseId.toString());
     
@@ -179,7 +252,7 @@ async function updateCourseLowman(
         lowman: {
           userId,
           displayName: userData?.displayName || "Player",
-          netScore: grossScore - (userData?.handicap || 0),
+          netScore: netScore,
           achievedAt: new Date(),
         },
       },
@@ -189,6 +262,46 @@ async function updateCourseLowman(
     console.log("✅ Updated course_leaders for course", courseId);
   } catch (error) {
     console.error("Error updating course lowman:", error);
+  }
+}
+
+/**
+ * Add hole-in-one to course_leaders collection
+ */
+async function addHoleInOneToCourse(
+  userId: string,
+  courseId: number,
+  courseName: string,
+  holeNumber?: number,
+  postId?: string
+): Promise<void> {
+  try {
+    // Get user data
+    const userDoc = await getDoc(doc(db, "users", userId));
+    const userData = userDoc.data();
+    
+    const courseLeaderRef = doc(db, "course_leaders", courseId.toString());
+    
+    // Add hole-in-one to the holeinones array
+    await setDoc(
+      courseLeaderRef,
+      {
+        courseId,
+        courseName,
+        holeinones: arrayUnion({
+          userId,
+          displayName: userData?.displayName || "Player",
+          hole: holeNumber || null,
+          achievedAt: new Date(),
+          postId: postId || null, // Store the clubhouse post ID
+        }),
+      },
+      { merge: true }
+    );
+    
+    console.log("✅ Added hole-in-one to course_leaders for course", courseId);
+  } catch (error) {
+    console.error("Error adding hole-in-one to course:", error);
   }
 }
 

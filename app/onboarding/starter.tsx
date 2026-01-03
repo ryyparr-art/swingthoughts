@@ -1,4 +1,5 @@
 import { auth, db } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { doc, setDoc } from "firebase/firestore";
@@ -15,7 +16,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import StarterImage from "@/assets/images/StarterImage.png";
+const StarterImage = require("@/assets/images/StarterImage.png");
 
 export default function Starter() {
   const router = useRouter();
@@ -28,10 +29,12 @@ export default function Starter() {
   const handleContinue = async () => {
     if (!acceptedTerms || !acceptedPrivacy) {
       setError("Please accept the Privacy Policy and Terms to continue.");
+      soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
 
+    soundPlayer.play('click');
     setLoading(true);
 
     try {
@@ -50,11 +53,14 @@ export default function Starter() {
         { merge: true }
       );
 
+      soundPlayer.play('postThought');
+
       // ✅ Everyone goes to clubhouse after accepting terms
       router.replace("/clubhouse");
     } catch (err) {
       console.error(err);
       setError("Failed to complete setup. Please try again.");
+      soundPlayer.play('error');
       setLoading(false);
     }
   };
@@ -141,6 +147,7 @@ export default function Starter() {
         <TouchableOpacity
           style={styles.checkboxRow}
           onPress={() => {
+            soundPlayer.play('click');
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             setAcceptedPrivacy(!acceptedPrivacy);
             setError("");
@@ -156,9 +163,10 @@ export default function Starter() {
             I agree to the{" "}
             <Text
               style={styles.link}
-              onPress={() =>
-                Linking.openURL("https://example.com/privacy")
-              }
+              onPress={() => {
+                soundPlayer.play('click');
+                Linking.openURL("https://example.com/privacy");
+              }}
             >
               Privacy Policy
             </Text>
@@ -169,6 +177,7 @@ export default function Starter() {
         <TouchableOpacity
           style={styles.checkboxRow}
           onPress={() => {
+            soundPlayer.play('click');
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             setAcceptedTerms(!acceptedTerms);
             setError("");
@@ -184,9 +193,10 @@ export default function Starter() {
             I agree to the{" "}
             <Text
               style={styles.link}
-              onPress={() =>
-                Linking.openURL("https://example.com/terms")
-              }
+              onPress={() => {
+                soundPlayer.play('click');
+                Linking.openURL("https://example.com/terms");
+              }}
             >
               Terms & Conditions
             </Text>

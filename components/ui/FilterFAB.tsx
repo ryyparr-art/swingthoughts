@@ -23,7 +23,7 @@ export default function FilterFAB({ onPress, hasFilters = false }: Props) {
         resizeMode="contain"
         style={[
           styles.icon,
-          { tintColor: hasFilters ? "#FFD700" : "#FFFFFF" } // ✅ ONLY CHANGE
+          hasFilters && styles.iconActive
         ]}
       />
 
@@ -53,24 +53,29 @@ const styles = StyleSheet.create({
   icon: {
     width: 28,
     height: 28,
-    tintColor: "#FFFFFF", // default
+    tintColor: "#FFFFFF",
+  },
+  iconActive: {
+    tintColor: "#FFD700", // ✅ Matches BottomActionBar active icons
   },
   badge: {
     position: "absolute",
     top: 8,
     right: 8,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: "#FFD700",
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: "#FFD700", // ✅ Same gold as notifications
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#0D5C3A", // ✅ Same border as notification badges
   },
   badgeDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "#FF6B00",
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#0D5C3A", // ✅ Consistent with BottomActionBar badge text
   },
 });
 

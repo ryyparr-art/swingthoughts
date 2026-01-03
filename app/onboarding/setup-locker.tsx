@@ -1,4 +1,5 @@
 import { auth, db } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
@@ -19,7 +20,7 @@ import {
 import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import BackIcon from "@/assets/icons/Back.png";
+const BackIcon = require("@/assets/icons/Back.png");
 
 export default function SetupLocker() {
   const router = useRouter();
@@ -32,6 +33,7 @@ export default function SetupLocker() {
   /* ---------------- BACK ---------------- */
   const handleBack = () => {
     if (loading) return;
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.replace("/onboarding/setup-profile");
   };
@@ -43,16 +45,19 @@ export default function SetupLocker() {
     // Validation (both fields optional, but if provided, must be valid)
     if (homeCourse.trim() && homeCourse.trim().length < 2) {
       setError("Course name must be at least 2 characters");
+      soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
 
     if (gameIdentity.trim() && gameIdentity.trim().length < 2) {
       setError("Game identity must be at least 2 characters");
+      soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
 
+    soundPlayer.play('click');
     setLoading(true);
 
     try {
@@ -74,6 +79,7 @@ export default function SetupLocker() {
       const snap = await getDoc(userRef);
       const userData = snap.data();
 
+      soundPlayer.play('postThought');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       // Check if verification is needed
@@ -89,6 +95,7 @@ export default function SetupLocker() {
     } catch (err) {
       console.error("Error saving locker info:", err);
       setError("Failed to save information. Please try again.");
+      soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setLoading(false);
     }
@@ -97,6 +104,7 @@ export default function SetupLocker() {
   /* ---------------- SKIP ---------------- */
   const handleSkip = async () => {
     if (loading) return;
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     try {
@@ -117,6 +125,8 @@ export default function SetupLocker() {
       const snap = await getDoc(userRef);
       const userData = snap.data();
 
+      soundPlayer.play('postThought');
+
       if (
         userData?.userType === "PGA Professional" ||
         userData?.userType === "Course"
@@ -128,6 +138,7 @@ export default function SetupLocker() {
       router.replace("/onboarding/starter");
     } catch (err) {
       console.error("Skip locker failed:", err);
+      soundPlayer.play('error');
     }
   };
 

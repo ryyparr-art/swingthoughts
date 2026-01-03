@@ -39,7 +39,10 @@ export default function TopNavBar() {
         />
       </TouchableOpacity>
 
-      <TouchableOpacity onPress={() => handleNavigation("/leaderboard")}>
+      <TouchableOpacity 
+        onPress={() => handleNavigation("/leaderboard")}
+        style={styles.leaderboardButton}
+      >
         <Image 
           source={require("@/assets/icons/Leaderboard.png")} 
           style={getIconStyle("leaderboard")}
@@ -67,6 +70,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: 40,
+  },
+  leaderboardButton: {
+    marginRight: 12, // Pull leaderboard left
   },
   iconBase: {
     width: 42,

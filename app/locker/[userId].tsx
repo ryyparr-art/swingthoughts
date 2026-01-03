@@ -2,8 +2,10 @@ import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
 
 import {
+  acceptPartnerRequest,
   arePartnersAlready,
   checkExistingRequest,
   sendPartnerRequest,
@@ -17,6 +19,7 @@ import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   ImageBackground,
   ScrollView,
   StyleSheet,
@@ -25,6 +28,12 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+// ✅ Badge icon imports (matching LowmanCarousel)
+const LowLeaderTrophy = require("@/assets/icons/LowLeaderTrophy.png");
+const LowLeaderScratch = require("@/assets/icons/LowLeaderScratch.png");
+const LowLeaderAce = require("@/assets/icons/LowLeaderAce.png");
+const HoleInOne = require("@/assets/icons/HoleinOne.png");
 
 export default function LockerUserScreen() {
   const router = useRouter();
@@ -38,7 +47,7 @@ export default function LockerUserScreen() {
   const [clubs, setClubs] = useState<any>(null);
   const [badges, setBadges] = useState<any[]>([]);
   const [partnershipStatus, setPartnershipStatus] =
-    useState<"none" | "pending" | "partners">("none");
+    useState<"none" | "pending_sent" | "pending_received" | "partners">("none");
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
 
@@ -69,11 +78,17 @@ export default function LockerUserScreen() {
               return true;
             });
             
-            setBadges(validBadges);
+            // ✅ Use displayBadges if available, otherwise fallback to first 3
+            const displayBadges = data.displayBadges || validBadges.slice(0, 3);
+            setBadges(displayBadges);
           }
           setLoading(false);
         },
-        () => setLoading(false)
+        (error) => {
+          console.error("Error loading user:", error);
+          soundPlayer.play('error');
+          setLoading(false);
+        }
       );
 
       if (!isOwnLocker && currentUserId) {
@@ -87,17 +102,28 @@ export default function LockerUserScreen() {
   const checkPartnershipStatus = async () => {
     if (!currentUserId || !viewingUserId) return;
 
-    if (await arePartnersAlready(currentUserId, viewingUserId)) {
-      setPartnershipStatus("partners");
-      return;
-    }
+    try {
+      if (await arePartnersAlready(currentUserId, viewingUserId)) {
+        setPartnershipStatus("partners");
+        return;
+      }
 
-    if (await checkExistingRequest(currentUserId, viewingUserId)) {
-      setPartnershipStatus("pending");
-      return;
-    }
+      const existingRequest = await checkExistingRequest(currentUserId, viewingUserId);
+      if (existingRequest.exists) {
+        if (existingRequest.sentByMe) {
+          setPartnershipStatus("pending_sent");
+        } else if (existingRequest.sentToMe) {
+          setPartnershipStatus("pending_received");
+        }
+        return;
+      }
 
-    setPartnershipStatus("none");
+      setPartnershipStatus("none");
+    } catch (error) {
+      console.log("⚠️ Error checking partnership status (likely permissions):", error);
+      // Default to "none" if we can't check
+      setPartnershipStatus("none");
+    }
   };
 
   /* ========================= HELPERS ========================= */
@@ -119,34 +145,102 @@ export default function LockerUserScreen() {
   };
 
   const parseBadge = (badge: any) => {
-    // Handle different badge structures
+    console.log("🔍 Parsing badge:", JSON.stringify(badge, null, 2));
     
-    // If it's a string, return basic structure
+    // Handle string badges (legacy)
     if (typeof badge === "string") {
-      return { label: badge, courseName: null, date: null };
-    }
-
-    // Check if badge has a nested structure (like lowman)
-    const badgeKeys = Object.keys(badge || {});
-    const nestedBadgeKey = badgeKeys.find(key => 
-      badge[key] && typeof badge[key] === 'object' && badge[key].displayName
-    );
-
-    if (nestedBadgeKey) {
-      // Badge type is the key (e.g., "lowman")
-      const badgeData = badge[nestedBadgeKey];
-      return {
-        label: nestedBadgeKey.charAt(0).toUpperCase() + nestedBadgeKey.slice(1),
-        courseName: badge.courseName || null,
-        date: badgeData.achievedAt || null,
+      return { 
+        label: badge, 
+        courseName: null, 
+        date: null,
+        icon: LowLeaderTrophy,
+        type: "lowman"
       };
     }
 
-    // Standard structure
+    // ✅ Handle flat structure with direct "type" field (MOST COMMON)
+    if (badge.type) {
+      const badgeType = badge.type.toLowerCase();
+      
+      console.log(`  ✅ Badge type (flat): ${badgeType}`);
+      
+      // Map badge type to custom icon
+      let icon = LowLeaderTrophy; // Default
+      
+      switch (badgeType) {
+        case "lowman":
+          icon = LowLeaderTrophy;
+          break;
+        case "scratch":
+          icon = LowLeaderScratch;
+          break;
+        case "ace":
+          icon = LowLeaderAce;
+          break;
+        case "holeinone":
+          icon = HoleInOne;
+          break;
+        default:
+          console.warn(`⚠️ Unknown badge type: ${badgeType}`);
+      }
+      
+      return {
+        label: badge.displayName || (badgeType.charAt(0).toUpperCase() + badgeType.slice(1)),
+        courseName: badge.courseName || null,
+        date: badge.achievedAt || null,
+        icon: icon,
+        type: badgeType
+      };
+    }
+
+    // ✅ FALLBACK: Handle nested structure (if it exists)
+    const badgeKeys = Object.keys(badge || {}).filter(key => key !== 'courseName');
+    const badgeTypeKey = badgeKeys.find(key => 
+      badge[key] && typeof badge[key] === 'object' && badge[key].displayName
+    );
+
+    if (badgeTypeKey) {
+      const badgeData = badge[badgeTypeKey];
+      const badgeType = badgeTypeKey.toLowerCase();
+      
+      console.log(`  ✅ Badge type (nested): ${badgeType}`);
+      
+      let icon = LowLeaderTrophy;
+      
+      switch (badgeType) {
+        case "lowman":
+          icon = LowLeaderTrophy;
+          break;
+        case "scratch":
+          icon = LowLeaderScratch;
+          break;
+        case "ace":
+          icon = LowLeaderAce;
+          break;
+        case "holeinone":
+          icon = HoleInOne;
+          break;
+        default:
+          console.warn(`⚠️ Unknown badge type: ${badgeType}`);
+      }
+      
+      return {
+        label: badgeData.displayName || (badgeTypeKey.charAt(0).toUpperCase() + badgeTypeKey.slice(1)),
+        courseName: badge.courseName || null,
+        date: badgeData.achievedAt || null,
+        icon: icon,
+        type: badgeType
+      };
+    }
+
+    // Default fallback
+    console.warn("⚠️ No valid badge type found in:", badge);
     return {
-      label: badge.displayName || badge.label || "Achievement",
+      label: badge.displayName || "Achievement",
       courseName: badge.courseName || null,
       date: badge.achievedAt || null,
+      icon: LowLeaderTrophy,
+      type: "lowman"
     };
   };
 
@@ -155,30 +249,44 @@ export default function LockerUserScreen() {
   const handlePartnerUp = async () => {
     if (!currentUserId || !viewingUserId) return;
 
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setActionLoading(true);
 
     try {
-      await sendPartnerRequest(viewingUserId);
-      setPartnershipStatus("pending");
-      Alert.alert("Request Sent", "Your partner request is pending.");
+      if (partnershipStatus === "pending_received") {
+        // Accept the incoming request
+        await acceptPartnerRequest(currentUserId, viewingUserId);
+        soundPlayer.play('postThought');
+        setPartnershipStatus("partners");
+        Alert.alert("Partners! 🤝", "You're now partners!");
+      } else {
+        // Send a new request
+        await sendPartnerRequest(currentUserId, viewingUserId);
+        soundPlayer.play('postThought');
+        setPartnershipStatus("pending_sent");
+        Alert.alert("Request Sent", "Your partner request is pending.");
+      }
     } catch (e: any) {
+      soundPlayer.play('error');
       Alert.alert("Error", e.message);
     } finally {
       setActionLoading(false);
     }
   };
 
-  const handleFanmail = () => {
+  const handleLockerNote = () => {
     if (partnershipStatus !== "partners") {
+      soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
       Alert.alert(
-        "Fanmail Locked",
+        "Locker Note Locked",
         `Notes in the locker aren't available until ${profile?.displayName} accepts your Partner invitation.`
       );
       return;
     }
 
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/messages/${viewingUserId}`);
   };
@@ -238,18 +346,21 @@ export default function LockerUserScreen() {
             {!isOwnLocker && (
               <View style={styles.actionRow}>
                 <TouchableOpacity
-                  disabled={partnershipStatus !== "none" || actionLoading}
+                  disabled={partnershipStatus === "pending_sent" || partnershipStatus === "partners" || actionLoading}
                   onPress={handlePartnerUp}
                   style={[
                     styles.actionButton,
-                    partnershipStatus === "pending" && styles.pendingButton,
+                    partnershipStatus === "pending_sent" && styles.pendingButton,
+                    partnershipStatus === "pending_received" && styles.acceptButton,
                     partnershipStatus === "partners" && styles.disabledButton,
                   ]}
                 >
                   <Ionicons
                     name={
-                      partnershipStatus === "pending"
+                      partnershipStatus === "pending_sent"
                         ? "time-outline"
+                        : partnershipStatus === "pending_received"
+                        ? "checkmark-circle-outline"
                         : "people"
                     }
                     size={18}
@@ -258,57 +369,98 @@ export default function LockerUserScreen() {
                   <Text style={styles.actionText}>
                     {partnershipStatus === "none"
                       ? "Partner Up"
-                      : partnershipStatus === "pending"
+                      : partnershipStatus === "pending_sent"
                       ? "Pending"
+                      : partnershipStatus === "pending_received"
+                      ? "Accept"
                       : "Partners"}
                   </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  onPress={handleFanmail}
+                  onPress={handleLockerNote}
                   style={[
                     styles.actionButton,
-                    partnershipStatus !== "partners" && styles.fanmailLocked,
+                    partnershipStatus !== "partners" && styles.lockerNoteLocked,
                   ]}
                 >
                   <Ionicons name="mail" size={18} color="#fff" />
-                  <Text style={styles.actionText}>Fanmail</Text>
+                  <Text style={styles.actionText}>Locker Note</Text>
                 </TouchableOpacity>
               </View>
             )}
 
-            {/* BADGES */}
+            {/* BADGES - 2 COLUMN LAYOUT */}
             <View style={styles.badgesWrapper}>
               <Text style={styles.sectionTitle}>Achievements</Text>
 
               {badges.length === 0 ? (
                 <Text style={styles.noBadges}>No badges earned yet</Text>
               ) : (
-                <View style={styles.badgesRow}>
-                  {badges.slice(0, 3).map((badge, i) => {
-                    const parsed = parseBadge(badge);
-                    
-                    return (
-                      <View key={i} style={styles.badge}>
-                        <View style={styles.badgeHeader}>
-                          <Ionicons name="trophy" size={16} color="#FFD700" />
+                <View style={styles.badgesContainer}>
+                  {/* First Row - 2 badges */}
+                  <View style={styles.badgesRow}>
+                    {badges.slice(0, 2).map((badge, i) => {
+                      const parsed = parseBadge(badge);
+                      
+                      return (
+                        <View key={i} style={styles.badge}>
+                          {/* ✅ Custom badge icon at top */}
+                          <Image source={parsed.icon} style={styles.badgeIcon} />
+                          
                           <Text style={styles.badgeText}>{parsed.label}</Text>
+                          
+                          {(parsed.courseName || parsed.date) && (
+                            <View style={styles.badgeDetails}>
+                              {parsed.courseName && (
+                                <Text style={styles.badgeDetailText} numberOfLines={1}>
+                                  {parsed.courseName}
+                                </Text>
+                              )}
+                              {parsed.date && (
+                                <Text style={styles.badgeDetailText}>
+                                  {formatBadgeDate(parsed.date)}
+                                </Text>
+                              )}
+                            </View>
+                          )}
                         </View>
-                        {(parsed.courseName || parsed.date) && (
-                          <View style={styles.badgeDetails}>
-                            {parsed.courseName && (
-                              <Text style={styles.badgeDetailText}>{parsed.courseName}</Text>
-                            )}
-                            {parsed.date && (
-                              <Text style={styles.badgeDetailText}>
-                                {formatBadgeDate(parsed.date)}
-                              </Text>
+                      );
+                    })}
+                  </View>
+
+                  {/* Second Row - 1 badge centered */}
+                  {badges.length > 2 && (
+                    <View style={styles.badgesRowSingle}>
+                      {(() => {
+                        const parsed = parseBadge(badges[2]);
+                        
+                        return (
+                          <View style={styles.badge}>
+                            {/* ✅ Custom badge icon at top */}
+                            <Image source={parsed.icon} style={styles.badgeIcon} />
+                            
+                            <Text style={styles.badgeText}>{parsed.label}</Text>
+                            
+                            {(parsed.courseName || parsed.date) && (
+                              <View style={styles.badgeDetails}>
+                                {parsed.courseName && (
+                                  <Text style={styles.badgeDetailText} numberOfLines={1}>
+                                    {parsed.courseName}
+                                  </Text>
+                                )}
+                                {parsed.date && (
+                                  <Text style={styles.badgeDetailText}>
+                                    {formatBadgeDate(parsed.date)}
+                                  </Text>
+                                )}
+                              </View>
                             )}
                           </View>
-                        )}
-                      </View>
-                    );
-                  })}
+                        );
+                      })()}
+                    </View>
+                  )}
                 </View>
               )}
             </View>
@@ -334,7 +486,10 @@ export default function LockerUserScreen() {
           </View>
         </ScrollView>
 
-        <BottomActionBar />
+        <BottomActionBar 
+          isViewingOtherUser={!isOwnLocker} 
+          viewingUserId={viewingUserId}
+        />
         <SwingFooter />
       </ImageBackground>
     </View>
@@ -411,8 +566,9 @@ const styles = StyleSheet.create({
   },
 
   pendingButton: { backgroundColor: "#888" },
+  acceptButton: { backgroundColor: "#FFD700" },
   disabledButton: { backgroundColor: "#555" },
-  fanmailLocked: { backgroundColor: "#999" },
+  lockerNoteLocked: { backgroundColor: "#999" },
 
   actionText: {
     color: "#fff",
@@ -420,7 +576,10 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
-  badgesWrapper: { width: "100%", alignItems: "center" },
+  badgesWrapper: { 
+    width: "100%", 
+    alignItems: "center",
+  },
 
   sectionTitle: {
     fontSize: 22,
@@ -429,36 +588,53 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
 
+  // ✅ Container for all badges
+  badgesContainer: {
+    width: "100%",
+    gap: 12,
+  },
+
+  // ✅ First row - 2 badges side by side
   badgesRow: { 
     flexDirection: "row", 
     gap: 12,
-    flexWrap: "wrap",
+    justifyContent: "center",
+  },
+
+  // ✅ Second row - 1 badge centered
+  badgesRowSingle: {
+    flexDirection: "row",
     justifyContent: "center",
   },
 
   badge: {
     backgroundColor: "rgba(0,0,0,0.4)",
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     borderRadius: 12,
-    minWidth: 100,
+    minWidth: 140,
+    maxWidth: 160,
+    alignItems: "center",
   },
 
-  badgeHeader: {
-    flexDirection: "row",
-    gap: 8,
-    alignItems: "center",
-    marginBottom: 4,
+  // ✅ Custom badge icon at top
+  badgeIcon: {
+    width: 40,
+    height: 40,
+    resizeMode: "contain",
+    marginBottom: 8,
   },
 
   badgeText: { 
     color: "white", 
     fontWeight: "700",
     fontSize: 14,
+    textAlign: "center",
+    marginBottom: 4,
   },
 
   badgeDetails: {
-    marginTop: 4,
+    width: "100%",
     gap: 2,
   },
 
@@ -466,6 +642,7 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.7)",
     fontSize: 11,
     fontWeight: "500",
+    textAlign: "center",
   },
 
   noBadges: {
@@ -499,4 +676,3 @@ const styles = StyleSheet.create({
     color: "white",
   },
 });
-

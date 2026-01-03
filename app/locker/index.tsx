@@ -2,13 +2,15 @@ import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
 
 import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { Redirect, useFocusEffect, useRouter } from "expo-router";
 import { doc, onSnapshot } from "firebase/firestore";
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   ImageBackground,
   ScrollView,
   StyleSheet,
@@ -16,6 +18,12 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+// ✅ Badge icon imports (matching LowmanCarousel)
+const LowLeaderTrophy = require("@/assets/icons/LowLeaderTrophy.png");
+const LowLeaderScratch = require("@/assets/icons/LowLeaderScratch.png");
+const LowLeaderAce = require("@/assets/icons/LowLeaderAce.png");
+const HoleInOne = require("@/assets/icons/HoleinOne.png");
 
 export default function LockerScreen() {
   const router = useRouter();
@@ -53,11 +61,17 @@ export default function LockerScreen() {
               return true;
             });
             
-            setBadges(validBadges);
+            // ✅ Use displayBadges if available, otherwise fallback to first 3
+            const displayBadges = data.displayBadges || validBadges.slice(0, 3);
+            setBadges(displayBadges);
           }
           setLoading(false);
         },
-        () => setLoading(false)
+        (error) => {
+          console.error("Error loading user:", error);
+          soundPlayer.play('error');
+          setLoading(false);
+        }
       );
 
       return () => unsubscribe();
@@ -83,36 +97,111 @@ export default function LockerScreen() {
   };
 
   const parseBadge = (badge: any) => {
-    // Handle different badge structures
+    console.log("🔍 Parsing badge:", JSON.stringify(badge, null, 2));
     
-    // If it's a string, return basic structure
+    // Handle string badges (legacy)
     if (typeof badge === "string") {
-      return { label: badge, courseName: null, date: null };
-    }
-
-    // Check if badge has a nested structure (like lowman)
-    const badgeKeys = Object.keys(badge || {});
-    const nestedBadgeKey = badgeKeys.find(key => 
-      badge[key] && typeof badge[key] === 'object' && badge[key].displayName
-    );
-
-    if (nestedBadgeKey) {
-      // Badge type is the key (e.g., "lowman")
-      const badgeData = badge[nestedBadgeKey];
-      return {
-        label: nestedBadgeKey.charAt(0).toUpperCase() + nestedBadgeKey.slice(1),
-        courseName: badge.courseName || null,
-        date: badgeData.achievedAt || null,
+      return { 
+        label: badge, 
+        courseName: null, 
+        date: null,
+        icon: LowLeaderTrophy,
+        type: "lowman"
       };
     }
 
-    // Standard structure
+    // ✅ Handle flat structure with direct "type" field (MOST COMMON)
+    if (badge.type) {
+      const badgeType = badge.type.toLowerCase();
+      
+      console.log(`  ✅ Badge type (flat): ${badgeType}`);
+      
+      // Map badge type to custom icon
+      let icon = LowLeaderTrophy; // Default
+      
+      switch (badgeType) {
+        case "lowman":
+          icon = LowLeaderTrophy;
+          break;
+        case "scratch":
+          icon = LowLeaderScratch;
+          break;
+        case "ace":
+          icon = LowLeaderAce;
+          break;
+        case "holeinone":
+          icon = HoleInOne;
+          break;
+        default:
+          console.warn(`⚠️ Unknown badge type: ${badgeType}`);
+      }
+      
+      return {
+        label: badge.displayName || (badgeType.charAt(0).toUpperCase() + badgeType.slice(1)),
+        courseName: badge.courseName || null,
+        date: badge.achievedAt || null,
+        icon: icon,
+        type: badgeType
+      };
+    }
+
+    // ✅ FALLBACK: Handle nested structure (if it exists)
+    const badgeKeys = Object.keys(badge || {}).filter(key => key !== 'courseName');
+    const badgeTypeKey = badgeKeys.find(key => 
+      badge[key] && typeof badge[key] === 'object' && badge[key].displayName
+    );
+
+    if (badgeTypeKey) {
+      const badgeData = badge[badgeTypeKey];
+      const badgeType = badgeTypeKey.toLowerCase();
+      
+      console.log(`  ✅ Badge type (nested): ${badgeType}`);
+      
+      let icon = LowLeaderTrophy;
+      
+      switch (badgeType) {
+        case "lowman":
+          icon = LowLeaderTrophy;
+          break;
+        case "scratch":
+          icon = LowLeaderScratch;
+          break;
+        case "ace":
+          icon = LowLeaderAce;
+          break;
+        case "holeinone":
+          icon = HoleInOne;
+          break;
+        default:
+          console.warn(`⚠️ Unknown badge type: ${badgeType}`);
+      }
+      
+      return {
+        label: badgeData.displayName || (badgeTypeKey.charAt(0).toUpperCase() + badgeTypeKey.slice(1)),
+        courseName: badge.courseName || null,
+        date: badgeData.achievedAt || null,
+        icon: icon,
+        type: badgeType
+      };
+    }
+
+    // Default fallback
+    console.warn("⚠️ No valid badge type found in:", badge);
     return {
-      label: badge.displayName || badge.label || "Achievement",
+      label: badge.displayName || "Achievement",
       courseName: badge.courseName || null,
       date: badge.achievedAt || null,
+      icon: LowLeaderTrophy,
+      type: "lowman"
     };
   };
+
+  /* ========================= COURSE USER REDIRECT ========================= */
+
+  // If user is a Course, redirect to their course locker
+  if (!loading && profile?.userType === "Course" && profile?.ownedCourseId) {
+    return <Redirect href={`/locker/course/${profile.ownedCourseId}`} />;
+  }
 
   /* ========================= UI ========================= */
 
@@ -165,38 +254,77 @@ export default function LockerScreen() {
               </View>
             )}
 
-            {/* BADGES */}
+            {/* BADGES - 2 COLUMN LAYOUT */}
             <View style={styles.badgesWrapper}>
               <Text style={styles.sectionTitle}>Achievements</Text>
 
               {badges.length === 0 ? (
                 <Text style={styles.noBadges}>No badges earned yet</Text>
               ) : (
-                <View style={styles.badgesRow}>
-                  {badges.slice(0, 3).map((badge, i) => {
-                    const parsed = parseBadge(badge);
-                    
-                    return (
-                      <View key={i} style={styles.badge}>
-                        <View style={styles.badgeHeader}>
-                          <Ionicons name="trophy" size={16} color="#FFD700" />
+                <View style={styles.badgesContainer}>
+                  {/* First Row - 2 badges */}
+                  <View style={styles.badgesRow}>
+                    {badges.slice(0, 2).map((badge, i) => {
+                      const parsed = parseBadge(badge);
+                      
+                      return (
+                        <View key={i} style={styles.badge}>
+                          {/* ✅ Custom badge icon at top */}
+                          <Image source={parsed.icon} style={styles.badgeIcon} />
+                          
                           <Text style={styles.badgeText}>{parsed.label}</Text>
+                          
+                          {(parsed.courseName || parsed.date) && (
+                            <View style={styles.badgeDetails}>
+                              {parsed.courseName && (
+                                <Text style={styles.badgeDetailText} numberOfLines={1}>
+                                  {parsed.courseName}
+                                </Text>
+                              )}
+                              {parsed.date && (
+                                <Text style={styles.badgeDetailText}>
+                                  {formatBadgeDate(parsed.date)}
+                                </Text>
+                              )}
+                            </View>
+                          )}
                         </View>
-                        {(parsed.courseName || parsed.date) && (
-                          <View style={styles.badgeDetails}>
-                            {parsed.courseName && (
-                              <Text style={styles.badgeDetailText}>{parsed.courseName}</Text>
-                            )}
-                            {parsed.date && (
-                              <Text style={styles.badgeDetailText}>
-                                {formatBadgeDate(parsed.date)}
-                              </Text>
+                      );
+                    })}
+                  </View>
+
+                  {/* Second Row - 1 badge centered */}
+                  {badges.length > 2 && (
+                    <View style={styles.badgesRowSingle}>
+                      {(() => {
+                        const parsed = parseBadge(badges[2]);
+                        
+                        return (
+                          <View style={styles.badge}>
+                            {/* ✅ Custom badge icon at top */}
+                            <Image source={parsed.icon} style={styles.badgeIcon} />
+                            
+                            <Text style={styles.badgeText}>{parsed.label}</Text>
+                            
+                            {(parsed.courseName || parsed.date) && (
+                              <View style={styles.badgeDetails}>
+                                {parsed.courseName && (
+                                  <Text style={styles.badgeDetailText} numberOfLines={1}>
+                                    {parsed.courseName}
+                                  </Text>
+                                )}
+                                {parsed.date && (
+                                  <Text style={styles.badgeDetailText}>
+                                    {formatBadgeDate(parsed.date)}
+                                  </Text>
+                                )}
+                              </View>
                             )}
                           </View>
-                        )}
-                      </View>
-                    );
-                  })}
+                        );
+                      })()}
+                    </View>
+                  )}
                 </View>
               )}
             </View>
@@ -280,7 +408,10 @@ const styles = StyleSheet.create({
     fontStyle: "italic",
   },
 
-  badgesWrapper: { width: "100%", alignItems: "center" },
+  badgesWrapper: { 
+    width: "100%", 
+    alignItems: "center",
+  },
 
   sectionTitle: {
     fontSize: 22,
@@ -289,36 +420,53 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
 
+  // ✅ Container for all badges
+  badgesContainer: {
+    width: "100%",
+    gap: 12,
+  },
+
+  // ✅ First row - 2 badges side by side
   badgesRow: { 
     flexDirection: "row", 
     gap: 12,
-    flexWrap: "wrap",
+    justifyContent: "center",
+  },
+
+  // ✅ Second row - 1 badge centered
+  badgesRowSingle: {
+    flexDirection: "row",
     justifyContent: "center",
   },
 
   badge: {
     backgroundColor: "rgba(0,0,0,0.4)",
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     borderRadius: 12,
-    minWidth: 100,
+    minWidth: 140,
+    maxWidth: 160,
+    alignItems: "center",
   },
 
-  badgeHeader: {
-    flexDirection: "row",
-    gap: 8,
-    alignItems: "center",
-    marginBottom: 4,
+  // ✅ Custom badge icon at top
+  badgeIcon: {
+    width: 40,
+    height: 40,
+    resizeMode: "contain",
+    marginBottom: 8,
   },
 
   badgeText: { 
     color: "white", 
     fontWeight: "700",
     fontSize: 14,
+    textAlign: "center",
+    marginBottom: 4,
   },
 
   badgeDetails: {
-    marginTop: 4,
+    width: "100%",
     gap: 2,
   },
 
@@ -326,6 +474,7 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.7)",
     fontSize: 11,
     fontWeight: "500",
+    textAlign: "center",
   },
 
   noBadges: {
@@ -359,8 +508,6 @@ const styles = StyleSheet.create({
     color: "white",
   },
 });
-
-
 
 
 

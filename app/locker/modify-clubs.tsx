@@ -1,4 +1,6 @@
+import BadgeSelectionModal from "@/components/modals/BadgeSelectionModal";
 import { auth, db } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
@@ -25,6 +27,15 @@ interface Clubs {
   ball?: string;
 }
 
+interface Badge {
+  type: string;
+  displayName: string;
+  courseName?: string;
+  achievedAt?: any;
+  score?: number;
+  courseId?: number;
+}
+
 export default function ModifyLockerScreen() {
   const router = useRouter();
   const userId = auth.currentUser?.uid;
@@ -41,6 +52,11 @@ export default function ModifyLockerScreen() {
     putter: "",
     ball: "",
   });
+
+  // Badge selection
+  const [allBadges, setAllBadges] = useState<Badge[]>([]);
+  const [selectedBadges, setSelectedBadges] = useState<Badge[]>([]);
+  const [showBadgeModal, setShowBadgeModal] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -70,11 +86,25 @@ export default function ModifyLockerScreen() {
           putter: data.clubs?.putter || "",
           ball: data.clubs?.ball || "",
         });
+
+        // Load badges
+        const badgesData = data.Badges || [];
+        const validBadges = badgesData.filter((badge: any) => {
+          if (!badge) return false;
+          if (typeof badge === "string" && badge.trim() === "") return false;
+          return true;
+        });
+        setAllBadges(validBadges);
+
+        // Load selected badges (or default to first 3)
+        const displayBadges = data.displayBadges || validBadges.slice(0, 3);
+        setSelectedBadges(displayBadges);
       }
       
       setLoading(false);
     } catch (error) {
       console.error("Error fetching locker data:", error);
+      soundPlayer.play('error');
       setLoading(false);
     }
   };
@@ -83,6 +113,7 @@ export default function ModifyLockerScreen() {
     if (!userId) return;
 
     try {
+      soundPlayer.play('click');
       setSaving(true);
 
       await setDoc(
@@ -91,11 +122,13 @@ export default function ModifyLockerScreen() {
           homeCourse: homeCourse.trim(),
           gameIdentity: gameIdentity.trim(),
           clubs: clubs,
+          displayBadges: selectedBadges, // Save selected badges
           updatedAt: new Date().toISOString(),
         },
         { merge: true }
       );
 
+      soundPlayer.play('postThought');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       
       if (Platform.OS === 'web') {
@@ -107,6 +140,7 @@ export default function ModifyLockerScreen() {
       router.replace("/locker");
     } catch (error) {
       console.error("Error saving locker:", error);
+      soundPlayer.play('error');
       setSaving(false);
       
       if (Platform.OS === 'web') {
@@ -118,8 +152,13 @@ export default function ModifyLockerScreen() {
   };
 
   const handleClear = (field: keyof Clubs) => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setClubs({ ...clubs, [field]: "" });
+  };
+
+  const handleSaveBadgeSelection = (badges: Badge[]) => {
+    setSelectedBadges(badges);
   };
 
   if (loading) {
@@ -136,7 +175,14 @@ export default function ModifyLockerScreen() {
 
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.headerButton}>
+        <TouchableOpacity 
+          onPress={() => {
+            soundPlayer.play('click');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.back();
+          }} 
+          style={styles.headerButton}
+        >
           <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
         </TouchableOpacity>
 
@@ -167,7 +213,12 @@ export default function ModifyLockerScreen() {
                 <Text style={styles.label}>HOME COURSE</Text>
               </View>
               {homeCourse !== "" && (
-                <TouchableOpacity onPress={() => setHomeCourse("")}>
+                <TouchableOpacity 
+                  onPress={() => {
+                    soundPlayer.play('click');
+                    setHomeCourse("");
+                  }}
+                >
                   <Text style={styles.clearButton}>Clear</Text>
                 </TouchableOpacity>
               )}
@@ -189,7 +240,12 @@ export default function ModifyLockerScreen() {
                 <Text style={styles.label}>GAME IDENTITY</Text>
               </View>
               {gameIdentity !== "" && (
-                <TouchableOpacity onPress={() => setGameIdentity("")}>
+                <TouchableOpacity 
+                  onPress={() => {
+                    soundPlayer.play('click');
+                    setGameIdentity("");
+                  }}
+                >
                   <Text style={styles.clearButton}>Clear</Text>
                 </TouchableOpacity>
               )}
@@ -204,6 +260,54 @@ export default function ModifyLockerScreen() {
               maxLength={60}
             />
           </View>
+        </View>
+
+        {/* Divider */}
+        <View style={styles.divider} />
+
+        {/* Achievements Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Achievements</Text>
+          <Text style={styles.sectionSubtitle}>
+            Select up to 3 badges to display in your locker
+          </Text>
+
+          <TouchableOpacity
+            style={styles.selectBadgesButton}
+            onPress={() => {
+              soundPlayer.play('click');
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowBadgeModal(true);
+            }}
+          >
+            <View style={styles.selectBadgesContent}>
+              <Ionicons name="trophy" size={20} color="#0D5C3A" />
+              <Text style={styles.selectBadgesText}>
+                Select Your Achievements to Display
+              </Text>
+              <View style={styles.badgeCount}>
+                <Text style={styles.badgeCountText}>
+                  {selectedBadges.length}/3
+                </Text>
+              </View>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="#666" />
+          </TouchableOpacity>
+
+          {selectedBadges.length > 0 && (
+            <View style={styles.selectedBadgesPreview}>
+              <Text style={styles.previewLabel}>Currently Selected:</Text>
+              {selectedBadges.map((badge, index) => (
+                <View key={index} style={styles.previewBadge}>
+                  <Text style={styles.previewBadgeNumber}>{index + 1}.</Text>
+                  <Text style={styles.previewBadgeText}>
+                    {badge.displayName}
+                    {badge.courseName && ` • ${badge.courseName}`}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
 
         {/* Divider */}
@@ -331,6 +435,19 @@ export default function ModifyLockerScreen() {
           )}
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Badge Selection Modal */}
+      <BadgeSelectionModal
+        visible={showBadgeModal}
+        badges={allBadges}
+        selectedBadges={selectedBadges}
+        onClose={() => {
+          soundPlayer.play('click');
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          setShowBadgeModal(false);
+        }}
+        onSave={handleSaveBadgeSelection}
+      />
     </View>
   );
 }
@@ -436,6 +553,83 @@ const styles = StyleSheet.create({
     color: "#333",
     borderWidth: 2,
     borderColor: "#E0E0E0",
+  },
+
+  // ✅ Badge Selection Button
+  selectBadgesButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 2,
+    borderColor: "#0D5C3A",
+  },
+
+  selectBadgesContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+  },
+
+  selectBadgesText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#0D5C3A",
+    flex: 1,
+  },
+
+  badgeCount: {
+    backgroundColor: "#0D5C3A",
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+
+  badgeCountText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+
+  // ✅ Selected Badges Preview
+  selectedBadgesPreview: {
+    marginTop: 12,
+    backgroundColor: "#F0F7F4",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#0D5C3A",
+  },
+
+  previewLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#0D5C3A",
+    marginBottom: 8,
+    letterSpacing: 0.5,
+  },
+
+  previewBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 4,
+  },
+
+  previewBadgeNumber: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#0D5C3A",
+    marginRight: 8,
+    width: 20,
+  },
+
+  previewBadgeText: {
+    fontSize: 13,
+    color: "#333",
+    flex: 1,
   },
 
   saveButton: {

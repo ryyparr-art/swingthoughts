@@ -1,15 +1,13 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { initializeApp } from "firebase/app";
-import {
-  getAuth,
-  getReactNativePersistence,
-  initializeAuth
-} from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
-import { Platform } from "react-native";
+// constants/firebaseConfig.ts
 
-// Your web app's Firebase configuration
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Analytics, getAnalytics, isSupported } from "firebase/analytics";
+import { getApp, getApps, initializeApp } from "firebase/app";
+import { Auth, browserLocalPersistence, initializeAuth } from "firebase/auth";
+import { Firestore, getFirestore } from "firebase/firestore";
+import { FirebaseStorage, getStorage } from "firebase/storage";
+import { Platform } from 'react-native';
+
 const firebaseConfig = {
   apiKey: "AIzaSyBgnus2kERSsimt21ynAbGxAU0sUGrfodM",
   authDomain: "swing-thoughts-1807b.firebaseapp.com",
@@ -20,22 +18,36 @@ const firebaseConfig = {
   measurementId: "G-PYXW1L8LGQ"
 };
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
+// Prevent re-init during Fast Refresh
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
 // Initialize Auth with platform-specific persistence
-let auth;
+let auth: Auth;
+
 if (Platform.OS === 'web') {
-  auth = getAuth(app);
+  auth = initializeAuth(app, {
+    persistence: browserLocalPersistence
+  });
 } else {
+  // For React Native, use AsyncStorage via dynamic import
+  const getReactNativePersistence = require('firebase/auth/react-native').getReactNativePersistence;
   auth = initializeAuth(app, {
     persistence: getReactNativePersistence(AsyncStorage)
   });
 }
 
-// Initialize Firestore and Storage
-const db = getFirestore(app);
-const storage = getStorage(app);
+const db: Firestore = getFirestore(app);
+const storage: FirebaseStorage = getStorage(app);
 
-export { auth, db, storage };
+// Initialize Analytics (web only)
+let analytics: Analytics | null = null;
+if (typeof window !== 'undefined') {
+  isSupported().then((supported) => {
+    if (supported) {
+      analytics = getAnalytics(app);
+    }
+  });
+}
+
+export { analytics, auth, db, storage };
 

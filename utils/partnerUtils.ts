@@ -1,78 +1,24 @@
-import { auth, db } from "@/constants/firebaseConfig";
+import { db } from "@/constants/firebaseConfig";
+import { createNotification } from "@/utils/notificationHelpers";
 import {
-    addDoc,
-    collection,
-    deleteDoc,
-    doc,
-    getDocs,
-    query,
-    updateDoc,
-    where
+  addDoc,
+  arrayUnion,
+  collection,
+  doc,
+  getDocs,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
 } from "firebase/firestore";
 
-export interface PartnerRequest {
-  id: string;
-  fromUserId: string;
-  toUserId: string;
-  status: "pending" | "accepted" | "declined";
-  createdAt: any;
-}
-
-export interface Partner {
-  id: string;
-  user1Id: string;
-  user2Id: string;
-  createdAt: any;
-}
-
-// Send a partner request
-export const sendPartnerRequest = async (toUserId: string) => {
-  const fromUserId = auth.currentUser?.uid;
-  if (!fromUserId) throw new Error("Not authenticated");
-
-  // Check if request already exists
-  const existingRequest = await checkExistingRequest(fromUserId, toUserId);
-  if (existingRequest) {
-    throw new Error("Partner request already exists");
-  }
-
-  // Check if already partners
-  const alreadyPartners = await arePartnersAlready(fromUserId, toUserId);
-  if (alreadyPartners) {
-    throw new Error("Already partners");
-  }
-
-  await addDoc(collection(db, "partnerRequests"), {
-    fromUserId,
-    toUserId,
-    status: "pending",
-    createdAt: new Date(),
-  });
-};
-
-// Check if a request already exists between two users
-export const checkExistingRequest = async (userId1: string, userId2: string) => {
-  const q1 = query(
-    collection(db, "partnerRequests"),
-    where("fromUserId", "==", userId1),
-    where("toUserId", "==", userId2),
-    where("status", "==", "pending")
-  );
-
-  const q2 = query(
-    collection(db, "partnerRequests"),
-    where("fromUserId", "==", userId2),
-    where("toUserId", "==", userId1),
-    where("status", "==", "pending")
-  );
-
-  const [snapshot1, snapshot2] = await Promise.all([getDocs(q1), getDocs(q2)]);
-
-  return !snapshot1.empty || !snapshot2.empty;
-};
-
-// Check if two users are already partners
-export const arePartnersAlready = async (userId1: string, userId2: string) => {
+/**
+ * Check if two users are already partners
+ */
+export async function arePartnersAlready(
+  userId1: string,
+  userId2: string
+): Promise<boolean> {
   const q1 = query(
     collection(db, "partners"),
     where("user1Id", "==", userId1),
@@ -85,117 +31,157 @@ export const arePartnersAlready = async (userId1: string, userId2: string) => {
     where("user2Id", "==", userId1)
   );
 
-  const [snapshot1, snapshot2] = await Promise.all([getDocs(q1), getDocs(q2)]);
+  const [snap1, snap2] = await Promise.all([getDocs(q1), getDocs(q2)]);
 
-  return !snapshot1.empty || !snapshot2.empty;
-};
+  return !snap1.empty || !snap2.empty;
+}
 
-// Accept a partner request
-export const acceptPartnerRequest = async (requestId: string) => {
-  const requestRef = doc(db, "partnerRequests", requestId);
-  
-  // Get the request details
-  const requestQuery = query(
+/**
+ * Check if there's already a pending request between two users
+ * Returns information about the request direction
+ */
+export async function checkExistingRequest(
+  currentUserId: string,
+  otherUserId: string
+): Promise<{
+  exists: boolean;
+  status?: "pending" | "approved" | "rejected";
+  sentByMe?: boolean; // true if currentUser sent the request
+  sentToMe?: boolean; // true if currentUser received the request
+  requestId?: string;
+}> {
+  // Check if I sent a request to them
+  const q1 = query(
     collection(db, "partnerRequests"),
-    where("__name__", "==", requestId)
-  );
-  const requestSnapshot = await getDocs(requestQuery);
-  
-  if (requestSnapshot.empty) {
-    throw new Error("Request not found");
-  }
-
-  const requestData = requestSnapshot.docs[0].data() as PartnerRequest;
-
-  // Create partnership
-  await addDoc(collection(db, "partners"), {
-    user1Id: requestData.fromUserId,
-    user2Id: requestData.toUserId,
-    createdAt: new Date(),
-  });
-
-  // Update request status to accepted
-  await updateDoc(requestRef, {
-    status: "accepted",
-  });
-};
-
-// Decline a partner request
-export const declinePartnerRequest = async (requestId: string) => {
-  const requestRef = doc(db, "partnerRequests", requestId);
-  
-  await updateDoc(requestRef, {
-    status: "declined",
-  });
-};
-
-// Get all pending requests for current user
-export const getPendingRequests = async () => {
-  const userId = auth.currentUser?.uid;
-  if (!userId) return [];
-
-  const q = query(
-    collection(db, "partnerRequests"),
-    where("toUserId", "==", userId),
+    where("fromUserId", "==", currentUserId),
+    where("toUserId", "==", otherUserId),
     where("status", "==", "pending")
   );
 
-  const snapshot = await getDocs(q);
-  return snapshot.docs.map(doc => ({
-    id: doc.id,
-    ...doc.data()
-  })) as PartnerRequest[];
-};
-
-// Get all partners for current user
-export const getMyPartners = async () => {
-  const userId = auth.currentUser?.uid;
-  if (!userId) return [];
-
-  const q1 = query(
-    collection(db, "partners"),
-    where("user1Id", "==", userId)
-  );
-
+  // Check if they sent a request to me
   const q2 = query(
-    collection(db, "partners"),
-    where("user2Id", "==", userId)
+    collection(db, "partnerRequests"),
+    where("fromUserId", "==", otherUserId),
+    where("toUserId", "==", currentUserId),
+    where("status", "==", "pending")
   );
 
-  const [snapshot1, snapshot2] = await Promise.all([getDocs(q1), getDocs(q2)]);
+  const [snap1, snap2] = await Promise.all([getDocs(q1), getDocs(q2)]);
 
-  const partners: Partner[] = [];
-  
-  snapshot1.docs.forEach(doc => {
-    partners.push({
-      id: doc.id,
-      ...doc.data()
-    } as Partner);
-  });
+  if (!snap1.empty) {
+    return {
+      exists: true,
+      status: snap1.docs[0].data().status as "pending",
+      sentByMe: true,
+      sentToMe: false,
+      requestId: snap1.docs[0].id,
+    };
+  }
 
-  snapshot2.docs.forEach(doc => {
-    partners.push({
-      id: doc.id,
-      ...doc.data()
-    } as Partner);
-  });
+  if (!snap2.empty) {
+    return {
+      exists: true,
+      status: snap2.docs[0].data().status as "pending",
+      sentByMe: false,
+      sentToMe: true,
+      requestId: snap2.docs[0].id,
+    };
+  }
 
-  return partners;
-};
+  return { exists: false };
+}
 
-// Get partner user IDs (returns array of user IDs who are your partners)
-export const getPartnerUserIds = async () => {
-  const userId = auth.currentUser?.uid;
-  if (!userId) return [];
-
-  const partners = await getMyPartners();
-  
-  return partners.map(partner => 
-    partner.user1Id === userId ? partner.user2Id : partner.user1Id
+/**
+ * Accept a partner request
+ */
+export async function acceptPartnerRequest(
+  currentUserId: string,
+  otherUserId: string
+): Promise<void> {
+  // Find the request where otherUser sent to currentUser
+  const requestQuery = query(
+    collection(db, "partnerRequests"),
+    where("fromUserId", "==", otherUserId),
+    where("toUserId", "==", currentUserId),
+    where("status", "==", "pending")
   );
-};
+  
+  const requestSnap = await getDocs(requestQuery);
+  
+  if (requestSnap.empty) {
+    throw new Error("No partner request found");
+  }
+  
+  const requestDoc = requestSnap.docs[0];
+  
+  // Update request status to approved
+  await updateDoc(doc(db, "partnerRequests", requestDoc.id), {
+    status: "approved",
+  });
+  
+  // Create partnership record
+  await addDoc(collection(db, "partners"), {
+    user1Id: currentUserId,
+    user2Id: otherUserId,
+    createdAt: serverTimestamp(),
+  });
+  
+  // Add each user to the other's partners array
+  const currentUserRef = doc(db, "users", currentUserId);
+  const otherUserRef = doc(db, "users", otherUserId);
+  
+  await updateDoc(currentUserRef, {
+    partners: arrayUnion(otherUserId),
+  });
+  
+  await updateDoc(otherUserRef, {
+    partners: arrayUnion(currentUserId),
+  });
+  
+  // Create notification for the other user
+  await createNotification({
+    userId: otherUserId,
+    type: "partner_accepted",
+    actorId: currentUserId,
+  });
+}
 
-// Remove partnership
-export const removePartnership = async (partnerId: string) => {
-  await deleteDoc(doc(db, "partners", partnerId));
-};
+export async function sendPartnerRequest(
+  fromUserId: string,
+  toUserId: string
+): Promise<void> {
+  // Check if already partners
+  const alreadyPartners = await arePartnersAlready(fromUserId, toUserId);
+  if (alreadyPartners) {
+    throw new Error("You're already partners with this user");
+  }
+
+  // Check if request already exists
+  const existing = await checkExistingRequest(fromUserId, toUserId);
+  if (existing.exists) {
+    throw new Error("A partner request already exists between you");
+  }
+
+  // Create the partner request
+  await addDoc(collection(db, "partnerRequests"), {
+    fromUserId,
+    toUserId,
+    status: "pending",
+    createdAt: serverTimestamp(),
+  });
+
+  // Create notification for the recipient
+  console.log("📧 Creating partner request notification:", {
+    userId: toUserId,
+    type: "partner_request",
+    actorId: fromUserId,
+  });
+  
+  await createNotification({
+    userId: toUserId,
+    type: "partner_request",
+    actorId: fromUserId,
+  });
+  
+  console.log("✅ Partner request notification created successfully");
+}

@@ -1,42 +1,65 @@
 import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
 import { auth, db, storage } from "@/constants/firebaseConfig";
 import { POST_TYPES } from "@/constants/postTypes";
+import { createNotification } from "@/utils/notificationHelpers";
+import {
+  checkRateLimit,
+  EMAIL_VERIFICATION_MESSAGE,
+  getRateLimitMessage,
+  isEmailVerified,
+  updateRateLimitTimestamp
+} from "@/utils/rateLimitHelpers";
+import { soundPlayer } from "@/utils/soundPlayer";
 
+import Slider from "@react-native-community/slider";
+import { ResizeMode, Video } from "expo-av";
+import * as Haptics from "expo-haptics";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
-import { useRouter } from "expo-router";
-import { addDoc, collection, doc, getDoc, getDocs, query } from "firebase/firestore";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, updateDoc, where } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import React, { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
-  FlatList,
   Image,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
+import { Video as VideoCompressor } from "react-native-compressor";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 /* -------------------------------- UTILS -------------------------------- */
 
 function canWrite(userData: any): boolean {
   if (!userData) return false;
-  if (typeof userData.verified === "boolean") return userData.verified;
-  if (typeof userData.verificationStatus === "string") return userData.verificationStatus === "approved";
-  return !!userData.userType;
+  
+  // Golfers and Juniors only need to accept terms
+  if (userData.userType === "Golfer" || userData.userType === "Junior") {
+    return userData.acceptedTerms === true;
+  }
+  
+  // Courses and PGA Professionals need verification
+  if (userData.userType === "Course" || userData.userType === "PGA Professional") {
+    return userData.verified === true || userData.verification?.status === "approved";
+  }
+  
+  return false;
 }
 
 /* -------------------------------- CONFIG -------------------------------- */
 
 const MAX_CHARACTERS = 280;
-const MAX_PARTNERS = 5;
-const MAX_COURSES = 5;
+const MAX_VIDEO_DURATION = 30; // seconds
+const MAX_IMAGE_WIDTH = 1080; // Compress images to max 1080px width
+const IMAGE_QUALITY = 0.7; // JPEG quality
 
 /* -------------------------------- TYPES -------------------------------- */
 
@@ -64,32 +87,39 @@ interface GolfCourse {
 
 export default function CreateScreen() {
   const router = useRouter();
+  const { editId } = useLocalSearchParams();
 
   const [selectedType, setSelectedType] = useState("swing-thought");
   const [content, setContent] = useState("");
-  const [imageUri, setImageUri] = useState<string | null>(null);
+  const [mediaUri, setMediaUri] = useState<string | null>(null);
+  const [mediaType, setMediaType] = useState<"image" | "video" | null>(null);
   const [isPosting, setIsPosting] = useState(false);
+  const [isProcessingMedia, setIsProcessingMedia] = useState(false);
+
+  // Video trimming states
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [trimStart, setTrimStart] = useState(0);
+  const [trimEnd, setTrimEnd] = useState(30);
+  const [showVideoTrimmer, setShowVideoTrimmer] = useState(false);
+
+  const videoRef = useRef<Video>(null);
 
   const [userData, setUserData] = useState<any>(null);
   const writable = canWrite(userData);
-
-  const [taggedPartners, setTaggedPartners] = useState<Partner[]>([]);
-  const [taggedCourses, setTaggedCourses] = useState<Course[]>([]);
 
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [autocompleteType, setAutocompleteType] = useState<"partner" | "course" | null>(null);
   const [autocompleteResults, setAutocompleteResults] = useState<any[]>([]);
   const [currentMention, setCurrentMention] = useState("");
+  const [selectedMentions, setSelectedMentions] = useState<string[]>([]); // Track validated mentions
 
-  const [partnerModalVisible, setPartnerModalVisible] = useState(false);
-  const [courseModalVisible, setCourseModalVisible] = useState(false);
   const [allPartners, setAllPartners] = useState<Partner[]>([]);
-  const [courseSearchQuery, setCourseSearchQuery] = useState("");
-  const [courseSearchResults, setCourseSearchResults] = useState<any[]>([]);
-  const [loadingCourses, setLoadingCourses] = useState(false);
 
-  const debounceRef = useRef<NodeJS.Timeout | null>(null);
-  const courseDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  // Edit mode states
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editingPostId, setEditingPostId] = useState<string | null>(null);
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /* --------------------------- LOAD USER DATA --------------------------- */
 
@@ -104,7 +134,9 @@ export default function CreateScreen() {
         
         // Load user's partners
         const partners = snap.data()?.partners || [];
-        if (partners.length > 0) {
+        console.log("👥 Raw partners array:", partners);
+        
+        if (Array.isArray(partners) && partners.length > 0) {
           const partnerDocs = await Promise.all(
             partners.map((partnerId: string) => getDoc(doc(db, "users", partnerId)))
           );
@@ -116,13 +148,82 @@ export default function CreateScreen() {
               displayName: d.data()?.displayName || "Unknown",
             }));
           
+          console.log("✅ Loaded partners:", partnerList);
           setAllPartners(partnerList);
+        } else {
+          console.log("❌ No partners found in user document");
+          setAllPartners([]); // Set empty array
         }
       }
     };
 
     loadUser();
   }, []);
+
+  /* --------------------------- LOAD POST FOR EDITING --------------------------- */
+
+  useEffect(() => {
+    const loadPostForEdit = async () => {
+      if (!editId || typeof editId !== 'string') return;
+
+      try {
+        const postDoc = await getDoc(doc(db, "thoughts", editId));
+        if (!postDoc.exists()) {
+          soundPlayer.play('error');
+          Alert.alert("Error", "Post not found");
+          return;
+        }
+
+        const postData = postDoc.data();
+        
+        // Check if current user owns this post
+        if (postData.userId !== auth.currentUser?.uid) {
+          soundPlayer.play('error');
+          Alert.alert("Error", "You can only edit your own posts");
+          router.back();
+          return;
+        }
+
+        // Load post data into form
+        setIsEditMode(true);
+        setEditingPostId(editId);
+        setContent(postData.content || "");
+        setSelectedType(postData.postType || "swing-thought");
+        
+        // Load media
+        if (postData.imageUrl) {
+          setMediaUri(postData.imageUrl);
+          setMediaType("image");
+        } else if (postData.videoUrl) {
+          setMediaUri(postData.videoUrl);
+          setMediaType("video");
+        }
+        
+        // Populate selectedMentions from existing tags
+        const existingMentions: string[] = [];
+        
+        if (postData.taggedPartners) {
+          postData.taggedPartners.forEach((p: any) => {
+            existingMentions.push(`@${p.displayName}`);
+          });
+        }
+        
+        if (postData.taggedCourses) {
+          postData.taggedCourses.forEach((c: any) => {
+            existingMentions.push(`@${c.courseName}`);
+          });
+        }
+        
+        setSelectedMentions(existingMentions);
+      } catch (error) {
+        console.error("Error loading post:", error);
+        soundPlayer.play('error');
+        Alert.alert("Error", "Failed to load post");
+      }
+    };
+
+    loadPostForEdit();
+  }, [editId]);
 
   /* --------------------------- POST TYPES BY USER --------------------------- */
 
@@ -134,18 +235,182 @@ export default function CreateScreen() {
     return POST_TYPES.golfer;
   })();
 
-  /* --------------------------- IMAGE PICKER --------------------------- */
+  /* --------------------------- RENDER CONTENT WITH MENTIONS --------------------------- */
 
-  const pickImage = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [4, 3],
-      quality: 0.8,
+  const renderContentWithMentions = () => {
+    // Use regex to find all @mentions (any word or multi-word starting with @)
+    const mentionRegex = /@([\w\s]+?)(?=\s{2,}|$|@|\n)/g;
+    const parts: { text: string; isMention: boolean }[] = [];
+    let lastIndex = 0;
+    
+    let match;
+    while ((match = mentionRegex.exec(content)) !== null) {
+      // Add text before mention
+      if (match.index > lastIndex) {
+        parts.push({ text: content.slice(lastIndex, match.index), isMention: false });
+      }
+      
+      const mentionText = match[0].trim(); // Includes the @, trimmed
+      
+      // Only style if this mention was selected from autocomplete
+      const isValidMention = selectedMentions.includes(mentionText);
+      
+      parts.push({ text: match[0], isMention: isValidMention });
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Add remaining text
+    if (lastIndex < content.length) {
+      parts.push({ text: content.slice(lastIndex), isMention: false });
+    }
+    
+    return parts.map((part, index) => {
+      if (part.isMention) {
+        return (
+          <Text key={index} style={styles.mentionText}>
+            {part.text}
+          </Text>
+        );
+      }
+      
+      return <Text key={index}>{part.text}</Text>;
     });
+  };
 
-    if (!result.canceled && result.assets[0]) {
-      setImageUri(result.assets[0].uri);
+  /* --------------------------- IMAGE COMPRESSION --------------------------- */
+
+  const compressImage = async (uri: string): Promise<string> => {
+    try {
+      console.log("🖼️ Compressing image...");
+      const manipResult = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ resize: { width: MAX_IMAGE_WIDTH } }],
+        { compress: IMAGE_QUALITY, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      console.log("✅ Image compressed");
+      return manipResult.uri;
+    } catch (error) {
+      console.error("Image compression error:", error);
+      soundPlayer.play('error');
+      return uri; // Return original if compression fails
+    }
+  };
+
+  /* --------------------------- VIDEO COMPRESSION --------------------------- */
+
+  const compressVideo = async (uri: string): Promise<string> => {
+    try {
+      console.log("🎥 Compressing video...");
+      const compressedUri = await VideoCompressor.compress(
+        uri,
+        {
+          compressionMethod: 'auto',
+          maxSize: 1080, // Max 1080p
+          bitrate: 2000000, // 2 Mbps
+        },
+        (progress) => {
+          console.log(`📊 Compression progress: ${(progress * 100).toFixed(0)}%`);
+        }
+      );
+      console.log("✅ Video compressed");
+      return compressedUri;
+    } catch (error) {
+      console.error("Video compression error:", error);
+      soundPlayer.play('error');
+      return uri; // Return original if compression fails
+    }
+  };
+
+  /* --------------------------- MEDIA PICKER --------------------------- */
+
+  const pickMedia = async (type: "image" | "video") => {
+    try {
+      // Play click sound for media selection
+      soundPlayer.play('click');
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      // ✅ REQUEST PERMISSIONS FIRST
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      
+      if (status !== 'granted') {
+        soundPlayer.play('error');
+        Alert.alert(
+          'Permission Required',
+          'Please allow photo library access in your device settings to upload media.',
+          [
+            { 
+              text: 'Cancel', 
+              style: 'cancel',
+              onPress: () => {
+                soundPlayer.play('click');
+              }
+            },
+            { 
+              text: 'Open Settings', 
+              onPress: () => {
+                soundPlayer.play('click');
+                // On iOS, this will open app settings
+                if (Platform.OS === 'ios') {
+                  // Linking.openURL('app-settings:');
+                }
+              }
+            }
+          ]
+        );
+        return;
+      }
+
+      setIsProcessingMedia(true);
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: type === "image" 
+          ? ["images"]
+          : ["videos"],
+        allowsEditing: type === "image",
+        aspect: type === "image" ? [4, 3] : undefined,
+        quality: 0.8,
+        videoMaxDuration: 60, // Allow up to 60s for trimming
+      });
+
+      if (!result.canceled && result.assets[0]) {
+        const asset = result.assets[0];
+
+        if (type === "image") {
+          // Compress image
+          const compressedUri = await compressImage(asset.uri);
+          setMediaUri(compressedUri);
+          setMediaType("image");
+          setIsProcessingMedia(false);
+        } else {
+          // Compress video
+          const compressedUri = await compressVideo(asset.uri);
+          const duration = asset.duration || 0;
+          
+          setVideoDuration(duration / 1000); // Convert to seconds
+          setMediaUri(compressedUri);
+          setMediaType("video");
+
+          if (duration / 1000 > MAX_VIDEO_DURATION) {
+            // Show trimmer if video is longer than 30s
+            setTrimStart(0);
+            setTrimEnd(MAX_VIDEO_DURATION);
+            setShowVideoTrimmer(true);
+          } else {
+            setTrimStart(0);
+            setTrimEnd(duration / 1000);
+            setShowVideoTrimmer(false);
+          }
+          
+          setIsProcessingMedia(false);
+        }
+      } else {
+        setIsProcessingMedia(false);
+      }
+    } catch (error) {
+      console.error("Media picker error:", error);
+      soundPlayer.play('error');
+      Alert.alert("Error", "Failed to select media. Please try again.");
+      setIsProcessingMedia(false);
     }
   };
 
@@ -153,6 +418,14 @@ export default function CreateScreen() {
 
   const handleContentChange = (text: string) => {
     setContent(text);
+
+    // Clean up selectedMentions - remove any that are no longer in the content
+    const cleanedMentions = selectedMentions.filter((mention) => 
+      text.includes(mention)
+    );
+    if (cleanedMentions.length !== selectedMentions.length) {
+      setSelectedMentions(cleanedMentions);
+    }
 
     // Detect @ mention
     const lastAtIndex = text.lastIndexOf("@");
@@ -164,21 +437,21 @@ export default function CreateScreen() {
     // Get text after last @
     const afterAt = text.slice(lastAtIndex + 1);
     
-    // Check if there's a space after @ (mention ended)
-    if (afterAt.includes(" ")) {
+    // Close autocomplete if user types double space (end of mention)
+    if (afterAt.endsWith("  ") || afterAt.includes("\n")) {
       setShowAutocomplete(false);
       return;
     }
-
+    
     setCurrentMention(afterAt);
 
-    // Debounce search
+    // Debounce search - trigger after 1 character now
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
     }
 
     debounceRef.current = setTimeout(() => {
-      if (afterAt.length >= 2) {
+      if (afterAt.length >= 1) {
         searchMentions(afterAt);
       }
     }, 300);
@@ -186,22 +459,50 @@ export default function CreateScreen() {
 
   const searchMentions = async (searchText: string) => {
     try {
-      // Search partners first
+      // Search partners
       const partnerResults = allPartners.filter((p) =>
         p.displayName.toLowerCase().includes(searchText.toLowerCase())
       );
 
-      if (partnerResults.length > 0) {
-        setAutocompleteType("partner");
-        setAutocompleteResults(partnerResults);
+      // Search cached courses
+      const coursesQuery = query(collection(db, "courses"));
+      const coursesSnap = await getDocs(coursesQuery);
+      
+      const courseResults: any[] = [];
+      coursesSnap.forEach((doc) => {
+        const data = doc.data();
+        const courseName = data.course_name || data.courseName || "";
+        
+        if (courseName.toLowerCase().includes(searchText.toLowerCase())) {
+          courseResults.push({
+            courseId: data.id,
+            courseName: courseName,
+            location: data.location 
+              ? `${data.location.city}, ${data.location.state}`
+              : "",
+            type: "course",
+          });
+        }
+      });
+
+      // If we have both, show partners first, then courses
+      if (partnerResults.length > 0 || courseResults.length > 0) {
+        const combined = [
+          ...partnerResults.map((p) => ({ ...p, type: "partner" })),
+          ...courseResults,
+        ];
+        setAutocompleteResults(combined);
         setShowAutocomplete(true);
         return;
       }
 
-      // If no partners match, search courses
-      searchCoursesAutocomplete(searchText);
+      // If no cached courses, try API
+      if (courseResults.length === 0) {
+        searchCoursesAutocomplete(searchText);
+      }
     } catch (err) {
       console.error("Search error:", err);
+      soundPlayer.play('error');
     }
   };
 
@@ -258,196 +559,155 @@ export default function CreateScreen() {
             courseId: c.id,
             courseName: c.course_name,
             location: `${c.location.city}, ${c.location.state}`,
+            type: "course",
           }))
         );
         setShowAutocomplete(true);
       }
     } catch (err) {
       console.error("Course search error:", err);
+      soundPlayer.play('error');
     }
   };
 
-  const handleSelectMention = (item: any) => {
-    if (autocompleteType === "partner") {
-      if (taggedPartners.length >= MAX_PARTNERS) {
-        Alert.alert("Limit Reached", `You can only tag up to ${MAX_PARTNERS} partners per post.`);
-        return;
-      }
+  const handleSelectMention = async (item: any) => {
+    // Play click sound for mention selection
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-      if (taggedPartners.find((p) => p.userId === item.userId)) {
-        setShowAutocomplete(false);
-        return;
-      }
-
-      const lastAtIndex = content.lastIndexOf("@");
-      const beforeAt = content.slice(0, lastAtIndex);
-      const afterMention = content.slice(lastAtIndex + 1 + currentMention.length);
+    const lastAtIndex = content.lastIndexOf("@");
+    const beforeAt = content.slice(0, lastAtIndex);
+    const afterMention = content.slice(lastAtIndex + 1 + currentMention.length);
+    
+    let mentionText = "";
+    
+    if (item.type === "partner") {
+      // Insert partner displayName with @ (keeping spaces)
+      mentionText = `@${item.displayName}`;
+      setContent(`${beforeAt}${mentionText} ${afterMention}`);
+    } else if (item.type === "course") {
+      // Insert course name with @ (keeping spaces)
+      mentionText = `@${item.courseName}`;
+      setContent(`${beforeAt}${mentionText} ${afterMention}`);
       
-      setContent(`${beforeAt}@${item.displayName}${afterMention}`);
-      setTaggedPartners([...taggedPartners, { userId: item.userId, displayName: item.displayName }]);
-    } else if (autocompleteType === "course") {
-      if (taggedCourses.length >= MAX_COURSES) {
-        Alert.alert("Limit Reached", `You can only tag up to ${MAX_COURSES} courses per post.`);
-        return;
+      // Save course to Firestore if it doesn't exist yet
+      try {
+        const courseQuery = query(
+          collection(db, "courses"),
+          where("id", "==", item.courseId)
+        );
+        const courseSnap = await getDocs(courseQuery);
+        
+        if (courseSnap.empty) {
+          // Course doesn't exist in Firestore, add it
+          await addDoc(collection(db, "courses"), {
+            id: item.courseId,
+            course_name: item.courseName,
+            location: item.location ? {
+              city: item.location.split(", ")[0],
+              state: item.location.split(", ")[1]
+            } : null,
+          });
+          console.log("✅ Saved new course to Firestore:", item.courseName);
+        }
+      } catch (err) {
+        console.error("Error saving course to Firestore:", err);
+        soundPlayer.play('error');
       }
+    }
 
-      if (taggedCourses.find((c) => c.courseId === item.courseId)) {
-        setShowAutocomplete(false);
-        return;
-      }
-
-      const lastAtIndex = content.lastIndexOf("@");
-      const beforeAt = content.slice(0, lastAtIndex);
-      const afterMention = content.slice(lastAtIndex + 1 + currentMention.length);
-      
-      const courseTag = item.courseName.replace(/\s+/g, "");
-      
-      setContent(`${beforeAt}@${courseTag}${afterMention}`);
-      setTaggedCourses([...taggedCourses, { courseId: item.courseId, courseName: item.courseName }]);
+    // Add to validated mentions list
+    if (mentionText && !selectedMentions.includes(mentionText)) {
+      setSelectedMentions([...selectedMentions, mentionText]);
     }
 
     setShowAutocomplete(false);
   };
 
-  /* --------------------------- PARTNER MODAL --------------------------- */
+  /* --------------------------- DELETE POST ---------------------------- */
 
-  const handleOpenPartnerModal = () => {
-    if (allPartners.length === 0) {
-      Alert.alert("No Partners", "You haven't partnered up with anyone yet.");
-      return;
-    }
-    setPartnerModalVisible(true);
-  };
+  const handleDelete = async () => {
+    if (!editingPostId) return;
 
-  const handleSelectPartner = (partner: Partner) => {
-    if (taggedPartners.length >= MAX_PARTNERS) {
-      Alert.alert("Limit Reached", `You can only tag up to ${MAX_PARTNERS} partners per post.`);
-      return;
-    }
+    // Play click sound for delete button
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-    if (taggedPartners.find((p) => p.userId === partner.userId)) {
-      Alert.alert("Already Tagged", `@${partner.displayName} is already tagged.`);
-      return;
-    }
+    const confirmDelete = async () => {
+      if (Platform.OS === "web") {
+        return window.confirm("Delete this post permanently?");
+      } else {
+        return new Promise<boolean>((resolve) => {
+          Alert.alert(
+            "Delete Post",
+            "Are you sure you want to delete this post? This cannot be undone.",
+            [
+              { 
+                text: "Cancel", 
+                style: "cancel", 
+                onPress: () => {
+                  soundPlayer.play('click');
+                  resolve(false);
+                }
+              },
+              { 
+                text: "Delete", 
+                style: "destructive", 
+                onPress: () => {
+                  soundPlayer.play('error');
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  resolve(true);
+                }
+              },
+            ]
+          );
+        });
+      }
+    };
 
-    setTaggedPartners([...taggedPartners, partner]);
-    setPartnerModalVisible(false);
-  };
+    const shouldDelete = await confirmDelete();
+    if (!shouldDelete) return;
 
-  /* --------------------------- COURSE MODAL --------------------------- */
-
-  const handleCourseSearchChange = (text: string) => {
-    setCourseSearchQuery(text);
-
-    if (courseDebounceRef.current) {
-      clearTimeout(courseDebounceRef.current);
-    }
-
-    if (!text.trim()) {
-      setCourseSearchResults([]);
-      return;
-    }
-
-    courseDebounceRef.current = setTimeout(() => {
-      searchCoursesModal(text);
-    }, 300);
-  };
-
-  const searchCoursesModal = async (searchText: string) => {
     try {
-      setLoadingCourses(true);
-
-      // Search cached courses first
-      const coursesQuery = query(collection(db, "courses"));
-      const coursesSnap = await getDocs(coursesQuery);
-      
-      const cachedCourses: any[] = [];
-      coursesSnap.forEach((doc) => {
-        const data = doc.data();
-        const courseName = data.course_name || data.courseName || "";
-        
-        if (courseName.toLowerCase().includes(searchText.toLowerCase())) {
-          cachedCourses.push({
-            courseId: data.id,
-            courseName: courseName,
-            location: data.location 
-              ? `${data.location.city}, ${data.location.state}`
-              : "",
-          });
-        }
-      });
-
-      if (cachedCourses.length > 0) {
-        setCourseSearchResults(cachedCourses);
-        setLoadingCourses(false);
-        return;
-      }
-
-      // Fall back to API
-      const res = await fetch(
-        `${GOLF_COURSE_API_URL}/search?search_query=${encodeURIComponent(searchText)}`,
-        {
-          method: "GET",
-          headers: {
-            Authorization: `Key ${GOLF_COURSE_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      if (!res.ok) {
-        setLoadingCourses(false);
-        return;
-      }
-
-      const data = await res.json();
-      const courses: GolfCourse[] = data.courses || [];
-
-      setCourseSearchResults(
-        courses.map((c) => ({
-          courseId: c.id,
-          courseName: c.course_name,
-          location: `${c.location.city}, ${c.location.state}`,
-        }))
-      );
-      setLoadingCourses(false);
+      setIsPosting(true);
+      await deleteDoc(doc(db, "thoughts", editingPostId));
+      Alert.alert("Deleted 🗑️", "Your thought has been deleted.");
+      router.back();
     } catch (err) {
-      console.error("Course search error:", err);
-      setLoadingCourses(false);
+      console.error("Delete error:", err);
+      soundPlayer.play('error');
+      Alert.alert("Error", "Failed to delete post. Please try again.");
+      setIsPosting(false);
     }
-  };
-
-  const handleSelectCourse = (course: { courseId: number; courseName: string }) => {
-    if (taggedCourses.length >= MAX_COURSES) {
-      Alert.alert("Limit Reached", `You can only tag up to ${MAX_COURSES} courses per post.`);
-      return;
-    }
-
-    if (taggedCourses.find((c) => c.courseId === course.courseId)) {
-      Alert.alert("Already Tagged", `@${course.courseName} is already tagged.`);
-      return;
-    }
-
-    setTaggedCourses([...taggedCourses, course]);
-    setCourseModalVisible(false);
-    setCourseSearchQuery("");
-    setCourseSearchResults([]);
-  };
-
-  /* --------------------------- REMOVE TAGS --------------------------- */
-
-  const removePartner = (userId: string) => {
-    setTaggedPartners(taggedPartners.filter((p) => p.userId !== userId));
-  };
-
-  const removeCourse = (courseId: number) => {
-    setTaggedCourses(taggedCourses.filter((c) => c.courseId !== courseId));
   };
 
   /* --------------------------- POST HANDLING ---------------------------- */
 
   const handlePost = async () => {
+    // Play click sound for post button
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    // ✅ ANTI-BOT CHECK 1: Email Verification
+    if (!isEmailVerified()) {
+      soundPlayer.play('error');
+      Alert.alert("Email Not Verified", EMAIL_VERIFICATION_MESSAGE);
+      return;
+    }
+
+    // ✅ ANTI-BOT CHECK 2: Rate Limiting (skip for edit mode)
+    if (!isEditMode) {
+      const { allowed, remainingSeconds } = await checkRateLimit("post");
+      if (!allowed) {
+        soundPlayer.play('error');
+        Alert.alert("Please Wait", getRateLimitMessage("post", remainingSeconds));
+        return;
+      }
+    }
+
+    // Existing checks
     if (!writable) {
+      soundPlayer.play('error');
       Alert.alert(
         "Verification Pending",
         "Posting unlocks once your account is verified."
@@ -456,6 +716,7 @@ export default function CreateScreen() {
     }
 
     if (!content.trim()) {
+      soundPlayer.play('error');
       Alert.alert("Empty Post", "Please add some content.");
       return;
     }
@@ -463,43 +724,163 @@ export default function CreateScreen() {
     setIsPosting(true);
 
     try {
-      let imageUrl = null;
+      let uploadedMediaUrl = mediaUri; // Keep existing URL if not changed
+      let mediaUrlField: "imageUrl" | "videoUrl" | null = null;
 
-      if (imageUri) {
-        const response = await fetch(imageUri);
+      // Only upload new media if mediaUri is a local file (starts with file://)
+      if (mediaUri && mediaUri.startsWith('file://')) {
+        const response = await fetch(mediaUri);
         const blob = await response.blob();
-        const path = `posts/${auth.currentUser?.uid}/${Date.now()}.jpg`;
+        
+        const fileExtension = mediaType === "video" ? "mp4" : "jpg";
+        const path = `posts/${auth.currentUser?.uid}/${Date.now()}.${fileExtension}`;
         const storageRef = ref(storage, path);
 
         await uploadBytes(storageRef, blob);
-        imageUrl = await getDownloadURL(storageRef);
+        uploadedMediaUrl = await getDownloadURL(storageRef);
+        
+        mediaUrlField = mediaType === "video" ? "videoUrl" : "imageUrl";
+        console.log(`✅ Uploaded ${mediaType} to:`, uploadedMediaUrl);
+      } else if (mediaUri) {
+        // Existing media URL from edit mode
+        mediaUrlField = mediaType === "video" ? "videoUrl" : "imageUrl";
       }
 
-      await addDoc(collection(db, "thoughts"), {
-        thoughtId: `thought_${Date.now()}`,
-        userId: auth.currentUser?.uid,
-        userType: userData?.userType,
+      // Extract @mentions from content using same regex as rendering
+      const mentionRegex = /@([\w\s]+?)(?=\s{2,}|$|@|\n)/g;
+      const mentions = content.match(mentionRegex) || [];
+      
+      console.log("🔍 Extracted mentions from content:", mentions);
+      
+      const extractedPartners: Partner[] = [];
+      const extractedCourses: Course[] = [];
+      
+      // Match mentions against partners and courses
+      for (const mention of mentions) {
+        const mentionText = mention.substring(1).trim(); // Remove @ and trim
+        
+        console.log("🔎 Checking mention:", mentionText);
+        
+        // Check if it's a partner
+        const matchedPartner = allPartners.find(
+          (p) => p.displayName.toLowerCase() === mentionText.toLowerCase()
+        );
+        
+        if (matchedPartner && !extractedPartners.find((p) => p.userId === matchedPartner.userId)) {
+          console.log("✅ Matched partner:", matchedPartner.displayName);
+          extractedPartners.push(matchedPartner);
+          continue;
+        }
+        
+        // Check if it's a course (from cached courses)
+        try {
+          const coursesQuery = query(collection(db, "courses"));
+          const coursesSnap = await getDocs(coursesQuery);
+          
+          let foundCourse = false;
+          coursesSnap.forEach((doc) => {
+            const data = doc.data();
+            const courseName = data.course_name || data.courseName || "";
+            
+            console.log("📍 Comparing with course:", courseName);
+            
+            if (courseName.toLowerCase() === mentionText.toLowerCase() &&
+                !extractedCourses.find((c) => c.courseId === data.id)) {
+              console.log("✅ Matched course:", courseName);
+              extractedCourses.push({
+                courseId: data.id,
+                courseName: courseName,
+              });
+              foundCourse = true;
+            }
+          });
+          
+          if (!foundCourse) {
+            console.log("❌ No course match found for:", mentionText);
+          }
+        } catch (err) {
+          console.error("Error matching course mentions:", err);
+        }
+      }
+      
+      console.log("📦 Final extracted partners:", extractedPartners);
+      console.log("📦 Final extracted courses:", extractedCourses);
+
+      const postData: any = {
         content: content.trim(),
         postType: selectedType,
-        imageUrl,
-        taggedPartners: taggedPartners.map((p) => ({
+        taggedPartners: extractedPartners.map((p) => ({
           userId: p.userId,
           displayName: p.displayName,
         })),
-        taggedCourses: taggedCourses.map((c) => ({
+        taggedCourses: extractedCourses.map((c) => ({
           courseId: c.courseId,
           courseName: c.courseName,
         })),
-        createdAt: new Date(),
-        likes: 0,
-        likedBy: [],
-        comments: 0,
-      });
+      };
 
-      Alert.alert("Tee'd Up ⛳️", "Your thought has been published.");
+      // Add media URL to appropriate field
+      if (mediaUrlField === "imageUrl") {
+        postData.imageUrl = uploadedMediaUrl;
+        postData.videoUrl = null; // Clear video if switching to image
+      } else if (mediaUrlField === "videoUrl") {
+        postData.videoUrl = uploadedMediaUrl;
+        postData.imageUrl = null; // Clear image if switching to video
+        
+        // Add video metadata
+        postData.videoDuration = trimEnd - trimStart;
+        postData.videoTrimStart = trimStart;
+        postData.videoTrimEnd = trimEnd;
+      } else {
+        // No media
+        postData.imageUrl = null;
+        postData.videoUrl = null;
+      }
+
+      if (isEditMode && editingPostId) {
+        // UPDATE existing post
+        await updateDoc(doc(db, "thoughts", editingPostId), postData);
+        soundPlayer.play('postThought');
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        Alert.alert("Updated ✏️", "Your thought has been updated.");
+      } else {
+        // CREATE new post
+        const newPostRef = await addDoc(collection(db, "thoughts"), {
+          thoughtId: `thought_${Date.now()}`,
+          userId: auth.currentUser?.uid,
+          userType: userData?.userType,
+          ...postData,
+          createdAt: new Date(),
+          likes: 0,
+          likedBy: [],
+          comments: 0,
+        });
+
+        // ✅ ANTI-BOT: Update rate limit timestamp
+        await updateRateLimitTimestamp("post");
+
+        // Create mention notifications for tagged partners
+        const currentUserId = auth.currentUser?.uid;
+        if (extractedPartners.length > 0 && currentUserId) {
+          extractedPartners.forEach(async (partner) => {
+            await createNotification({
+              userId: partner.userId,
+              type: "mention_post",
+              actorId: currentUserId,
+              postId: newPostRef.id,
+            });
+          });
+        }
+
+        soundPlayer.play('postThought');
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        Alert.alert("Tee'd Up ⛳️", "Your thought has been published.");
+      }
+
       router.back();
     } catch (err) {
       console.error("Post error:", err);
+      soundPlayer.play('error');
       Alert.alert("Error", "Failed to post. Please try again.");
       setIsPosting(false);
     }
@@ -515,7 +896,14 @@ export default function CreateScreen() {
       >
         {/* HEADER */}
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.closeButton}>
+          <TouchableOpacity 
+            onPress={() => {
+              soundPlayer.play('click');
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.back();
+            }} 
+            style={styles.closeButton}
+          >
             <Image
               source={require("@/assets/icons/Close.png")}
               style={styles.closeIcon}
@@ -523,18 +911,34 @@ export default function CreateScreen() {
             />
           </TouchableOpacity>
 
-          <Text style={styles.headerTitle}>Create Thought</Text>
+          <Text style={styles.headerTitle}>
+            {isEditMode ? "Edit Thought" : "Create Thought"}
+          </Text>
 
-          <TouchableOpacity
-            onPress={handlePost}
-            disabled={!writable || isPosting}
-            style={[
-              styles.postButton,
-              (!writable || isPosting) && styles.postButtonDisabled,
-            ]}
-          >
-            <Text style={styles.flagIcon}>⛳</Text>
-          </TouchableOpacity>
+          <View style={styles.headerRightButtons}>
+            {/* Delete button (only in edit mode) */}
+            {isEditMode && (
+              <TouchableOpacity
+                onPress={handleDelete}
+                disabled={isPosting}
+                style={styles.deleteButton}
+              >
+                <Text style={styles.deleteIcon}>🗑️</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Submit button */}
+            <TouchableOpacity
+              onPress={handlePost}
+              disabled={!writable || isPosting}
+              style={[
+                styles.postButton,
+                (!writable || isPosting) && styles.postButtonDisabled,
+              ]}
+            >
+              <Text style={styles.flagIcon}>{isEditMode ? "✏️" : "⛳"}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* LOCK BANNER */}
@@ -547,31 +951,123 @@ export default function CreateScreen() {
         )}
 
         <ScrollView style={styles.content} keyboardShouldPersistTaps="handled">
-          {/* IMAGE PREVIEW (ALWAYS VISIBLE) */}
+          {/* MEDIA PREVIEW */}
           <View style={styles.section}>
-            <TouchableOpacity
-              style={styles.imagePreviewBox}
-              onPress={pickImage}
-              disabled={!writable}
-            >
-              {imageUri ? (
-                <Image source={{ uri: imageUri }} style={styles.imagePreview} />
-              ) : (
-                <View style={styles.imagePlaceholder}>
-                  <Text style={styles.imagePlaceholderIcon}>📸</Text>
-                  <Text style={styles.imagePlaceholderText}>Add Image</Text>
-                  <Text style={styles.imagePlaceholderHint}>Thoughts with images get 3x more engagement</Text>
+            {isProcessingMedia ? (
+              <View style={styles.mediaPreviewBox}>
+                <ActivityIndicator size="large" color="#0D5C3A" />
+                <Text style={styles.processingText}>Compressing media...</Text>
+              </View>
+            ) : mediaUri ? (
+              <View>
+                <View style={styles.mediaPreviewBox}>
+                  {mediaType === "image" ? (
+                    <Image source={{ uri: mediaUri }} style={styles.mediaPreview} />
+                  ) : (
+                    <Video
+                      ref={videoRef}
+                      source={{ uri: mediaUri }}
+                      style={styles.mediaPreview}
+                      resizeMode={ResizeMode.COVER}
+                      shouldPlay
+                      isLooping
+                      isMuted
+                    />
+                  )}
                 </View>
-              )}
-            </TouchableOpacity>
-            
-            {imageUri && (
-              <TouchableOpacity
-                style={styles.removeImageButton}
-                onPress={() => setImageUri(null)}
-              >
-                <Text style={styles.removeImageText}>✕ Remove Image</Text>
-              </TouchableOpacity>
+
+                {/* Video Trimmer */}
+                {mediaType === "video" && showVideoTrimmer && (
+                  <View style={styles.videoTrimmer}>
+                    <Text style={styles.trimmerLabel}>
+                      Trim Video: {trimStart.toFixed(1)}s - {trimEnd.toFixed(1)}s 
+                      ({(trimEnd - trimStart).toFixed(1)}s clip)
+                    </Text>
+                    
+                    <View style={styles.sliderContainer}>
+                      <Text style={styles.sliderLabel}>Start</Text>
+                      <Slider
+                        style={styles.slider}
+                        minimumValue={0}
+                        maximumValue={Math.max(0, videoDuration - 1)}
+                        value={trimStart}
+                        onValueChange={(value) => {
+                          setTrimStart(value);
+                          if (trimEnd - value > MAX_VIDEO_DURATION) {
+                            setTrimEnd(value + MAX_VIDEO_DURATION);
+                          }
+                        }}
+                        minimumTrackTintColor="#0D5C3A"
+                        maximumTrackTintColor="#E0E0E0"
+                        thumbTintColor="#0D5C3A"
+                      />
+                      <Text style={styles.sliderValue}>{trimStart.toFixed(1)}s</Text>
+                    </View>
+
+                    <View style={styles.sliderContainer}>
+                      <Text style={styles.sliderLabel}>End</Text>
+                      <Slider
+                        style={styles.slider}
+                        minimumValue={trimStart + 1}
+                        maximumValue={Math.min(videoDuration, trimStart + MAX_VIDEO_DURATION)}
+                        value={trimEnd}
+                        onValueChange={setTrimEnd}
+                        minimumTrackTintColor="#0D5C3A"
+                        maximumTrackTintColor="#E0E0E0"
+                        thumbTintColor="#0D5C3A"
+                      />
+                      <Text style={styles.sliderValue}>{trimEnd.toFixed(1)}s</Text>
+                    </View>
+                  </View>
+                )}
+
+                {/* Media Type Toggle & Remove Button */}
+                <View style={styles.mediaActions}>
+                  <TouchableOpacity
+                    style={styles.changeMediaButton}
+                    onPress={() => pickMedia(mediaType === "image" ? "video" : "image")}
+                  >
+                    <Text style={styles.changeMediaText}>
+                      Switch to {mediaType === "image" ? "Video 🎥" : "Image 📸"}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.removeMediaButton}
+                    onPress={() => {
+                      soundPlayer.play('click');
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setMediaUri(null);
+                      setMediaType(null);
+                      setShowVideoTrimmer(false);
+                    }}
+                  >
+                    <Text style={styles.removeMediaText}>✕ Remove</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.mediaPickerButtons}>
+                <TouchableOpacity
+                  style={styles.mediaPickerButton}
+                  onPress={() => pickMedia("image")}
+                  disabled={!writable}
+                >
+                  <Text style={styles.mediaPickerIcon}>📸</Text>
+                  <Text style={styles.mediaPickerText}>Add Image</Text>
+                  <Text style={styles.mediaPickerHint}>Photos get 3x more likes</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.mediaPickerButton}
+                  onPress={() => pickMedia("video")}
+                  disabled={!writable}
+                >
+                  <Text style={styles.mediaPickerIcon}>🎥</Text>
+                  <Text style={styles.mediaPickerText}>Add Video</Text>
+                  <Text style={styles.mediaPickerHint}>Up to 30 seconds</Text>
+                </TouchableOpacity>
+              </View>
             )}
           </View>
 
@@ -586,7 +1082,11 @@ export default function CreateScreen() {
                     styles.typeCard,
                     selectedType === type.id && styles.typeCardActive,
                   ]}
-                  onPress={() => setSelectedType(type.id)}
+                  onPress={() => {
+                    soundPlayer.play('click');
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setSelectedType(type.id);
+                  }}
                 >
                   <Text
                     style={[
@@ -603,199 +1103,62 @@ export default function CreateScreen() {
 
           {/* CONTENT INPUT */}
           <View style={styles.section}>
-            <TextInput
-              style={styles.textInput}
-              placeholder="What clicked for you today?"
-              placeholderTextColor="#999"
-              multiline
-              maxLength={MAX_CHARACTERS}
-              value={content}
-              onChangeText={handleContentChange}
-              editable={writable}
-            />
+            <View style={styles.textInputContainer}>
+              {/* Invisible TextInput for actual input */}
+              <TextInput
+                style={[styles.textInput, content && styles.textInputWithContent]}
+                placeholder="What clicked for you today?"
+                placeholderTextColor="#999"
+                multiline
+                maxLength={MAX_CHARACTERS}
+                value={content}
+                onChangeText={handleContentChange}
+                editable={writable}
+              />
+              
+              {/* Styled text overlay to show mentions */}
+              {content && (
+                <View style={styles.textOverlay} pointerEvents="none">
+                  <Text style={styles.overlayText}>
+                    {renderContentWithMentions()}
+                  </Text>
+                </View>
+              )}
+            </View>
+            
             <Text style={styles.charCount}>{content.length}/{MAX_CHARACTERS}</Text>
 
             {/* AUTOCOMPLETE DROPDOWN */}
-            {showAutocomplete && (
+            {showAutocomplete && autocompleteResults.length > 0 && (
               <View style={styles.autocompleteContainer}>
-                <FlatList
-                  data={autocompleteResults}
-                  keyExtractor={(item, idx) => `${item.userId || item.courseId}-${idx}`}
-                  scrollEnabled={false}
-                  renderItem={({ item }) => (
+                <ScrollView 
+                  style={styles.autocompleteScrollView}
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {autocompleteResults.map((item, idx) => (
                     <TouchableOpacity
+                      key={`${item.userId || item.courseId}-${idx}`}
                       style={styles.autocompleteItem}
                       onPress={() => handleSelectMention(item)}
                     >
                       <Text style={styles.autocompleteName}>
-                        {autocompleteType === "partner"
+                        {item.type === "partner"
                           ? `@${item.displayName}`
-                          : `@${item.courseName.replace(/\s+/g, "")}`}
+                          : `@${item.courseName}`}
                       </Text>
-                      {autocompleteType === "course" && (
+                      {item.type === "course" && item.location && (
                         <Text style={styles.autocompleteLocation}>{item.location}</Text>
                       )}
                     </TouchableOpacity>
-                  )}
-                />
+                  ))}
+                </ScrollView>
               </View>
             )}
           </View>
-
-          {/* TAG BUTTONS */}
-          <View style={styles.section}>
-            <View style={styles.tagButtonsRow}>
-              <TouchableOpacity
-                style={styles.tagButton}
-                onPress={handleOpenPartnerModal}
-                disabled={!writable}
-              >
-                <Text style={styles.tagButtonIcon}>👤</Text>
-                <Text style={styles.tagButtonText}>Tag Partners</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.tagButton}
-                onPress={() => setCourseModalVisible(true)}
-                disabled={!writable}
-              >
-                <Text style={styles.tagButtonIcon}>⛳</Text>
-                <Text style={styles.tagButtonText}>Tag Course</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* TAGGED PARTNERS */}
-          {taggedPartners.length > 0 && (
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Tagged Partners</Text>
-              <View style={styles.tagContainer}>
-                {taggedPartners.map((partner) => (
-                  <View key={partner.userId} style={styles.tagChip}>
-                    <Text style={styles.tagText}>@{partner.displayName}</Text>
-                    <TouchableOpacity onPress={() => removePartner(partner.userId)}>
-                      <Text style={styles.tagRemove}>✕</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
-            </View>
-          )}
-
-          {/* TAGGED COURSES */}
-          {taggedCourses.length > 0 && (
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Tagged Courses</Text>
-              <View style={styles.tagContainer}>
-                {taggedCourses.map((course) => (
-                  <View key={course.courseId} style={styles.tagChip}>
-                    <Text style={styles.tagText}>@{course.courseName}</Text>
-                    <TouchableOpacity onPress={() => removeCourse(course.courseId)}>
-                      <Text style={styles.tagRemove}>✕</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
-            </View>
-          )}
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* PARTNER MODAL */}
-      <Modal
-        visible={partnerModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setPartnerModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContainer}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Select Partner</Text>
-              <TouchableOpacity onPress={() => setPartnerModalVisible(false)}>
-                <Text style={styles.modalClose}>✕</Text>
-              </TouchableOpacity>
-            </View>
-
-            <FlatList
-              data={allPartners}
-              keyExtractor={(item) => item.userId}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={styles.modalItem}
-                  onPress={() => handleSelectPartner(item)}
-                >
-                  <Text style={styles.modalItemText}>@{item.displayName}</Text>
-                </TouchableOpacity>
-              )}
-              ListEmptyComponent={
-                <Text style={styles.modalEmptyText}>No partners found</Text>
-              }
-            />
-          </View>
-        </View>
-      </Modal>
-
-      {/* COURSE MODAL */}
-      <Modal
-        visible={courseModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => {
-          setCourseModalVisible(false);
-          setCourseSearchQuery("");
-          setCourseSearchResults([]);
-        }}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContainer}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Search Course</Text>
-              <TouchableOpacity
-                onPress={() => {
-                  setCourseModalVisible(false);
-                  setCourseSearchQuery("");
-                  setCourseSearchResults([]);
-                }}
-              >
-                <Text style={styles.modalClose}>✕</Text>
-              </TouchableOpacity>
-            </View>
-
-            <TextInput
-              style={styles.modalSearchInput}
-              placeholder="Type course name..."
-              placeholderTextColor="#999"
-              value={courseSearchQuery}
-              onChangeText={handleCourseSearchChange}
-              autoFocus
-            />
-
-            {loadingCourses && (
-              <Text style={styles.modalLoadingText}>Searching...</Text>
-            )}
-
-            <FlatList
-              data={courseSearchResults}
-              keyExtractor={(item) => item.courseId.toString()}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={styles.modalItem}
-                  onPress={() => handleSelectCourse(item)}
-                >
-                  <Text style={styles.modalItemText}>{item.courseName}</Text>
-                  <Text style={styles.modalItemSubtext}>{item.location}</Text>
-                </TouchableOpacity>
-              )}
-              ListEmptyComponent={
-                courseSearchQuery.length >= 2 && !loadingCourses ? (
-                  <Text style={styles.modalEmptyText}>No courses found</Text>
-                ) : null
-              }
-            />
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -832,6 +1195,23 @@ const styles = StyleSheet.create({
     fontSize: 18,
     flex: 1,
     textAlign: "center",
+  },
+
+  headerRightButtons: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  deleteButton: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  deleteIcon: {
+    fontSize: 22,
   },
 
   postButton: {
@@ -882,61 +1262,143 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
 
-  imagePreviewBox: {
-    width: "100%",
-    height: 200,
+  // Media Picker Buttons
+  mediaPickerButtons: {
+    flexDirection: "row",
+    gap: 12,
+  },
+
+  mediaPickerButton: {
+    flex: 1,
+    height: 140,
     borderRadius: 12,
-    overflow: "hidden",
-    backgroundColor: "#E8E8E8",
+    backgroundColor: "#FFF",
     borderWidth: 2,
     borderColor: "#0D5C3A",
     borderStyle: "dashed",
-  },
-
-  imagePreview: {
-    width: "100%",
-    height: "100%",
-    resizeMode: "cover",
-  },
-
-  imagePlaceholder: {
-    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    padding: 20,
+    padding: 12,
   },
 
-  imagePlaceholderIcon: {
-    fontSize: 48,
+  mediaPickerIcon: {
+    fontSize: 40,
     marginBottom: 8,
   },
 
-  imagePlaceholderText: {
-    fontSize: 16,
+  mediaPickerText: {
+    fontSize: 14,
     fontWeight: "700",
     color: "#0D5C3A",
     marginBottom: 4,
   },
 
-  imagePlaceholderHint: {
-    fontSize: 12,
+  mediaPickerHint: {
+    fontSize: 11,
     color: "#666",
     textAlign: "center",
   },
 
-  removeImageButton: {
-    marginTop: 8,
-    alignSelf: "center",
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    backgroundColor: "#FF3B30",
-    borderRadius: 6,
+  // Media Preview
+  mediaPreviewBox: {
+    width: "100%",
+    height: 200,
+    borderRadius: 12,
+    overflow: "hidden",
+    backgroundColor: "#000",
+    alignItems: "center",
+    justifyContent: "center",
   },
 
-  removeImageText: {
+  mediaPreview: {
+    width: "100%",
+    height: "100%",
+  },
+
+  processingText: {
+    color: "#0D5C3A",
+    marginTop: 12,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+
+  // Media Actions
+  mediaActions: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12,
+  },
+
+  changeMediaButton: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: "#0D5C3A",
+    borderRadius: 8,
+    alignItems: "center",
+  },
+
+  changeMediaText: {
     color: "#FFF",
     fontWeight: "600",
+    fontSize: 13,
+  },
+
+  removeMediaButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    backgroundColor: "#FF3B30",
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  removeMediaText: {
+    color: "#FFF",
+    fontWeight: "600",
+    fontSize: 13,
+  },
+
+  // Video Trimmer
+  videoTrimmer: {
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+  },
+
+  trimmerLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0D5C3A",
+    marginBottom: 16,
+    textAlign: "center",
+  },
+
+  sliderContainer: {
+    marginBottom: 16,
+  },
+
+  sliderLabel: {
     fontSize: 12,
+    fontWeight: "600",
+    color: "#666",
+    marginBottom: 8,
+  },
+
+  slider: {
+    width: "100%",
+    height: 40,
+  },
+
+  sliderValue: {
+    fontSize: 12,
+    color: "#0D5C3A",
+    fontWeight: "700",
+    textAlign: "right",
+    marginTop: 4,
   },
 
   typeGrid: {
@@ -972,6 +1434,10 @@ const styles = StyleSheet.create({
     color: "#FFF",
   },
 
+  textInputContainer: {
+    position: "relative",
+  },
+
   textInput: {
     backgroundColor: "#FFF",
     borderRadius: 12,
@@ -981,6 +1447,31 @@ const styles = StyleSheet.create({
     textAlignVertical: "top",
     borderWidth: 1,
     borderColor: "#E0E0E0",
+  },
+
+  textInputWithContent: {
+    color: "transparent", // Hide actual text when we have content
+  },
+
+  textOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: 16,
+    paddingTop: 17, // Match TextInput padding
+  },
+
+  overlayText: {
+    fontSize: 16,
+    color: "#333",
+  },
+
+  mentionText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#0D5C3A",
   },
 
   charCount: {
@@ -996,6 +1487,10 @@ const styles = StyleSheet.create({
     marginTop: 8,
     borderWidth: 1,
     borderColor: "#E0E0E0",
+    maxHeight: 200,
+  },
+
+  autocompleteScrollView: {
     maxHeight: 200,
   },
 
@@ -1016,139 +1511,4 @@ const styles = StyleSheet.create({
     color: "#666",
     marginTop: 2,
   },
-
-  tagButtonsRow: {
-    flexDirection: "row",
-    gap: 12,
-  },
-
-  tagButton: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 12,
-    backgroundColor: "#0D5C3A",
-    borderRadius: 8,
-  },
-
-  tagButtonIcon: {
-    fontSize: 18,
-  },
-
-  tagButtonText: {
-    color: "#FFF",
-    fontWeight: "600",
-    fontSize: 14,
-  },
-
-  tagContainer: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-
-  tagChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#0D5C3A",
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    gap: 6,
-  },
-
-  tagText: {
-    color: "#FFF",
-    fontSize: 13,
-    fontWeight: "600",
-  },
-
-  tagRemove: {
-    color: "#FFF",
-    fontSize: 16,
-    fontWeight: "700",
-  },
-
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
-    justifyContent: "flex-end",
-  },
-
-  modalContainer: {
-    backgroundColor: "#F4EED8",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    maxHeight: "80%",
-    paddingBottom: 40,
-  },
-
-  modalHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "#E0E0E0",
-  },
-
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#0D5C3A",
-  },
-
-  modalClose: {
-    fontSize: 24,
-    color: "#666",
-    fontWeight: "700",
-  },
-
-  modalSearchInput: {
-    backgroundColor: "#FFF",
-    margin: 16,
-    padding: 12,
-    borderRadius: 8,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-  },
-
-  modalLoadingText: {
-    textAlign: "center",
-    color: "#666",
-    padding: 20,
-  },
-
-  modalItem: {
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "#E0E0E0",
-  },
-
-  modalItemText: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#0D5C3A",
-  },
-
-  modalItemSubtext: {
-    fontSize: 13,
-    color: "#666",
-    marginTop: 4,
-  },
-
-  modalEmptyText: {
-    textAlign: "center",
-    color: "#999",
-    padding: 40,
-    fontSize: 14,
-  },
 });
-
-
-
-
-

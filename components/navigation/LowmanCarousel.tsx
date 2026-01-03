@@ -5,6 +5,7 @@ import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Image,
   ScrollView,
   StyleSheet,
   Text,
@@ -20,6 +21,13 @@ interface CourseLeader {
     displayName: string;
     netScore: number;
   };
+  holeinones?: Array<{
+    userId: string;
+    displayName: string;
+    hole: number;
+    achievedAt: any;
+    postId?: string; // Clubhouse post ID
+  }>;
   location?: {
     city?: string;
     state?: string;
@@ -31,11 +39,13 @@ interface CourseLeader {
 interface CarouselItem {
   userId: string;
   displayName: string;
-  netScore: number;
+  netScore?: number;
   courseName: string;
   courseId: string;
-  tier: "lowman" | "scratch" | "ace";
-  icon: string;
+  tier: "lowman" | "scratch" | "ace" | "holeinone";
+  icon: any; // ✅ Changed from string to any for Image source
+  hole?: number; // For hole-in-ones
+  postId?: string; // For navigating to clubhouse post
 }
 
 export default function LowmanCarousel({
@@ -61,6 +71,12 @@ export default function LowmanCarousel({
   const scrollContentWidth = useRef(0);
 
   const shuffledOnce = useRef<CarouselItem[] | null>(null);
+
+  // ✅ Badge icon imports
+  const LowLeaderTrophy = require("@/assets/icons/LowLeaderTrophy.png");
+  const LowLeaderScratch = require("@/assets/icons/LowLeaderScratch.png");
+  const LowLeaderAce = require("@/assets/icons/LowLeaderAce.png");
+  const HoleInOne = require("@/assets/icons/HoleinOne.png");
 
   /* =========================
      AUTH READY
@@ -130,14 +146,14 @@ export default function LowmanCarousel({
   }, [filteredLeaders, userLocation]);
 
   /* =========================
-     BUILD CAROUSEL WITH EXPANSION LOGIC
+     BUILD CAROUSEL WITH LOWMAN + HOLE-IN-ONES
      ========================= */
   const carouselData = useMemo(() => {
     if (shuffledOnce.current) return shuffledOnce.current;
 
     const TARGET_COUNT = 6;
 
-    // ✅ EXPANSION LOGIC: Find at least 6 lowmen
+    // ✅ EXPANSION LOGIC: Find at least 6 achievements
     let candidates = geoFiltered;
     
     console.log("🔍 Step 1 - Geo-filtered:", candidates.length, "leaders");
@@ -166,7 +182,7 @@ export default function LowmanCarousel({
     }
 
     if (candidates.length === 0) {
-      console.log("⚠️ No lowmen found anywhere");
+      console.log("⚠️ No achievements found anywhere");
       return [];
     }
 
@@ -178,23 +194,29 @@ export default function LowmanCarousel({
 
     console.log("🏆 Win counts:", wins);
 
-    // ✅ Build carousel from candidates
-    const built: CarouselItem[] = candidates.map((l) => {
+    // ✅ Build carousel from candidates (lowman + hole-in-ones)
+    const built: CarouselItem[] = [];
+
+    candidates.forEach((l) => {
+      // ✅ DEBUG: Log every lowman being processed
+      console.log("🔍 Processing lowman:", l.lowman.displayName, "userId:", l.lowman.userId, "course:", l.courseName, "location:", l.location);
+      
+      // Add lowman achievement
       const userWins = wins[l.lowman.userId] || 1;
-      let tier: CarouselItem["tier"] = "lowman";
-      let icon = "🏆";
+      let tier: "lowman" | "scratch" | "ace" = "lowman";
+      let icon = LowLeaderTrophy; // ✅ Default to Trophy
 
       if (userWins === 2) {
         tier = "scratch";
-        icon = "👑";
+        icon = LowLeaderScratch; // ✅ Scratch badge
       } else if (userWins >= 3) {
         tier = "ace";
-        icon = "🂡";
+        icon = LowLeaderAce; // ✅ Ace badge
       }
 
       console.log(`  ${l.lowman.displayName} at ${l.courseName}: ${userWins} total wins → ${tier}`);
 
-      return {
+      built.push({
         userId: l.lowman.userId,
         displayName: l.lowman.displayName,
         netScore: l.lowman.netScore,
@@ -202,7 +224,31 @@ export default function LowmanCarousel({
         courseId: l.courseId,
         tier,
         icon,
-      };
+      });
+
+      // Add hole-in-ones for this course
+      console.log(`  🔍 Checking hole-in-ones for ${l.courseName}:`, l.holeinones);
+      
+      if (l.holeinones && l.holeinones.length > 0) {
+        console.log(`  ✅ Found ${l.holeinones.length} hole-in-one(s) at ${l.courseName}`);
+        
+        l.holeinones.forEach((hio) => {
+          console.log(`    ⛳ ${hio.displayName} hole-in-one at ${l.courseName} on hole ${hio.hole}, postId: ${hio.postId}`);
+          
+          built.push({
+            userId: hio.userId,
+            displayName: hio.displayName,
+            courseName: l.courseName,
+            courseId: l.courseId,
+            tier: "holeinone",
+            icon: HoleInOne, // ✅ Hole-in-one badge
+            hole: hio.hole,
+            postId: hio.postId, // Store the post ID
+          });
+        });
+      } else {
+        console.log(`  ⚠️ No hole-in-ones at ${l.courseName}`);
+      }
     });
 
     // ✅ Shuffle
@@ -254,26 +300,51 @@ export default function LowmanCarousel({
     
     onSelectUser?.(item.userId);
     
-    console.log("🚀 Navigating to leaderboard with:", {
-      courseId: item.courseId,
-      playerId: item.userId,
-    });
-    
-    router.push({
-      pathname: "/leaderboard",
-      params: {
+    if (item.tier === "holeinone") {
+      if (item.postId) {
+        console.log("🚀 Navigating to clubhouse with highlighted hole-in-one post:", item.postId);
+        
+        router.push({
+          pathname: "/clubhouse",
+          params: { highlightPostId: item.postId },
+        });
+      } else {
+        console.log("⚠️ No postId for hole-in-one, navigating to clubhouse");
+        router.push("/clubhouse");
+      }
+    } else {
+      console.log("🚀 Navigating to leaderboard with:", {
         courseId: item.courseId,
         playerId: item.userId,
-      },
-    });
+      });
+      
+      router.push({
+        pathname: "/leaderboard",
+        params: {
+          courseId: item.courseId,
+          playerId: item.userId,
+        },
+      });
+    }
   };
 
-  // ✅ If no data, don't render anything (or show empty state)
+  // ✅ If no data, show motivational card
   if (carouselData.length === 0) {
     return (
-      <View style={styles.emptyContainer}>
-        <Text style={styles.emptyText}>No lowman badges yet</Text>
-      </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.scrollStrip}
+        contentContainerStyle={styles.container}
+        scrollEnabled={false}
+      >
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyCardIcon}>🏆</Text>
+          <Text style={styles.emptyCardText}>
+            Be the first to post a score and achieve Low Leader status
+          </Text>
+        </View>
+      </ScrollView>
     );
   }
 
@@ -288,30 +359,43 @@ export default function LowmanCarousel({
       onTouchStart={() => (isTouching.current = true)}
       onTouchEnd={() => (isTouching.current = false)}
     >
-      {[...carouselData, ...carouselData].map((item, idx) => (
-        <TouchableOpacity
-          key={`${item.userId}-${item.courseName}-${idx}`}
-          style={[styles.card, styles[item.tier]]}
-          activeOpacity={0.85}
-          onPress={() => handleItemPress(item)}
-        >
-          <View style={styles.topRow}>
-            <Text style={styles.icon}>{item.icon}</Text>
-            <Text
-              style={styles.name}
-              numberOfLines={1}
-              ellipsizeMode="tail"
-            >
-              {item.displayName}
-            </Text>
-            <Text style={styles.score}>{item.netScore}</Text>
-          </View>
+      {/* Duplicate cards enough times to ensure continuous scroll */}
+      {Array.from({ length: 4 }).flatMap((_, repeatIndex) =>
+        carouselData.map((item, idx) => (
+          <TouchableOpacity
+            key={`${item.userId}-${item.courseName}-${item.hole || 'lowman'}-${repeatIndex}-${idx}`}
+            style={[styles.card, styles[item.tier]]}
+            activeOpacity={0.85}
+            onPress={() => handleItemPress(item)}
+          >
+            <View style={styles.cardContent}>
+              {/* ✅ Icon on left, spanning both rows */}
+              <Image source={item.icon} style={styles.iconImage} />
+              
+              <View style={styles.textContent}>
+                {/* ✅ First row: DisplayName and Score */}
+                <View style={styles.topRow}>
+                  <Text
+                    style={styles.name}
+                    numberOfLines={1}
+                    ellipsizeMode="tail"
+                  >
+                    {item.displayName}
+                  </Text>
+                  <Text style={styles.score}>
+                    {item.tier === "holeinone" ? `#${item.hole}` : item.netScore}
+                  </Text>
+                </View>
 
-          <Text style={styles.course} numberOfLines={1}>
-            {item.courseName}
-          </Text>
-        </TouchableOpacity>
-      ))}
+                {/* ✅ Second row: CourseName */}
+                <Text style={styles.course} numberOfLines={1}>
+                  {item.courseName}
+                </Text>
+              </View>
+            </View>
+          </TouchableOpacity>
+        ))
+      )}
     </ScrollView>
   );
 }
@@ -343,12 +427,38 @@ const styles = StyleSheet.create({
     fontStyle: "italic",
   },
 
-  card: {
+  emptyCard: {
     marginRight: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
     borderRadius: 22,
     justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#F7F8FA",
+    borderWidth: 2,
+    borderColor: "#0D5C3A",
+    borderStyle: "dashed",
+    minWidth: 280,
+  },
+
+  emptyCardIcon: {
+    fontSize: 32,
+    marginBottom: 8,
+  },
+
+  emptyCardText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#0D5C3A",
+    textAlign: "center",
+    lineHeight: 18,
+  },
+
+  card: {
+    marginRight: 16,
+    paddingVertical: 2,
+    paddingHorizontal: 12,
+    borderRadius: 22,
 
     backgroundColor: "#F7F8FA",
     borderWidth: 1,
@@ -359,6 +469,7 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
     elevation: 6,
+    minWidth: 160,
   },
 
   lowman: {},
@@ -369,15 +480,37 @@ const styles = StyleSheet.create({
     borderColor: "#9FA3A8",
     backgroundColor: "#F2F4F7",
   },
-
-  topRow: {
-    width: "100%",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+  holeinone: {
+    borderColor: "#FFD700",
+    backgroundColor: "#FFFEF5",
   },
 
-  icon: { fontSize: 16 },
+  // ✅ Card content: horizontal layout
+  cardContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+
+  // ✅ Icon on left, spanning both rows
+  iconImage: {
+    width: 42,
+    height: 42,
+    resizeMode: "contain",
+  },
+
+  // ✅ Text content container
+  textContent: {
+    flex: 1,
+    minWidth: 0,
+  },
+
+  topRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 2,
+  },
 
   name: {
     flex: 1,
@@ -388,17 +521,15 @@ const styles = StyleSheet.create({
   },
 
   score: {
-    width: 34,
-    textAlign: "right",
     fontSize: 15,
     fontWeight: "900",
     color: "#111",
+    marginLeft: 6,
   },
 
   course: {
     fontSize: 11,
     color: "#666",
-    marginTop: 2,
   },
 });
 

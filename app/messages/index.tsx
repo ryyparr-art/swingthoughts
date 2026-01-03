@@ -2,6 +2,8 @@ import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
+import { EMAIL_VERIFICATION_MESSAGE, isEmailVerified } from "@/utils/rateLimitHelpers";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
@@ -19,6 +21,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Image,
   Platform,
   StyleSheet,
   Text,
@@ -31,6 +34,7 @@ interface Message {
   messageId: string;
   senderId: string;
   senderName: string;
+  senderAvatar?: string | null;
   receiverId: string;
   content: string;
   createdAt: any;
@@ -66,37 +70,62 @@ export default function MessagesScreen() {
       for (const docSnap of querySnapshot.docs) {
         const messageData = docSnap.data() as Message;
         
-        // Get sender's display name
+        // Get sender's display name and avatar
         try {
           const senderDoc = await getDoc(doc(db, "users", messageData.senderId));
           if (senderDoc.exists()) {
-            messageData.senderName = senderDoc.data().displayName || "Anonymous";
+            const senderData = senderDoc.data();
+            messageData.senderName = senderData.displayName || "Anonymous";
+            messageData.senderAvatar = senderData.avatar || null;
           } else {
             messageData.senderName = "Anonymous";
+            messageData.senderAvatar = null;
           }
         } catch (err) {
           messageData.senderName = "Anonymous";
+          messageData.senderAvatar = null;
         }
 
         messagesData.push(messageData);
       }
 
-      // Sort in JavaScript instead of Firestore
+      // Sort in JavaScript by timestamp (newest first)
       messagesData.sort((a, b) => {
         const aTime = a.createdAt?.toMillis?.() || 0;
         const bTime = b.createdAt?.toMillis?.() || 0;
-        return bTime - aTime; // Descending order (newest first)
+        return bTime - aTime;
       });
 
-      setMessages(messagesData);
+      // Group by sender - keep only the most recent message from each sender
+      const groupedBySender = new Map<string, Message>();
+      
+      for (const msg of messagesData) {
+        if (!groupedBySender.has(msg.senderId)) {
+          groupedBySender.set(msg.senderId, msg);
+        }
+      }
+
+      // Convert map back to array
+      const uniqueSenders = Array.from(groupedBySender.values());
+
+      setMessages(uniqueSenders);
       setLoading(false);
     } catch (error) {
       console.error("Error fetching messages:", error);
+      soundPlayer.play('error');
       setLoading(false);
     }
   };
 
   const handleComposeNew = () => {
+    // ✅ ANTI-BOT: Check email verification before allowing compose
+    if (!isEmailVerified()) {
+      soundPlayer.play('error');
+      Alert.alert("Email Not Verified", EMAIL_VERIFICATION_MESSAGE);
+      return;
+    }
+
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     router.push("/messages/select-partner");
   };
@@ -108,6 +137,7 @@ export default function MessagesScreen() {
     console.log("Delete attempt - userId:", currentUserId, "senderId:", senderId);
     
     if (!currentUserId) {
+      soundPlayer.play('error');
       if (Platform.OS === 'web') {
         alert("Error: User not authenticated. Please log in again.");
       } else {
@@ -128,12 +158,18 @@ export default function MessagesScreen() {
               {
                 text: "Cancel",
                 style: "cancel",
-                onPress: () => resolve(false),
+                onPress: () => {
+                  soundPlayer.play('click');
+                  resolve(false);
+                },
               },
               {
                 text: "Delete",
                 style: "destructive",
-                onPress: () => resolve(true),
+                onPress: () => {
+                  soundPlayer.play('error');
+                  resolve(true);
+                },
               },
             ]
           );
@@ -167,7 +203,7 @@ export default function MessagesScreen() {
 
       console.log("Found messages to delete - sent:", sent.size, "received:", received.size);
 
-      const deletePromises = [];
+      const deletePromises: Promise<void>[] = [];
       
       sent.forEach((docSnap) => {
         deletePromises.push(deleteDoc(docSnap.ref));
@@ -179,6 +215,7 @@ export default function MessagesScreen() {
 
       await Promise.all(deletePromises);
 
+      soundPlayer.play('postThought');
       console.log("Successfully deleted", deletePromises.length, "messages");
 
       // Remove from local state
@@ -191,6 +228,7 @@ export default function MessagesScreen() {
       }
     } catch (error) {
       console.error("Error deleting conversation:", error);
+      soundPlayer.play('error');
       if (Platform.OS === 'web') {
         alert("Failed to delete conversation: " + (error as Error).message);
       } else {
@@ -204,6 +242,7 @@ export default function MessagesScreen() {
       <TouchableOpacity
         style={[styles.messageCard, !item.read && styles.unreadCard]}
         onPress={() => {
+          soundPlayer.play('click');
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           // Navigate to thread with the sender's ID
           router.push(`/messages/${item.senderId}`);
@@ -211,11 +250,18 @@ export default function MessagesScreen() {
       >
         <View style={styles.messageHeader}>
           <View style={styles.senderInfo}>
-            <View style={styles.avatarCircle}>
-              <Text style={styles.avatarText}>
-                {item.senderName[0]?.toUpperCase() || "?"}
-              </Text>
-            </View>
+            {item.senderAvatar ? (
+              <Image
+                source={{ uri: item.senderAvatar }}
+                style={styles.avatarImage}
+              />
+            ) : (
+              <View style={styles.avatarCircle}>
+                <Text style={styles.avatarText}>
+                  {item.senderName[0]?.toUpperCase() || "?"}
+                </Text>
+              </View>
+            )}
             <View>
               <Text style={styles.senderName}>{item.senderName}</Text>
               <Text style={styles.timestamp}>
@@ -233,7 +279,11 @@ export default function MessagesScreen() {
 
       <TouchableOpacity
         style={styles.deleteButton}
-        onPress={() => handleDeleteMessage(item.messageId, item.senderId)}
+        onPress={() => {
+          soundPlayer.play('click');
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          handleDeleteMessage(item.messageId, item.senderId);
+        }}
       >
         <Ionicons name="trash-outline" size={20} color="#FF3B30" />
       </TouchableOpacity>
@@ -247,7 +297,7 @@ export default function MessagesScreen() {
       <TopNavBar />
 
       <View style={styles.header}>
-        <Text style={styles.title}>Fanmail</Text>
+        <Text style={styles.title}>Locker Notes</Text>
         <TouchableOpacity
           onPress={handleComposeNew}
           style={styles.composeButton}
@@ -270,9 +320,9 @@ export default function MessagesScreen() {
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <Ionicons name="mail-outline" size={64} color="#999" />
-              <Text style={styles.emptyText}>No messages yet</Text>
+              <Text style={styles.emptyText}>No locker notes yet</Text>
               <Text style={styles.emptySubtext}>
-                Your fanmail will appear here
+                Your locker notes will appear here
               </Text>
             </View>
           }
@@ -388,6 +438,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
+  avatarImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+
   avatarText: {
     color: "#FFFFFF",
     fontSize: 16,
@@ -414,8 +470,9 @@ const styles = StyleSheet.create({
   },
 
   messageContent: {
-    fontSize: 15,
-    lineHeight: 22,
+    fontFamily: 'Caveat_400Regular',
+    fontSize: 18,
+    lineHeight: 24,
     color: "#333",
   },
 

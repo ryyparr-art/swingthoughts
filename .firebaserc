@@ -1,5 +1,13 @@
 {
   "projects": {
     "default": "swing-thoughts-1807b"
+  },
+  "targets": {},
+  "etags": {
+    "swing-thoughts-1807b": {
+      "extensionInstances": {
+        "firestore-send-email": "fbe301fe9eece0c87a9c0ab801e036d4d8af9c5b8edd98dbc7159e95fc943378"
+      }
+    }
   }
 }

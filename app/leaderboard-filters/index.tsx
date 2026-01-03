@@ -1,5 +1,6 @@
 import LocationPickerModal from "@/components/modals/LocationPickerModal";
 import { auth, db } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
@@ -15,7 +16,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function LeaderboardFiltersScreen() {
   const router = useRouter();
-  const [filterType, setFilterType] = useState<"nearMe" | "course" | "player">("nearMe");
+  const [filterType, setFilterType] = useState<"nearMe" | "course" | "player" | "partnersOnly">("nearMe");
   const [locationModalVisible, setLocationModalVisible] = useState(false);
   const [cachedLocation, setCachedLocation] = useState<string>("Loading...");
 
@@ -39,11 +40,13 @@ export default function LeaderboardFiltersScreen() {
       }
     } catch (error) {
       console.error("Error loading location:", error);
+      soundPlayer.play('error');
       setCachedLocation("No location set");
     }
   };
 
-  const handleSelectFilterType = (type: "nearMe" | "course" | "player") => {
+  const handleSelectFilterType = (type: "nearMe" | "course" | "player" | "partnersOnly") => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     
     if (type === "nearMe") {
@@ -61,12 +64,14 @@ export default function LeaderboardFiltersScreen() {
     longitude?: number;
   }) => {
     // Location is cached in modal, update display
+    soundPlayer.play('click');
     setCachedLocation(`${location.city}, ${location.state}`);
     setFilterType("nearMe");
     setLocationModalVisible(false);
   };
 
   const handleApplyFilter = () => {
+    soundPlayer.play('click');
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     if (filterType === "nearMe") {
@@ -80,10 +85,17 @@ export default function LeaderboardFiltersScreen() {
     } else if (filterType === "player") {
       // Navigate to player search screen
       router.push("/leaderboard-filters/player-search");
+    } else if (filterType === "partnersOnly") {
+      // Navigate to leaderboard with partners filter
+      router.push({
+        pathname: "/leaderboard",
+        params: { filterType: "partnersOnly" },
+      });
     }
   };
 
   const handleClearFilter = () => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setFilterType("nearMe");
     router.push({
@@ -92,13 +104,20 @@ export default function LeaderboardFiltersScreen() {
     });
   };
 
-  const canApplyFilter = filterType === "nearMe" || filterType === "course" || filterType === "player";
+  const canApplyFilter = filterType === "nearMe" || filterType === "course" || filterType === "player" || filterType === "partnersOnly";
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.headerButton}>
+        <TouchableOpacity 
+          onPress={() => {
+            soundPlayer.play('click');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.back();
+          }} 
+          style={styles.headerButton}
+        >
           <Ionicons name="close" size={28} color="#FFFFFF" />
         </TouchableOpacity>
 
@@ -183,6 +202,29 @@ export default function LeaderboardFiltersScreen() {
               {filterType === "player" && <View style={styles.radioDot} />}
             </View>
           </TouchableOpacity>
+
+          {/* Partners Only - NEW */}
+          <TouchableOpacity
+            style={[styles.filterOption, filterType === "partnersOnly" && styles.filterOptionActive]}
+            onPress={() => handleSelectFilterType("partnersOnly")}
+          >
+            <View style={styles.filterOptionLeft}>
+              <Ionicons
+                name="people-outline"
+                size={24}
+                color={filterType === "partnersOnly" ? "#0D5C3A" : "#666"}
+              />
+              <View style={styles.filterOptionText}>
+                <Text style={[styles.filterOptionTitle, filterType === "partnersOnly" && styles.filterOptionTitleActive]}>
+                  Partners Only
+                </Text>
+                <Text style={styles.filterOptionDescription}>Show scores from your partners</Text>
+              </View>
+            </View>
+            <View style={[styles.radio, filterType === "partnersOnly" && styles.radioActive]}>
+              {filterType === "partnersOnly" && <View style={styles.radioDot} />}
+            </View>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -209,7 +251,11 @@ export default function LeaderboardFiltersScreen() {
       {/* Location Picker Modal */}
       <LocationPickerModal
         visible={locationModalVisible}
-        onClose={() => setLocationModalVisible(false)}
+        onClose={() => {
+          soundPlayer.play('click');
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          setLocationModalVisible(false);
+        }}
         onLocationSet={handleLocationSet}
       />
     </SafeAreaView>

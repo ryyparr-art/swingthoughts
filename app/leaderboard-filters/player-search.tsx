@@ -1,17 +1,18 @@
 import { db } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { collection, getDocs } from "firebase/firestore";
 import React, { useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    FlatList,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  FlatList,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -28,7 +29,7 @@ export default function PlayerSearchScreen() {
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
   const [loadingPlayers, setLoadingPlayers] = useState(false);
   
-  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const searchPlayers = async (query: string) => {
     try {
@@ -57,6 +58,7 @@ export default function PlayerSearchScreen() {
       setLoadingPlayers(false);
     } catch (err) {
       console.error("Player search error:", err);
+      soundPlayer.play('error');
       setLoadingPlayers(false);
     }
   };
@@ -85,6 +87,7 @@ export default function PlayerSearchScreen() {
   };
 
   const handleSelectPlayer = (player: Player) => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedPlayer(player);
   };
@@ -92,6 +95,7 @@ export default function PlayerSearchScreen() {
   const handleApply = () => {
     if (!selectedPlayer) return;
     
+    soundPlayer.play('click');
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     router.push({
       pathname: "/leaderboard",
@@ -107,7 +111,14 @@ export default function PlayerSearchScreen() {
     <SafeAreaView style={styles.container} edges={["top"]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.headerButton}>
+        <TouchableOpacity 
+          onPress={() => {
+            soundPlayer.play('click');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.back();
+          }} 
+          style={styles.headerButton}
+        >
           <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
         </TouchableOpacity>
 

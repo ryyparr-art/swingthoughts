@@ -1,8 +1,17 @@
 import { auth } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
+import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import React, { useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import {
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
+} from "react-native";
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -15,8 +24,14 @@ export default function LoginScreen() {
     console.log("🔐 Login button pressed");
     console.log("📧 Email:", email);
     
+    // Play click sound + light haptic
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
     if (!email || !password) {
       setError("Please enter both email and password");
+      // Play error sound for validation
+      soundPlayer.play('error');
       return;
     }
 
@@ -27,12 +42,42 @@ export default function LoginScreen() {
       console.log("🔄 Attempting Firebase login...");
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       console.log("✅ Login successful!", userCredential.user.uid);
-      // _layout.tsx will handle the redirect automatically
+      
+      // Play success sound + medium haptic on successful login
+      soundPlayer.play('postThought');
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      
+      // _layout.tsx will handle:
+      // 1. Onboarding redirects (if needed)
+      // 2. Location check (background)
+      // 3. Clubhouse redirect (if onboarding complete)
+      
     } catch (err: any) {
       console.error("❌ Login error:", err.code, err.message);
-      setError(err.message);
+      
+      // Play error sound for failed login
+      soundPlayer.play('error');
+      
+      if (err.code === "auth/user-not-found") {
+        setError("No account found with this email");
+      } else if (err.code === "auth/wrong-password") {
+        setError("Incorrect password");
+      } else if (err.code === "auth/invalid-email") {
+        setError("Invalid email address");
+      } else if (err.code === "auth/too-many-requests") {
+        setError("Too many failed attempts. Please try again later");
+      } else {
+        setError(err.message || "Failed to log in");
+      }
+      
       setLoading(false);
     }
+  };
+
+  const handleSignupNavigation = () => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push("/auth/signup");
   };
 
   return (
@@ -49,6 +94,7 @@ export default function LoginScreen() {
         value={email}
         autoCapitalize="none"
         keyboardType="email-address"
+        editable={!loading}
       />
       
       <TextInput
@@ -58,6 +104,7 @@ export default function LoginScreen() {
         onChangeText={setPassword}
         value={password}
         secureTextEntry
+        editable={!loading}
       />
       
       <TouchableOpacity 
@@ -72,7 +119,10 @@ export default function LoginScreen() {
         )}
       </TouchableOpacity>
       
-      <TouchableOpacity onPress={() => router.push("/auth/signup")}>
+      <TouchableOpacity 
+        onPress={handleSignupNavigation}
+        disabled={loading}
+      >
         <Text style={styles.link}>Don't have an account? Sign up</Text>
       </TouchableOpacity>
     </View>
@@ -94,9 +144,13 @@ const styles = StyleSheet.create({
     color: "#0D5C3A",
   },
   error: {
-    color: "red",
+    color: "#e74c3c",
     marginBottom: 10,
     textAlign: "center",
+    backgroundColor: "#FFFFFF",
+    padding: 10,
+    borderRadius: 8,
+    width: "100%",
   },
   input: {
     width: "100%",

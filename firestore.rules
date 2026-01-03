@@ -1,235 +1,316 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    /* =====================================================
-       🔐 HELPERS (SAFE)
-       ===================================================== */
-
+    
+    // ============================================================================
+    // HELPER FUNCTIONS
+    // ============================================================================
+    
     function isSignedIn() {
       return request.auth != null;
     }
-
-    function hasUserDoc() {
-      return isSignedIn()
-        && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    
+    function isEmailVerified() {
+      return request.auth != null && request.auth.token.email_verified == true;
     }
-
-    function userDoc() {
-      return hasUserDoc()
-        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data
-        : null;
-    }
-
+    
     function isAdmin() {
-      return isSignedIn()
-        && hasUserDoc()
-        && request.auth.uid == "DbnGP8iHXwbztZmy0Pc1XIwdou33"
-        && userDoc().role == "admin";
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
     }
-
-    /* =====================================================
-       ✍️ WRITE PERMISSIONS
-       ===================================================== */
-
-    function canWrite() {
-      return isSignedIn() && hasUserDoc() && (
-        (
-          (userDoc().userType == "Golfer"
-            || userDoc().userType == "Junior")
-          && userDoc().acceptedTerms == true
-        )
-        ||
-        (
-          (userDoc().userType == "Course"
-            || userDoc().userType == "PGA Professional")
-          && userDoc().verification.status == "approved"
-        )
-      );
+    
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
-
-    function canPostScores() {
-      return isSignedIn() && hasUserDoc() && (
-        (
-          (userDoc().userType == "Golfer"
-            || userDoc().userType == "Junior")
-          && userDoc().acceptedTerms == true
-        )
-        ||
-        (
-          userDoc().userType == "PGA Professional"
-          && userDoc().verification.status == "approved"
-        )
-      );
+    
+    // Rate limiting helpers with fallbacks
+    function canPost() {
+      let userData = getUserData();
+      // If lastPostTime doesn't exist or is null, allow the post
+      return !('lastPostTime' in userData) || 
+             userData.lastPostTime == null ||
+             userData.lastPostTime < request.time - duration.value(30, 's');
     }
-
-    // ✅ UPDATED: Allow onboarding updates (ADDED lockerCompleted)
-    function isOnboardingUpdate() {
-      return request.resource.data.diff(resource.data).affectedKeys()
-        .hasOnly([
-          'userType',
-          'displayName',
-          'handicap',
-          'homeClub',
-          'city',
-          'state',
-          'location',
-          'lockerCompleted',      // ✅ REQUIRED FIX
-          'acceptedTerms',
-          'acceptedPrivacy',
-          'termsAcceptedAt',
-          'privacyAcceptedAt',
-          'updatedAt',
-          'verification',
-          'userId',
-          'email',
-          'createdAt',
-          'badges',
-          'avatar',
-          'cachedCourses',
-          'cacheUpdatedAt'
-        ]);
+    
+    function canComment() {
+      let userData = getUserData();
+      // If lastCommentTime doesn't exist or is null, allow the comment
+      return !('lastCommentTime' in userData) || 
+             userData.lastCommentTime == null ||
+             userData.lastCommentTime < request.time - duration.value(5, 's');
     }
-
-    /* =====================================================
-       👤 USERS
-       ===================================================== */
-
+    
+    function canMessage() {
+      let userData = getUserData();
+      // If lastMessageTime doesn't exist or is null, allow the message
+      return !('lastMessageTime' in userData) || 
+             userData.lastMessageTime == null ||
+             userData.lastMessageTime < request.time - duration.value(10, 's');
+    }
+    
+    function canScore() {
+      let userData = getUserData();
+      // If lastScoreTime doesn't exist or is null, allow the score
+      return !('lastScoreTime' in userData) || 
+             userData.lastScoreTime == null ||
+             userData.lastScoreTime < request.time - duration.value(60, 's');
+    }
+    
+    // ============================================================================
+    // USERS COLLECTION
+    // ============================================================================
+    
     match /users/{userId} {
-
       allow read: if isSignedIn();
-
-      allow create: if isSignedIn()
-        && request.auth.uid == userId;
-
-      // ✅ Allow onboarding updates OR normal updates with canWrite()
-      allow update: if isSignedIn()
-        && request.auth.uid == userId
-        && (canWrite() || isOnboardingUpdate());
-
+      
+      allow create: if isSignedIn() && 
+                       request.auth.uid == userId &&
+                       request.auth.token.email_verified == true;
+      
+      // ✅ Allow users to update their own profile fields including:
+      // - Profile data (displayName, handicap, avatar, etc.)
+      // - Locker data (clubs, homeCourse, gameIdentity, displayBadges)
+      // - Onboarding flags (lockerCompleted, acceptedTerms, hasSeenWelcomeTour)
+      // - Location data
+      // - Partner relationships
+      // - Course relationships (playerCourses, declaredMemberCourses, pendingMembershipCourses)
+      allow update: if isSignedIn() && 
+                       (request.auth.uid == userId || isAdmin());
+      
       allow delete: if isAdmin();
-
-      /* -------- CACHED COURSES -------- */
-
-      match /cachedCourses/{courseId} {
-        allow read: if isSignedIn()
-          && request.auth.uid == userId;
-
-        allow write: if isSignedIn()
-          && request.auth.uid == userId;
-
-        allow delete: if isSignedIn()
-          && request.auth.uid == userId;
-      }
     }
-
-    /* =====================================================
-       📝 THOUGHTS (CLUBHOUSE FEED)
-       ===================================================== */
-
+    
+    // ============================================================================
+    // THOUGHTS (POSTS) COLLECTION
+    // ============================================================================
+    
     match /thoughts/{thoughtId} {
-
-      allow read: if isSignedIn();
-
-      allow create: if canWrite()
-        && request.resource.data.userId == request.auth.uid;
-
-      allow update, delete: if isSignedIn()
-        && request.auth.uid == resource.data.userId
-        && canWrite();
-
-      allow update: if isSignedIn()
-        && canWrite()
-        && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(["likes", "likedBy", "comments"]);
-
-      allow update, delete: if isAdmin();
-
+      allow read: if true; // Public read
+      
+      allow create: if isSignedIn() && 
+                       isEmailVerified() &&
+                       canPost() &&
+                       request.resource.data.userId == request.auth.uid &&
+                       request.resource.data.content.size() <= 280;
+      
+      allow update: if isSignedIn() && 
+                       (request.auth.uid == resource.data.userId || isAdmin());
+      
+      allow delete: if isSignedIn() && 
+                       (request.auth.uid == resource.data.userId || isAdmin());
+      
+      // Comments subcollection
       match /comments/{commentId} {
-
-        allow read: if isSignedIn();
-
-        allow create: if canWrite();
-
-        allow update, delete: if isSignedIn()
-          && request.auth.uid == resource.data.userId
-          && canWrite();
-
-        allow delete: if isAdmin();
+        allow read: if true;
+        
+        allow create: if isSignedIn() && 
+                         isEmailVerified() &&
+                         canComment() &&
+                         request.resource.data.userId == request.auth.uid &&
+                         request.resource.data.content.size() <= 500;
+        
+        allow update: if isSignedIn() && 
+                         (request.auth.uid == resource.data.userId || isAdmin());
+        
+        allow delete: if isSignedIn() && 
+                         (request.auth.uid == resource.data.userId || isAdmin());
       }
     }
-
-    /* =====================================================
-       🏌️ SCORES (ANTI-SPOOFING)
-       ===================================================== */
-
+    
+    // ============================================================================
+    // MESSAGES COLLECTION
+    // ============================================================================
+    
+    match /messages/{messageId} {
+      allow read: if isSignedIn() && 
+                     (request.auth.uid == resource.data.senderId || 
+                      request.auth.uid == resource.data.receiverId ||
+                      isAdmin());
+      
+      allow list, get: if isSignedIn();
+      
+      allow create: if isSignedIn() && 
+                       isEmailVerified() &&
+                       canMessage() &&
+                       request.resource.data.senderId == request.auth.uid &&
+                       request.resource.data.content.size() <= 1000;
+      
+      allow update: if isSignedIn() && 
+                       (request.auth.uid == resource.data.senderId || 
+                        request.auth.uid == resource.data.receiverId ||
+                        isAdmin());
+      
+      allow delete: if isSignedIn() && 
+                       (request.auth.uid == resource.data.senderId || 
+                        request.auth.uid == resource.data.receiverId ||
+                        isAdmin());
+    }
+    
+    // ============================================================================
+    // SCORES COLLECTION
+    // ============================================================================
+    
     match /scores/{scoreId} {
-
-      allow read: if isSignedIn();
-
-      allow create: if canPostScores()
-        && request.resource.data.userId == request.auth.uid;
-
-      allow update, delete: if isSignedIn()
-        && request.auth.uid == resource.data.userId
-        && canPostScores();
-
-      allow delete: if isAdmin();
+      allow read: if true;
+      
+      allow create: if isSignedIn() && 
+                       isEmailVerified() &&
+                       canScore() &&
+                       request.resource.data.userId == request.auth.uid;
+      
+      allow update: if isSignedIn() && 
+                       (request.auth.uid == resource.data.userId || isAdmin());
+      
+      allow delete: if isSignedIn() && 
+                       (request.auth.uid == resource.data.userId || isAdmin());
     }
-
-    /* =====================================================
-       🏆 COURSE LEADERS (LOWMAN CACHE)
-       ===================================================== */
-
-    match /course_leaders/{courseId} {
-
-      allow read: if isSignedIn();
-
-      allow write: if false;
-
-      allow write: if isAdmin();
-    }
-
-    /* =====================================================
-       🗺️ COURSES (API CACHE)
-       ===================================================== */
-
-    match /courses/{courseId} {
-
-      allow read: if isSignedIn();
-
+    
+    // ============================================================================
+    // NOTIFICATIONS COLLECTION
+    // ============================================================================
+    
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && 
+                     (request.auth.uid == resource.data.userId || isAdmin());
+      
+      allow list, get: if isSignedIn() || isAdmin();
+      
       allow create: if isSignedIn();
-
-      allow update, delete: if false;
-
+      
+      allow update: if isSignedIn() && 
+                       (request.auth.uid == resource.data.userId || isAdmin());
+      
+      allow delete: if isSignedIn() && 
+                       (request.auth.uid == resource.data.userId || isAdmin());
+    }
+    
+    // ============================================================================
+    // REPORTS COLLECTION
+    // ============================================================================
+    
+    match /reports/{reportId} {
+      allow create: if isSignedIn() && isEmailVerified();
+      
+      allow read: if isSignedIn() && (
+        request.auth.uid == resource.data.reporterId || isAdmin()
+      );
+      
+      allow list, get: if isSignedIn();
+      
       allow update, delete: if isAdmin();
     }
-
-    /* =====================================================
-       💬 MESSAGES
-       ===================================================== */
-
-    match /messages/{messageId} {
-
-      allow read: if isSignedIn()
-        && (
-          request.auth.uid == resource.data.senderId
-          || request.auth.uid == resource.data.receiverId
-        );
-
-      allow create: if canWrite();
-
+    
+    // ============================================================================
+    // VERIFICATION REQUESTS COLLECTION
+    // ============================================================================
+    
+    match /verification_requests/{requestId} {
+      allow read: if isAdmin();
+      allow list, get: if isAdmin();
+      
+      allow create: if isSignedIn() && 
+                       request.resource.data.userId == request.auth.uid;
+      
+      allow update, delete: if isAdmin();
+    }
+    
+    // ============================================================================
+    // PARTNER REQUESTS COLLECTION
+    // ============================================================================
+    
+    match /partnerRequests/{requestId} {
+      allow read: if isSignedIn() && 
+                     (request.auth.uid == resource.data.fromUserId || 
+                      request.auth.uid == resource.data.toUserId ||
+                      isAdmin());
+      
+      allow list, get: if isSignedIn();
+      
+      allow create: if isSignedIn() && 
+                       isEmailVerified() &&
+                       request.resource.data.fromUserId == request.auth.uid;
+      
+      allow update, delete: if isSignedIn() && 
+                               (request.auth.uid == resource.data.fromUserId || 
+                                request.auth.uid == resource.data.toUserId ||
+                                isAdmin());
+    }
+    
+    // ============================================================================
+    // PARTNERS COLLECTION
+    // ============================================================================
+    
+    match /partners/{partnerId} {
+      // Allow reading partnership documents if you're one of the partners
+      allow read: if isSignedIn() && 
+                     (partnerId.matches('.*' + request.auth.uid + '.*') ||
+                      isAdmin());
+      
+      // Allow listing partnerships (for queries)
+      allow list, get: if isSignedIn();
+      
+      // Allow creating partnerships if you're one of the partners
+      allow create: if isSignedIn() && 
+                       isEmailVerified();
+      
+      // Allow updating/deleting partnerships if you're one of the partners
+      allow update, delete: if isSignedIn() && 
+                               (partnerId.matches('.*' + request.auth.uid + '.*') ||
+                                isAdmin());
+    }
+    
+    // ============================================================================
+    // COURSE MEMBERSHIPS COLLECTION
+    // ============================================================================
+    
+    match /course_memberships/{membershipId} {
+      // Allow users to read their own membership requests
+      allow read: if isSignedIn() && 
+                     (request.auth.uid == resource.data.userId || isAdmin());
+      
+      // Allow listing memberships (for queries)
+      allow list, get: if isSignedIn();
+      
+      // Allow users to create membership requests
+      allow create: if isSignedIn() && 
+                       isEmailVerified() &&
+                       request.resource.data.userId == request.auth.uid;
+      
+      // Only admins can update/delete
+      allow update, delete: if isAdmin();
+    }
+    
+    // ============================================================================
+    // COURSES COLLECTION (cached golf courses)
+    // ============================================================================
+    
+    match /courses/{courseId} {
+      allow read: if true; // Public read
+      allow create, update: if isSignedIn();
       allow delete: if isAdmin();
     }
-
-    /* =====================================================
-       🚫 DEFAULT DENY
-       ===================================================== */
-
-    match /{document=**} {
-      allow read, write: if false;
+    
+    // ============================================================================
+    // COURSE LEADERS COLLECTION
+    // ============================================================================
+    
+    match /course_leaders/{courseLeaderId} {
+      allow read: if true; // Public read
+      allow create, update: if isSignedIn();
+      allow delete: if isAdmin();
+    }
+    
+    // ============================================================================
+    // CLUBS COLLECTION
+    // ============================================================================
+    
+    match /clubs/{clubId} {
+      allow read: if true;
+      allow create: if isSignedIn() && isEmailVerified();
+      allow update, delete: if isSignedIn() && 
+                               (request.auth.uid == resource.data.ownerId || isAdmin());
     }
   }
 }
-
-

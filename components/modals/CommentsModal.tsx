@@ -1,35 +1,50 @@
+import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
 import { auth, db } from "@/constants/firebaseConfig";
+import { createNotification } from "@/utils/notificationHelpers";
+import {
+  checkRateLimit,
+  EMAIL_VERIFICATION_MESSAGE,
+  getRateLimitMessage,
+  isEmailVerified,
+  updateRateLimitTimestamp
+} from "@/utils/rateLimitHelpers";
+import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import {
-    addDoc,
-    collection,
-    doc,
-    getDoc,
-    getDocs,
-    increment,
-    orderBy,
-    query,
-    updateDoc,
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  increment,
+  orderBy,
+  query,
+  updateDoc,
+  where,
 } from "firebase/firestore";
 import { useEffect, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    FlatList,
-    Image,
-    KeyboardAvoidingView,
-    Modal,
-    Platform,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 interface Props {
   visible: boolean;
   thoughtId: string;
   postContent: string;
+  postOwnerId: string;
   onClose: () => void;
   onCommentAdded: () => void;
 }
@@ -41,6 +56,8 @@ interface Comment {
   createdAt: any;
   likes?: number;
   likedBy?: string[];
+  taggedPartners?: { userId: string; displayName: string }[];
+  taggedCourses?: { courseId: number; courseName: string }[];
 }
 
 interface UserProfile {
@@ -51,11 +68,13 @@ interface UserProfile {
 export default function CommentsModal({
   visible,
   thoughtId,
+  postOwnerId,
   onClose,
   onCommentAdded,
 }: Props) {
   const router = useRouter();
   const inputRef = useRef<TextInput>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [comments, setComments] = useState<Comment[]>([]);
   const [userMap, setUserMap] = useState<Record<string, UserProfile>>({});
@@ -63,7 +82,55 @@ export default function CommentsModal({
   const [text, setText] = useState("");
   const [posting, setPosting] = useState(false);
 
+  // Edit mode
+  const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
+  const [originalEditText, setOriginalEditText] = useState("");
+
+  // @ Mention autocomplete state
+  const [taggedPartners, setTaggedPartners] = useState<{ userId: string; displayName: string }[]>([]);
+  const [taggedCourses, setTaggedCourses] = useState<{ courseId: number; courseName: string }[]>([]);
+  const [showAutocomplete, setShowAutocomplete] = useState(false);
+  const [autocompleteType, setAutocompleteType] = useState<"partner" | "course" | null>(null);
+  const [autocompleteResults, setAutocompleteResults] = useState<any[]>([]);
+  const [currentMention, setCurrentMention] = useState("");
+  const [allPartners, setAllPartners] = useState<{ userId: string; displayName: string }[]>([]);
+  
+  // ✅ Track validated mentions for styling
+  const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
+
   const currentUserId = auth.currentUser?.uid;
+
+  /* ---------------- LOAD USER PARTNERS ---------------- */
+  useEffect(() => {
+    if (!visible || !currentUserId) return;
+
+    const loadPartners = async () => {
+      try {
+        const userDoc = await getDoc(doc(db, "users", currentUserId));
+        if (userDoc.exists()) {
+          const partners = userDoc.data()?.partners || [];
+          if (partners.length > 0) {
+            const partnerDocs = await Promise.all(
+              partners.map((partnerId: string) => getDoc(doc(db, "users", partnerId)))
+            );
+            
+            const partnerList = partnerDocs
+              .filter((d) => d.exists())
+              .map((d) => ({
+                userId: d.id,
+                displayName: d.data()?.displayName || "Unknown",
+              }));
+            
+            setAllPartners(partnerList);
+          }
+        }
+      } catch (error) {
+        console.error("Error loading partners:", error);
+      }
+    };
+
+    loadPartners();
+  }, [visible, currentUserId]);
 
   /* ---------------- FETCH COMMENTS ---------------- */
   useEffect(() => {
@@ -107,27 +174,498 @@ export default function CommentsModal({
     fetch();
   }, [visible, thoughtId]);
 
-  /* ---------------- POST COMMENT ---------------- */
+  /* ---------------- @ MENTION AUTOCOMPLETE ---------------- */
+  const handleTextChange = (newText: string) => {
+    setText(newText);
+
+    // ✅ Clean up selectedMentions - remove any that are no longer in the content
+    const cleanedMentions = selectedMentions.filter((mention) => 
+      newText.includes(mention)
+    );
+    if (cleanedMentions.length !== selectedMentions.length) {
+      setSelectedMentions(cleanedMentions);
+    }
+
+    const lastAtIndex = newText.lastIndexOf("@");
+    if (lastAtIndex === -1) {
+      setShowAutocomplete(false);
+      return;
+    }
+
+    const afterAt = newText.slice(lastAtIndex + 1);
+    
+    if (afterAt.includes(" ")) {
+      setShowAutocomplete(false);
+      return;
+    }
+
+    setCurrentMention(afterAt);
+
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+
+    debounceRef.current = setTimeout(() => {
+      if (afterAt.length >= 2) {
+        searchMentions(afterAt);
+      }
+    }, 300);
+  };
+
+  const searchMentions = async (searchText: string) => {
+    try {
+      const partnerResults = allPartners.filter((p) =>
+        p.displayName.toLowerCase().includes(searchText.toLowerCase())
+      );
+
+      if (partnerResults.length > 0) {
+        setAutocompleteType("partner");
+        setAutocompleteResults(partnerResults);
+        setShowAutocomplete(true);
+        return;
+      }
+
+      searchCourses(searchText);
+    } catch (err) {
+      console.error("Search error:", err);
+    }
+  };
+
+  const searchCourses = async (searchText: string) => {
+    try {
+      const coursesQuery = query(collection(db, "courses"));
+      const coursesSnap = await getDocs(coursesQuery);
+      
+      const cachedCourses: any[] = [];
+      coursesSnap.forEach((doc) => {
+        const data = doc.data();
+        const courseName = data.course_name || data.courseName || "";
+        
+        if (courseName.toLowerCase().includes(searchText.toLowerCase())) {
+          cachedCourses.push({
+            courseId: data.id,
+            courseName: courseName,
+            location: data.location 
+              ? `${data.location.city}, ${data.location.state}`
+              : "",
+          });
+        }
+      });
+
+      if (cachedCourses.length > 0) {
+        setAutocompleteType("course");
+        setAutocompleteResults(cachedCourses);
+        setShowAutocomplete(true);
+        return;
+      }
+
+      const res = await fetch(
+        `${GOLF_COURSE_API_URL}/search?search_query=${encodeURIComponent(searchText)}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Key ${GOLF_COURSE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (!res.ok) return;
+
+      const data = await res.json();
+      const courses = data.courses || [];
+
+      if (courses.length > 0) {
+        setAutocompleteType("course");
+        setAutocompleteResults(
+          courses.map((c: any) => ({
+            courseId: c.id,
+            courseName: c.course_name,
+            location: `${c.location.city}, ${c.location.state}`,
+          }))
+        );
+        setShowAutocomplete(true);
+      }
+    } catch (err) {
+      console.error("Course search error:", err);
+    }
+  };
+
+  const handleSelectMention = (item: any) => {
+    let mentionText = "";
+    
+    if (autocompleteType === "partner") {
+      if (taggedPartners.find((p) => p.userId === item.userId)) {
+        setShowAutocomplete(false);
+        return;
+      }
+
+      const lastAtIndex = text.lastIndexOf("@");
+      const beforeAt = text.slice(0, lastAtIndex);
+      const afterMention = text.slice(lastAtIndex + 1 + currentMention.length);
+      
+      mentionText = `@${item.displayName}`;
+      setText(`${beforeAt}${mentionText} ${afterMention}`);
+      setTaggedPartners([...taggedPartners, { userId: item.userId, displayName: item.displayName }]);
+    } else if (autocompleteType === "course") {
+      if (taggedCourses.find((c) => c.courseId === item.courseId)) {
+        setShowAutocomplete(false);
+        return;
+      }
+
+      const lastAtIndex = text.lastIndexOf("@");
+      const beforeAt = text.slice(0, lastAtIndex);
+      const afterMention = text.slice(lastAtIndex + 1 + currentMention.length);
+      
+      mentionText = `@${item.courseName}`;
+      setText(`${beforeAt}${mentionText} ${afterMention}`);
+      setTaggedCourses([...taggedCourses, { courseId: item.courseId, courseName: item.courseName }]);
+    }
+
+    // ✅ Track validated mention for styling
+    if (mentionText && !selectedMentions.includes(mentionText)) {
+      setSelectedMentions([...selectedMentions, mentionText]);
+    }
+
+    setShowAutocomplete(false);
+  };
+
+  /* ✅ RENDER INPUT TEXT WITH STYLED MENTIONS ---------------- */
+  const renderTextWithMentions = () => {
+    const mentionRegex = /@([\w\s]+?)(?=\s{2,}|$|@|\n)/g;
+    const parts: { text: string; isMention: boolean }[] = [];
+    let lastIndex = 0;
+    
+    let match;
+    while ((match = mentionRegex.exec(text)) !== null) {
+      // Add text before mention
+      if (match.index > lastIndex) {
+        parts.push({ text: text.slice(lastIndex, match.index), isMention: false });
+      }
+      
+      const mentionText = match[0].trim(); // Includes the @, trimmed
+      
+      // Only style if this mention was selected from autocomplete
+      const isValidMention = selectedMentions.includes(mentionText);
+      
+      parts.push({ text: match[0], isMention: isValidMention });
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Add remaining text
+    if (lastIndex < text.length) {
+      parts.push({ text: text.slice(lastIndex), isMention: false });
+    }
+    
+    return parts.map((part, index) => {
+      if (part.isMention) {
+        return (
+          <Text key={index} style={styles.mentionInput}>
+            {part.text}
+          </Text>
+        );
+      }
+      
+      return <Text key={index}>{part.text}</Text>;
+    });
+  };
+
+  /* ---------------- RENDER COMMENT WITH STYLED MENTIONS ---------------- */
+  const renderCommentWithTags = (comment: Comment) => {
+    const { content, taggedPartners = [], taggedCourses = [] } = comment;
+    
+    const mentionMap: { [key: string]: { type: string; data: any } } = {};
+    
+    taggedPartners.forEach((partner) => {
+      mentionMap[`@${partner.displayName}`] = { type: 'partner', data: partner };
+    });
+    
+    taggedCourses.forEach((course) => {
+      const courseTagNoSpaces = `@${course.courseName.replace(/\s+/g, "")}`;
+      mentionMap[courseTagNoSpaces] = { type: 'course', data: course };
+      mentionMap[`@${course.courseName}`] = { type: 'course', data: course };
+    });
+    
+    const mentionPatterns = Object.keys(mentionMap)
+      .map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .sort((a, b) => b.length - a.length);
+    
+    if (mentionPatterns.length === 0) {
+      return <Text style={styles.commentText}>{content}</Text>;
+    }
+    
+    const mentionRegex = new RegExp(`(${mentionPatterns.join('|')})`, 'g');
+    const parts = content.split(mentionRegex);
+    
+    return (
+      <Text style={styles.commentText}>
+        {parts.map((part, index) => {
+          const mention = mentionMap[part];
+          
+          if (mention) {
+            return (
+              <Text
+                key={index}
+                style={styles.mention}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  if (mention.type === 'partner') {
+                    router.push(`/locker/${mention.data.userId}`);
+                  } else if (mention.type === 'course') {
+                    router.push(`/locker/course/${mention.data.courseId}`);
+                  }
+                }}
+              >
+                {part}
+              </Text>
+            );
+          }
+          
+          return <Text key={index}>{part}</Text>;
+        })}
+      </Text>
+    );
+  };
+
+  /* ---------------- POST/UPDATE COMMENT ---------------- */
   const post = async () => {
     if (!text.trim() || !currentUserId) return;
 
+    // ✅ ANTI-BOT CHECK 1: Email Verification
+    if (!isEmailVerified()) {
+      Alert.alert("Email Not Verified", EMAIL_VERIFICATION_MESSAGE);
+      return;
+    }
+
+    // ✅ ANTI-BOT CHECK 2: Rate Limiting (skip for edit mode)
+    if (!editingCommentId) {
+      const { allowed, remainingSeconds } = await checkRateLimit("comment");
+      if (!allowed) {
+        Alert.alert("Please Wait", getRateLimitMessage("comment", remainingSeconds));
+        return;
+      }
+    }
+
     setPosting(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    await addDoc(collection(db, "thoughts", thoughtId, "comments"), {
-      content: text.trim(),
-      userId: currentUserId,
-      createdAt: new Date(),
-      likes: 0,
-      likedBy: [],
-    });
+    try {
+      if (editingCommentId) {
+        // UPDATE existing comment
+        await updateDoc(doc(db, "thoughts", thoughtId, "comments", editingCommentId), {
+          content: text.trim(),
+          taggedPartners: taggedPartners,
+          taggedCourses: taggedCourses,
+        });
 
-    await updateDoc(doc(db, "thoughts", thoughtId), {
-      comments: increment(1),
-    });
+        setComments((prev) =>
+          prev.map((c) =>
+            c.id === editingCommentId
+              ? { ...c, content: text.trim(), taggedPartners, taggedCourses }
+              : c
+          )
+        );
 
+        setEditingCommentId(null);
+        setOriginalEditText("");
+      } else {
+        // CREATE new comment
+        const commentRef = await addDoc(collection(db, "thoughts", thoughtId, "comments"), {
+          content: text.trim(),
+          userId: currentUserId,
+          createdAt: new Date(),
+          likes: 0,
+          likedBy: [],
+          taggedPartners: taggedPartners,
+          taggedCourses: taggedCourses,
+        });
+
+        await updateDoc(doc(db, "thoughts", thoughtId), {
+          comments: increment(1),
+        });
+
+        // Check if post owner was tagged
+        const postOwnerWasTagged = taggedPartners.some(p => p.userId === postOwnerId);
+
+        // Create comment notification for post owner (only if NOT tagged)
+        if (postOwnerId && postOwnerId !== currentUserId && !postOwnerWasTagged) {
+          await createNotification({
+            userId: postOwnerId,
+            type: "comment",
+            actorId: currentUserId,
+            postId: thoughtId,
+          });
+        }
+
+        // Create mention notifications for tagged partners
+        for (const partner of taggedPartners) {
+          if (partner.userId !== currentUserId) {
+            await createNotification({
+              userId: partner.userId,
+              type: "mention_comment",
+              actorId: currentUserId,
+              postId: thoughtId,
+              commentId: commentRef.id,
+            });
+          }
+        }
+
+        // Create mention notifications for tagged courses (claimed courses)
+        for (const course of taggedCourses) {
+          try {
+            // Find the user who owns this course
+            const usersQuery = query(
+              collection(db, "users"),
+              where("ownedCourseId", "==", course.courseId)
+            );
+            const usersSnap = await getDocs(usersQuery);
+
+            if (!usersSnap.empty) {
+              const courseOwner = usersSnap.docs[0];
+              const courseOwnerId = courseOwner.id;
+
+              if (courseOwnerId !== currentUserId && courseOwnerId !== postOwnerId) {
+                await createNotification({
+                  userId: courseOwnerId,
+                  type: "mention_comment",
+                  actorId: currentUserId,
+                  postId: thoughtId,
+                  commentId: commentRef.id,
+                });
+              }
+            }
+          } catch (error) {
+            console.error("Error notifying course owner:", error);
+          }
+        }
+
+        // ✅ ANTI-BOT: Update rate limit timestamp
+        await updateRateLimitTimestamp("comment");
+
+        onCommentAdded();
+      }
+
+      setText("");
+      setTaggedPartners([]);
+      setTaggedCourses([]);
+      setSelectedMentions([]);
+      
+      // ✅ Refetch comments to show the new one immediately
+      const fetchComments = async () => {
+        const q = query(
+          collection(db, "thoughts", thoughtId, "comments"),
+          orderBy("createdAt", "asc")
+        );
+        const snap = await getDocs(q);
+        const loaded: Comment[] = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as any),
+        }));
+        setComments(loaded);
+      };
+      await fetchComments();
+      
+      setPosting(false);
+    } catch (error) {
+      console.error("Error posting/updating comment:", error);
+      setPosting(false);
+    }
+  };
+
+  /* ---------------- EDIT COMMENT ---------------- */
+  const handleEditComment = (comment: Comment) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setEditingCommentId(comment.id);
+    setText(comment.content);
+    setOriginalEditText(comment.content);
+    setTaggedPartners(comment.taggedPartners || []);
+    setTaggedCourses(comment.taggedCourses || []);
+    
+    // ✅ Populate selectedMentions from existing tags
+    const existingMentions: string[] = [];
+    if (comment.taggedPartners) {
+      comment.taggedPartners.forEach((p) => {
+        existingMentions.push(`@${p.displayName}`);
+      });
+    }
+    if (comment.taggedCourses) {
+      comment.taggedCourses.forEach((c) => {
+        existingMentions.push(`@${c.courseName}`);
+      });
+    }
+    setSelectedMentions(existingMentions);
+    
+    inputRef.current?.focus();
+  };
+
+  const handleCancelEdit = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setEditingCommentId(null);
     setText("");
-    onCommentAdded();
-    setPosting(false);
+    setOriginalEditText("");
+    setTaggedPartners([]);
+    setTaggedCourses([]);
+    setSelectedMentions([]);
+  };
+
+  /* ---------------- DELETE COMMENT ---------------- */
+  const handleDeleteComment = (comment: Comment) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    Alert.alert(
+      "Delete Comment",
+      "Are you sure you want to delete this comment?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+              await deleteDoc(doc(db, "thoughts", thoughtId, "comments", comment.id));
+
+              await updateDoc(doc(db, "thoughts", thoughtId), {
+                comments: increment(-1),
+              });
+
+              setComments((prev) => prev.filter((c) => c.id !== comment.id));
+            } catch (error) {
+              console.error("Error deleting comment:", error);
+              Alert.alert("Error", "Failed to delete comment");
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  /* ---------------- LONG PRESS MENU ---------------- */
+  const handleLongPressComment = (comment: Comment) => {
+    if (comment.userId !== currentUserId) return;
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    Alert.alert(
+      "Comment Options",
+      "What would you like to do?",
+      [
+        {
+          text: "Edit",
+          onPress: () => handleEditComment(comment),
+        },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => handleDeleteComment(comment),
+        },
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+      ]
+    );
   };
 
   /* ---------------- LIKE COMMENT ---------------- */
@@ -175,10 +713,17 @@ export default function CommentsModal({
               />
             </TouchableOpacity>
 
-            <Text style={styles.title}>Comments</Text>
+            <Text style={styles.title}>
+              {editingCommentId ? "Edit Comment" : "Comments"}
+            </Text>
 
-            {/* Spacer to keep title centered */}
-            <View style={styles.headerButton} />
+            {editingCommentId && (
+              <TouchableOpacity onPress={handleCancelEdit} style={styles.headerButton}>
+                <Text style={styles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+            )}
+
+            {!editingCommentId && <View style={styles.headerButton} />}
           </View>
 
           {/* LIST */}
@@ -194,23 +739,35 @@ export default function CommentsModal({
                 renderItem={({ item }) => {
                   const user = userMap[item.userId];
                   const hasLiked = item.likedBy?.includes(currentUserId || "");
+                  const isOwnComment = item.userId === currentUserId;
 
                   return (
-                    <View style={styles.commentRow}>
-                      {user?.avatar ? (
-                        <Image
-                          source={{ uri: user.avatar }}
-                          style={styles.avatar}
-                        />
-                      ) : (
-                        <View style={styles.avatarPlaceholder} />
-                      )}
+                    <TouchableOpacity
+                      style={styles.commentRow}
+                      onLongPress={() => handleLongPressComment(item)}
+                      delayLongPress={500}
+                      activeOpacity={isOwnComment ? 0.7 : 1}
+                    >
+                      <TouchableOpacity
+                        onPress={() => router.push(`/locker/${item.userId}`)}
+                      >
+                        {user?.avatar ? (
+                          <Image
+                            source={{ uri: user.avatar }}
+                            style={styles.avatar}
+                          />
+                        ) : (
+                          <View style={styles.avatarPlaceholder}>
+                            <Text style={styles.avatarText}>
+                              {user?.displayName?.charAt(0).toUpperCase() || "?"}
+                            </Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
 
                       <View style={styles.commentBody}>
                         <TouchableOpacity
-                          onPress={() =>
-                            router.push(`/locker/${item.userId}`)
-                          }
+                          onPress={() => router.push(`/locker/${item.userId}`)}
                         >
                           <Text style={styles.name}>
                             {item.userId === currentUserId
@@ -219,7 +776,7 @@ export default function CommentsModal({
                           </Text>
                         </TouchableOpacity>
 
-                        <Text>{item.content}</Text>
+                        {renderCommentWithTags(item)}
                       </View>
 
                       <TouchableOpacity
@@ -234,27 +791,76 @@ export default function CommentsModal({
                           ]}
                         />
                       </TouchableOpacity>
-                    </View>
+                    </TouchableOpacity>
                   );
                 }}
               />
             )}
           </View>
 
-          {/* INPUT */}
+          {/* AUTOCOMPLETE DROPDOWN */}
+          {showAutocomplete && (
+            <View style={styles.autocompleteContainer}>
+              <ScrollView 
+                keyboardShouldPersistTaps="handled"
+                style={styles.autocompleteScroll}
+              >
+                {autocompleteResults.map((item, idx) => (
+                  <TouchableOpacity
+                    key={`${item.userId || item.courseId}-${idx}`}
+                    style={styles.autocompleteItem}
+                    onPress={() => handleSelectMention(item)}
+                  >
+                    <Text style={styles.autocompleteName}>
+                      {autocompleteType === "partner"
+                        ? `@${item.displayName}`
+                        : `@${item.courseName}`}
+                    </Text>
+                    {autocompleteType === "course" && (
+                      <Text style={styles.autocompleteLocation}>{item.location}</Text>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
+          {/* INPUT - ✅ WITH TWO-LAYER SYSTEM */}
           <View style={styles.inputRow}>
-            <TextInput
-              ref={inputRef}
-              style={styles.input}
-              placeholder="Add a comment…"
-              value={text}
-              onChangeText={setText}
-            />
-            <TouchableOpacity onPress={post} disabled={posting}>
-              <Image
-                source={require("@/assets/icons/Post Score.png")}
-                style={styles.send}
+            <View style={styles.inputContainer}>
+              {/* Invisible TextInput for actual input */}
+              <TextInput
+                ref={inputRef}
+                style={[styles.input, text && styles.inputWithContent]}
+                placeholder={editingCommentId ? "Update your comment…" : "Add a comment…"}
+                value={text}
+                onChangeText={handleTextChange}
+                multiline
+                maxLength={500}
               />
+              
+              {/* Styled text overlay to show mentions */}
+              {text && !posting && (
+                <View style={styles.inputOverlay} pointerEvents="none">
+                  <Text style={styles.inputOverlayText}>
+                    {renderTextWithMentions()}
+                  </Text>
+                </View>
+              )}
+            </View>
+            
+            <TouchableOpacity onPress={post} disabled={posting || !text.trim()}>
+              {posting ? (
+                <ActivityIndicator size="small" color="#0D5C3A" />
+              ) : (
+                <Image
+                  source={require("@/assets/icons/Post Score.png")}
+                  style={[
+                    styles.send,
+                    !text.trim() && styles.sendDisabled,
+                  ]}
+                />
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -270,7 +876,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.5)",
   },
   sheet: {
-    height: "65%",
+    height: "75%",
     backgroundColor: "#F0F8F0",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
@@ -285,13 +891,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   headerButton: {
-    width: 40,
+    width: 60,
     alignItems: "center",
   },
   closeIcon: {
     width: 24,
     height: 24,
     tintColor: "#0D5C3A",
+  },
+  cancelText: {
+    color: "#FF3B30",
+    fontSize: 14,
+    fontWeight: "600",
   },
   title: {
     fontWeight: "700",
@@ -309,7 +920,7 @@ const styles = StyleSheet.create({
   },
   commentRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     marginBottom: 14,
   },
   avatar: {
@@ -322,13 +933,31 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: "#CCC",
+    backgroundColor: "#0D5C3A",
     marginRight: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarText: {
+    color: "#FFF",
+    fontSize: 16,
+    fontWeight: "700",
   },
   commentBody: {
     flex: 1,
   },
   name: {
+    fontWeight: "700",
+    color: "#0D5C3A",
+    marginBottom: 2,
+  },
+  commentText: {
+    fontSize: 14,
+    color: "#333",
+    lineHeight: 20,
+  },
+  mention: {
+    fontSize: 14,
     fontWeight: "700",
     color: "#0D5C3A",
   },
@@ -343,27 +972,104 @@ const styles = StyleSheet.create({
   likeIconActive: {
     tintColor: "#FF3B30",
   },
+
+  /* AUTOCOMPLETE */
+  autocompleteContainer: {
+    backgroundColor: "#FFF",
+    marginHorizontal: 12,
+    marginBottom: 8,
+    borderRadius: 8,
+    maxHeight: 150,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  autocompleteScroll: {
+    maxHeight: 150,
+  },
+  autocompleteItem: {
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F0F0F0",
+  },
+  autocompleteName: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#0D5C3A",
+  },
+  autocompleteLocation: {
+    fontSize: 12,
+    color: "#666",
+    marginTop: 2,
+  },
+
+  /* INPUT - ✅ TWO-LAYER SYSTEM */
   inputRow: {
     flexDirection: "row",
+    alignItems: "flex-end",
     padding: 12,
     borderTopWidth: 1,
     borderTopColor: "#DDD",
     backgroundColor: "#E8DCC3",
+    gap: 10,
   },
+  
+  inputContainer: {
+    position: "relative",
+    flex: 1,
+  },
+  
   input: {
     flex: 1,
     backgroundColor: "#FFF",
     borderRadius: 20,
     paddingHorizontal: 14,
-    marginRight: 10,
+    paddingVertical: 8,
+    maxHeight: 100,
+    fontSize: 14,
+    textAlignVertical: "top",
   },
+  
+  inputWithContent: {
+    color: "transparent", // ✅ Hide actual text when overlay is showing
+  },
+  
+  inputOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 14,
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
+  
+  inputOverlayText: {
+    fontSize: 14,
+    color: "#333",
+    lineHeight: 18,
+  },
+  
+  mentionInput: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0D5C3A",
+  },
+  
   send: {
     width: 28,
     height: 28,
     tintColor: "#0D5C3A",
   },
+  sendDisabled: {
+    opacity: 0.4,
+  },
 });
-
 
 
 
