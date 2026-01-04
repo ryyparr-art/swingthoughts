@@ -1,12 +1,13 @@
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Caveat_400Regular, Caveat_700Bold, useFonts } from '@expo-google-fonts/caveat';
 import { Slot, router, usePathname } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 
 export default function RootLayout() {
   const [initializing, setInitializing] = useState(true);
   const pathname = usePathname();
+  const hasPlayedAppOpenSound = useRef(false);
 
   // Load Caveat font
   const [fontsLoaded] = useFonts({
@@ -186,14 +187,19 @@ export default function RootLayout() {
             return;
           }
 
-          // 🔊 PLAY APP OPEN SOUND (after onboarding complete)
-          try {
-            // Small delay to ensure sounds are loaded
-            setTimeout(async () => {
-              await soundPlayer.play('appOpen');
-            }, 300);
-          } catch (soundErr) {
-            console.error("⚠️ App open sound failed:", soundErr);
+          // 🔊 PLAY APP OPEN SOUND (ONLY ONCE on initial app launch)
+          if (!hasPlayedAppOpenSound.current) {
+            try {
+              console.log("🔊 Playing app open sound (first time only)");
+              hasPlayedAppOpenSound.current = true;
+              
+              // Small delay to ensure sounds are loaded
+              setTimeout(async () => {
+                await soundPlayer.play('appOpen');
+              }, 300);
+            } catch (soundErr) {
+              console.error("⚠️ App open sound failed:", soundErr);
+            }
           }
 
           // 📍 CHECK AND UPDATE LOCATION (silent background check)
@@ -266,7 +272,6 @@ export default function RootLayout() {
 
   return <Slot />;
 }
-
 
 
 

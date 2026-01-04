@@ -1,6 +1,8 @@
 import * as Haptics from "expo-haptics";
 import { Image, StyleSheet, TouchableOpacity, View } from "react-native";
 
+import { soundPlayer } from "@/utils/soundPlayer";
+
 interface Props {
   onPress: () => void;
   hasFilters?: boolean;
@@ -8,6 +10,7 @@ interface Props {
 
 export default function FilterFAB({ onPress, hasFilters = false }: Props) {
   const handlePress = () => {
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     onPress();
   };

@@ -2,6 +2,8 @@ import * as Haptics from "expo-haptics";
 import { useRouter, useSegments } from "expo-router";
 import { Image, StyleSheet, TouchableOpacity, View } from "react-native";
 
+import { soundPlayer } from "@/utils/soundPlayer";
+
 export default function TopNavBar() {
   const router = useRouter();
   const segments = useSegments();
@@ -24,6 +26,7 @@ export default function TopNavBar() {
   };
 
   const handleNavigation = (route: string) => {
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     router.push(route as any);
   };

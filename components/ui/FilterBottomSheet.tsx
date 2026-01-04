@@ -1,5 +1,6 @@
 import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
 import { getAllThoughtTypes } from "@/constants/postTypes";
+import { soundPlayer } from "@/utils/soundPlayer";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -52,7 +53,7 @@ export default function FilterBottomSheet({
   const [loadingCourses, setLoadingCourses] = useState(false);
   const [partnersOnly, setPartnersOnly] = useState(false);
 
-  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const debounceRef = useRef<number | null>(null);
   const allThoughtTypes = getAllThoughtTypes();
 
   const initializedRef = useRef(false);
@@ -148,6 +149,7 @@ export default function FilterBottomSheet({
 
   // Handle course selection
   const handleSelectCourse = (course: GolfCourse) => {
+    soundPlayer.play("click");
     console.log('🏌️ Course selected:', course.course_name);
     setSelectedCourse(course);
     setCourseSearch(course.course_name);
@@ -170,6 +172,7 @@ export default function FilterBottomSheet({
 
   // Clear all filters
   const handleClearFilters = () => {
+    soundPlayer.play("click");
     console.log('🧹 CLEAR FILTERS CLICKED');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setType(null);
@@ -187,6 +190,7 @@ export default function FilterBottomSheet({
 
   // Apply filters
   const handleApplyFilters = () => {
+    soundPlayer.play("click");
     const filters = {
       type: type || undefined,
       course: selectedCourse?.course_name || undefined,
@@ -201,6 +205,7 @@ export default function FilterBottomSheet({
 
   // Handle close
   const handleClose = () => {
+    soundPlayer.play("click");
     console.log('❌ CLOSE BUTTON CLICKED');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     onClose();
@@ -251,6 +256,7 @@ export default function FilterBottomSheet({
                   type && styles.filterPillSelected,
                 ]}
                 onPress={() => {
+                  soundPlayer.play("click");
                   console.log('🔘 Swing Thought pill clicked. Current mode:', activeFilterMode, 'Current type:', type);
                   setActiveFilterMode(activeFilterMode === "type" ? null : "type");
                 }}
@@ -268,6 +274,7 @@ export default function FilterBottomSheet({
                 {type && (
                   <TouchableOpacity
                     onPress={() => {
+                      soundPlayer.play("click");
                       console.log('✕ Removing type filter');
                       setType(null);
                     }}
@@ -286,6 +293,7 @@ export default function FilterBottomSheet({
                   selectedCourse && styles.filterPillSelected,
                 ]}
                 onPress={() => {
+                  soundPlayer.play("click");
                   console.log('🔘 Course pill clicked. Current mode:', activeFilterMode);
                   setActiveFilterMode(activeFilterMode === "course" ? null : "course");
                 }}
@@ -302,6 +310,7 @@ export default function FilterBottomSheet({
                 {selectedCourse && (
                   <TouchableOpacity
                     onPress={() => {
+                      soundPlayer.play("click");
                       console.log('✕ Removing course filter');
                       setSelectedCourse(null);
                       setCourseSearch("");
@@ -320,6 +329,7 @@ export default function FilterBottomSheet({
                   partnersOnly && styles.filterPillSelected,
                 ]}
                 onPress={() => {
+                  soundPlayer.play("click");
                   console.log('👥 Partners Only clicked. Current:', partnersOnly, '→ New:', !partnersOnly);
                   setPartnersOnly(!partnersOnly);
                 }}
@@ -352,6 +362,7 @@ export default function FilterBottomSheet({
                       type === t.id && styles.typeChipSelected,
                     ]}
                     onPress={() => {
+                      soundPlayer.play("click");
                       console.log('🎯 Type chip clicked:', t.id, 'Current type:', type);
                       setType(type === t.id ? null : t.id);
                     }}
@@ -435,6 +446,7 @@ export default function FilterBottomSheet({
                 <TouchableOpacity
                   style={styles.postTile}
                   onPress={() => {
+                    soundPlayer.play("click");
                     console.log('📸 Post tile clicked');
                     handleClose();
                   }}

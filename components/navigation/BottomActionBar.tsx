@@ -6,6 +6,7 @@ import { Alert, Image, StyleSheet, Text, TouchableOpacity, View } from "react-na
 import { auth, db } from "@/constants/firebaseConfig";
 import { canWrite } from "@/utils";
 import { canPostScores } from "@/utils/canPostScores";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { collection, doc, getDoc, onSnapshot, query, where } from "firebase/firestore";
 
 interface BottomActionBarProps {
@@ -108,6 +109,7 @@ export default function BottomActionBar({
   const canScore = canPostScores(userData);
 
   const handleNavigation = (route: string) => {
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(route as any);
   };
@@ -116,6 +118,7 @@ export default function BottomActionBar({
 
   const requireWrite = (route: string, message: string) => {
     if (!writable) {
+      soundPlayer.play("error");
       Alert.alert("Verification Pending", message);
       return;
     }
@@ -124,6 +127,7 @@ export default function BottomActionBar({
 
   const requireScore = () => {
     if (!canScore) {
+      soundPlayer.play("error");
       Alert.alert(
         "Score Posting Locked",
         "Only golfers and juniors can post scores. Courses cannot post scores."
@@ -296,6 +300,7 @@ export default function BottomActionBar({
             {/* VIEW PROFILE - FIXED: Routes to correct profile */}
             <TouchableOpacity
               onPress={() => {
+                soundPlayer.play("click");
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 
                 if (isOnCourseLocker && courseId) {

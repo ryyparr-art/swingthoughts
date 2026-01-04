@@ -1,34 +1,35 @@
 import { auth, db } from "@/constants/firebaseConfig";
 import {
-    addDoc,
-    collection,
-    deleteDoc,
-    doc,
-    getDoc,
-    getDocs,
-    increment,
-    orderBy,
-    query,
-    serverTimestamp,
-    updateDoc,
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  increment,
+  orderBy,
+  query,
+  serverTimestamp,
+  updateDoc,
 } from "firebase/firestore";
 
+import { soundPlayer } from "@/utils/soundPlayer";
 import * as Haptics from "expo-haptics";
 import {
-    ActivityIndicator,
-    Animated,
-    Image,
-    Keyboard,
-    KeyboardAvoidingView,
-    Modal,
-    Platform,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Animated,
+  Image,
+  Keyboard,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 import { useEffect, useRef, useState } from "react";
@@ -183,6 +184,7 @@ export default function CommentsModal({
 
     try {
       setPosting(true);
+      soundPlayer.play("postThought");
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
       // Store comment
@@ -208,6 +210,7 @@ export default function CommentsModal({
       setPosting(false);
     } catch (err) {
       console.error("Post comment error:", err);
+      soundPlayer.play("error");
       setPosting(false);
     }
   };
@@ -217,6 +220,7 @@ export default function CommentsModal({
   // ----------------------------------
   const handleDeleteComment = async (comment: Comment) => {
     try {
+      soundPlayer.play("click");
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
       const ref = doc(
@@ -241,6 +245,7 @@ export default function CommentsModal({
       onCommentAdded?.();
     } catch (err) {
       console.error("Delete comment error:", err);
+      soundPlayer.play("error");
     }
   };
 
@@ -248,6 +253,7 @@ export default function CommentsModal({
   // CLOSE MODAL
   // ----------------------------------
   const handleClose = () => {
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     Animated.timing(slideAnim, {
@@ -550,6 +556,5 @@ const styles = StyleSheet.create({
 
   postIcon: { width: 22, height: 22, tintColor: "#FFF" },
 });
-
 
 

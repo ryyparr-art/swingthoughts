@@ -13,6 +13,8 @@ import {
   View,
 } from "react-native";
 
+import { soundPlayer } from "@/utils/soundPlayer";
+
 interface CourseLeader {
   courseId: string;
   courseName: string;
@@ -296,6 +298,7 @@ export default function LowmanCarousel({
      HANDLE TAP
      ========================= */
   const handleItemPress = (item: CarouselItem) => {
+    soundPlayer.play("click");
     Haptics.selectionAsync();
     
     onSelectUser?.(item.userId);
@@ -532,7 +535,6 @@ const styles = StyleSheet.create({
     color: "#666",
   },
 });
-
 
 
 
