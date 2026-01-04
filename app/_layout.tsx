@@ -134,6 +134,18 @@ export default function RootLayout() {
             return;
           }
 
+          // 🔐 Email Verification Gate - MUST verify before continuing
+          const hasVerifiedEmail = userData.emailVerified === true;
+          if (!hasVerifiedEmail) {
+            console.log("📧 Email not verified, staying on hero page for verification modal");
+            // Keep user on hero page where email verification modal will show
+            if (!isPublicRoute) {
+              router.replace("/");
+            }
+            setInitializing(false);
+            return;
+          }
+
           // 1️⃣ User type
           if (!hasUserType) {
             console.log("🔄 No user type, redirecting to user-type");
@@ -279,7 +291,6 @@ export default function RootLayout() {
 
   return <Slot />;
 }
-
 
 
 

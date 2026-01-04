@@ -150,6 +150,46 @@ export default function HeroLandingPage() {
         );
       }
 
+      // 📍 CREATE FIRESTORE USER DOCUMENT
+      const { doc: firestoreDoc, setDoc, serverTimestamp } = await import("firebase/firestore");
+      
+      await setDoc(firestoreDoc(db, "users", user.uid), {
+        userId: user.uid,
+        email: user.email,
+        emailVerified: false, // ← Will be set to true when user verifies email
+        createdAt: serverTimestamp(),
+
+        // Location data (empty for now, will be filled during onboarding)
+        homeCity: "",
+        homeState: "",
+        currentCity: "",
+        currentState: "",
+        locationPermission: false,
+        locationMethod: "manual",
+        homeLocation: null,
+        currentLocation: null,
+        currentLocationUpdatedAt: serverTimestamp(),
+        locationHistory: [],
+
+        // ✅ ANTI-BOT FIELDS
+        displayName: null,
+        displayNameLower: null,
+        lastPostTime: null,
+        lastCommentTime: null,
+        lastMessageTime: null,
+        lastScoreTime: null,
+        banned: false,
+
+        // Onboarding status
+        userType: null,
+        handicap: null,
+        acceptedTerms: false,
+        verified: false,
+        lockerCompleted: false,
+      });
+
+      console.log("✅ Firestore user document created with emailVerified: false");
+
       soundPlayer.play('postThought');
       Haptics.notificationAsync(
         Haptics.NotificationFeedbackType.Success

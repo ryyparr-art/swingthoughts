@@ -345,38 +345,128 @@ export default function SettingsScreen() {
         {
           text: "Delete",
           style: "destructive",
-          onPress: () => {
-            soundPlayer.play('click');
-            Alert.alert(
-              "Final Confirmation",
-              "Type DELETE to confirm account deletion",
-              [
-                { 
-                  text: "Cancel", 
-                  style: "cancel",
-                  onPress: () => soundPlayer.play('click')
-                },
-                {
-                  text: "I understand",
-                  style: "destructive",
-                  onPress: () => {
-                    soundPlayer.play('error');
-                    Alert.alert(
-                      "Coming Soon",
-                      "Account deletion will be available in the next update. Please contact support to delete your account.",
-                      [{ 
-                        text: "OK",
-                        onPress: () => soundPlayer.play('click')
-                      }]
-                    );
-                  },
-                },
-              ]
-            );
-          },
+          onPress: () => confirmPasswordForDeletion(),
         },
       ]
     );
+  };
+
+  const confirmPasswordForDeletion = () => {
+    soundPlayer.play('click');
+    
+    // Use Alert.prompt for password entry (iOS only, Android needs custom modal)
+    if (Platform.OS === 'ios') {
+      Alert.prompt(
+        "Confirm Deletion",
+        "Enter your password to permanently delete your account:",
+        [
+          {
+            text: "Cancel",
+            style: "cancel",
+            onPress: () => soundPlayer.play('click'),
+          },
+          {
+            text: "Delete Forever",
+            style: "destructive",
+            onPress: async (password?: string) => {
+              if (!password || !password.trim()) {
+                soundPlayer.play('error');
+                Alert.alert("Error", "Password is required");
+                return;
+              }
+              await executeAccountDeletion(password);
+            },
+          },
+        ],
+        "secure-text"
+      );
+    } else {
+      // For Android, use a simpler confirmation
+      Alert.alert(
+        "Final Confirmation",
+        "Type your password in settings to delete, or contact support at support@swingthoughts.com",
+        [
+          { 
+            text: "OK",
+            onPress: () => soundPlayer.play('click')
+          }
+        ]
+      );
+    }
+  };
+
+  const executeAccountDeletion = async (password: string) => {
+    const user = auth.currentUser;
+    if (!user || !user.email) {
+      soundPlayer.play('error');
+      Alert.alert("Error", "Not logged in");
+      return;
+    }
+
+    try {
+      soundPlayer.play('click');
+      
+      // Re-authenticate user with password
+      const credential = EmailAuthProvider.credential(user.email, password);
+      await reauthenticateWithCredential(user, credential);
+
+      // Mark user as deleted in Firestore (soft delete - keep data for moderation)
+      if (userId) {
+        await updateDoc(doc(db, "users", userId), {
+          deleted: true,
+          deletedAt: new Date().toISOString(),
+          // Keep display name for content moderation but mark as deleted
+          displayName: "[Deleted User]",
+        });
+      }
+
+      // Delete Firebase Auth account
+      await user.delete();
+
+      soundPlayer.play('postThought');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      
+      Alert.alert(
+        "Account Deleted",
+        "Your account has been permanently deleted. We're sorry to see you go.",
+        [
+          {
+            text: "OK",
+            onPress: () => {
+              soundPlayer.play('click');
+              router.replace("/");
+            },
+          },
+        ]
+      );
+    } catch (error: any) {
+      console.error("Account deletion error:", error);
+      soundPlayer.play('error');
+      
+      if (error.code === "auth/wrong-password") {
+        Alert.alert("Error", "Incorrect password. Please try again.");
+      } else if (error.code === "auth/requires-recent-login") {
+        Alert.alert(
+          "Session Expired",
+          "For security, please log out and log back in before deleting your account.",
+          [{ 
+            text: "OK",
+            onPress: () => soundPlayer.play('click')
+          }]
+        );
+      } else if (error.code === "auth/invalid-credential") {
+        Alert.alert("Error", "Invalid password. Please try again.");
+      } else {
+        Alert.alert(
+          "Error", 
+          "Failed to delete account. Please contact support@swingthoughts.com for assistance.",
+          [{ 
+            text: "OK",
+            onPress: () => soundPlayer.play('click')
+          }]
+        );
+      }
+    }
   };
 
   /* ------------------ SEND VERIFICATION EMAIL ------------------ */

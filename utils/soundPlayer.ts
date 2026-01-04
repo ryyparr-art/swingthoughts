@@ -5,6 +5,7 @@
  * - Optional override to allow sound in silent mode (future setting)
  * - Listener system for Settings UI
  * - Expo SDK–safe (no deprecated constants)
+ * - Optimized for instant playback to sync with haptics
  *
  * Sounds live in /assets/sounds/
  */
@@ -124,19 +125,32 @@ class SoundPlayer {
 
   /**
    * Play a sound by name
+   * Optimized for immediate playback to sync with haptics
    */
-  async play(soundName: SoundName) {
+  play(soundName: SoundName) {
     if (!this.isLoaded || this.isMuted) return;
 
     try {
       const sound = this.sounds[soundName];
       if (!sound) return;
 
-      await sound.stopAsync();
-      await sound.setPositionAsync(0);
-      await sound.playAsync();
+      // Fire-and-forget for instant playback
+      // Check status and replay from start if already playing
+      sound.getStatusAsync().then((status) => {
+        if (status.isLoaded && status.isPlaying) {
+          // Sound is playing - restart it
+          sound.replayAsync().catch((error) => {
+            console.error(`❌ Error replaying sound "${soundName}":`, error);
+          });
+        } else {
+          // Sound not playing - just play it
+          sound.playAsync().catch((error) => {
+            console.error(`❌ Error playing sound "${soundName}":`, error);
+          });
+        }
+      });
     } catch (error) {
-      console.error(`❌ Error playing sound "${soundName}":`, error);
+      console.error(`❌ Error with sound "${soundName}":`, error);
     }
   }
 
@@ -190,5 +204,4 @@ class SoundPlayer {
 
 // Singleton export
 export const soundPlayer = new SoundPlayer();
-
 

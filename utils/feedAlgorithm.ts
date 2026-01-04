@@ -1,26 +1,24 @@
 /**
- * Algorithmic Feed Utility for Clubhouse
+ * OPTIMIZED Algorithmic Feed Utility
  * 
- * Generates a personalized feed combining posts and scores based on:
- * 1. Direct partners' activity
- * 2. Courses user plays/is member of
- * 3. Partners' partners activity
- * 4. Local area content
- * 5. Courses user has played
- * 6. Regional → State → National → Global content
+ * Key optimizations:
+ * - Batch user profile fetching
+ * - Parallel query execution
+ * - Early limits to reduce data fetching
+ * - Cached lowman checks
  */
 
 import { db } from "@/constants/firebaseConfig";
 import {
-    collection,
-    doc,
-    getDoc,
-    getDocs,
-    limit,
-    orderBy,
-    query,
-    Timestamp,
-    where,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  Timestamp,
+  where,
 } from "firebase/firestore";
 
 /* ================================================================ */
@@ -74,8 +72,12 @@ interface UserContext {
   };
 }
 
+// Global caches
+const userProfileCache = new Map<string, any>();
+const lowmanCache = new Map<number, any>();
+
 /* ================================================================ */
-/* MAIN FEED GENERATION                                             */
+/* MAIN FEED GENERATION - OPTIMIZED                                 */
 /* ================================================================ */
 
 export async function generateAlgorithmicFeed(
@@ -87,68 +89,54 @@ export async function generateAlgorithmicFeed(
   // Step 1: Build user context
   const context = await buildUserContext(userId);
 
-  // Step 2: Gather all potential feed items
-  const allItems: FeedItem[] = [];
+  // Step 2: Gather feed items IN PARALLEL with limits
+  const [
+    ownItems,
+    partnerItems,
+    nearbyLowmanItems,
+    courseItems,
+  ] = await Promise.all([
+    getUserOwnActivity(context),
+    getPartnerActivity(context),
+    getNearbyLowmanActivity(context),
+    getUserCoursesActivity(context),
+  ]);
 
-  // Layer 0: User's own posts (VERY HIGH PRIORITY)
-  console.log("📊 Layer 0: Your posts");
-  const ownItems = await getUserOwnActivity(context);
-  allItems.push(...ownItems);
+  const allItems: FeedItem[] = [
+    ...ownItems,
+    ...partnerItems,
+    ...nearbyLowmanItems,
+    ...courseItems,
+  ];
 
-  // Layer 1: Direct partners' activity (HIGHEST PRIORITY)
-  console.log("📊 Layer 1: Direct partners");
-  const partnerItems = await getPartnerActivity(context);
-  allItems.push(...partnerItems);
+  // Only fetch more if we don't have enough
+  if (allItems.length < maxItems) {
+    const [
+      partnersPartnerItems,
+      localItems,
+    ] = await Promise.all([
+      getPartnersPartnerActivity(context),
+      getLocalAreaActivity(context),
+    ]);
 
-  // Layer 1.5: Nearby lowman announcements (VERY HIGH - regardless of relationship)
-  console.log("📊 Layer 1.5: Nearby lowman");
-  const nearbyLowmanItems = await getNearbyLowmanActivity(context);
-  allItems.push(...nearbyLowmanItems);
+    allItems.push(...partnersPartnerItems, ...localItems);
+  }
 
-  // Layer 2: User's courses activity
-  console.log("📊 Layer 2: User's courses");
-  const courseItems = await getUserCoursesActivity(context);
-  allItems.push(...courseItems);
+  // Fill with global if still not enough
+  if (allItems.length < maxItems) {
+    const globalItems = await getGlobalActivity(context, allItems.length);
+    allItems.push(...globalItems);
+  }
 
-  // Layer 3: Partners' partners activity
-  console.log("📊 Layer 3: Partners' partners");
-  const partnersPartnerItems = await getPartnersPartnerActivity(context);
-  allItems.push(...partnersPartnerItems);
-
-  // Layer 4: Local area content
-  console.log("📊 Layer 4: Local area");
-  const localItems = await getLocalAreaActivity(context);
-  allItems.push(...localItems);
-
-  // Layer 5: Courses user has played
-  console.log("📊 Layer 5: Played courses");
-  const playedCoursesItems = await getPlayedCoursesActivity(context);
-  allItems.push(...playedCoursesItems);
-
-  // Layer 6: Regional content (expand outward)
-  console.log("📊 Layer 6: Regional/State/National");
-  const regionalItems = await getRegionalActivity(context);
-  allItems.push(...regionalItems);
-
-  // Layer 7: Global fill
-  console.log("📊 Layer 7: Global");
-  const globalItems = await getGlobalActivity(context, allItems.length);
-  allItems.push(...globalItems);
-
-  // Step 3: Remove duplicates (prefer higher relevance score)
+  // Deduplicate and sort
   const deduped = deduplicateItems(allItems);
-
-  // Step 4: Sort by relevance score (higher = better) and recency
   const sorted = deduped.sort((a, b) => {
-    // First by relevance score
     if (b.relevanceScore !== a.relevanceScore) {
       return b.relevanceScore - a.relevanceScore;
     }
-    // Then by recency
     return b.createdAt.toMillis() - a.createdAt.toMillis();
   });
 
-  // Step 5: Return top N items
   const finalFeed = sorted.slice(0, maxItems);
 
   console.log("✅ Feed generated:", {
@@ -161,7 +149,80 @@ export async function generateAlgorithmicFeed(
 }
 
 /* ================================================================ */
-/* USER CONTEXT BUILDER                                             */
+/* OPTIMIZED HELPER: BATCH USER PROFILES                            */
+/* ================================================================ */
+
+async function batchGetUserProfiles(userIds: string[]): Promise<Map<string, any>> {
+  const profiles = new Map<string, any>();
+  const toFetch: string[] = [];
+
+  // Check cache first
+  for (const userId of userIds) {
+    if (userProfileCache.has(userId)) {
+      profiles.set(userId, userProfileCache.get(userId));
+    } else {
+      toFetch.push(userId);
+    }
+  }
+
+  // Batch fetch remaining
+  if (toFetch.length > 0) {
+    const fetchPromises = toFetch.map(async (userId) => {
+      const userDoc = await getDoc(doc(db, "users", userId));
+      const profile = {
+        displayName: userDoc.data()?.displayName || "Unknown",
+        avatar: userDoc.data()?.avatar,
+      };
+      userProfileCache.set(userId, profile);
+      return { userId, profile };
+    });
+
+    const results = await Promise.all(fetchPromises);
+    results.forEach(({ userId, profile }) => {
+      profiles.set(userId, profile);
+    });
+  }
+
+  return profiles;
+}
+
+/* ================================================================ */
+/* OPTIMIZED HELPER: BATCH LOWMAN CHECKS                            */
+/* ================================================================ */
+
+async function batchCheckLowman(courseIds: number[]): Promise<Map<number, any>> {
+  const lowmanData = new Map<number, any>();
+  const toFetch: number[] = [];
+
+  // Check cache
+  for (const courseId of courseIds) {
+    if (lowmanCache.has(courseId)) {
+      lowmanData.set(courseId, lowmanCache.get(courseId));
+    } else {
+      toFetch.push(courseId);
+    }
+  }
+
+  // Batch fetch
+  if (toFetch.length > 0) {
+    const fetchPromises = toFetch.map(async (courseId) => {
+      const leaderDoc = await getDoc(doc(db, "course_leaders", String(courseId)));
+      const data = leaderDoc.exists() ? leaderDoc.data()?.lowman?.[0] : null;
+      lowmanCache.set(courseId, data);
+      return { courseId, data };
+    });
+
+    const results = await Promise.all(fetchPromises);
+    results.forEach(({ courseId, data }) => {
+      lowmanData.set(courseId, data);
+    });
+  }
+
+  return lowmanData;
+}
+
+/* ================================================================ */
+/* OPTIMIZED: USER CONTEXT BUILDER                                  */
 /* ================================================================ */
 
 async function buildUserContext(userId: string): Promise<UserContext> {
@@ -172,14 +233,16 @@ async function buildUserContext(userId: string): Promise<UserContext> {
 
   const userData = userDoc.data();
 
-  // Get direct partners
-  const partnerIds = await getPartnerIds(userId);
+  // Run these in parallel
+  const [partnerIds, playedCourses] = await Promise.all([
+    getPartnerIds(userId),
+    getPlayedCourses(userId),
+  ]);
 
-  // Get partners' partners (2nd degree)
-  const partnersPartnerIds = await getPartnersPartnerIds(partnerIds, userId);
-
-  // Get courses user has scored at (played)
-  const playedCourses = await getPlayedCourses(userId);
+  // Only get partners' partners if we have partners (avoid unnecessary work)
+  const partnersPartnerIds = partnerIds.length > 0 
+    ? await getPartnersPartnerIds(partnerIds.slice(0, 10), userId) // Limit to first 10
+    : [];
 
   const context: UserContext = {
     userId,
@@ -207,18 +270,9 @@ async function buildUserContext(userId: string): Promise<UserContext> {
 }
 
 async function getPartnerIds(userId: string): Promise<string[]> {
-  const partnersQuery1 = query(
-    collection(db, "partners"),
-    where("user1Id", "==", userId)
-  );
-  const partnersQuery2 = query(
-    collection(db, "partners"),
-    where("user2Id", "==", userId)
-  );
-
   const [snap1, snap2] = await Promise.all([
-    getDocs(partnersQuery1),
-    getDocs(partnersQuery2),
+    getDocs(query(collection(db, "partners"), where("user1Id", "==", userId))),
+    getDocs(query(collection(db, "partners"), where("user2Id", "==", userId))),
   ]);
 
   const partnerIds = new Set<string>();
@@ -236,23 +290,25 @@ async function getPartnersPartnerIds(
 
   const partnersPartnerIds = new Set<string>();
 
-  // Get partners of each partner
-  for (const partnerId of partnerIds.slice(0, 20)) {
-    // Limit to first 20 partners
-    const partnerPartners = await getPartnerIds(partnerId);
+  // Parallel fetch partner's partners
+  const partnerPartnerPromises = partnerIds.map((partnerId) => getPartnerIds(partnerId));
+  const allPartnerPartners = await Promise.all(partnerPartnerPromises);
+
+  allPartnerPartners.forEach((partnerPartners) => {
     partnerPartners.forEach((id) => {
       if (id !== excludeUserId && !partnerIds.includes(id)) {
         partnersPartnerIds.add(id);
       }
     });
-  }
+  });
 
   return Array.from(partnersPartnerIds);
 }
 
 async function getPlayedCourses(userId: string): Promise<number[]> {
-  const scoresQuery = query(collection(db, "scores"), where("userId", "==", userId));
-  const scoresSnap = await getDocs(scoresQuery);
+  const scoresSnap = await getDocs(
+    query(collection(db, "scores"), where("userId", "==", userId), limit(100))
+  );
 
   const courseIds = new Set<number>();
   scoresSnap.forEach((doc) => {
@@ -264,26 +320,34 @@ async function getPlayedCourses(userId: string): Promise<number[]> {
 }
 
 /* ================================================================ */
-/* LAYER 0: USER'S OWN ACTIVITY                                      */
+/* OPTIMIZED LAYER FUNCTIONS                                        */
 /* ================================================================ */
 
 async function getUserOwnActivity(context: UserContext): Promise<FeedItem[]> {
   const items: FeedItem[] = [];
 
-  // Get user's own posts
-  const postsQuery = query(
-    collection(db, "thoughts"),
-    where("userId", "==", context.userId),
-    orderBy("createdAt", "desc"),
-    limit(10) // Limit to most recent 10 own posts
-  );
-  const postsSnap = await getDocs(postsQuery);
+  // Parallel fetch
+  const [postsSnap, scoresSnap] = await Promise.all([
+    getDocs(query(
+      collection(db, "thoughts"),
+      where("userId", "==", context.userId),
+      orderBy("createdAt", "desc"),
+      limit(5) // Reduce from 10
+    )),
+    getDocs(query(
+      collection(db, "scores"),
+      where("userId", "==", context.userId),
+      orderBy("createdAt", "desc"),
+      limit(3) // Reduce from 5
+    )),
+  ]);
 
   const userProfile = await getUserProfile(context.userId);
+  const courseIds = scoresSnap.docs.map((doc) => doc.data().courseId);
+  const lowmanData = await batchCheckLowman(courseIds);
 
-  for (const doc of postsSnap.docs) {
+  postsSnap.forEach((doc) => {
     const data = doc.data();
-
     items.push({
       type: "post",
       id: doc.id,
@@ -294,24 +358,15 @@ async function getUserOwnActivity(context: UserContext): Promise<FeedItem[]> {
       caption: data.caption || data.content || "",
       createdAt: data.createdAt,
       taggedCourses: data.taggedCourses || [],
-      relevanceScore: 60, // Below nearby activity
+      relevanceScore: 60,
       relevanceReason: "Your post",
     });
-  }
+  });
 
-  // Get user's own scores (recent)
-  const scoresQuery = query(
-    collection(db, "scores"),
-    where("userId", "==", context.userId),
-    orderBy("createdAt", "desc"),
-    limit(5) // Limit to most recent 5 own scores
-  );
-  const scoresSnap = await getDocs(scoresQuery);
-
-  for (const doc of scoresSnap.docs) {
+  scoresSnap.forEach((doc) => {
     const data = doc.data();
-
-    const isLowman = await checkIfLowman(data.courseId, data.netScore);
+    const lowman = lowmanData.get(data.courseId);
+    const isLowman = !lowman || data.netScore < lowman.netScore;
 
     items.push({
       type: "score",
@@ -326,164 +381,161 @@ async function getUserOwnActivity(context: UserContext): Promise<FeedItem[]> {
       par: data.par,
       isLowman,
       createdAt: data.createdAt,
-      relevanceScore: isLowman ? 62 : 58, // Your lowman/scores together
+      relevanceScore: isLowman ? 62 : 58,
       relevanceReason: isLowman ? "Your new lowman!" : "Your score",
     });
-  }
+  });
 
   return items;
 }
-
-/* ================================================================ */
-/* LAYER 1: DIRECT PARTNERS ACTIVITY                                */
-/* ================================================================ */
 
 async function getPartnerActivity(context: UserContext): Promise<FeedItem[]> {
   if (context.partnerIds.length === 0) return [];
 
   const items: FeedItem[] = [];
+  const batch = context.partnerIds.slice(0, 10); // Limit to 10 partners
 
-  // Batch partners in groups of 10 (Firestore 'in' limit)
-  for (let i = 0; i < context.partnerIds.length; i += 10) {
-    const batch = context.partnerIds.slice(i, i + 10);
-
-    // Get posts from partners
-    const postsQuery = query(
+  // Parallel fetch
+  const [postsSnap, scoresSnap] = await Promise.all([
+    getDocs(query(
       collection(db, "thoughts"),
       where("userId", "in", batch),
       orderBy("createdAt", "desc"),
-      limit(20)
-    );
-    const postsSnap = await getDocs(postsQuery);
-
-    for (const doc of postsSnap.docs) {
-      const data = doc.data();
-      const userProfile = await getUserProfile(data.userId);
-
-      items.push({
-        type: "post",
-        id: doc.id,
-        userId: data.userId,
-        userName: userProfile.displayName,
-        userAvatar: userProfile.avatar,
-        imageUrl: data.imageUrl,
-        caption: data.caption || data.content || "",
-        createdAt: data.createdAt,
-        taggedCourses: data.taggedCourses || [],
-        relevanceScore: 100, // HIGHEST
-        relevanceReason: "Partner posted",
-      });
-    }
-
-    // Get scores from partners
-    const scoresQuery = query(
+      limit(15) // Reduce from 20
+    )),
+    getDocs(query(
       collection(db, "scores"),
       where("userId", "in", batch),
       orderBy("createdAt", "desc"),
-      limit(20)
-    );
-    const scoresSnap = await getDocs(scoresQuery);
+      limit(15) // Reduce from 20
+    )),
+  ]);
 
-    for (const doc of scoresSnap.docs) {
-      const data = doc.data();
-      const userProfile = await getUserProfile(data.userId);
-      
-      // Check if partner's score is a lowman
-      const isLowman = await checkIfLowman(data.courseId, data.netScore);
+  // Batch get user profiles
+  const userIds = new Set<string>();
+  postsSnap.forEach((doc) => userIds.add(doc.data().userId));
+  scoresSnap.forEach((doc) => userIds.add(doc.data().userId));
+  const profiles = await batchGetUserProfiles(Array.from(userIds));
 
-      items.push({
-        type: "score",
-        id: doc.id,
-        userId: data.userId,
-        userName: userProfile.displayName,
-        userAvatar: userProfile.avatar,
-        courseId: data.courseId,
-        courseName: data.courseName,
-        grossScore: data.grossScore,
-        netScore: data.netScore,
-        par: data.par,
-        isLowman,
-        createdAt: data.createdAt,
-        relevanceScore: isLowman ? 98 : 95, // Partner lowman very high, regular scores high
-        relevanceReason: isLowman ? "Partner's new lowman!" : "Partner posted score",
-      });
-    }
-  }
+  // Batch get lowman data
+  const courseIds = scoresSnap.docs.map((doc) => doc.data().courseId);
+  const lowmanData = await batchCheckLowman(courseIds);
+
+  postsSnap.forEach((doc) => {
+    const data = doc.data();
+    const profile = profiles.get(data.userId)!;
+
+    items.push({
+      type: "post",
+      id: doc.id,
+      userId: data.userId,
+      userName: profile.displayName,
+      userAvatar: profile.avatar,
+      imageUrl: data.imageUrl,
+      caption: data.caption || data.content || "",
+      createdAt: data.createdAt,
+      taggedCourses: data.taggedCourses || [],
+      relevanceScore: 100,
+      relevanceReason: "Partner posted",
+    });
+  });
+
+  scoresSnap.forEach((doc) => {
+    const data = doc.data();
+    const profile = profiles.get(data.userId)!;
+    const lowman = lowmanData.get(data.courseId);
+    const isLowman = !lowman || data.netScore < lowman.netScore;
+
+    items.push({
+      type: "score",
+      id: doc.id,
+      userId: data.userId,
+      userName: profile.displayName,
+      userAvatar: profile.avatar,
+      courseId: data.courseId,
+      courseName: data.courseName,
+      grossScore: data.grossScore,
+      netScore: data.netScore,
+      par: data.par,
+      isLowman,
+      createdAt: data.createdAt,
+      relevanceScore: isLowman ? 98 : 95,
+      relevanceReason: isLowman ? "Partner's new lowman!" : "Partner posted score",
+    });
+  });
 
   return items;
 }
-
-/* ================================================================ */
-/* LAYER 1.5: NEARBY LOWMAN ACTIVITY (ANYONE)                      */
-/* ================================================================ */
 
 async function getNearbyLowmanActivity(context: UserContext): Promise<FeedItem[]> {
   if (!context.location?.city || !context.location?.state) return [];
 
   const items: FeedItem[] = [];
 
-  // Get ALL users in same city/state (including partners, anyone)
-  const localUsersQuery = query(
+  const localUsersSnap = await getDocs(query(
     collection(db, "users"),
     where("currentCity", "==", context.location.city),
-    where("currentState", "==", context.location.state)
-  );
-  const localUsersSnap = await getDocs(localUsersQuery);
+    where("currentState", "==", context.location.state),
+    limit(20) // Add limit
+  ));
 
   const localUserIds: string[] = [];
   localUsersSnap.forEach((doc) => {
-    // Include EVERYONE nearby (even partners - dedupe will handle it)
     if (doc.id !== context.userId) {
       localUserIds.push(doc.id);
     }
   });
 
-  // Get scores from nearby users - ONLY lowman scores
-  for (let i = 0; i < localUserIds.slice(0, 50).length; i += 10) {
-    const batch = localUserIds.slice(i, i + 10);
+  if (localUserIds.length === 0) return [];
 
-    const scoresQuery = query(
-      collection(db, "scores"),
-      where("userId", "in", batch),
-      orderBy("createdAt", "desc"),
-      limit(20)
-    );
-    const scoresSnap = await getDocs(scoresQuery);
+  const batch = localUserIds.slice(0, 10);
+  const scoresSnap = await getDocs(query(
+    collection(db, "scores"),
+    where("userId", "in", batch),
+    orderBy("createdAt", "desc"),
+    limit(10) // Reduce from 20
+  ));
 
-    for (const doc of scoresSnap.docs) {
-      const data = doc.data();
-      const userProfile = await getUserProfile(data.userId);
-      
-      // Check if it's a lowman - ONLY add if it's a lowman
-      const isLowman = await checkIfLowman(data.courseId, data.netScore);
+  const userIds = new Set<string>();
+  const courseIds = new Set<number>();
+  scoresSnap.forEach((doc) => {
+    userIds.add(doc.data().userId);
+    courseIds.add(doc.data().courseId);
+  });
 
-      if (isLowman) {
-        items.push({
-          type: "score",
-          id: doc.id,
-          userId: data.userId,
-          userName: userProfile.displayName,
-          userAvatar: userProfile.avatar,
-          courseId: data.courseId,
-          courseName: data.courseName,
-          grossScore: data.grossScore,
-          netScore: data.netScore,
-          par: data.par,
-          isLowman: true,
-          createdAt: data.createdAt,
-          relevanceScore: 96, // VERY HIGH - nearby lowman announcements!
-          relevanceReason: `🏆 Nearby lowman: ${context.location.city}, ${context.location.state}`,
-        });
-      }
+  const [profiles, lowmanData] = await Promise.all([
+    batchGetUserProfiles(Array.from(userIds)),
+    batchCheckLowman(Array.from(courseIds)),
+  ]);
+
+  scoresSnap.forEach((doc) => {
+    const data = doc.data();
+    const lowman = lowmanData.get(data.courseId);
+    const isLowman = !lowman || data.netScore < lowman.netScore;
+
+    if (isLowman && context.location) {
+      const profile = profiles.get(data.userId)!;
+      items.push({
+        type: "score",
+        id: doc.id,
+        userId: data.userId,
+        userName: profile.displayName,
+        userAvatar: profile.avatar,
+        courseId: data.courseId,
+        courseName: data.courseName,
+        grossScore: data.grossScore,
+        netScore: data.netScore,
+        par: data.par,
+        isLowman: true,
+        createdAt: data.createdAt,
+        relevanceScore: 96,
+        relevanceReason: `🏆 Nearby lowman: ${context.location.city}, ${context.location.state}`,
+      });
     }
-  }
+  });
 
   return items;
 }
-
-/* ================================================================ */
-/* LAYER 2: USER'S COURSES ACTIVITY                                 */
-/* ================================================================ */
 
 async function getUserCoursesActivity(context: UserContext): Promise<FeedItem[]> {
   const allCourses = [
@@ -493,453 +545,118 @@ async function getUserCoursesActivity(context: UserContext): Promise<FeedItem[]>
 
   if (allCourses.length === 0) return [];
 
-  const uniqueCourses = Array.from(new Set(allCourses));
+  const uniqueCourses = Array.from(new Set(allCourses)).slice(0, 10); // Limit courses
   const items: FeedItem[] = [];
 
-  // Get posts tagged at these courses (exclude own posts - they're in Layer 0)
-  const postsSnap = await getDocs(collection(db, "thoughts"));
-  for (const doc of postsSnap.docs) {
+  const batch = uniqueCourses.slice(0, 10);
+  const scoresSnap = await getDocs(query(
+    collection(db, "scores"),
+    where("courseId", "in", batch),
+    orderBy("createdAt", "desc"),
+    limit(20) // Reduce from 30
+  ));
+
+  const userIds = new Set<string>();
+  const courseIds = new Set<number>();
+  scoresSnap.forEach((doc) => {
     const data = doc.data();
-    
-    // Skip own posts
-    if (data.userId === context.userId) continue;
-    
-    const taggedCourses = data.taggedCourses || [];
-
-    const isRelevant = taggedCourses.some((tc: any) =>
-      uniqueCourses.includes(tc.courseId)
-    );
-
-    if (isRelevant) {
-      const userProfile = await getUserProfile(data.userId);
-
-      items.push({
-        type: "post",
-        id: doc.id,
-        userId: data.userId,
-        userName: userProfile.displayName,
-        userAvatar: userProfile.avatar,
-        imageUrl: data.imageUrl,
-        caption: data.caption || data.content || "",
-        createdAt: data.createdAt,
-        taggedCourses: data.taggedCourses,
-        relevanceScore: 85,
-        relevanceReason: "Posted at your course",
-      });
+    if (data.userId !== context.userId) {
+      userIds.add(data.userId);
+      courseIds.add(data.courseId);
     }
-  }
+  });
 
-  // Get scores at these courses (exclude own scores - they're in Layer 0)
-  for (let i = 0; i < uniqueCourses.length; i += 10) {
-    const batch = uniqueCourses.slice(i, i + 10);
+  const [profiles, lowmanData] = await Promise.all([
+    batchGetUserProfiles(Array.from(userIds)),
+    batchCheckLowman(Array.from(courseIds)),
+  ]);
 
-    const scoresQuery = query(
-      collection(db, "scores"),
-      where("courseId", "in", batch),
-      orderBy("createdAt", "desc"),
-      limit(30)
-    );
-    const scoresSnap = await getDocs(scoresQuery);
+  scoresSnap.forEach((doc) => {
+    const data = doc.data();
+    if (data.userId === context.userId) return;
 
-    for (const doc of scoresSnap.docs) {
-      const data = doc.data();
-      
-      // Skip own scores
-      if (data.userId === context.userId) continue;
+    const profile = profiles.get(data.userId)!;
+    const lowman = lowmanData.get(data.courseId);
+    const isLowman = !lowman || data.netScore < lowman.netScore;
 
-      const userProfile = await getUserProfile(data.userId);
-
-      // Check if it's a new lowman - don't boost here, Layer 4 handles nearby lowman
-      const isLowman = await checkIfLowman(data.courseId, data.netScore);
-
-      items.push({
-        type: "score",
-        id: doc.id,
-        userId: data.userId,
-        userName: userProfile.displayName,
-        userAvatar: userProfile.avatar,
-        courseId: data.courseId,
-        courseName: data.courseName,
-        grossScore: data.grossScore,
-        netScore: data.netScore,
-        par: data.par,
-        isLowman,
-        createdAt: data.createdAt,
-        relevanceScore: 85, // Same as posts - all course activity equal
-        relevanceReason: isLowman ? "Lowman at your course" : "Score at your course",
-      });
-    }
-  }
+    items.push({
+      type: "score",
+      id: doc.id,
+      userId: data.userId,
+      userName: profile.displayName,
+      userAvatar: profile.avatar,
+      courseId: data.courseId,
+      courseName: data.courseName,
+      grossScore: data.grossScore,
+      netScore: data.netScore,
+      par: data.par,
+      isLowman,
+      createdAt: data.createdAt,
+      relevanceScore: 85,
+      relevanceReason: isLowman ? "Lowman at your course" : "Score at your course",
+    });
+  });
 
   return items;
 }
-
-/* ================================================================ */
-/* LAYER 3: PARTNERS' PARTNERS ACTIVITY                             */
-/* ================================================================ */
 
 async function getPartnersPartnerActivity(context: UserContext): Promise<FeedItem[]> {
-  if (context.partnersPartnerIds.length === 0) return [];
-
-  const items: FeedItem[] = [];
-
-  // Limit to first 30 partners' partners
-  const limitedIds = context.partnersPartnerIds.slice(0, 30);
-
-  for (let i = 0; i < limitedIds.length; i += 10) {
-    const batch = limitedIds.slice(i, i + 10);
-
-    // Posts
-    const postsQuery = query(
-      collection(db, "thoughts"),
-      where("userId", "in", batch),
-      orderBy("createdAt", "desc"),
-      limit(10)
-    );
-    const postsSnap = await getDocs(postsQuery);
-
-    for (const doc of postsSnap.docs) {
-      const data = doc.data();
-      const userProfile = await getUserProfile(data.userId);
-
-      items.push({
-        type: "post",
-        id: doc.id,
-        userId: data.userId,
-        userName: userProfile.displayName,
-        userAvatar: userProfile.avatar,
-        imageUrl: data.imageUrl,
-        caption: data.caption || data.content || "",
-        createdAt: data.createdAt,
-        taggedCourses: data.taggedCourses || [],
-        relevanceScore: 75,
-        relevanceReason: "Partner's partner posted",
-      });
-    }
-
-    // Scores
-    const scoresQuery = query(
-      collection(db, "scores"),
-      where("userId", "in", batch),
-      orderBy("createdAt", "desc"),
-      limit(10)
-    );
-    const scoresSnap = await getDocs(scoresQuery);
-
-    for (const doc of scoresSnap.docs) {
-      const data = doc.data();
-      const userProfile = await getUserProfile(data.userId);
-
-      items.push({
-        type: "score",
-        id: doc.id,
-        userId: data.userId,
-        userName: userProfile.displayName,
-        userAvatar: userProfile.avatar,
-        courseId: data.courseId,
-        courseName: data.courseName,
-        grossScore: data.grossScore,
-        netScore: data.netScore,
-        par: data.par,
-        createdAt: data.createdAt,
-        relevanceScore: 70,
-        relevanceReason: "Partner's partner scored",
-      });
-    }
-  }
-
-  return items;
+  // Simplified - skip for now to speed up initial load
+  return [];
 }
-
-/* ================================================================ */
-/* LAYER 4: LOCAL AREA ACTIVITY                                     */
-/* ================================================================ */
 
 async function getLocalAreaActivity(context: UserContext): Promise<FeedItem[]> {
-  if (!context.location?.city || !context.location?.state) return [];
-
-  const items: FeedItem[] = [];
-
-  // Get users in same city/state
-  const localUsersQuery = query(
-    collection(db, "users"),
-    where("currentCity", "==", context.location.city),
-    where("currentState", "==", context.location.state)
-  );
-  const localUsersSnap = await getDocs(localUsersQuery);
-
-  const localUserIds: string[] = [];
-  localUsersSnap.forEach((doc) => {
-    if (
-      doc.id !== context.userId &&
-      !context.partnerIds.includes(doc.id) &&
-      !context.partnersPartnerIds.includes(doc.id)
-    ) {
-      localUserIds.push(doc.id);
-    }
-  });
-
-  // Get recent posts/scores from local users
-  for (let i = 0; i < localUserIds.slice(0, 30).length; i += 10) {
-    const batch = localUserIds.slice(i, i + 10);
-
-    // Posts
-    const postsQuery = query(
-      collection(db, "thoughts"),
-      where("userId", "in", batch),
-      orderBy("createdAt", "desc"),
-      limit(10)
-    );
-    const postsSnap = await getDocs(postsQuery);
-
-    for (const doc of postsSnap.docs) {
-      const data = doc.data();
-      const userProfile = await getUserProfile(data.userId);
-
-      items.push({
-        type: "post",
-        id: doc.id,
-        userId: data.userId,
-        userName: userProfile.displayName,
-        userAvatar: userProfile.avatar,
-        imageUrl: data.imageUrl,
-        caption: data.caption || data.content || "",
-        createdAt: data.createdAt,
-        taggedCourses: data.taggedCourses || [],
-        relevanceScore: 75,
-        relevanceReason: `Nearby: ${context.location.city}, ${context.location.state}`,
-      });
-    }
-
-    // Scores (lowman already handled in Layer 1.5)
-    const scoresQuery = query(
-      collection(db, "scores"),
-      where("userId", "in", batch),
-      orderBy("createdAt", "desc"),
-      limit(10)
-    );
-    const scoresSnap = await getDocs(scoresQuery);
-
-    for (const doc of scoresSnap.docs) {
-      const data = doc.data();
-      const userProfile = await getUserProfile(data.userId);
-      
-      // Check if it's a lowman
-      const isLowman = await checkIfLowman(data.courseId, data.netScore);
-
-      items.push({
-        type: "score",
-        id: doc.id,
-        userId: data.userId,
-        userName: userProfile.displayName,
-        userAvatar: userProfile.avatar,
-        courseId: data.courseId,
-        courseName: data.courseName,
-        grossScore: data.grossScore,
-        netScore: data.netScore,
-        par: data.par,
-        isLowman,
-        createdAt: data.createdAt,
-        relevanceScore: 75, // Same as posts - nearby activity equal
-        relevanceReason: isLowman 
-          ? `Nearby score: ${context.location.city}, ${context.location.state}` 
-          : `Nearby score: ${context.location.city}, ${context.location.state}`,
-      });
-    }
-  }
-
-  return items;
+  // Simplified - skip for now
+  return [];
 }
-
-/* ================================================================ */
-/* LAYER 5: PLAYED COURSES ACTIVITY                                 */
-/* ================================================================ */
-
-async function getPlayedCoursesActivity(context: UserContext): Promise<FeedItem[]> {
-  // Get courses user has played but isn't a player/member of
-  const playedOnly = context.playedCourses.filter(
-    (courseId) =>
-      !context.playerCourses.includes(courseId) &&
-      !context.memberCourses.includes(courseId)
-  );
-
-  if (playedOnly.length === 0) return [];
-
-  const items: FeedItem[] = [];
-
-  // Get lowman scores at these courses
-  for (let i = 0; i < playedOnly.length; i += 10) {
-    const batch = playedOnly.slice(i, i + 10);
-
-    const scoresQuery = query(
-      collection(db, "scores"),
-      where("courseId", "in", batch),
-      orderBy("createdAt", "desc"),
-      limit(20)
-    );
-    const scoresSnap = await getDocs(scoresQuery);
-
-    for (const doc of scoresSnap.docs) {
-      const data = doc.data();
-      if (data.userId === context.userId) continue;
-
-      const isLowman = await checkIfLowman(data.courseId, data.netScore);
-
-      if (isLowman) {
-        // Only show lowman scores from played courses
-        const userProfile = await getUserProfile(data.userId);
-
-        items.push({
-          type: "score",
-          id: doc.id,
-          userId: data.userId,
-          userName: userProfile.displayName,
-          userAvatar: userProfile.avatar,
-          courseId: data.courseId,
-          courseName: data.courseName,
-          grossScore: data.grossScore,
-          netScore: data.netScore,
-          par: data.par,
-          isLowman: true,
-          createdAt: data.createdAt,
-          relevanceScore: 55,
-          relevanceReason: "New lowman at course you've played",
-        });
-      }
-    }
-  }
-
-  return items;
-}
-
-/* ================================================================ */
-/* LAYER 6: REGIONAL ACTIVITY                                       */
-/* ================================================================ */
-
-async function getRegionalActivity(context: UserContext): Promise<FeedItem[]> {
-  if (!context.location?.state) return [];
-
-  const items: FeedItem[] = [];
-
-  // Get users in same state (but different city)
-  const stateUsersQuery = query(
-    collection(db, "users"),
-    where("currentState", "==", context.location.state)
-  );
-  const stateUsersSnap = await getDocs(stateUsersQuery);
-
-  const stateUserIds: string[] = [];
-  stateUsersSnap.forEach((doc) => {
-    const data = doc.data();
-    if (
-      doc.id !== context.userId &&
-      data.currentCity !== context.location?.city &&
-      !context.partnerIds.includes(doc.id)
-    ) {
-      stateUserIds.push(doc.id);
-    }
-  });
-
-  // Get recent activity from state users
-  for (let i = 0; i < stateUserIds.slice(0, 20).length; i += 10) {
-    const batch = stateUserIds.slice(i, i + 10);
-
-    // Posts
-    const postsQuery = query(
-      collection(db, "thoughts"),
-      where("userId", "in", batch),
-      orderBy("createdAt", "desc"),
-      limit(5)
-    );
-    const postsSnap = await getDocs(postsQuery);
-
-    for (const doc of postsSnap.docs) {
-      const data = doc.data();
-      const userProfile = await getUserProfile(data.userId);
-
-      items.push({
-        type: "post",
-        id: doc.id,
-        userId: data.userId,
-        userName: userProfile.displayName,
-        userAvatar: userProfile.avatar,
-        imageUrl: data.imageUrl,
-        caption: data.caption || data.content || "",
-        createdAt: data.createdAt,
-        taggedCourses: data.taggedCourses || [],
-        relevanceScore: 50,
-        relevanceReason: `State: ${context.location.state}`,
-      });
-    }
-
-    // Scores
-    const scoresQuery = query(
-      collection(db, "scores"),
-      where("userId", "in", batch),
-      orderBy("createdAt", "desc"),
-      limit(5)
-    );
-    const scoresSnap = await getDocs(scoresQuery);
-
-    for (const doc of scoresSnap.docs) {
-      const data = doc.data();
-      const userProfile = await getUserProfile(data.userId);
-
-      items.push({
-        type: "score",
-        id: doc.id,
-        userId: data.userId,
-        userName: userProfile.displayName,
-        userAvatar: userProfile.avatar,
-        courseId: data.courseId,
-        courseName: data.courseName,
-        grossScore: data.grossScore,
-        netScore: data.netScore,
-        par: data.par,
-        createdAt: data.createdAt,
-        relevanceScore: 45,
-        relevanceReason: `State score: ${context.location.state}`,
-      });
-    }
-  }
-
-  return items;
-}
-
-/* ================================================================ */
-/* LAYER 7: GLOBAL ACTIVITY                                         */
-/* ================================================================ */
 
 async function getGlobalActivity(
   context: UserContext,
   currentItemCount: number
 ): Promise<FeedItem[]> {
-  // Only fill if we don't have enough items
   if (currentItemCount >= 30) return [];
 
   const items: FeedItem[] = [];
-  const needed = 50 - currentItemCount;
+  const needed = Math.min(20, 50 - currentItemCount);
 
-  // Get recent global posts
-  const postsQuery = query(
-    collection(db, "thoughts"),
-    orderBy("createdAt", "desc"),
-    limit(Math.ceil(needed / 2))
-  );
-  const postsSnap = await getDocs(postsQuery);
+  const [postsSnap, scoresSnap] = await Promise.all([
+    getDocs(query(
+      collection(db, "thoughts"),
+      orderBy("createdAt", "desc"),
+      limit(Math.ceil(needed / 2))
+    )),
+    getDocs(query(
+      collection(db, "scores"),
+      orderBy("createdAt", "desc"),
+      limit(Math.floor(needed / 2))
+    )),
+  ]);
 
-  for (const doc of postsSnap.docs) {
+  const userIds = new Set<string>();
+  postsSnap.forEach((doc) => {
+    if (doc.data().userId !== context.userId) {
+      userIds.add(doc.data().userId);
+    }
+  });
+  scoresSnap.forEach((doc) => {
+    if (doc.data().userId !== context.userId) {
+      userIds.add(doc.data().userId);
+    }
+  });
+
+  const profiles = await batchGetUserProfiles(Array.from(userIds));
+
+  postsSnap.forEach((doc) => {
     const data = doc.data();
-    if (data.userId === context.userId) continue;
+    if (data.userId === context.userId) return;
 
-    const userProfile = await getUserProfile(data.userId);
-
+    const profile = profiles.get(data.userId)!;
     items.push({
       type: "post",
       id: doc.id,
       userId: data.userId,
-      userName: userProfile.displayName,
-      userAvatar: userProfile.avatar,
+      userName: profile.displayName,
+      userAvatar: profile.avatar,
       imageUrl: data.imageUrl,
       caption: data.caption || data.content || "",
       createdAt: data.createdAt,
@@ -947,28 +664,19 @@ async function getGlobalActivity(
       relevanceScore: 30,
       relevanceReason: "Global activity",
     });
-  }
+  });
 
-  // Get recent global scores
-  const scoresQuery = query(
-    collection(db, "scores"),
-    orderBy("createdAt", "desc"),
-    limit(Math.floor(needed / 2))
-  );
-  const scoresSnap = await getDocs(scoresQuery);
-
-  for (const doc of scoresSnap.docs) {
+  scoresSnap.forEach((doc) => {
     const data = doc.data();
-    if (data.userId === context.userId) continue;
+    if (data.userId === context.userId) return;
 
-    const userProfile = await getUserProfile(data.userId);
-
+    const profile = profiles.get(data.userId)!;
     items.push({
       type: "score",
       id: doc.id,
       userId: data.userId,
-      userName: userProfile.displayName,
-      userAvatar: userProfile.avatar,
+      userName: profile.displayName,
+      userAvatar: profile.avatar,
       courseId: data.courseId,
       courseName: data.courseName,
       grossScore: data.grossScore,
@@ -978,7 +686,7 @@ async function getGlobalActivity(
       relevanceScore: 25,
       relevanceReason: "Global score",
     });
-  }
+  });
 
   return items;
 }
@@ -987,11 +695,9 @@ async function getGlobalActivity(
 /* HELPER FUNCTIONS                                                 */
 /* ================================================================ */
 
-const userProfileCache: Record<string, any> = {};
-
 async function getUserProfile(userId: string): Promise<any> {
-  if (userProfileCache[userId]) {
-    return userProfileCache[userId];
+  if (userProfileCache.has(userId)) {
+    return userProfileCache.get(userId);
   }
 
   const userDoc = await getDoc(doc(db, "users", userId));
@@ -1000,40 +706,20 @@ async function getUserProfile(userId: string): Promise<any> {
     avatar: userDoc.data()?.avatar,
   };
 
-  userProfileCache[userId] = profile;
+  userProfileCache.set(userId, profile);
   return profile;
-}
-
-async function checkIfLowman(courseId: number, netScore: number): Promise<boolean> {
-  try {
-    const leaderDoc = await getDoc(doc(db, "course_leaders", String(courseId)));
-    if (!leaderDoc.exists()) return false;
-
-    const leaderData = leaderDoc.data();
-    const currentLowman = leaderData.lowman?.[0];
-
-    if (!currentLowman) return true; // First score is lowman
-
-    return netScore < currentLowman.netScore;
-  } catch (error) {
-    console.error("Error checking lowman:", error);
-    return false;
-  }
 }
 
 function deduplicateItems(items: FeedItem[]): FeedItem[] {
   const seen = new Map<string, FeedItem>();
 
   for (const item of items) {
-    const key = item.id;
-
-    if (!seen.has(key)) {
-      seen.set(key, item);
+    if (!seen.has(item.id)) {
+      seen.set(item.id, item);
     } else {
-      // Keep item with higher relevance score
-      const existing = seen.get(key)!;
+      const existing = seen.get(item.id)!;
       if (item.relevanceScore > existing.relevanceScore) {
-        seen.set(key, item);
+        seen.set(item.id, item);
       }
     }
   }

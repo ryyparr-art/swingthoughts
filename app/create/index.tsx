@@ -644,6 +644,49 @@ export default function CreateScreen() {
     setShowAutocomplete(false);
   };
 
+  /* --------------------------- HANDLE CLOSE WITH WARNING --------------------------- */
+
+  const handleClose = async () => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    // If there's content or media, show warning
+    if (content.trim() || mediaUri) {
+      const shouldDiscard = await new Promise<boolean>((resolve) => {
+        Alert.alert(
+          "Discard Thought?",
+          "You have unsaved changes. Are you sure you want to discard this thought?",
+          [
+            {
+              text: "Keep Editing",
+              style: "cancel",
+              onPress: () => {
+                soundPlayer.play('click');
+                resolve(false);
+              },
+            },
+            {
+              text: "Discard",
+              style: "destructive",
+              onPress: () => {
+                soundPlayer.play('error');
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                resolve(true);
+              },
+            },
+          ]
+        );
+      });
+
+      if (shouldDiscard) {
+        router.back();
+      }
+    } else {
+      // No content, just close
+      router.back();
+    }
+  };
+
   /* --------------------------- DELETE POST ---------------------------- */
 
   const handleDelete = async () => {
@@ -914,11 +957,7 @@ export default function CreateScreen() {
       {/* HEADER - Outside KeyboardAvoidingView so it stays fixed */}
       <View style={styles.header}>
         <TouchableOpacity 
-          onPress={() => {
-            soundPlayer.play('click');
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.back();
-          }} 
+          onPress={handleClose}
           style={styles.closeButton}
         >
           <Image
