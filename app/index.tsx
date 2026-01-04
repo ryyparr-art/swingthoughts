@@ -1,9 +1,11 @@
 import { auth } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import {
   createUserWithEmailAndPassword,
+  sendEmailVerification,
   signInWithEmailAndPassword,
 } from "firebase/auth";
 import React, { useState } from "react";
@@ -27,6 +29,8 @@ export default function HeroLandingPage() {
 
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showSignupModal, setShowSignupModal] = useState(false);
+  const [showEmailVerificationModal, setShowEmailVerificationModal] = useState(false);
+  const [verificationEmail, setVerificationEmail] = useState("");
 
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
@@ -42,9 +46,11 @@ export default function HeroLandingPage() {
   /* ================= LOGIN ================= */
 
   const handleLogin = async () => {
+    soundPlayer.play('click');
     setLoginError("");
 
     if (!loginEmail || !loginPassword) {
+      soundPlayer.play('error');
       setLoginError("Please enter both email and password");
       return;
     }
@@ -55,6 +61,7 @@ export default function HeroLandingPage() {
       const userCredential = await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
       console.log("✅ Login successful:", userCredential.user.email);
       
+      soundPlayer.play('postThought');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setShowLoginModal(false);
       setLoginLoading(false);
@@ -63,6 +70,8 @@ export default function HeroLandingPage() {
       // But we can add explicit navigation if needed
     } catch (err: any) {
       console.error("❌ Login error:", err.code, err.message);
+      
+      soundPlayer.play('error');
       
       let errorMessage = "Login failed. Please try again.";
       
@@ -92,19 +101,23 @@ export default function HeroLandingPage() {
   /* ================= SIGNUP ================= */
 
   const handleSignup = async () => {
+    soundPlayer.play('click');
     setSignupError("");
 
     if (!signupEmail || !signupPassword || !signupConfirmPassword) {
+      soundPlayer.play('error');
       setSignupError("Please fill in all fields");
       return;
     }
 
     if (signupPassword !== signupConfirmPassword) {
+      soundPlayer.play('error');
       setSignupError("Passwords do not match");
       return;
     }
 
     if (signupPassword.length < 6) {
+      soundPlayer.play('error');
       setSignupError("Password must be at least 6 characters");
       return;
     }
@@ -118,8 +131,25 @@ export default function HeroLandingPage() {
         signupPassword
       );
       
-      console.log("✅ Signup successful:", userCredential.user.email);
+      const user = userCredential.user;
+      console.log("✅ Signup successful:", user.email);
 
+      // 🔐 Force session initialization (CRITICAL in Expo)
+      await user.reload();
+
+      // ✅ SEND EMAIL VERIFICATION
+      try {
+        await sendEmailVerification(user);
+        console.log("✅ Verification email sent to:", user.email);
+      } catch (verifyError: any) {
+        console.error(
+          "❌ Verification email failed:",
+          verifyError.code,
+          verifyError.message
+        );
+      }
+
+      soundPlayer.play('postThought');
       Haptics.notificationAsync(
         Haptics.NotificationFeedbackType.Success
       );
@@ -127,11 +157,13 @@ export default function HeroLandingPage() {
       setSignupLoading(false);
       setShowSignupModal(false);
 
-      // ✅ EXPLICIT ROUTING (REQUIRED)
-      console.log("🚀 Navigating to /auth/user-type");
-      router.replace("/auth/user-type");
+      // Show email verification modal
+      setVerificationEmail(user.email || signupEmail);
+      setShowEmailVerificationModal(true);
     } catch (err: any) {
       console.error("❌ Signup error:", err.code, err.message);
+      
+      soundPlayer.play('error');
       
       let errorMessage = "Signup failed. Please try again.";
       
@@ -155,6 +187,7 @@ export default function HeroLandingPage() {
   };
 
   const openLoginModal = () => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setLoginEmail("");
     setLoginPassword("");
@@ -163,6 +196,7 @@ export default function HeroLandingPage() {
   };
 
   const openSignupModal = () => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setSignupEmail("");
     setSignupPassword("");
@@ -234,7 +268,10 @@ export default function HeroLandingPage() {
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Enter Clubhouse</Text>
-              <TouchableOpacity onPress={() => setShowLoginModal(false)}>
+              <TouchableOpacity onPress={() => {
+                soundPlayer.play('click');
+                setShowLoginModal(false);
+              }}>
                 <Ionicons name="close" size={28} color="#0D5C3A" />
               </TouchableOpacity>
             </View>
@@ -279,6 +316,7 @@ export default function HeroLandingPage() {
 
             <TouchableOpacity
               onPress={() => {
+                soundPlayer.play('click');
                 setShowLoginModal(false);
                 openSignupModal();
               }}
@@ -306,7 +344,10 @@ export default function HeroLandingPage() {
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Become a Member</Text>
-              <TouchableOpacity onPress={() => setShowSignupModal(false)}>
+              <TouchableOpacity onPress={() => {
+                soundPlayer.play('click');
+                setShowSignupModal(false);
+              }}>
                 <Ionicons name="close" size={28} color="#0D5C3A" />
               </TouchableOpacity>
             </View>
@@ -362,6 +403,7 @@ export default function HeroLandingPage() {
 
             <TouchableOpacity
               onPress={() => {
+                soundPlayer.play('click');
                 setShowSignupModal(false);
                 openLoginModal();
               }}
@@ -374,7 +416,217 @@ export default function HeroLandingPage() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      {/* ================= EMAIL VERIFICATION MODAL ================= */}
+      <Modal
+        visible={showEmailVerificationModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => {}} // Prevent dismissing - must verify or skip
+      >
+        <EmailVerificationModal
+          email={verificationEmail}
+          onVerified={() => {
+            setShowEmailVerificationModal(false);
+            router.replace("/auth/user-type" as any);
+          }}
+          onSkip={() => {
+            setShowEmailVerificationModal(false);
+            router.replace("/auth/user-type" as any);
+          }}
+        />
+      </Modal>
     </SafeAreaView>
+  );
+}
+
+/* ================= EMAIL VERIFICATION MODAL COMPONENT ================= */
+
+function EmailVerificationModal({ 
+  email, 
+  onVerified, 
+  onSkip 
+}: { 
+  email: string; 
+  onVerified: () => void; 
+  onSkip: () => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+
+  // Cooldown timer
+  React.useEffect(() => {
+    if (resendCooldown > 0) {
+      const timer = setTimeout(() => {
+        setResendCooldown(resendCooldown - 1);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [resendCooldown]);
+
+  const handleResendEmail = async () => {
+    if (!auth.currentUser) return;
+
+    try {
+      setLoading(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+      // 🔐 Force session reload (CRITICAL in Expo)
+      await auth.currentUser.reload();
+
+      // Check if already verified
+      if (auth.currentUser.emailVerified) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert(
+          "Already Verified! ✅",
+          "Your email is already verified.",
+          [{ text: "Continue", onPress: onVerified }]
+        );
+        setLoading(false);
+        return;
+      }
+
+      // Send verification email
+      await sendEmailVerification(auth.currentUser);
+      console.log("✅ Verification email resent to:", auth.currentUser.email);
+      
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert(
+        "Email Sent! ✉️",
+        "Verification email sent. Check your inbox and spam folder."
+      );
+
+      setResendCooldown(60);
+    } catch (error: any) {
+      console.error("❌ Resend error:", error.code, error.message);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      
+      let errorMessage = "Failed to send email. Please try again.";
+      if (error.code === "auth/too-many-requests") {
+        errorMessage = "Too many requests. Wait a few minutes.";
+      }
+      Alert.alert("Error", errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCheckVerification = async () => {
+    if (!auth.currentUser) return;
+
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      
+      // 🔐 Force session reload to get latest verification status
+      await auth.currentUser.reload();
+
+      if (auth.currentUser.emailVerified) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        
+        // ✅ Automatically close modal and navigate to next step
+        Alert.alert(
+          "Email Verified! ✅",
+          "Your email has been verified successfully.",
+          [{ 
+            text: "Continue", 
+            onPress: () => {
+              onVerified();
+            }
+          }]
+        );
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        Alert.alert(
+          "Not Verified Yet",
+          "Please check your email and click the verification link. Don't forget to check spam!"
+        );
+      }
+    } catch (error) {
+      console.error("❌ Check verification error:", error);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Error", "Failed to check verification status.");
+    }
+  };
+
+  const handleSkip = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    Alert.alert(
+      "Skip Verification?",
+      "You can continue, but you won't be able to post, comment, or message until you verify your email.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Skip for Now", onPress: onSkip }
+      ]
+    );
+  };
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      style={styles.modalOverlay}
+    >
+      <View style={styles.emailModalContent}>
+        {/* Email Icon */}
+        <View style={styles.emailIconContainer}>
+          <Text style={styles.emailIconText}>📧</Text>
+        </View>
+
+        <Text style={styles.emailModalTitle}>Verify Your Email</Text>
+
+        <Text style={styles.emailDescription}>
+          We've sent a verification email to:
+        </Text>
+
+        <Text style={styles.emailAddress}>{email}</Text>
+
+        <Text style={styles.emailInstructions}>
+          Please check your inbox and click the verification link.
+        </Text>
+
+        {/* Tips Box */}
+        <View style={styles.tipsBox}>
+          <Text style={styles.tipsTitle}>💡 Can't find the email?</Text>
+          <Text style={styles.tipText}>• Check spam/junk folder</Text>
+          <Text style={styles.tipText}>• Check promotions tab (Gmail)</Text>
+          <Text style={styles.tipText}>• Wait a few minutes</Text>
+          <Text style={styles.tipText}>• Click "Resend Email" below</Text>
+        </View>
+
+        {/* Resend Button */}
+        <TouchableOpacity
+          style={[
+            styles.emailSecondaryButton,
+            (loading || resendCooldown > 0) && styles.disabledButton
+          ]}
+          onPress={handleResendEmail}
+          disabled={loading || resendCooldown > 0}
+        >
+          {loading ? (
+            <ActivityIndicator color="#0D5C3A" />
+          ) : (
+            <Text style={styles.emailSecondaryButtonText}>
+              {resendCooldown > 0
+                ? `Resend Email (${resendCooldown}s)`
+                : "Resend Email"}
+            </Text>
+          )}
+        </TouchableOpacity>
+
+        {/* I've Verified Button */}
+        <TouchableOpacity
+          style={styles.emailPrimaryButton}
+          onPress={handleCheckVerification}
+        >
+          <Text style={styles.emailPrimaryButtonText}>
+            I've Verified My Email
+          </Text>
+        </TouchableOpacity>
+
+        {/* Skip Link */}
+        <TouchableOpacity onPress={handleSkip}>
+          <Text style={styles.emailSkipText}>Skip for Now</Text>
+        </TouchableOpacity>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -495,5 +747,101 @@ const styles = StyleSheet.create({
   switchTextBold: {
     color: "#0D5C3A",
     fontWeight: "700",
+  },
+  // Email Verification Modal
+  emailModalContent: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingBottom: 40,
+    maxHeight: "90%",
+  },
+  emailIconContainer: {
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  emailIconText: {
+    fontSize: 64,
+  },
+  emailModalTitle: {
+    fontSize: 28,
+    fontWeight: "700",
+    color: "#0D5C3A",
+    textAlign: "center",
+    marginBottom: 16,
+  },
+  emailDescription: {
+    fontSize: 16,
+    color: "#666",
+    textAlign: "center",
+    marginBottom: 8,
+  },
+  emailAddress: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#0D5C3A",
+    textAlign: "center",
+    marginBottom: 16,
+  },
+  emailInstructions: {
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
+    marginBottom: 20,
+    lineHeight: 20,
+  },
+  tipsBox: {
+    backgroundColor: "#F0F9F4",
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#0D5C3A",
+    marginBottom: 20,
+  },
+  tipsTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0D5C3A",
+    marginBottom: 8,
+  },
+  tipText: {
+    fontSize: 13,
+    color: "#666",
+    marginBottom: 4,
+    paddingLeft: 8,
+  },
+  emailSecondaryButton: {
+    backgroundColor: "#FFFFFF",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: "#0D5C3A",
+  },
+  emailSecondaryButtonText: {
+    color: "#0D5C3A",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  emailPrimaryButton: {
+    backgroundColor: "#0D5C3A",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  emailPrimaryButtonText: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  emailSkipText: {
+    textAlign: "center",
+    color: "#0D5C3A",
+    fontSize: 14,
+    fontWeight: "600",
+    textDecorationLine: "underline",
   },
 });

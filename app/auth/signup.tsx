@@ -11,7 +11,6 @@ import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   StyleSheet,
   Text,
   TextInput,
@@ -56,12 +55,19 @@ export default function SignupScreen() {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const user = userCredential.user;
 
+      // 🔐 Force session initialization (CRITICAL in Expo)
+      await user.reload();
+
       // ✅ SEND EMAIL VERIFICATION
       try {
         await sendEmailVerification(user);
-        console.log("✅ Verification email sent to:", email);
-      } catch (verifyError) {
-        console.error("Error sending verification email:", verifyError);
+        console.log("✅ Verification email sent to:", user.email);
+      } catch (verifyError: any) {
+        console.error(
+          "❌ Verification email failed:",
+          verifyError.code,
+          verifyError.message
+        );
       }
 
       // 📍 REQUEST LOCATION PERMISSION
@@ -149,21 +155,9 @@ export default function SignupScreen() {
       soundPlayer.play('postThought');
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-      Alert.alert(
-        "Verify Your Email ✉️",
-        `A verification email has been sent to ${email}. Please verify your email before posting, commenting, or messaging.`,
-        [
-          {
-            text: "OK",
-            onPress: () => {
-              // Play click sound when dismissing alert
-              soundPlayer.play('click');
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.push("/auth/user-type");
-            },
-          },
-        ]
-      );
+      // Navigate to email verification screen
+      router.push("/auth/email-verification" as any);
+      
     } catch (err: any) {
       console.error("Signup error:", err);
 
@@ -235,13 +229,6 @@ export default function SignupScreen() {
       <Text style={styles.locationNote}>
         We'll ask for location access to help you find nearby courses
       </Text>
-
-      <View style={styles.emailVerificationInfo}>
-        <Text style={styles.infoTitle}>📧 Email Verification Required</Text>
-        <Text style={styles.infoText}>
-          You'll need to verify your email before you can post, comment, or message.
-        </Text>
-      </View>
     </View>
   );
 }
@@ -302,24 +289,5 @@ const styles = StyleSheet.create({
     color: "#666",
     textAlign: "center",
     fontStyle: "italic",
-    marginBottom: 16,
-  },
-  emailVerificationInfo: {
-    backgroundColor: "#E8F5E9",
-    padding: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#0D5C3A",
-  },
-  infoTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#0D5C3A",
-    marginBottom: 4,
-  },
-  infoText: {
-    fontSize: 12,
-    color: "#666",
   },
 });
-

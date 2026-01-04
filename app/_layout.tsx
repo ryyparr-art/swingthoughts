@@ -49,7 +49,9 @@ export default function RootLayout() {
           const isOnboardingRoute = pathname.startsWith("/onboarding");
           const isWelcomeTour = pathname === "/welcome-tour";
           
-          // 🔑 Treat /auth/user-type as part of onboarding flow
+          // 🔑 Auth flow pages (login/signup only - email verification is now a modal on hero page)
+          const isInAuthFlow = pathname === "/auth/login" || 
+                               pathname === "/auth/signup";
           const isInOnboardingFlow = isOnboardingRoute || pathname === "/auth/user-type";
 
           /* =====================================================
@@ -61,7 +63,7 @@ export default function RootLayout() {
             // Allowed when logged out:
             // - Hero page
             // - Auth flows (login/signup pages only, NOT user-type)
-            if (isPublicRoute || (isAuthRoute && pathname !== "/auth/user-type")) {
+            if (isPublicRoute || isInAuthFlow) {
               setInitializing(false);
               return;
             }
@@ -81,14 +83,19 @@ export default function RootLayout() {
           const userRef = doc(db, "users", user.uid);
           const userSnap = await getDoc(userRef);
 
-          // User exists in Auth but not Firestore yet
+          // User exists in Auth but not Firestore yet (still in email verification modal on hero page)
           if (!userSnap.exists()) {
-            console.log("📝 No Firestore doc, redirecting to user-type");
+            console.log("📝 No Firestore doc, allowing to stay on current page");
             
-            // Only redirect if not already on user-type page
-            if (pathname !== "/auth/user-type") {
-              router.replace("/auth/user-type");
+            // Allow staying on hero page (where email verification modal is)
+            // or user-type page (if they skipped verification)
+            if (isPublicRoute || pathname === "/auth/user-type") {
+              setInitializing(false);
+              return;
             }
+            
+            // Otherwise redirect to hero page
+            router.replace("/");
             setInitializing(false);
             return;
           }
@@ -239,7 +246,7 @@ export default function RootLayout() {
           }
 
           // ✅ Only redirect if user is on public/auth routes - allow all app routes
-          if (isPublicRoute || isAuthRoute) {
+          if (isPublicRoute || (isAuthRoute && !isInAuthFlow)) {
             console.log("🔄 Redirecting to clubhouse");
             router.replace("/clubhouse");
             setInitializing(false);

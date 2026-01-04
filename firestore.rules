@@ -65,9 +65,10 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isSignedIn();
       
+      // ✅ FIXED: Removed email verification requirement for initial user creation
+      // Users need to be able to create their account document before they can verify email
       allow create: if isSignedIn() && 
-                       request.auth.uid == userId &&
-                       request.auth.token.email_verified == true;
+                       request.auth.uid == userId;
       
       // ✅ Allow users to update their own profile fields including:
       // - Profile data (displayName, handicap, avatar, etc.)
