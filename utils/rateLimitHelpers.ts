@@ -98,12 +98,23 @@ export async function updateRateLimitTimestamp(
 }
 
 // ============================================================================
-// CHECK EMAIL VERIFICATION
+// CHECK EMAIL VERIFICATION (FIRESTORE VERSION)
 // ============================================================================
 
-export function isEmailVerified(): boolean {
-  const user = auth.currentUser;
-  return user?.emailVerified === true;
+export async function isEmailVerified(): Promise<boolean> {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return false;
+
+  try {
+    const userDoc = await getDoc(doc(db, "users", uid));
+    if (!userDoc.exists()) return false;
+    
+    // ✅ Check Firestore field instead of Firebase Auth token
+    return userDoc.data()?.emailVerified === true;
+  } catch (error) {
+    console.error("Error checking email verification:", error);
+    return false;
+  }
 }
 
 // ============================================================================
@@ -136,4 +147,4 @@ export function getRateLimitMessage(
 // ============================================================================
 
 export const EMAIL_VERIFICATION_MESSAGE = 
-  "Please verify your email address before posting. Check your inbox for a verification email from Firebase.";
+  "Please verify your email address before posting. Check your inbox for a verification email.";

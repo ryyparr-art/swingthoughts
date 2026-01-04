@@ -24,6 +24,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -103,6 +104,7 @@ export default function CreateScreen() {
   const [showVideoTrimmer, setShowVideoTrimmer] = useState(false);
 
   const videoRef = useRef<Video>(null);
+  const scrollViewRef = useRef<ScrollView>(null);
 
   const [userData, setUserData] = useState<any>(null);
   const writable = canWrite(userData);
@@ -120,6 +122,24 @@ export default function CreateScreen() {
   const [editingPostId, setEditingPostId] = useState<string | null>(null);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /* --------------------------- KEYBOARD HANDLING --------------------------- */
+
+  useEffect(() => {
+    const keyboardDidShowListener = Keyboard.addListener(
+      'keyboardDidShow',
+      () => {
+        // Scroll to bottom when keyboard shows
+        setTimeout(() => {
+          scrollViewRef.current?.scrollToEnd({ animated: true });
+        }, 100);
+      }
+    );
+
+    return () => {
+      keyboardDidShowListener.remove();
+    };
+  }, []);
 
   /* --------------------------- LOAD USER DATA --------------------------- */
 
@@ -689,7 +709,8 @@ export default function CreateScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     // ✅ ANTI-BOT CHECK 1: Email Verification
-    if (!isEmailVerified()) {
+    const emailVerified = await isEmailVerified();
+    if (!emailVerified) {
       soundPlayer.play('error');
       Alert.alert("Email Not Verified", EMAIL_VERIFICATION_MESSAGE);
       return;
@@ -890,67 +911,74 @@ export default function CreateScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        style={styles.keyboardView}
-      >
-        {/* HEADER */}
-        <View style={styles.header}>
-          <TouchableOpacity 
-            onPress={() => {
-              soundPlayer.play('click');
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.back();
-            }} 
-            style={styles.closeButton}
-          >
-            <Image
-              source={require("@/assets/icons/Close.png")}
-              style={styles.closeIcon}
-              resizeMode="contain"
-            />
-          </TouchableOpacity>
+      {/* HEADER - Outside KeyboardAvoidingView so it stays fixed */}
+      <View style={styles.header}>
+        <TouchableOpacity 
+          onPress={() => {
+            soundPlayer.play('click');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.back();
+          }} 
+          style={styles.closeButton}
+        >
+          <Image
+            source={require("@/assets/icons/Close.png")}
+            style={styles.closeIcon}
+            resizeMode="contain"
+          />
+        </TouchableOpacity>
 
-          <Text style={styles.headerTitle}>
-            {isEditMode ? "Edit Thought" : "Create Thought"}
-          </Text>
+        <Text style={styles.headerTitle}>
+          {isEditMode ? "Edit Thought" : "Create Thought"}
+        </Text>
 
-          <View style={styles.headerRightButtons}>
-            {/* Delete button (only in edit mode) */}
-            {isEditMode && (
-              <TouchableOpacity
-                onPress={handleDelete}
-                disabled={isPosting}
-                style={styles.deleteButton}
-              >
-                <Text style={styles.deleteIcon}>🗑️</Text>
-              </TouchableOpacity>
-            )}
-
-            {/* Submit button */}
+        <View style={styles.headerRightButtons}>
+          {/* Delete button (only in edit mode) */}
+          {isEditMode && (
             <TouchableOpacity
-              onPress={handlePost}
-              disabled={!writable || isPosting}
-              style={[
-                styles.postButton,
-                (!writable || isPosting) && styles.postButtonDisabled,
-              ]}
+              onPress={handleDelete}
+              disabled={isPosting}
+              style={styles.deleteButton}
             >
-              <Text style={styles.flagIcon}>{isEditMode ? "✏️" : "⛳"}</Text>
+              <Text style={styles.deleteIcon}>🗑️</Text>
             </TouchableOpacity>
-          </View>
+          )}
+
+          {/* Submit button */}
+          <TouchableOpacity
+            onPress={handlePost}
+            disabled={!writable || isPosting}
+            style={[
+              styles.postButton,
+              (!writable || isPosting) && styles.postButtonDisabled,
+            ]}
+          >
+            <Text style={styles.flagIcon}>{isEditMode ? "✏️" : "⛳"}</Text>
+          </TouchableOpacity>
         </View>
+      </View>
 
-        {/* LOCK BANNER */}
-        {!writable && (
-          <View style={styles.lockBanner}>
-            <Text style={styles.lockText}>
-              Posting unlocks once verification is approved.
-            </Text>
-          </View>
-        )}
+      {/* LOCK BANNER */}
+      {!writable && (
+        <View style={styles.lockBanner}>
+          <Text style={styles.lockText}>
+            Posting unlocks once verification is approved.
+          </Text>
+        </View>
+      )}
 
-        <ScrollView style={styles.content} keyboardShouldPersistTaps="handled">
+      {/* Content wrapped in KeyboardAvoidingView */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={styles.flex1}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+      >
+        <ScrollView 
+          ref={scrollViewRef}
+          style={styles.content} 
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
           {/* MEDIA PREVIEW */}
           <View style={styles.section}>
             {isProcessingMedia ? (
@@ -1156,9 +1184,11 @@ export default function CreateScreen() {
               </View>
             )}
           </View>
+
+          {/* Extra padding for keyboard */}
+          <View style={{ height: 100 }} />
         </ScrollView>
       </KeyboardAvoidingView>
-
     </SafeAreaView>
   );
 }
@@ -1167,7 +1197,7 @@ export default function CreateScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F4EED8" },
-  keyboardView: { flex: 1 },
+  flex1: { flex: 1 },
 
   header: {
     flexDirection: "row",

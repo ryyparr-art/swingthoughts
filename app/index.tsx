@@ -1,4 +1,4 @@
-import { auth } from "@/constants/firebaseConfig";
+import { auth, db } from "@/constants/firebaseConfig";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -8,6 +8,7 @@ import {
   sendEmailVerification,
   signInWithEmailAndPassword,
 } from "firebase/auth";
+import { doc, updateDoc } from "firebase/firestore";
 import React, { useState } from "react";
 import {
   ActivityIndicator,
@@ -421,15 +422,11 @@ export default function HeroLandingPage() {
         visible={showEmailVerificationModal}
         animationType="slide"
         transparent={true}
-        onRequestClose={() => {}} // Prevent dismissing - must verify or skip
+        onRequestClose={() => {}} // Prevent dismissing - must verify
       >
         <EmailVerificationModal
           email={verificationEmail}
           onVerified={() => {
-            setShowEmailVerificationModal(false);
-            router.replace("/auth/user-type" as any);
-          }}
-          onSkip={() => {
             setShowEmailVerificationModal(false);
             router.replace("/auth/user-type" as any);
           }}
@@ -443,15 +440,52 @@ export default function HeroLandingPage() {
 
 function EmailVerificationModal({ 
   email, 
-  onVerified, 
-  onSkip 
+  onVerified
 }: { 
   email: string; 
-  onVerified: () => void; 
-  onSkip: () => void;
+  onVerified: () => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
+
+  // ✅ AUTO-CHECK FOR VERIFICATION every 3 seconds
+  React.useEffect(() => {
+    const checkInterval = setInterval(async () => {
+      if (!auth.currentUser) return;
+
+      try {
+        // Force reload to get latest verification status from Firebase Auth
+        await auth.currentUser.reload();
+
+        if (auth.currentUser.emailVerified) {
+          console.log("✅ Email verified! Auto-advancing...");
+          
+          // Update Firestore document
+          try {
+            await updateDoc(doc(db, "users", auth.currentUser.uid), {
+              emailVerified: true,
+            });
+            console.log("✅ Firestore emailVerified updated to true");
+          } catch (firestoreError) {
+            console.error("❌ Failed to update Firestore:", firestoreError);
+          }
+
+          // Play success sound
+          soundPlayer.play('achievement');
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+          // Auto-advance to next step
+          clearInterval(checkInterval);
+          onVerified();
+        }
+      } catch (error) {
+        console.error("❌ Auto-check error:", error);
+      }
+    }, 3000); // Check every 3 seconds
+
+    // Cleanup on unmount
+    return () => clearInterval(checkInterval);
+  }, [onVerified]);
 
   // Cooldown timer
   React.useEffect(() => {
@@ -510,55 +544,6 @@ function EmailVerificationModal({
     }
   };
 
-  const handleCheckVerification = async () => {
-    if (!auth.currentUser) return;
-
-    try {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      
-      // 🔐 Force session reload to get latest verification status
-      await auth.currentUser.reload();
-
-      if (auth.currentUser.emailVerified) {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        
-        // ✅ Automatically close modal and navigate to next step
-        Alert.alert(
-          "Email Verified! ✅",
-          "Your email has been verified successfully.",
-          [{ 
-            text: "Continue", 
-            onPress: () => {
-              onVerified();
-            }
-          }]
-        );
-      } else {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-        Alert.alert(
-          "Not Verified Yet",
-          "Please check your email and click the verification link. Don't forget to check spam!"
-        );
-      }
-    } catch (error) {
-      console.error("❌ Check verification error:", error);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Error", "Failed to check verification status.");
-    }
-  };
-
-  const handleSkip = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    Alert.alert(
-      "Skip Verification?",
-      "You can continue, but you won't be able to post, comment, or message until you verify your email.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Skip for Now", onPress: onSkip }
-      ]
-    );
-  };
-
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -611,20 +596,20 @@ function EmailVerificationModal({
           )}
         </TouchableOpacity>
 
-        {/* I've Verified Button */}
-        <TouchableOpacity
-          style={styles.emailPrimaryButton}
-          onPress={handleCheckVerification}
-        >
-          <Text style={styles.emailPrimaryButtonText}>
-            I've Verified My Email
+        {/* Auto-detection message */}
+        <View style={styles.autoDetectBox}>
+          <Text style={styles.autoDetectText}>
+            ✨ Waiting for verification...
           </Text>
-        </TouchableOpacity>
-
-        {/* Skip Link */}
-        <TouchableOpacity onPress={handleSkip}>
-          <Text style={styles.emailSkipText}>Skip for Now</Text>
-        </TouchableOpacity>
+          <Text style={styles.autoDetectSubtext}>
+            Click the link in your email and we'll automatically continue
+          </Text>
+          <ActivityIndicator 
+            size="small" 
+            color="#0D5C3A" 
+            style={{ marginTop: 8 }}
+          />
+        </View>
       </View>
     </KeyboardAvoidingView>
   );
@@ -843,5 +828,24 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     textDecorationLine: "underline",
+  },
+  autoDetectBox: {
+    backgroundColor: "#F0F9F4",
+    padding: 20,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#0D5C3A",
+    alignItems: "center",
+  },
+  autoDetectText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#0D5C3A",
+    marginBottom: 4,
+  },
+  autoDetectSubtext: {
+    fontSize: 13,
+    color: "#666",
+    textAlign: "center",
   },
 });

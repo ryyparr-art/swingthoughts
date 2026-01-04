@@ -109,6 +109,7 @@ export default function SignupScreen() {
       await setDoc(doc(db, "users", user.uid), {
         userId: user.uid,
         email: user.email,
+        emailVerified: false, // ← Will be set to true when user verifies email
         createdAt: serverTimestamp(),
 
         // Location data
