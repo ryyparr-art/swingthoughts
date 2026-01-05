@@ -13,7 +13,7 @@ import {
   updateEmail,
   updatePassword
 } from "firebase/auth";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { deleteDoc, doc, getDoc, updateDoc } from "firebase/firestore";
 import {
   getDownloadURL,
   getStorage,
@@ -77,6 +77,10 @@ export default function SettingsScreen() {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  
+  // Delete account modal (cross-platform)
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
   
   const [emailVerified, setEmailVerified] = useState(false);
   const [sendingVerification, setSendingVerification] = useState(false);
@@ -345,57 +349,23 @@ export default function SettingsScreen() {
         {
           text: "Delete",
           style: "destructive",
-          onPress: () => confirmPasswordForDeletion(),
+          onPress: () => {
+            soundPlayer.play('click');
+            setDeletePassword("");
+            setDeleteModalVisible(true);
+          },
         },
       ]
     );
   };
 
-  const confirmPasswordForDeletion = () => {
-    soundPlayer.play('click');
-    
-    // Use Alert.prompt for password entry (iOS only, Android needs custom modal)
-    if (Platform.OS === 'ios') {
-      Alert.prompt(
-        "Confirm Deletion",
-        "Enter your password to permanently delete your account:",
-        [
-          {
-            text: "Cancel",
-            style: "cancel",
-            onPress: () => soundPlayer.play('click'),
-          },
-          {
-            text: "Delete Forever",
-            style: "destructive",
-            onPress: async (password?: string) => {
-              if (!password || !password.trim()) {
-                soundPlayer.play('error');
-                Alert.alert("Error", "Password is required");
-                return;
-              }
-              await executeAccountDeletion(password);
-            },
-          },
-        ],
-        "secure-text"
-      );
-    } else {
-      // For Android, use a simpler confirmation
-      Alert.alert(
-        "Final Confirmation",
-        "Type your password in settings to delete, or contact support at support@swingthoughts.com",
-        [
-          { 
-            text: "OK",
-            onPress: () => soundPlayer.play('click')
-          }
-        ]
-      );
+  const executeAccountDeletion = async () => {
+    if (!deletePassword.trim()) {
+      soundPlayer.play('error');
+      Alert.alert("Error", "Password is required");
+      return;
     }
-  };
 
-  const executeAccountDeletion = async (password: string) => {
     const user = auth.currentUser;
     if (!user || !user.email) {
       soundPlayer.play('error');
@@ -407,22 +377,18 @@ export default function SettingsScreen() {
       soundPlayer.play('click');
       
       // Re-authenticate user with password
-      const credential = EmailAuthProvider.credential(user.email, password);
+      const credential = EmailAuthProvider.credential(user.email, deletePassword);
       await reauthenticateWithCredential(user, credential);
 
-      // Mark user as deleted in Firestore (soft delete - keep data for moderation)
+      // Delete user document from Firestore (hard delete)
       if (userId) {
-        await updateDoc(doc(db, "users", userId), {
-          deleted: true,
-          deletedAt: new Date().toISOString(),
-          // Keep display name for content moderation but mark as deleted
-          displayName: "[Deleted User]",
-        });
+        await deleteDoc(doc(db, "users", userId));
       }
 
       // Delete Firebase Auth account
       await user.delete();
 
+      setDeleteModalVisible(false);
       soundPlayer.play('postThought');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       
@@ -443,7 +409,7 @@ export default function SettingsScreen() {
       console.error("Account deletion error:", error);
       soundPlayer.play('error');
       
-      if (error.code === "auth/wrong-password") {
+      if (error.code === "auth/wrong-password" || error.code === "auth/invalid-credential") {
         Alert.alert("Error", "Incorrect password. Please try again.");
       } else if (error.code === "auth/requires-recent-login") {
         Alert.alert(
@@ -451,11 +417,12 @@ export default function SettingsScreen() {
           "For security, please log out and log back in before deleting your account.",
           [{ 
             text: "OK",
-            onPress: () => soundPlayer.play('click')
+            onPress: () => {
+              soundPlayer.play('click');
+              setDeleteModalVisible(false);
+            }
           }]
         );
-      } else if (error.code === "auth/invalid-credential") {
-        Alert.alert("Error", "Invalid password. Please try again.");
       } else {
         Alert.alert(
           "Error", 
@@ -1305,6 +1272,68 @@ export default function SettingsScreen() {
         </View>
       </Modal>
 
+      {/* ==================== DELETE ACCOUNT MODAL ==================== */}
+      <Modal
+        visible={deleteModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setDeleteModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Delete Account</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  soundPlayer.play('click');
+                  setDeleteModalVisible(false);
+                }}
+                style={styles.modalClose}
+              >
+                <Image
+                  source={require("@/assets/icons/Close.png")}
+                  style={styles.closeIcon}
+                />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalContent}>
+              <Text style={styles.deleteWarningText}>
+                ⚠️ This action cannot be undone. Your profile, scores, and posts will be permanently deleted.
+              </Text>
+
+              <Text style={styles.modalLabel}>Enter Your Password to Confirm</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="Enter your password"
+                placeholderTextColor="#999"
+                value={deletePassword}
+                onChangeText={setDeletePassword}
+                secureTextEntry
+                autoCapitalize="none"
+              />
+
+              <TouchableOpacity
+                style={styles.deleteSubmitButton}
+                onPress={executeAccountDeletion}
+              >
+                <Text style={styles.deleteSubmitButtonText}>Delete Account Forever</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={() => {
+                  soundPlayer.play('click');
+                  setDeleteModalVisible(false);
+                }}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* ==================== LOCATION PREFERENCES MODAL ==================== */}
       <LocationPreferencesModal
         visible={locationPrefsVisible}
@@ -1799,5 +1828,45 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "500",
     color: "#333",
+  },
+
+  /* DELETE MODAL STYLES */
+  deleteWarningText: {
+    fontSize: 14,
+    color: "#FF3B30",
+    backgroundColor: "#FFF5F5",
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 20,
+    textAlign: "center",
+    fontWeight: "600",
+  },
+
+  deleteSubmitButton: {
+    backgroundColor: "#FF3B30",
+    borderRadius: 12,
+    padding: 16,
+    alignItems: "center",
+    marginTop: 16,
+  },
+
+  deleteSubmitButtonText: {
+    color: "#FFF",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+
+  cancelButton: {
+    backgroundColor: "transparent",
+    borderRadius: 12,
+    padding: 16,
+    alignItems: "center",
+    marginTop: 8,
+  },
+
+  cancelButtonText: {
+    color: "#666",
+    fontSize: 16,
+    fontWeight: "600",
   },
 });

@@ -8,6 +8,8 @@ import {
   isEmailVerified,
   updateRateLimitTimestamp
 } from "@/utils/rateLimitHelpers";
+import { soundPlayer } from "@/utils/soundPlayer";
+import { getUserProfile } from "@/utils/userProfileHelpers";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import {
@@ -18,6 +20,7 @@ import {
   getDoc,
   getDocs,
   increment,
+  onSnapshot,
   orderBy,
   query,
   updateDoc,
@@ -132,36 +135,42 @@ export default function CommentsModal({
     loadPartners();
   }, [visible, currentUserId]);
 
-  /* ---------------- FETCH COMMENTS ---------------- */
+  /* ✅ REAL-TIME COMMENTS LISTENER ---------------- */
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || !thoughtId) return;
 
-    const fetch = async () => {
-      setLoading(true);
+    setLoading(true);
 
-      const q = query(
-        collection(db, "thoughts", thoughtId, "comments"),
-        orderBy("createdAt", "asc")
-      );
+    const q = query(
+      collection(db, "thoughts", thoughtId, "comments"),
+      orderBy("createdAt", "asc")
+    );
 
-      const snap = await getDocs(q);
-      const loaded: Comment[] = snap.docs.map((d) => ({
+    // ✅ Real-time listener - comments update automatically!
+    const unsubscribe = onSnapshot(q, async (snapshot) => {
+      const loaded: Comment[] = snapshot.docs.map((d) => ({
         id: d.id,
         ...(d.data() as any),
       }));
 
       setComments(loaded);
 
+      // ✅ Load user profiles with helper (handles deleted users)
       const uniqueUserIds = Array.from(new Set(loaded.map((c) => c.userId)));
       const userData: Record<string, UserProfile> = {};
 
       await Promise.all(
         uniqueUserIds.map(async (uid) => {
-          const u = await getDoc(doc(db, "users", uid));
-          if (u.exists()) {
+          try {
+            const userProfile = await getUserProfile(uid);
             userData[uid] = {
-              displayName: u.data().displayName,
-              avatar: u.data().avatar,
+              displayName: userProfile.displayName, // "[Deleted User]" if deleted
+              avatar: userProfile.avatar || undefined,
+            };
+          } catch {
+            userData[uid] = {
+              displayName: "[Deleted User]",
+              avatar: undefined,
             };
           }
         })
@@ -169,9 +178,13 @@ export default function CommentsModal({
 
       setUserMap(userData);
       setLoading(false);
-    };
+    }, (error) => {
+      console.error("Comments listener error:", error);
+      setLoading(false);
+    });
 
-    fetch();
+    // Cleanup listener on unmount
+    return () => unsubscribe();
   }, [visible, thoughtId]);
 
   /* ---------------- @ MENTION AUTOCOMPLETE ---------------- */
@@ -292,6 +305,9 @@ export default function CommentsModal({
   };
 
   const handleSelectMention = (item: any) => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
     let mentionText = "";
     
     if (autocompleteType === "partner") {
@@ -408,6 +424,7 @@ export default function CommentsModal({
                 key={index}
                 style={styles.mention}
                 onPress={() => {
+                  soundPlayer.play('click');
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   if (mention.type === 'partner') {
                     router.push(`/locker/${mention.data.userId}`);
@@ -433,6 +450,7 @@ export default function CommentsModal({
 
     // ✅ ANTI-BOT CHECK 1: Email Verification
     if (!isEmailVerified()) {
+      soundPlayer.play('error');
       Alert.alert("Email Not Verified", EMAIL_VERIFICATION_MESSAGE);
       return;
     }
@@ -441,12 +459,14 @@ export default function CommentsModal({
     if (!editingCommentId) {
       const { allowed, remainingSeconds } = await checkRateLimit("comment");
       if (!allowed) {
+        soundPlayer.play('error');
         Alert.alert("Please Wait", getRateLimitMessage("comment", remainingSeconds));
         return;
       }
     }
 
     setPosting(true);
+    soundPlayer.play('postThought');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     try {
@@ -458,14 +478,7 @@ export default function CommentsModal({
           taggedCourses: taggedCourses,
         });
 
-        setComments((prev) =>
-          prev.map((c) =>
-            c.id === editingCommentId
-              ? { ...c, content: text.trim(), taggedPartners, taggedCourses }
-              : c
-          )
-        );
-
+        // ✅ No need to manually update state - real-time listener handles it!
         setEditingCommentId(null);
         setOriginalEditText("");
       } else {
@@ -550,30 +563,19 @@ export default function CommentsModal({
       setTaggedCourses([]);
       setSelectedMentions([]);
       
-      // ✅ Refetch comments to show the new one immediately
-      const fetchComments = async () => {
-        const q = query(
-          collection(db, "thoughts", thoughtId, "comments"),
-          orderBy("createdAt", "asc")
-        );
-        const snap = await getDocs(q);
-        const loaded: Comment[] = snap.docs.map((d) => ({
-          id: d.id,
-          ...(d.data() as any),
-        }));
-        setComments(loaded);
-      };
-      await fetchComments();
-      
+      // ✅ No need to refetch - real-time listener shows new comment automatically!
       setPosting(false);
     } catch (error) {
       console.error("Error posting/updating comment:", error);
+      soundPlayer.play('error');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setPosting(false);
     }
   };
 
   /* ---------------- EDIT COMMENT ---------------- */
   const handleEditComment = (comment: Comment) => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setEditingCommentId(comment.id);
     setText(comment.content);
@@ -599,6 +601,7 @@ export default function CommentsModal({
   };
 
   const handleCancelEdit = () => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setEditingCommentId(null);
     setText("");
@@ -610,6 +613,7 @@ export default function CommentsModal({
 
   /* ---------------- DELETE COMMENT ---------------- */
   const handleDeleteComment = (comment: Comment) => {
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     Alert.alert(
@@ -622,6 +626,7 @@ export default function CommentsModal({
           style: "destructive",
           onPress: async () => {
             try {
+              soundPlayer.play('dart');
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
               await deleteDoc(doc(db, "thoughts", thoughtId, "comments", comment.id));
@@ -630,9 +635,11 @@ export default function CommentsModal({
                 comments: increment(-1),
               });
 
-              setComments((prev) => prev.filter((c) => c.id !== comment.id));
+              // ✅ No need to manually update state - real-time listener handles it!
             } catch (error) {
               console.error("Error deleting comment:", error);
+              soundPlayer.play('error');
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
               Alert.alert("Error", "Failed to delete comment");
             }
           },
@@ -645,6 +652,7 @@ export default function CommentsModal({
   const handleLongPressComment = (comment: Comment) => {
     if (comment.userId !== currentUserId) return;
 
+    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     Alert.alert(
@@ -672,6 +680,9 @@ export default function CommentsModal({
   const toggleLike = async (comment: Comment) => {
     if (!currentUserId) return;
 
+    soundPlayer.play('dart');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
     const ref = doc(db, "thoughts", thoughtId, "comments", comment.id);
     const hasLiked = comment.likedBy?.includes(currentUserId);
 
@@ -682,19 +693,7 @@ export default function CommentsModal({
         : [...(comment.likedBy || []), currentUserId],
     });
 
-    setComments((prev) =>
-      prev.map((c) =>
-        c.id === comment.id
-          ? {
-              ...c,
-              likes: hasLiked ? (c.likes || 0) - 1 : (c.likes || 0) + 1,
-              likedBy: hasLiked
-                ? c.likedBy?.filter((id) => id !== currentUserId)
-                : [...(c.likedBy || []), currentUserId],
-            }
-          : c
-      )
-    );
+    // ✅ No need to manually update state - real-time listener handles it!
   };
 
   return (
@@ -706,7 +705,14 @@ export default function CommentsModal({
         <View style={styles.sheet}>
           {/* HEADER */}
           <View style={styles.header}>
-            <TouchableOpacity onPress={onClose} style={styles.headerButton}>
+            <TouchableOpacity 
+              onPress={() => {
+                soundPlayer.play('click');
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                onClose();
+              }} 
+              style={styles.headerButton}
+            >
               <Image
                 source={require("@/assets/icons/Close.png")}
                 style={styles.closeIcon}
@@ -749,7 +755,11 @@ export default function CommentsModal({
                       activeOpacity={isOwnComment ? 0.7 : 1}
                     >
                       <TouchableOpacity
-                        onPress={() => router.push(`/locker/${item.userId}`)}
+                        onPress={() => {
+                          soundPlayer.play('click');
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          router.push(`/locker/${item.userId}`);
+                        }}
                       >
                         {user?.avatar ? (
                           <Image
@@ -767,7 +777,11 @@ export default function CommentsModal({
 
                       <View style={styles.commentBody}>
                         <TouchableOpacity
-                          onPress={() => router.push(`/locker/${item.userId}`)}
+                          onPress={() => {
+                            soundPlayer.play('click');
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            router.push(`/locker/${item.userId}`);
+                          }}
                         >
                           <Text style={styles.name}>
                             {item.userId === currentUserId
@@ -1070,7 +1084,6 @@ const styles = StyleSheet.create({
     opacity: 0.4,
   },
 });
-
 
 
 

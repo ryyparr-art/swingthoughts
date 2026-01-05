@@ -1,319 +1,579 @@
-rules_version = '2';
+import { auth, db } from "@/constants/firebaseConfig";
+import { markAllNotificationsAsRead, markNotificationAsRead } from "@/utils/notificationHelpers";
+import { soundPlayer } from "@/utils/soundPlayer";
+import { getUserProfile } from "@/utils/userProfileHelpers";
+import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import { useRouter } from "expo-router";
+import { collection, onSnapshot, orderBy, query, where } from "firebase/firestore";
+import React, { useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  FlatList,
+  Image,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-service cloud.firestore {
-  match /databases/{database}/documents {
-    
-    // ============================================================================
-    // HELPER FUNCTIONS
-    // ============================================================================
-    
-    function isSignedIn() {
-      return request.auth != null;
-    }
-    
-    function isEmailVerified() {
-      return request.auth != null && 
-             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.emailVerified == true;
-    }
-    
-    function isAdmin() {
-      return isSignedIn() && 
-             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
-    }
-    
-    function getUserData() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-    }
-    
-    // Rate limiting helpers with fallbacks
-    function canPost() {
-      let userData = getUserData();
-      // If lastPostTime doesn't exist or is null, allow the post
-      return !('lastPostTime' in userData) || 
-             userData.lastPostTime == null ||
-             userData.lastPostTime < request.time - duration.value(30, 's');
-    }
-    
-    function canComment() {
-      let userData = getUserData();
-      // If lastCommentTime doesn't exist or is null, allow the comment
-      return !('lastCommentTime' in userData) || 
-             userData.lastCommentTime == null ||
-             userData.lastCommentTime < request.time - duration.value(5, 's');
-    }
-    
-    function canMessage() {
-      let userData = getUserData();
-      // If lastMessageTime doesn't exist or is null, allow the message
-      return !('lastMessageTime' in userData) || 
-             userData.lastMessageTime == null ||
-             userData.lastMessageTime < request.time - duration.value(10, 's');
-    }
-    
-    function canScore() {
-      let userData = getUserData();
-      // If lastScoreTime doesn't exist or is null, allow the score
-      return !('lastScoreTime' in userData) || 
-             userData.lastScoreTime == null ||
-             userData.lastScoreTime < request.time - duration.value(60, 's');
-    }
-    
-    // ============================================================================
-    // USERS COLLECTION
-    // ============================================================================
-    
-    match /users/{userId} {
-      allow read: if isSignedIn();
-      
-      // ✅ FIXED: Removed email verification requirement for initial user creation
-      // Users need to be able to create their account document before they can verify email
-      allow create: if isSignedIn() && 
-                       request.auth.uid == userId;
-      
-      // ✅ Allow users to update their own profile fields including:
-      // - Profile data (displayName, handicap, avatar, etc.)
-      // - Locker data (clubs, homeCourse, gameIdentity, displayBadges)
-      // - Onboarding flags (lockerCompleted, acceptedTerms, hasSeenWelcomeTour)
-      // - Location data
-      // - Partner relationships
-      // - Course relationships (playerCourses, declaredMemberCourses, pendingMembershipCourses)
-      allow update: if isSignedIn() && 
-                       (request.auth.uid == userId || isAdmin());
-      
-      allow delete: if isAdmin();
-    }
-    
-    // ============================================================================
-    // THOUGHTS (POSTS) COLLECTION
-    // ============================================================================
-    
-    match /thoughts/{thoughtId} {
-      allow read: if true; // Public read
-      
-      allow create: if isSignedIn() && 
-                       isEmailVerified() &&
-                       canPost() &&
-                       request.resource.data.userId == request.auth.uid &&
-                       request.resource.data.content.size() <= 280;
-      
-      allow update: if isSignedIn() && 
-                       (request.auth.uid == resource.data.userId || isAdmin());
-      
-      allow delete: if isSignedIn() && 
-                       (request.auth.uid == resource.data.userId || isAdmin());
-      
-      // Comments subcollection
-      match /comments/{commentId} {
-        allow read: if true;
-        
-        allow create: if isSignedIn() && 
-                         isEmailVerified() &&
-                         canComment() &&
-                         request.resource.data.userId == request.auth.uid &&
-                         request.resource.data.content.size() <= 500;
-        
-        allow update: if isSignedIn() && 
-                         (request.auth.uid == resource.data.userId || isAdmin());
-        
-        allow delete: if isSignedIn() && 
-                         (request.auth.uid == resource.data.userId || isAdmin());
-      }
-    }
-    
-    // ============================================================================
-    // MESSAGES COLLECTION
-    // ============================================================================
-    
-    match /messages/{messageId} {
-      allow read: if isSignedIn() && 
-                     (request.auth.uid == resource.data.senderId || 
-                      request.auth.uid == resource.data.receiverId ||
-                      isAdmin());
-      
-      allow list, get: if isSignedIn();
-      
-      allow create: if isSignedIn() && 
-                       isEmailVerified() &&
-                       canMessage() &&
-                       request.resource.data.senderId == request.auth.uid &&
-                       request.resource.data.content.size() <= 1000;
-      
-      allow update: if isSignedIn() && 
-                       (request.auth.uid == resource.data.senderId || 
-                        request.auth.uid == resource.data.receiverId ||
-                        isAdmin());
-      
-      allow delete: if isSignedIn() && 
-                       (request.auth.uid == resource.data.senderId || 
-                        request.auth.uid == resource.data.receiverId ||
-                        isAdmin());
-    }
-    
-    // ============================================================================
-    // SCORES COLLECTION
-    // ============================================================================
-    
-    match /scores/{scoreId} {
-      allow read: if true;
-      
-      allow create: if isSignedIn() && 
-                       isEmailVerified() &&
-                       canScore() &&
-                       request.resource.data.userId == request.auth.uid;
-      
-      allow update: if isSignedIn() && 
-                       (request.auth.uid == resource.data.userId || isAdmin());
-      
-      allow delete: if isSignedIn() && 
-                       (request.auth.uid == resource.data.userId || isAdmin());
-    }
-    
-    // ============================================================================
-    // NOTIFICATIONS COLLECTION
-    // ============================================================================
-    
-    match /notifications/{notificationId} {
-      allow read: if isSignedIn() && 
-                     (request.auth.uid == resource.data.userId || isAdmin());
-      
-      allow list, get: if isSignedIn() || isAdmin();
-      
-      allow create: if isSignedIn();
-      
-      allow update: if isSignedIn() && 
-                       (request.auth.uid == resource.data.userId || isAdmin());
-      
-      allow delete: if isSignedIn() && 
-                       (request.auth.uid == resource.data.userId || isAdmin());
-    }
-    
-    // ============================================================================
-    // REPORTS COLLECTION
-    // ============================================================================
-    
-    match /reports/{reportId} {
-      allow create: if isSignedIn() && isEmailVerified();
-      
-      allow read: if isSignedIn() && (
-        request.auth.uid == resource.data.reporterId || isAdmin()
-      );
-      
-      allow list, get: if isSignedIn();
-      
-      allow update, delete: if isAdmin();
-    }
-    
-    // ============================================================================
-    // VERIFICATION REQUESTS COLLECTION
-    // ============================================================================
-    
-    match /verification_requests/{requestId} {
-      allow read: if isAdmin();
-      allow list, get: if isAdmin();
-      
-      allow create: if isSignedIn() && 
-                       request.resource.data.userId == request.auth.uid;
-      
-      allow update, delete: if isAdmin();
-    }
-    
-    // ============================================================================
-    // PARTNER REQUESTS COLLECTION
-    // ============================================================================
-    
-    match /partnerRequests/{requestId} {
-      allow read: if isSignedIn() && 
-                     (request.auth.uid == resource.data.fromUserId || 
-                      request.auth.uid == resource.data.toUserId ||
-                      isAdmin());
-      
-      allow list, get: if isSignedIn();
-      
-      allow create: if isSignedIn() && 
-                       isEmailVerified() &&
-                       request.resource.data.fromUserId == request.auth.uid;
-      
-      allow update, delete: if isSignedIn() && 
-                               (request.auth.uid == resource.data.fromUserId || 
-                                request.auth.uid == resource.data.toUserId ||
-                                isAdmin());
-    }
-    
-    // ============================================================================
-    // PARTNERS COLLECTION
-    // ============================================================================
-    
-    match /partners/{partnerId} {
-      // Allow reading partnership documents if you're one of the partners
-      allow read: if isSignedIn() && 
-                     (partnerId.matches('.*' + request.auth.uid + '.*') ||
-                      isAdmin());
-      
-      // Allow listing partnerships (for queries)
-      allow list, get: if isSignedIn();
-      
-      // Allow creating partnerships if you're one of the partners
-      allow create: if isSignedIn() && 
-                       isEmailVerified();
-      
-      // Allow updating/deleting partnerships if you're one of the partners
-      allow update, delete: if isSignedIn() && 
-                               (partnerId.matches('.*' + request.auth.uid + '.*') ||
-                                isAdmin());
-    }
-    
-    // ============================================================================
-    // COURSE MEMBERSHIPS COLLECTION
-    // ============================================================================
-    
-    match /course_memberships/{membershipId} {
-      // Allow users to read their own membership requests
-      allow read: if isSignedIn() && 
-                     (request.auth.uid == resource.data.userId || isAdmin());
-      
-      // Allow listing memberships (for queries)
-      allow list, get: if isSignedIn();
-      
-      // Allow users to create membership requests
-      allow create: if isSignedIn() && 
-                       isEmailVerified() &&
-                       request.resource.data.userId == request.auth.uid;
-      
-      // Only admins can update/delete
-      allow update, delete: if isAdmin();
-    }
-    
-    // ============================================================================
-    // COURSES COLLECTION (cached golf courses)
-    // ============================================================================
-    
-    match /courses/{courseId} {
-      allow read: if true; // Public read
-      allow create, update: if isSignedIn();
-      allow delete: if isAdmin();
-    }
-    
-    // ============================================================================
-    // COURSE LEADERS COLLECTION
-    // ============================================================================
-    
-    match /course_leaders/{courseLeaderId} {
-      allow read: if true; // Public read
-      allow create, update: if isSignedIn();
-      allow delete: if isAdmin();
-    }
-    
-    // ============================================================================
-    // CLUBS COLLECTION
-    // ============================================================================
-    
-    match /clubs/{clubId} {
-      allow read: if true;
-      allow create: if isSignedIn() && isEmailVerified();
-      allow update, delete: if isSignedIn() && 
-                               (request.auth.uid == resource.data.ownerId || isAdmin());
-    }
-  }
+interface Notification {
+  id: string;
+  userId: string;
+  type: string;
+  read: boolean;
+  createdAt: any;
+  message: string;
+  
+  // Grouped notifications
+  actors?: Array<{ userId: string; displayName: string; avatar?: string }>;
+  actorCount?: number;
+  
+  // Single actor notifications
+  actorId?: string;
+  actorName?: string;
+  actorAvatar?: string;
+  
+  // Related content
+  postId?: string;
+  commentId?: string;
+  courseId?: number;
+  scoreId?: string;
 }
+
+interface GroupedNotifications {
+  title: string;
+  data: Notification[];
+}
+
+export default function NotificationsScreen() {
+  const router = useRouter();
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+
+    // Real-time listener for notifications
+    const notificationsQuery = query(
+      collection(db, "notifications"),
+      where("userId", "==", uid),
+      orderBy("createdAt", "desc")
+    );
+
+    const unsubscribe = onSnapshot(
+      notificationsQuery,
+      async (snapshot) => {
+        const notificationsList: Notification[] = [];
+        const actorIds = new Set<string>();
+        
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          notificationsList.push({
+            id: doc.id,
+            ...data,
+          } as Notification);
+          
+          // Collect actor IDs for batch fetching
+          if (data.actorId) {
+            actorIds.add(data.actorId);
+          }
+          if (data.actors && Array.isArray(data.actors)) {
+            data.actors.forEach((actor: any) => {
+              if (actor.userId) {
+                actorIds.add(actor.userId);
+              }
+            });
+          }
+        });
+
+        // ✅ USE HELPER - Fetch all actor profiles with deleted user handling
+        if (actorIds.size > 0) {
+          try {
+            const { batchGetUserProfiles } = await import("@/utils/userProfileHelpers");
+            const profileMap = await batchGetUserProfiles(Array.from(actorIds));
+            
+            // Update notifications with fresh profile data
+            notificationsList.forEach((notif) => {
+              if (notif.actorId) {
+                const profile = profileMap.get(notif.actorId);
+                if (profile) {
+                  notif.actorName = profile.displayName; // "[Deleted User]" if deleted
+                  notif.actorAvatar = profile.avatar || undefined;
+                }
+              }
+              
+              if (notif.actors) {
+                notif.actors = notif.actors.map((actor) => {
+                  const profile = profileMap.get(actor.userId);
+                  return {
+                    ...actor,
+                    displayName: profile?.displayName || actor.displayName || "[Deleted User]",
+                    avatar: profile?.avatar || actor.avatar,
+                  };
+                });
+              }
+            });
+          } catch (error) {
+            console.error("Error fetching actor profiles:", error);
+          }
+        }
+
+        setNotifications(notificationsList);
+        setLoading(false);
+        setRefreshing(false);
+      },
+      (error) => {
+        console.error("Error fetching notifications:", error);
+        soundPlayer.play('error');
+        setLoading(false);
+        setRefreshing(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  const handleRefresh = () => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setRefreshing(true);
+    // The snapshot listener will automatically refresh
+  };
+
+  const handleMarkAllAsRead = async () => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    try {
+      await markAllNotificationsAsRead(uid);
+      soundPlayer.play('postThought');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error) {
+      console.error("Error marking all as read:", error);
+      soundPlayer.play('error');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    }
+  };
+
+  const handleNotificationTap = async (notification: Notification) => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    // Mark as read
+    if (!notification.read) {
+      await markNotificationAsRead(notification.id);
+    }
+
+    // Navigate based on type
+    switch (notification.type) {
+      case "like":
+      case "comment":
+      case "share":
+      case "mention_comment":
+      case "partner_posted":
+      case "trending":
+        // All clubhouse interactions - highlight the post with gold border
+        if (notification.postId) {
+          router.push({
+            pathname: "/clubhouse",
+            params: { highlightPostId: notification.postId },
+          });
+        }
+        break;
+
+      case "mention_post":
+        if (notification.postId) {
+          router.push({
+            pathname: "/clubhouse",
+            params: { highlightPostId: notification.postId },
+          });
+        }
+        break;
+
+      case "partner_request":
+      case "partner_accepted":
+        if (notification.actorId) {
+          router.push(`/locker/${notification.actorId}`);
+        }
+        break;
+
+      case "message":
+      case "message_request":
+        if (notification.actorId) {
+          router.push(`/messages/${notification.actorId}`);
+        }
+        break;
+
+      case "partner_scored":
+        if (notification.scoreId) {
+          router.push({
+            pathname: "/clubhouse",
+            params: { highlightScoreId: notification.scoreId },
+          });
+        }
+        break;
+
+      // ✅ LOW LEADER - Navigate to leaderboard with highlighting
+      case "partner_lowman":
+        if (notification.courseId && notification.actorId) {
+          router.push({
+            pathname: "/leaderboard",
+            params: {
+              highlightCourseId: notification.courseId.toString(),
+              highlightUserId: notification.actorId,
+            },
+          });
+        }
+        break;
+
+      // ===============================
+      // HOLE-IN-ONE ADDITIONS
+      // ===============================
+
+      case "holeinone_verification_request":
+        if (notification.scoreId) {
+          router.push(`/verify-holeinone/${notification.scoreId}`);
+        }
+        break;
+
+      case "holeinone_verified":
+        if (notification.postId) {
+          router.push({
+            pathname: "/clubhouse",
+            params: { highlightPostId: notification.postId },
+          });
+        } else {
+          router.push(`/clubhouse`);
+        }
+        break;
+
+      case "holeinone_denied":
+        router.push(`/profile/${auth.currentUser?.uid}`);
+        break;
+
+      case "partner_holeinone":
+        if (notification.postId) {
+          router.push({
+            pathname: "/clubhouse",
+            params: { highlightPostId: notification.postId },
+          });
+        } else {
+          router.push(`/clubhouse`);
+        }
+        break;
+
+      default:
+        // For system notifications, do nothing or navigate to settings
+        console.log("Unknown notification type:", notification.type);
+        break;
+    }
+  };
+
+  const groupNotificationsByDate = (): GroupedNotifications[] => {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const thisWeek = new Date(today);
+    thisWeek.setDate(thisWeek.getDate() - 7);
+
+    const todayNotifs: Notification[] = [];
+    const yesterdayNotifs: Notification[] = [];
+    const thisWeekNotifs: Notification[] = [];
+    const olderNotifs: Notification[] = [];
+
+    notifications.forEach((notif) => {
+      const date = notif.createdAt?.toDate();
+      if (!date) return;
+
+      if (date >= today) {
+        todayNotifs.push(notif);
+      } else if (date >= yesterday) {
+        yesterdayNotifs.push(notif);
+      } else if (date >= thisWeek) {
+        thisWeekNotifs.push(notif);
+      } else {
+        olderNotifs.push(notif);
+      }
+    });
+
+    const grouped: GroupedNotifications[] = [];
+    if (todayNotifs.length > 0) grouped.push({ title: "Today", data: todayNotifs });
+    if (yesterdayNotifs.length > 0) grouped.push({ title: "Yesterday", data: yesterdayNotifs });
+    if (thisWeekNotifs.length > 0) grouped.push({ title: "This Week", data: thisWeekNotifs });
+    if (olderNotifs.length > 0) grouped.push({ title: "Older", data: olderNotifs });
+
+    return grouped;
+  };
+
+  const renderNotification = ({ item }: { item: Notification }) => {
+    // Get avatar (grouped or single)
+    const avatar = item.actors && item.actors.length > 0
+      ? item.actors[0].avatar
+      : item.actorAvatar;
+
+    return (
+      <TouchableOpacity
+        style={[styles.notificationCard, !item.read && styles.notificationUnread]}
+        onPress={() => handleNotificationTap(item)}
+        activeOpacity={0.7}
+      >
+        {/* Avatar */}
+        <View style={styles.avatarContainer}>
+          {avatar ? (
+            <Image source={{ uri: avatar }} style={styles.avatar} />
+          ) : (
+            <View style={styles.avatarPlaceholder}>
+              <Ionicons name="person" size={24} color="#0D5C3A" />
+            </View>
+          )}
+          {!item.read && <View style={styles.unreadDot} />}
+        </View>
+
+        {/* Content */}
+        <View style={styles.notificationContent}>
+          <Text style={styles.notificationMessage}>{item.message}</Text>
+          <Text style={styles.notificationTime}>
+            {item.createdAt?.toDate().toLocaleString("en-US", {
+              month: "short",
+              day: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+            })}
+          </Text>
+        </View>
+
+        {/* Icon */}
+        <Ionicons name="chevron-forward" size={20} color="#999" />
+      </TouchableOpacity>
+    );
+  };
+
+  const renderSectionHeader = ({ section }: { section: GroupedNotifications }) => (
+    <View style={styles.sectionHeader}>
+      <Text style={styles.sectionTitle}>{section.title}</Text>
+    </View>
+  );
+
+  const groupedData = groupNotificationsByDate();
+
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#0D5C3A" />
+      </View>
+    );
+  }
+
+  const hasUnread = notifications.some((n) => !n.read);
+
+  return (
+    <SafeAreaView style={styles.container} edges={["top"]}>
+      {/* Header */}
+      <View style={styles.header}>
+        <TouchableOpacity
+          onPress={() => {
+            soundPlayer.play('click');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.back();
+          }}
+          style={styles.backButton}
+        >
+          <Image
+            source={require("@/assets/icons/Close.png")}
+            style={styles.closeIcon}
+            resizeMode="contain"
+          />
+        </TouchableOpacity>
+
+        <Text style={styles.headerTitle}>Notifications</Text>
+
+        {hasUnread && (
+          <TouchableOpacity
+            onPress={handleMarkAllAsRead}
+            style={styles.markAllButton}
+          >
+            <Text style={styles.markAllText}>Mark all read</Text>
+          </TouchableOpacity>
+        )}
+
+        {!hasUnread && <View style={styles.backButton} />}
+      </View>
+
+      {/* Notifications List */}
+      {notifications.length === 0 ? (
+        <View style={styles.emptyContainer}>
+          <Ionicons name="notifications-off-outline" size={80} color="#CCC" />
+          <Text style={styles.emptyText}>No notifications yet</Text>
+          <Text style={styles.emptySubtext}>
+            We'll notify you when something happens
+          </Text>
+        </View>
+      ) : (
+        <FlatList
+          data={groupedData}
+          renderItem={({ item: section }) => (
+            <>
+              {renderSectionHeader({ section })}
+              {section.data.map((notification) => (
+                <View key={notification.id}>
+                  {renderNotification({ item: notification })}
+                </View>
+              ))}
+            </>
+          )}
+          keyExtractor={(item) => item.title}
+          contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor="#0D5C3A"
+            />
+          }
+        />
+      )}
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#F4EED8",
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#F4EED8",
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  backButton: {
+    width: 40,
+    alignItems: "flex-start",
+  },
+  closeIcon: {
+    width: 28,
+    height: 28,
+    tintColor: "#FFFFFF",
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#FFFFFF",
+    flex: 1,
+    textAlign: "center",
+  },
+  markAllButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  markAllText: {
+    color: "#FFD700",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  listContent: {
+    paddingBottom: 20,
+  },
+  sectionHeader: {
+    backgroundColor: "#F4EED8",
+    paddingHorizontal: 16,
+    paddingTop: 20,
+    paddingBottom: 8,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#0D5C3A",
+  },
+  notificationCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    marginHorizontal: 16,
+    marginVertical: 4,
+    padding: 16,
+    borderRadius: 12,
+    gap: 12,
+  },
+  notificationUnread: {
+    backgroundColor: "#FFF9E6",
+    borderLeftWidth: 4,
+    borderLeftColor: "#FFD700",
+  },
+  avatarContainer: {
+    position: "relative",
+  },
+  avatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+  },
+  avatarPlaceholder: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "#E0E0E0",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  unreadDot: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: "#FFD700",
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
+  },
+  notificationContent: {
+    flex: 1,
+  },
+  notificationMessage: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
+    marginBottom: 4,
+  },
+  notificationTime: {
+    fontSize: 12,
+    color: "#999",
+  },
+  emptyContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 40,
+  },
+  emptyText: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#666",
+    marginTop: 16,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: "#999",
+    marginTop: 8,
+    textAlign: "center",
+  },
+});

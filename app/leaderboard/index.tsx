@@ -5,6 +5,7 @@ import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
 import { getCachedCourses } from "@/utils/courseCache";
 import { soundPlayer } from "@/utils/soundPlayer";
+import { batchGetUserProfiles } from "@/utils/userProfileHelpers";
 const LowLeaderTrophy = require("@/assets/icons/LowLeaderTrophy.png");
 
 import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
@@ -470,19 +471,19 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
       }
 
 
-      /* ---- LOAD USER PROFILES ---- */
+      /* ---- LOAD USER PROFILES WITH HELPER ---- */
 
+      // ✅ USE HELPER FUNCTION - Handles deleted users automatically
+      const profileMap = await batchGetUserProfiles(Array.from(userIds));
       const profiles: Record<string, UserProfile> = {};
-      const ids = Array.from(userIds);
 
-      for (let i = 0; i < ids.length; i += 10) {
-        const batch = ids.slice(i, i + 10);
-        const uq = query(collection(db, "users"), where("__name__", "in", batch));
-        const us = await getDocs(uq);
-        us.forEach((u) => {
-          profiles[u.id] = u.data() as UserProfile;
-        });
-      }
+      profileMap.forEach((profile, userId) => {
+        profiles[userId] = {
+          displayName: profile.displayName, // "[Deleted User]" if deleted
+          avatar: profile.avatar,
+          userType: profile.userType,
+        };
+      });
 
       /* ---- MERGE + FILTER OUT COURSE ACCOUNTS + HOLE-IN-ONE SCORES ---- */
 
@@ -492,7 +493,7 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
         .filter((s) => s.grossScore != null && s.netScore != null) // Ensure scores exist
         .map((s) => ({
           ...s,
-          userName: profiles[s.userId]?.displayName || "Player",
+          userName: profiles[s.userId]?.displayName || "[Deleted User]",
           userAvatar: profiles[s.userId]?.avatar ?? null,
         }));
 
@@ -934,7 +935,7 @@ const styles = StyleSheet.create({
   playerName: { fontWeight: "700", flexShrink: 1 },
 
   lowNet: { color: "#C9A400", fontWeight: "900" },
-trophyIcon: {
+  trophyIcon: {
     width: 24,
     height: 24,
     resizeMode: "contain",

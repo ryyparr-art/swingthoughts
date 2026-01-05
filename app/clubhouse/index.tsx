@@ -8,6 +8,7 @@ import { getPostTypeLabel } from "@/constants/postTypes";
 import { FeedItem, FeedPost, FeedScore, generateAlgorithmicFeed } from "@/utils/feedAlgorithm";
 import { createNotification } from "@/utils/notificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
+import { getUserProfile } from "@/utils/userProfileHelpers";
 
 import {
   arrayRemove,
@@ -300,16 +301,13 @@ export default function ClubhouseScreen() {
           thoughtId: data.thoughtId || docSnap.id,
         };
 
+        // ✅ USE HELPER FUNCTION - Handles deleted users automatically
         try {
-          const userDoc = await getDoc(doc(db, "users", thought.userId));
-          if (userDoc.exists()) {
-            thought.displayName = userDoc.data().displayName || "Anonymous";
-            thought.avatarUrl = userDoc.data().avatar || undefined;
-          } else {
-            thought.displayName = "Anonymous";
-          }
+          const userProfile = await getUserProfile(thought.userId);
+          thought.displayName = userProfile.displayName; // "[Deleted User]" if deleted
+          thought.avatarUrl = userProfile.avatar || undefined;
         } catch {
-          thought.displayName = "Anonymous";
+          thought.displayName = "[Deleted User]";
         }
 
         list.push(thought);
@@ -448,13 +446,11 @@ export default function ClubhouseScreen() {
 
   /* ------------------ LIKE ------------------ */
   const handleLike = async (thought: Thought) => {
-    if (!canWrite) {
-      // Play error sound for verification required
+    // ✅ FIXED: Only check if user is signed in, not email verification
+    // Users should be able to like posts once they're in the app
+    if (!currentUserId) {
       soundPlayer.play('error');
-      return Alert.alert(
-        "Verification Required",
-        "You'll be able to interact once your account is verified."
-      );
+      return Alert.alert("Please sign in to like posts");
     }
 
     if (thought.userId === currentUserId) {
@@ -550,16 +546,26 @@ export default function ClubhouseScreen() {
     activeFilters.partnersOnly
   );
 
-  // Optimistic comment count
+  // Optimistic comment count update
   const handleCommentAdded = () => {
     if (!selectedThought) return;
 
+    // ✅ Play success sound when comment is added
+    soundPlayer.play('postThought');
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    // ✅ Update the comment count optimistically
     setThoughts((prev) =>
       prev.map((t) =>
         t.id === selectedThought.id
           ? { ...t, comments: (t.comments || 0) + 1 }
           : t
       )
+    );
+
+    // ✅ Update the selectedThought so the modal reflects the new count
+    setSelectedThought((prev) => 
+      prev ? { ...prev, comments: (prev.comments || 0) + 1 } : prev
     );
   };
 
@@ -968,20 +974,22 @@ export default function ClubhouseScreen() {
         currentFilters={activeFilters}
       />
 
-      <CommentsModal
-        visible={commentsModalVisible}
-        thoughtId={selectedThought?.id || ""}
-        postContent={selectedThought?.content || ""}
-        postOwnerId={selectedThought?.userId || ""}
-        onClose={() => {
-          // Play click sound when closing comments
-          soundPlayer.play('click');
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          setCommentsModalVisible(false);
-          setSelectedThought(null);
-        }}
-        onCommentAdded={handleCommentAdded}
-      />
+      {selectedThought && (
+        <CommentsModal
+          visible={true}
+          thoughtId={selectedThought.id}
+          postContent={selectedThought.content}
+          postOwnerId={selectedThought.userId}
+          onClose={() => {
+            // Play click sound when closing comments
+            soundPlayer.play('click');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setCommentsModalVisible(false);
+            setSelectedThought(null);
+          }}
+          onCommentAdded={handleCommentAdded}
+        />
+      )}
 
       <ReportModal
         visible={reportModalVisible}
@@ -1219,7 +1227,6 @@ const styles = StyleSheet.create({
   actionIconCommented: { tintColor: "#FFD700" },
   actionText: { fontSize: 14, color: "#666", fontWeight: "600" },
 });
-
 
 
 
