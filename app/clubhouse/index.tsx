@@ -581,30 +581,105 @@ export default function ClubhouseScreen() {
 
   /* ------------------ SCROLL TO HIGHLIGHTED POST ------------------ */
   useEffect(() => {
-    if (!highlightPostId || loading || thoughts.length === 0) return;
+    if (!highlightPostId || loading) return;
 
-    const postIndex = thoughts.findIndex((t) => t.id === highlightPostId);
-    
-    if (postIndex !== -1) {
-      console.log("🎯 Scrolling to highlighted post at index:", postIndex);
+    console.log("🎯 Attempting to highlight post:", highlightPostId);
+    console.log("📊 Current thoughts count:", thoughts.length);
+
+    const scrollToPost = async () => {
+      // First, check if post is already in the feed
+      let postIndex = thoughts.findIndex((t) => t.id === highlightPostId);
       
-      setTimeout(() => {
+      if (postIndex !== -1) {
+        console.log("✅ Post found at index:", postIndex);
+        
+        setTimeout(() => {
+          try {
+            flatListRef.current?.scrollToIndex({
+              index: postIndex,
+              animated: true,
+              viewPosition: 0.5,
+            });
+            console.log("✅ Scrolled to post");
+          } catch (error) {
+            console.log("⚠️ Scroll error, using offset instead");
+            flatListRef.current?.scrollToOffset({
+              offset: postIndex * 400,
+              animated: true,
+            });
+          }
+        }, 500);
+      } else {
+        // Post not in feed - fetch it and add to top
+        console.log("⚠️ Post not in current feed, fetching...");
+        
         try {
-          flatListRef.current?.scrollToIndex({
-            index: postIndex,
-            animated: true,
-            viewPosition: 0.5,
-          });
+          const postDoc = await getDoc(doc(db, "thoughts", highlightPostId));
+          
+          if (postDoc.exists()) {
+            const data = postDoc.data();
+            console.log("✅ Fetched highlighted post");
+            
+            // Create thought object
+            const thought: Thought = {
+              id: postDoc.id,
+              thoughtId: data.thoughtId || postDoc.id,
+              userId: data.userId,
+              userType: data.userType || "Golfer",
+              content: data.content || data.caption || "",
+              postType: data.postType,
+              imageUrl: data.imageUrl,
+              videoUrl: data.videoUrl,
+              videoDuration: data.videoDuration,
+              videoTrimStart: data.videoTrimStart,
+              videoTrimEnd: data.videoTrimEnd,
+              createdAt: data.createdAt,
+              likes: data.likes || 0,
+              likedBy: data.likedBy || [],
+              comments: data.comments || 0,
+              courseName: data.courseName,
+              taggedPartners: data.taggedPartners || [],
+              taggedCourses: data.taggedCourses || [],
+              ownedCourseId: data.ownedCourseId,
+              linkedCourseId: data.linkedCourseId,
+            };
+            
+            // Fetch user profile
+            try {
+              const userProfile = await getUserProfile(thought.userId);
+              thought.displayName = userProfile.displayName;
+              thought.avatarUrl = userProfile.avatar || undefined;
+            } catch {
+              thought.displayName = "[Deleted User]";
+            }
+            
+            // Add to top of feed
+            setThoughts(prev => [thought, ...prev]);
+            console.log("✅ Added post to top of feed");
+            
+            // Scroll to top (index 0)
+            setTimeout(() => {
+              flatListRef.current?.scrollToIndex({
+                index: 0,
+                animated: true,
+                viewPosition: 0.5,
+              });
+              console.log("✅ Scrolled to top");
+            }, 300);
+          } else {
+            console.error("❌ Post not found in database");
+            soundPlayer.play('error');
+            Alert.alert("Post Not Found", "This post may have been deleted.");
+          }
         } catch (error) {
-          console.log("⚠️ Scroll error, using offset instead");
-          flatListRef.current?.scrollToOffset({
-            offset: postIndex * 400,
-            animated: true,
-          });
+          console.error("❌ Error fetching highlighted post:", error);
+          soundPlayer.play('error');
         }
-      }, 300);
-    }
-  }, [highlightPostId, loading, thoughts]);
+      }
+    };
+
+    scrollToPost();
+  }, [highlightPostId, loading, thoughts.length]); // Only trigger when these change
 
   /* ------------------ RENDER CONTENT WITH MENTIONS ------------------ */
   const renderContentWithMentions = (content: string, taggedPartners: any[] = [], taggedCourses: any[] = []) => {

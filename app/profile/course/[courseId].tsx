@@ -34,7 +34,9 @@ interface CourseProfile {
 interface Post {
   postId: string;
   userId: string;
-  imageUrl: string;
+  imageUrl?: string;
+  videoUrl?: string;
+  videoThumbnailUrl?: string;
   caption: string;
   createdAt: any;
   userName?: string;
@@ -175,6 +177,8 @@ export default function CourseProfileScreen() {
             postId: doc.id,
             userId: data.userId,
             imageUrl: data.imageUrl,
+            videoUrl: data.videoUrl,
+            videoThumbnailUrl: data.videoThumbnailUrl,
             caption: data.caption || data.content || "",
             createdAt: data.createdAt,
           });
@@ -236,9 +240,19 @@ export default function CourseProfileScreen() {
           router.push(`/post/${item.postId}`);
         }}
       >
-        {item.imageUrl ? (
+        {/* Video post with thumbnail */}
+        {item.videoThumbnailUrl ? (
+          <>
+            <Image source={{ uri: item.videoThumbnailUrl }} style={styles.postImage} />
+            <View style={styles.videoIndicator}>
+              <Ionicons name="play-circle" size={40} color="#FFF" />
+            </View>
+          </>
+        ) : item.imageUrl ? (
+          /* Regular image post */
           <Image source={{ uri: item.imageUrl }} style={styles.postImage} />
         ) : (
+          /* Text-only post */
           <View style={styles.textOnlyCard}>
             <Text style={styles.textOnlyContent} numberOfLines={4}>
               {item.caption}
@@ -623,6 +637,18 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
     backgroundColor: "#E0E0E0",
+  },
+
+  // ✅ NEW: Video indicator overlay
+  videoIndicator: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.3)",
   },
 
   textOnlyCard: {

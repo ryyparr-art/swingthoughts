@@ -109,26 +109,44 @@ export default function CommentsModal({
 
     const loadPartners = async () => {
       try {
+        console.log("🔍 Loading partners for:", currentUserId);
         const userDoc = await getDoc(doc(db, "users", currentUserId));
+        
         if (userDoc.exists()) {
           const partners = userDoc.data()?.partners || [];
+          console.log("👥 Raw partners array:", partners);
+          
           if (partners.length > 0) {
             const partnerDocs = await Promise.all(
               partners.map((partnerId: string) => getDoc(doc(db, "users", partnerId)))
             );
             
             const partnerList = partnerDocs
-              .filter((d) => d.exists())
+              .filter((d) => {
+                if (!d.exists()) {
+                  console.warn("⚠️ Partner document doesn't exist:", d.id);
+                  return false;
+                }
+                return true;
+              })
               .map((d) => ({
                 userId: d.id,
                 displayName: d.data()?.displayName || "Unknown",
               }));
             
+            console.log("✅ Loaded partners:", partnerList);
             setAllPartners(partnerList);
+          } else {
+            console.log("❌ No partners in user document");
+            setAllPartners([]);
           }
+        } else {
+          console.error("❌ User document doesn't exist:", currentUserId);
+          setAllPartners([]);
         }
       } catch (error) {
-        console.error("Error loading partners:", error);
+        console.error("❌ Error loading partners:", error);
+        setAllPartners([]);
       }
     };
 
@@ -206,8 +224,11 @@ export default function CommentsModal({
     }
 
     const afterAt = newText.slice(lastAtIndex + 1);
+    console.log("📝 After @ symbol:", `"${afterAt}"`);
     
-    if (afterAt.includes(" ")) {
+    // Close autocomplete if user types double space or newline
+    if (afterAt.endsWith("  ") || afterAt.includes("\n")) {
+      console.log("❌ Closing autocomplete - double space or newline");
       setShowAutocomplete(false);
       return;
     }
@@ -219,28 +240,41 @@ export default function CommentsModal({
     }
 
     debounceRef.current = setTimeout(() => {
-      if (afterAt.length >= 2) {
+      // ✅ FIXED: Trigger after 1 character instead of 2
+      if (afterAt.length >= 1) {
+        console.log("✅ Triggering search for:", afterAt);
         searchMentions(afterAt);
+      } else {
+        console.log("⏳ Waiting for more characters...");
       }
     }, 300);
   };
 
   const searchMentions = async (searchText: string) => {
     try {
-      const partnerResults = allPartners.filter((p) =>
-        p.displayName.toLowerCase().includes(searchText.toLowerCase())
-      );
+      console.log("🔎 Searching for:", searchText);
+      console.log("👥 Available partners:", allPartners);
+      
+      const partnerResults = allPartners.filter((p) => {
+        const matches = p.displayName.toLowerCase().includes(searchText.toLowerCase());
+        console.log(`  ${p.displayName} matches "${searchText}"?`, matches);
+        return matches;
+      });
+
+      console.log("✅ Partner results:", partnerResults);
 
       if (partnerResults.length > 0) {
         setAutocompleteType("partner");
         setAutocompleteResults(partnerResults);
         setShowAutocomplete(true);
+        console.log("📋 Showing partner autocomplete");
         return;
       }
 
+      console.log("🏌️ No partners found, searching courses...");
       searchCourses(searchText);
     } catch (err) {
-      console.error("Search error:", err);
+      console.error("❌ Search error:", err);
     }
   };
 
@@ -344,46 +378,6 @@ export default function CommentsModal({
     }
 
     setShowAutocomplete(false);
-  };
-
-  /* ✅ RENDER INPUT TEXT WITH STYLED MENTIONS ---------------- */
-  const renderTextWithMentions = () => {
-    const mentionRegex = /@([\w\s]+?)(?=\s{2,}|$|@|\n)/g;
-    const parts: { text: string; isMention: boolean }[] = [];
-    let lastIndex = 0;
-    
-    let match;
-    while ((match = mentionRegex.exec(text)) !== null) {
-      // Add text before mention
-      if (match.index > lastIndex) {
-        parts.push({ text: text.slice(lastIndex, match.index), isMention: false });
-      }
-      
-      const mentionText = match[0].trim(); // Includes the @, trimmed
-      
-      // Only style if this mention was selected from autocomplete
-      const isValidMention = selectedMentions.includes(mentionText);
-      
-      parts.push({ text: match[0], isMention: isValidMention });
-      lastIndex = match.index + match[0].length;
-    }
-    
-    // Add remaining text
-    if (lastIndex < text.length) {
-      parts.push({ text: text.slice(lastIndex), isMention: false });
-    }
-    
-    return parts.map((part, index) => {
-      if (part.isMention) {
-        return (
-          <Text key={index} style={styles.mentionInput}>
-            {part.text}
-          </Text>
-        );
-      }
-      
-      return <Text key={index}>{part.text}</Text>;
-    });
   };
 
   /* ---------------- RENDER COMMENT WITH STYLED MENTIONS ---------------- */
@@ -839,26 +833,36 @@ export default function CommentsModal({
             </View>
           )}
 
-          {/* INPUT - ✅ WITH TWO-LAYER SYSTEM */}
+          {/* INPUT */}
           <View style={styles.inputRow}>
             <View style={styles.inputContainer}>
-              {/* Invisible TextInput for actual input */}
               <TextInput
                 ref={inputRef}
-                style={[styles.input, text && styles.inputWithContent]}
+                style={styles.input}
                 placeholder={editingCommentId ? "Update your comment…" : "Add a comment…"}
+                placeholderTextColor="#999"
                 value={text}
                 onChangeText={handleTextChange}
                 multiline
                 maxLength={500}
+                autoCorrect={true}
+                autoCapitalize="sentences"
+                spellCheck={true}
+                textAlignVertical="top"
+                selectionColor="#0D5C3A" // Green selection color hints at mentions
               />
               
-              {/* Styled text overlay to show mentions */}
-              {text && !posting && (
-                <View style={styles.inputOverlay} pointerEvents="none">
-                  <Text style={styles.inputOverlayText}>
-                    {renderTextWithMentions()}
-                  </Text>
+              {/* Show validated mentions as chips below when typing */}
+              {selectedMentions.length > 0 && text.includes("@") && (
+                <View style={styles.mentionChipsContainer}>
+                  <Text style={styles.mentionChipsLabel}>Tagged:</Text>
+                  <View style={styles.mentionChips}>
+                    {selectedMentions.map((mention, idx) => (
+                      <View key={idx} style={styles.mentionChip}>
+                        <Text style={styles.mentionChipText}>{mention}</Text>
+                      </View>
+                    ))}
+                  </View>
                 </View>
               )}
             </View>
@@ -1021,7 +1025,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  /* INPUT - ✅ TWO-LAYER SYSTEM */
+  /* INPUT */
   inputRow: {
     flexDirection: "row",
     alignItems: "flex-end",
@@ -1033,12 +1037,10 @@ const styles = StyleSheet.create({
   },
   
   inputContainer: {
-    position: "relative",
     flex: 1,
   },
   
   input: {
-    flex: 1,
     backgroundColor: "#FFF",
     borderRadius: 20,
     paddingHorizontal: 14,
@@ -1046,33 +1048,38 @@ const styles = StyleSheet.create({
     maxHeight: 100,
     fontSize: 14,
     textAlignVertical: "top",
-  },
-  
-  inputWithContent: {
-    color: "transparent", // ✅ Hide actual text when overlay is showing
-  },
-  
-  inputOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: 14,
-    paddingTop: 4,
-    paddingBottom: 4,
-  },
-  
-  inputOverlayText: {
-    fontSize: 14,
     color: "#333",
-    lineHeight: 18,
   },
-  
-  mentionInput: {
-    fontSize: 14,
-    fontWeight: "700",
+
+  mentionChipsContainer: {
+    marginTop: 6,
+    paddingHorizontal: 4,
+  },
+
+  mentionChipsLabel: {
+    fontSize: 10,
+    fontWeight: "600",
     color: "#0D5C3A",
+    marginBottom: 4,
+  },
+
+  mentionChips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+
+  mentionChip: {
+    backgroundColor: "#0D5C3A",
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+  },
+
+  mentionChipText: {
+    color: "#FFF",
+    fontSize: 11,
+    fontWeight: "600",
   },
   
   send: {
@@ -1084,7 +1091,6 @@ const styles = StyleSheet.create({
     opacity: 0.4,
   },
 });
-
 
 
 

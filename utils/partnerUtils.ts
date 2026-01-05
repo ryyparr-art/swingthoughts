@@ -98,6 +98,8 @@ export async function acceptPartnerRequest(
   currentUserId: string,
   otherUserId: string
 ): Promise<void> {
+  console.log("🤝 Starting acceptPartnerRequest", { currentUserId, otherUserId });
+  
   // Find the request where otherUser sent to currentUser
   const requestQuery = query(
     collection(db, "partnerRequests"),
@@ -109,22 +111,26 @@ export async function acceptPartnerRequest(
   const requestSnap = await getDocs(requestQuery);
   
   if (requestSnap.empty) {
+    console.error("❌ No partner request found");
     throw new Error("No partner request found");
   }
   
   const requestDoc = requestSnap.docs[0];
+  console.log("✅ Found partner request:", requestDoc.id);
   
   // Update request status to approved
   await updateDoc(doc(db, "partnerRequests", requestDoc.id), {
     status: "approved",
   });
+  console.log("✅ Updated request status to approved");
   
   // Create partnership record
-  await addDoc(collection(db, "partners"), {
+  const partnershipRef = await addDoc(collection(db, "partners"), {
     user1Id: currentUserId,
     user2Id: otherUserId,
     createdAt: serverTimestamp(),
   });
+  console.log("✅ Created partnership:", partnershipRef.id);
   
   // Add each user to the other's partners array
   const currentUserRef = doc(db, "users", currentUserId);
@@ -133,17 +139,28 @@ export async function acceptPartnerRequest(
   await updateDoc(currentUserRef, {
     partners: arrayUnion(otherUserId),
   });
+  console.log("✅ Updated currentUser partners array");
   
   await updateDoc(otherUserRef, {
     partners: arrayUnion(currentUserId),
   });
+  console.log("✅ Updated otherUser partners array");
   
   // Create notification for the other user
-  await createNotification({
-    userId: otherUserId,
-    type: "partner_accepted",
-    actorId: currentUserId,
-  });
+  console.log("📧 Creating partner_accepted notification for:", otherUserId);
+  try {
+    await createNotification({
+      userId: otherUserId,
+      type: "partner_accepted",
+      actorId: currentUserId,
+    });
+    console.log("✅ Partner accepted notification created successfully!");
+  } catch (notifError) {
+    console.error("❌ Failed to create notification:", notifError);
+    // Don't throw - partnership still succeeded
+  }
+  
+  console.log("🎉 Partner accept complete!");
 }
 
 export async function sendPartnerRequest(

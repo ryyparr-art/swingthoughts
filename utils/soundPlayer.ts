@@ -134,20 +134,13 @@ class SoundPlayer {
       const sound = this.sounds[soundName];
       if (!sound) return;
 
-      // Fire-and-forget for instant playback
-      // Check status and replay from start if already playing
-      sound.getStatusAsync().then((status) => {
-        if (status.isLoaded && status.isPlaying) {
-          // Sound is playing - restart it
-          sound.replayAsync().catch((error) => {
-            console.error(`❌ Error replaying sound "${soundName}":`, error);
-          });
-        } else {
-          // Sound not playing - just play it
-          sound.playAsync().catch((error) => {
-            console.error(`❌ Error playing sound "${soundName}":`, error);
-          });
-        }
+      // ✅ Synchronous fire-and-forget for instant playback
+      // Replay from start if already playing, otherwise just play
+      sound.replayAsync().catch(() => {
+        // If replay fails (sound not playing), just play it
+        sound.playAsync().catch((error) => {
+          console.error(`❌ Error playing sound "${soundName}":`, error);
+        });
       });
     } catch (error) {
       console.error(`❌ Error with sound "${soundName}":`, error);

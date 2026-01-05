@@ -30,6 +30,8 @@ interface UserProfile {
 interface Post {
   postId: string;
   imageUrl?: string;
+  videoUrl?: string;
+  videoThumbnailUrl?: string;
   caption: string;
   createdAt: any;
 }
@@ -82,6 +84,8 @@ export default function ProfileScreen() {
         postsData.push({
           postId: doc.id,
           imageUrl: data.imageUrl,
+          videoUrl: data.videoUrl,
+          videoThumbnailUrl: data.videoThumbnailUrl,
           caption: data.caption || data.content || "",
           createdAt: data.createdAt,
         });
@@ -162,7 +166,27 @@ export default function ProfileScreen() {
         router.push(`/post/${item.postId}`);
       }}
     >
-      {item.imageUrl ? (
+      {/* Video post with thumbnail */}
+      {item.videoThumbnailUrl ? (
+        <>
+          <Image source={{ uri: item.videoThumbnailUrl }} style={styles.postImage} />
+          <View style={styles.videoIndicator}>
+            <Ionicons name="play-circle" size={40} color="#FFF" />
+          </View>
+          {isOwnProfile && (
+            <TouchableOpacity 
+              style={styles.editIcon}
+              onPress={(e) => {
+                e.stopPropagation();
+                handleEditPost(item.postId);
+              }}
+            >
+              <Ionicons name="create-outline" size={20} color="#0D5C3A" />
+            </TouchableOpacity>
+          )}
+        </>
+      ) : item.imageUrl ? (
+        /* Regular image post */
         <>
           <Image source={{ uri: item.imageUrl }} style={styles.postImage} />
           {isOwnProfile && (
@@ -178,7 +202,7 @@ export default function ProfileScreen() {
           )}
         </>
       ) : (
-        // Text-only post card
+        /* Text-only post */
         <View style={styles.textOnlyCard}>
           <Text style={styles.textOnlyContent} numberOfLines={4}>
             {item.caption}
@@ -537,6 +561,18 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
     backgroundColor: "#E0E0E0",
+  },
+
+  // ✅ NEW: Video indicator overlay
+  videoIndicator: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.3)",
   },
 
   textOnlyCard: {

@@ -17,6 +17,7 @@ import * as Haptics from "expo-haptics";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import * as VideoThumbnails from "expo-video-thumbnails";
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, updateDoc, where } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import React, { useEffect, useRef, useState } from "react";
@@ -94,6 +95,7 @@ export default function CreateScreen() {
   const [content, setContent] = useState("");
   const [mediaUri, setMediaUri] = useState<string | null>(null);
   const [mediaType, setMediaType] = useState<"image" | "video" | null>(null);
+  const [videoThumbnailUri, setVideoThumbnailUri] = useState<string | null>(null);
   const [isPosting, setIsPosting] = useState(false);
   const [isProcessingMedia, setIsProcessingMedia] = useState(false);
 
@@ -255,48 +257,6 @@ export default function CreateScreen() {
     return POST_TYPES.golfer;
   })();
 
-  /* --------------------------- RENDER CONTENT WITH MENTIONS --------------------------- */
-
-  const renderContentWithMentions = () => {
-    // Use regex to find all @mentions (any word or multi-word starting with @)
-    const mentionRegex = /@([\w\s]+?)(?=\s{2,}|$|@|\n)/g;
-    const parts: { text: string; isMention: boolean }[] = [];
-    let lastIndex = 0;
-    
-    let match;
-    while ((match = mentionRegex.exec(content)) !== null) {
-      // Add text before mention
-      if (match.index > lastIndex) {
-        parts.push({ text: content.slice(lastIndex, match.index), isMention: false });
-      }
-      
-      const mentionText = match[0].trim(); // Includes the @, trimmed
-      
-      // Only style if this mention was selected from autocomplete
-      const isValidMention = selectedMentions.includes(mentionText);
-      
-      parts.push({ text: match[0], isMention: isValidMention });
-      lastIndex = match.index + match[0].length;
-    }
-    
-    // Add remaining text
-    if (lastIndex < content.length) {
-      parts.push({ text: content.slice(lastIndex), isMention: false });
-    }
-    
-    return parts.map((part, index) => {
-      if (part.isMention) {
-        return (
-          <Text key={index} style={styles.mentionText}>
-            {part.text}
-          </Text>
-        );
-      }
-      
-      return <Text key={index}>{part.text}</Text>;
-    });
-  };
-
   /* --------------------------- IMAGE COMPRESSION --------------------------- */
 
   const compressImage = async (uri: string): Promise<string> => {
@@ -338,6 +298,24 @@ export default function CreateScreen() {
       console.error("Video compression error:", error);
       soundPlayer.play('error');
       return uri; // Return original if compression fails
+    }
+  };
+
+  /* --------------------------- VIDEO THUMBNAIL --------------------------- */
+
+  const generateVideoThumbnail = async (videoUri: string): Promise<string> => {
+    try {
+      console.log("📸 Generating video thumbnail...");
+      const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, {
+        time: 0, // Get first frame (0 milliseconds)
+        quality: 0.8,
+      });
+      console.log("✅ Thumbnail generated:", uri);
+      return uri;
+    } catch (error) {
+      console.error("❌ Thumbnail generation error:", error);
+      soundPlayer.play('error');
+      return videoUri; // Fallback to video URI if thumbnail generation fails
     }
   };
 
@@ -386,10 +364,10 @@ export default function CreateScreen() {
         mediaTypes: type === "image" 
           ? ["images"]
           : ["videos"],
-        allowsEditing: type === "image",
-        aspect: type === "image" ? [4, 3] : undefined,
+        allowsEditing: true, // ✅ Enable editing for BOTH image and video (iOS will let users crop/trim)
+        aspect: [4, 3], // ✅ Force 4:3 aspect ratio for consistency across all media
         quality: 0.8,
-        videoMaxDuration: 60, // Allow up to 60s for trimming
+        videoMaxDuration: 60, // Allow up to 60s, we'll trim to 30s
       });
 
       if (!result.canceled && result.assets[0]) {
@@ -402,19 +380,45 @@ export default function CreateScreen() {
           setMediaType("image");
           setIsProcessingMedia(false);
         } else {
+          // Video handling
+          const duration = asset.duration || 0;
+          
+          // ✅ Validate video duration
+          if (duration / 1000 > 60) {
+            soundPlayer.play('error');
+            Alert.alert(
+              "Video Too Long",
+              "Please select a video shorter than 60 seconds. You can trim it to 30 seconds in the next step.",
+              [{ text: "OK", onPress: () => soundPlayer.play('click') }]
+            );
+            setIsProcessingMedia(false);
+            return;
+          }
+          
           // Compress video
           const compressedUri = await compressVideo(asset.uri);
-          const duration = asset.duration || 0;
+          
+          // ✅ Generate thumbnail from first frame
+          const thumbnailUri = await generateVideoThumbnail(compressedUri);
           
           setVideoDuration(duration / 1000); // Convert to seconds
           setMediaUri(compressedUri);
           setMediaType("video");
+          setVideoThumbnailUri(thumbnailUri); // Store thumbnail URI
 
           if (duration / 1000 > MAX_VIDEO_DURATION) {
             // Show trimmer if video is longer than 30s
             setTrimStart(0);
             setTrimEnd(MAX_VIDEO_DURATION);
             setShowVideoTrimmer(true);
+            
+            // Show helpful message
+            soundPlayer.play('click');
+            Alert.alert(
+              "Trim Your Video",
+              `Your video is ${(duration / 1000).toFixed(0)} seconds. Use the sliders below to select the best 30-second clip.`,
+              [{ text: "Got it", onPress: () => soundPlayer.play('click') }]
+            );
           } else {
             setTrimStart(0);
             setTrimEnd(duration / 1000);
@@ -734,6 +738,7 @@ export default function CreateScreen() {
     try {
       setIsPosting(true);
       await deleteDoc(doc(db, "thoughts", editingPostId));
+      soundPlayer.play('dart');
       Alert.alert("Deleted 🗑️", "Your thought has been deleted.");
       router.back();
     } catch (err) {
@@ -789,6 +794,7 @@ export default function CreateScreen() {
 
     try {
       let uploadedMediaUrl = mediaUri; // Keep existing URL if not changed
+      let uploadedThumbnailUrl: string | null = null;
       let mediaUrlField: "imageUrl" | "videoUrl" | null = null;
 
       // Only upload new media if mediaUri is a local file (starts with file://)
@@ -805,6 +811,24 @@ export default function CreateScreen() {
         
         mediaUrlField = mediaType === "video" ? "videoUrl" : "imageUrl";
         console.log(`✅ Uploaded ${mediaType} to:`, uploadedMediaUrl);
+
+        // ✅ If video, also upload thumbnail
+        if (mediaType === "video" && videoThumbnailUri) {
+          try {
+            console.log("📸 Uploading video thumbnail...");
+            const thumbnailResponse = await fetch(videoThumbnailUri);
+            const thumbnailBlob = await thumbnailResponse.blob();
+            const thumbnailPath = `posts/${auth.currentUser?.uid}/${Date.now()}_thumb.jpg`;
+            const thumbnailRef = ref(storage, thumbnailPath);
+            
+            await uploadBytes(thumbnailRef, thumbnailBlob);
+            uploadedThumbnailUrl = await getDownloadURL(thumbnailRef);
+            console.log("✅ Thumbnail uploaded to:", uploadedThumbnailUrl);
+          } catch (thumbError) {
+            console.error("⚠️ Thumbnail upload failed:", thumbError);
+            // Continue without thumbnail if upload fails
+          }
+        }
       } else if (mediaUri) {
         // Existing media URL from edit mode
         mediaUrlField = mediaType === "video" ? "videoUrl" : "imageUrl";
@@ -887,9 +911,11 @@ export default function CreateScreen() {
       if (mediaUrlField === "imageUrl") {
         postData.imageUrl = uploadedMediaUrl;
         postData.videoUrl = null; // Clear video if switching to image
+        postData.videoThumbnailUrl = null; // Clear thumbnail
       } else if (mediaUrlField === "videoUrl") {
         postData.videoUrl = uploadedMediaUrl;
         postData.imageUrl = null; // Clear image if switching to video
+        postData.videoThumbnailUrl = uploadedThumbnailUrl; // Add thumbnail URL
         
         // Add video metadata
         postData.videoDuration = trimEnd - trimStart;
@@ -899,6 +925,7 @@ export default function CreateScreen() {
         // No media
         postData.imageUrl = null;
         postData.videoUrl = null;
+        postData.videoThumbnailUrl = null;
       }
 
       if (isEditMode && editingPostId) {
@@ -1106,6 +1133,7 @@ export default function CreateScreen() {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       setMediaUri(null);
                       setMediaType(null);
+                      setVideoThumbnailUri(null); // Clear thumbnail
                       setShowVideoTrimmer(false);
                     }}
                   >
@@ -1133,6 +1161,7 @@ export default function CreateScreen() {
                   <Text style={styles.mediaPickerIcon}>🎥</Text>
                   <Text style={styles.mediaPickerText}>Add Video</Text>
                   <Text style={styles.mediaPickerHint}>Up to 30 seconds</Text>
+                  <Text style={styles.mediaPickerHint2}>✂️ Crop & trim in picker</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -1170,28 +1199,37 @@ export default function CreateScreen() {
 
           {/* CONTENT INPUT */}
           <View style={styles.section}>
-            <View style={styles.textInputContainer}>
-              {/* Invisible TextInput for actual input */}
-              <TextInput
-                style={[styles.textInput, content && styles.textInputWithContent]}
-                placeholder="What clicked for you today?"
-                placeholderTextColor="#999"
-                multiline
-                maxLength={MAX_CHARACTERS}
-                value={content}
-                onChangeText={handleContentChange}
-                editable={writable}
-              />
-              
-              {/* Styled text overlay to show mentions */}
-              {content && (
-                <View style={styles.textOverlay} pointerEvents="none">
-                  <Text style={styles.overlayText}>
-                    {renderContentWithMentions()}
-                  </Text>
+            <Text style={styles.sectionLabel}>
+              Tap @ to tag partners or courses
+            </Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="What clicked for you today?"
+              placeholderTextColor="#999"
+              multiline
+              maxLength={MAX_CHARACTERS}
+              value={content}
+              onChangeText={handleContentChange}
+              editable={writable}
+              autoCorrect={true}
+              autoCapitalize="sentences"
+              spellCheck={true}
+              textAlignVertical="top"
+            />
+            
+            {/* Show validated mentions below input */}
+            {selectedMentions.length > 0 && (
+              <View style={styles.mentionsPreview}>
+                <Text style={styles.mentionsLabel}>Tagged:</Text>
+                <View style={styles.mentionChips}>
+                  {selectedMentions.map((mention, idx) => (
+                    <View key={idx} style={styles.mentionChip}>
+                      <Text style={styles.mentionChipText}>{mention}</Text>
+                    </View>
+                  ))}
                 </View>
-              )}
-            </View>
+              </View>
+            )}
             
             <Text style={styles.charCount}>{content.length}/{MAX_CHARACTERS}</Text>
 
@@ -1339,7 +1377,7 @@ const styles = StyleSheet.create({
 
   mediaPickerButton: {
     flex: 1,
-    height: 140,
+    height: 160,
     borderRadius: 12,
     backgroundColor: "#FFF",
     borderWidth: 2,
@@ -1366,6 +1404,14 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "#666",
     textAlign: "center",
+  },
+
+  mediaPickerHint2: {
+    fontSize: 10,
+    color: "#0D5C3A",
+    textAlign: "center",
+    marginTop: 4,
+    fontWeight: "600",
   },
 
   // Media Preview
@@ -1503,10 +1549,6 @@ const styles = StyleSheet.create({
     color: "#FFF",
   },
 
-  textInputContainer: {
-    position: "relative",
-  },
-
   textInput: {
     backgroundColor: "#FFF",
     borderRadius: 12,
@@ -1518,29 +1560,39 @@ const styles = StyleSheet.create({
     borderColor: "#E0E0E0",
   },
 
-  textInputWithContent: {
-    color: "transparent", // Hide actual text when we have content
+  mentionsPreview: {
+    marginTop: 8,
+    padding: 12,
+    backgroundColor: "rgba(13, 92, 58, 0.05)",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(13, 92, 58, 0.2)",
   },
 
-  textOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    padding: 16,
-    paddingTop: 17, // Match TextInput padding
-  },
-
-  overlayText: {
-    fontSize: 16,
-    color: "#333",
-  },
-
-  mentionText: {
-    fontSize: 16,
-    fontWeight: "700",
+  mentionsLabel: {
+    fontSize: 12,
+    fontWeight: "600",
     color: "#0D5C3A",
+    marginBottom: 6,
+  },
+
+  mentionChips: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+
+  mentionChip: {
+    backgroundColor: "#0D5C3A",
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+  },
+
+  mentionChipText: {
+    color: "#FFF",
+    fontSize: 12,
+    fontWeight: "600",
   },
 
   charCount: {
