@@ -1,7 +1,9 @@
 import CoursePlayersModal from "@/components/modals/CoursePlayersModal";
+import CoursePostsGalleryModal from "@/components/modals/CoursePostsGalleryModal";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import { auth, db } from "@/constants/firebaseConfig";
+import { batchGetUserProfiles } from "@/utils/userProfileHelpers";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -64,6 +66,8 @@ export default function CourseProfileScreen() {
     totalMembers: 0
   });
   const [playersModalVisible, setPlayersModalVisible] = useState(false);
+  const [galleryModalVisible, setGalleryModalVisible] = useState(false);
+  const [selectedPostId, setSelectedPostId] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [isOwnCourse, setIsOwnCourse] = useState(false);
 
@@ -188,17 +192,16 @@ export default function CourseProfileScreen() {
 
       // Load user profiles for posts
       if (userIds.size > 0) {
+        // ✅ USE HELPER FUNCTION - Handles deleted users automatically
+        const profilesMap = await batchGetUserProfiles(Array.from(userIds));
         const profiles: Record<string, any> = {};
-        const ids = Array.from(userIds);
 
-        for (let i = 0; i < ids.length; i += 10) {
-          const batch = ids.slice(i, i + 10);
-          const uq = query(collection(db, "users"), where("__name__", "in", batch));
-          const us = await getDocs(uq);
-          us.forEach((u) => {
-            profiles[u.id] = u.data();
-          });
-        }
+        profilesMap.forEach((profile, userId) => {
+          profiles[userId] = {
+            displayName: profile.displayName, // "[Deleted User]" if deleted
+            avatar: profile.avatar,
+          };
+        });
 
         postsData.forEach((post: any) => {
           const userId = postsSnap.docs.find(d => d.id === post.postId)?.data().userId;
@@ -237,7 +240,9 @@ export default function CourseProfileScreen() {
         style={styles.postCard}
         onPress={() => {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          router.push(`/post/${item.postId}`);
+          setSelectedPostId(item.postId);
+          // For courses, we want ALL course posts, so pass courseId
+          setGalleryModalVisible(true);
         }}
       >
         {/* Video post with thumbnail */}
@@ -455,6 +460,20 @@ export default function CourseProfileScreen() {
           onClose={() => setPlayersModalVisible(false)}
           courseId={profile.courseId}
           courseName={profile.courseName}
+        />
+      )}
+
+      {/* Course Posts Gallery Modal */}
+      {profile && (
+        <CoursePostsGalleryModal
+          visible={galleryModalVisible}
+          courseId={profile.courseId}
+          courseName={profile.courseName}
+          initialPostId={selectedPostId}
+          onClose={() => {
+            setGalleryModalVisible(false);
+            setSelectedPostId(undefined);
+          }}
         />
       )}
 

@@ -189,25 +189,91 @@ export default function ClubhouseScreen() {
     try {
       setLoading(true);
       
+      // ✅ FIX: If there's a highlighted post, fetch it first
+      let highlightedThought: Thought | null = null;
+      if (highlightPostId) {
+        console.log("🎯 Fetching highlighted post first:", highlightPostId);
+        try {
+          const postDoc = await getDoc(doc(db, "thoughts", highlightPostId));
+          
+          if (postDoc.exists()) {
+            const data = postDoc.data();
+            highlightedThought = {
+              id: postDoc.id,
+              thoughtId: data.thoughtId || postDoc.id,
+              userId: data.userId,
+              userType: data.userType || "Golfer",
+              content: data.content || data.caption || "",
+              postType: data.postType,
+              imageUrl: data.imageUrl,
+              videoUrl: data.videoUrl,
+              videoDuration: data.videoDuration,
+              videoTrimStart: data.videoTrimStart,
+              videoTrimEnd: data.videoTrimEnd,
+              createdAt: data.createdAt,
+              likes: data.likes || 0,
+              likedBy: data.likedBy || [],
+              comments: data.comments || 0,
+              courseName: data.courseName,
+              taggedPartners: data.taggedPartners || [],
+              taggedCourses: data.taggedCourses || [],
+              ownedCourseId: data.ownedCourseId,
+              linkedCourseId: data.linkedCourseId,
+            };
+            
+            // Fetch user profile
+            try {
+              const userProfile = await getUserProfile(highlightedThought.userId);
+              highlightedThought.displayName = userProfile.displayName;
+              highlightedThought.avatarUrl = userProfile.avatar || undefined;
+            } catch {
+              highlightedThought.displayName = "[Deleted User]";
+            }
+            
+            console.log("✅ Highlighted post fetched successfully");
+          }
+        } catch (error) {
+          console.error("❌ Error fetching highlighted post:", error);
+          soundPlayer.play('error');
+        }
+      }
+      
       if (useAlgorithmicFeed && Object.keys(activeFilters).length === 0) {
         // Use algorithmic feed when no filters are active
         console.log("🎯 Using algorithmic feed");
         const feed = await generateAlgorithmicFeed(currentUserId, 50);
         setFeedItems(feed);
         
-        // Also load into thoughts for compatibility (convert feed items to thoughts)
+        // Convert feed items to thoughts
         const thoughtsFromFeed = await convertFeedToThoughts(feed);
-        setThoughts(thoughtsFromFeed);
+        
+        // ✅ FIX: If we have a highlighted post, add it to the TOP
+        if (highlightedThought) {
+          // Remove it if it already exists in the feed
+          const filteredThoughts = thoughtsFromFeed.filter(t => t.id !== highlightPostId);
+          setThoughts([highlightedThought, ...filteredThoughts]);
+          console.log("✅ Added highlighted post to top of algorithmic feed");
+        } else {
+          setThoughts(thoughtsFromFeed);
+        }
       } else {
         // Use traditional fetch when filters are active
         console.log("🔍 Using filtered feed");
         await fetchThoughts(activeFilters);
+        
+        // ✅ FIX: If we have a highlighted post, add it to the TOP of filtered feed too
+        if (highlightedThought) {
+          setThoughts(prev => {
+            const filteredPrev = prev.filter(t => t.id !== highlightPostId);
+            return [highlightedThought, ...filteredPrev];
+          });
+          console.log("✅ Added highlighted post to top of filtered feed");
+        }
       }
       
       setLoading(false);
     } catch (error) {
       console.error("Feed load error:", error);
-      // Play error sound on feed load failure
       soundPlayer.play('error');
       setLoading(false);
     }
@@ -581,105 +647,39 @@ export default function ClubhouseScreen() {
 
   /* ------------------ SCROLL TO HIGHLIGHTED POST ------------------ */
   useEffect(() => {
-    if (!highlightPostId || loading) return;
+    if (!highlightPostId || loading || thoughts.length === 0) return;
 
-    console.log("🎯 Attempting to highlight post:", highlightPostId);
-    console.log("📊 Current thoughts count:", thoughts.length);
-
-    const scrollToPost = async () => {
-      // First, check if post is already in the feed
-      let postIndex = thoughts.findIndex((t) => t.id === highlightPostId);
+    console.log("🎯 Scrolling to highlighted post:", highlightPostId);
+    console.log("📊 Thoughts count:", thoughts.length);
+    
+    // Post should be at index 0 since we add it to top in loadFeed
+    const postIndex = thoughts.findIndex((t) => t.id === highlightPostId);
+    
+    if (postIndex !== -1) {
+      console.log("✅ Post found at index:", postIndex);
       
-      if (postIndex !== -1) {
-        console.log("✅ Post found at index:", postIndex);
-        
-        setTimeout(() => {
-          try {
-            flatListRef.current?.scrollToIndex({
-              index: postIndex,
-              animated: true,
-              viewPosition: 0.5,
-            });
-            console.log("✅ Scrolled to post");
-          } catch (error) {
-            console.log("⚠️ Scroll error, using offset instead");
-            flatListRef.current?.scrollToOffset({
-              offset: postIndex * 400,
-              animated: true,
-            });
-          }
-        }, 500);
-      } else {
-        // Post not in feed - fetch it and add to top
-        console.log("⚠️ Post not in current feed, fetching...");
-        
+      setTimeout(() => {
         try {
-          const postDoc = await getDoc(doc(db, "thoughts", highlightPostId));
-          
-          if (postDoc.exists()) {
-            const data = postDoc.data();
-            console.log("✅ Fetched highlighted post");
-            
-            // Create thought object
-            const thought: Thought = {
-              id: postDoc.id,
-              thoughtId: data.thoughtId || postDoc.id,
-              userId: data.userId,
-              userType: data.userType || "Golfer",
-              content: data.content || data.caption || "",
-              postType: data.postType,
-              imageUrl: data.imageUrl,
-              videoUrl: data.videoUrl,
-              videoDuration: data.videoDuration,
-              videoTrimStart: data.videoTrimStart,
-              videoTrimEnd: data.videoTrimEnd,
-              createdAt: data.createdAt,
-              likes: data.likes || 0,
-              likedBy: data.likedBy || [],
-              comments: data.comments || 0,
-              courseName: data.courseName,
-              taggedPartners: data.taggedPartners || [],
-              taggedCourses: data.taggedCourses || [],
-              ownedCourseId: data.ownedCourseId,
-              linkedCourseId: data.linkedCourseId,
-            };
-            
-            // Fetch user profile
-            try {
-              const userProfile = await getUserProfile(thought.userId);
-              thought.displayName = userProfile.displayName;
-              thought.avatarUrl = userProfile.avatar || undefined;
-            } catch {
-              thought.displayName = "[Deleted User]";
-            }
-            
-            // Add to top of feed
-            setThoughts(prev => [thought, ...prev]);
-            console.log("✅ Added post to top of feed");
-            
-            // Scroll to top (index 0)
-            setTimeout(() => {
-              flatListRef.current?.scrollToIndex({
-                index: 0,
-                animated: true,
-                viewPosition: 0.5,
-              });
-              console.log("✅ Scrolled to top");
-            }, 300);
-          } else {
-            console.error("❌ Post not found in database");
-            soundPlayer.play('error');
-            Alert.alert("Post Not Found", "This post may have been deleted.");
-          }
+          flatListRef.current?.scrollToIndex({
+            index: postIndex,
+            animated: true,
+            viewPosition: 0.2, // Show near top of screen
+          });
+          console.log("✅ Scrolled to highlighted post");
         } catch (error) {
-          console.error("❌ Error fetching highlighted post:", error);
-          soundPlayer.play('error');
+          console.log("⚠️ Scroll error, using offset instead");
+          flatListRef.current?.scrollToOffset({
+            offset: postIndex * 400,
+            animated: true,
+          });
         }
-      }
-    };
-
-    scrollToPost();
-  }, [highlightPostId, loading, thoughts.length]); // Only trigger when these change
+      }, 500);
+    } else {
+      console.warn("⚠️ Highlighted post not found in feed after load");
+      soundPlayer.play('error');
+      Alert.alert("Post Not Found", "This post may have been deleted.");
+    }
+  }, [highlightPostId, loading, thoughts.length]);
 
   /* ------------------ RENDER CONTENT WITH MENTIONS ------------------ */
   const renderContentWithMentions = (content: string, taggedPartners: any[] = [], taggedCourses: any[] = []) => {
@@ -1302,6 +1302,5 @@ const styles = StyleSheet.create({
   actionIconCommented: { tintColor: "#FFD700" },
   actionText: { fontSize: 14, color: "#666", fontWeight: "600" },
 });
-
 
 

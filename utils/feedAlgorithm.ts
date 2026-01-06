@@ -1,11 +1,19 @@
 /**
- * OPTIMIZED Algorithmic Feed Utility
+ * OPTIMIZED Algorithmic Feed Utility with Jr User Type Priority
+ * 
+ * Priority Structure:
+ * 1. Partners (100 pts) - ALWAYS #1, any partner activity
+ * 2. Nearby Users (85-95 pts) - Same city → nearby cities, Jr → PGA → Course → Golfer
+ * 3. Your Courses (80-85 pts) - Activity at your courses, Jr players first
+ * 4. Your Own Activity (60-70 pts) - Limited to 2 posts + 2 scores
+ * 5. Global Fallback (30-50 pts) - Jr → PGA → Course → Golfer priority
  * 
  * Key optimizations:
  * - Batch user profile fetching
  * - Parallel query execution
  * - Early limits to reduce data fetching
  * - Cached lowman checks
+ * - Geographic expansion for nearby users
  */
 
 import { db } from "@/constants/firebaseConfig";
@@ -32,6 +40,8 @@ export interface FeedPost {
   userName: string;
   userAvatar?: string;
   imageUrl?: string;
+  videoUrl?: string;
+  videoThumbnailUrl?: string;
   caption: string;
   createdAt: Timestamp;
   taggedCourses?: { courseId: number; courseName: string }[];
@@ -60,6 +70,7 @@ export type FeedItem = FeedPost | FeedScore;
 
 interface UserContext {
   userId: string;
+  userType: string; // Jr, Golfer, PGA Professional, Course
   partnerIds: string[];
   partnersPartnerIds: string[];
   playerCourses: number[];
@@ -76,6 +87,14 @@ interface UserContext {
 const userProfileCache = new Map<string, any>();
 const lowmanCache = new Map<number, any>();
 
+// User type priority for Jr users
+const USER_TYPE_PRIORITY = {
+  "Junior": 4,
+  "PGA Professional": 3,
+  "Course": 2,
+  "Golfer": 1,
+};
+
 /* ================================================================ */
 /* MAIN FEED GENERATION - OPTIMIZED                                 */
 /* ================================================================ */
@@ -89,42 +108,29 @@ export async function generateAlgorithmicFeed(
   // Step 1: Build user context
   const context = await buildUserContext(userId);
 
-  // Step 2: Gather feed items IN PARALLEL with limits
+  // Step 2: Gather feed items with NEW PRIORITY
   const [
-    ownItems,
-    partnerItems,
-    nearbyLowmanItems,
-    courseItems,
+    partnerItems,         // Priority 1: Partners (100 pts)
+    nearbyUserItems,      // Priority 2: Nearby users with expansion (85-95 pts)
+    courseItems,          // Priority 3: Your courses (80-85 pts)
+    ownItems,             // Priority 4: Your own activity (60-70 pts) - REDUCED
   ] = await Promise.all([
-    getUserOwnActivity(context),
     getPartnerActivity(context),
-    getNearbyLowmanActivity(context),
+    getNearbyUsersWithExpansion(context), // NEW: Expands geographically
     getUserCoursesActivity(context),
+    getUserOwnActivity(context), // Now limited to 2+2
   ]);
 
   const allItems: FeedItem[] = [
-    ...ownItems,
     ...partnerItems,
-    ...nearbyLowmanItems,
+    ...nearbyUserItems,
     ...courseItems,
+    ...ownItems,
   ];
 
-  // Only fetch more if we don't have enough
+  // Fill with global if still not enough (with Jr priority)
   if (allItems.length < maxItems) {
-    const [
-      partnersPartnerItems,
-      localItems,
-    ] = await Promise.all([
-      getPartnersPartnerActivity(context),
-      getLocalAreaActivity(context),
-    ]);
-
-    allItems.push(...partnersPartnerItems, ...localItems);
-  }
-
-  // Fill with global if still not enough
-  if (allItems.length < maxItems) {
-    const globalItems = await getGlobalActivity(context, allItems.length);
+    const globalItems = await getGlobalActivityWithPriority(context, allItems.length);
     allItems.push(...globalItems);
   }
 
@@ -143,6 +149,7 @@ export async function generateAlgorithmicFeed(
     total: finalFeed.length,
     posts: finalFeed.filter((i) => i.type === "post").length,
     scores: finalFeed.filter((i) => i.type === "score").length,
+    userType: context.userType,
   });
 
   return finalFeed;
@@ -172,6 +179,7 @@ async function batchGetUserProfiles(userIds: string[]): Promise<Map<string, any>
       const profile = {
         displayName: userDoc.data()?.displayName || "Unknown",
         avatar: userDoc.data()?.avatar,
+        userType: userDoc.data()?.userType || "Golfer",
       };
       userProfileCache.set(userId, profile);
       return { userId, profile };
@@ -222,6 +230,26 @@ async function batchCheckLowman(courseIds: number[]): Promise<Map<number, any>> 
 }
 
 /* ================================================================ */
+/* USER TYPE PRIORITY HELPER                                        */
+/* ================================================================ */
+
+function getUserTypePriorityBoost(
+  targetUserType: string,
+  viewerUserType: string
+): number {
+  // Only boost if viewer is Jr
+  if (viewerUserType !== "Junior") return 0;
+  
+  const priority = USER_TYPE_PRIORITY[targetUserType as keyof typeof USER_TYPE_PRIORITY] || 0;
+  
+  // Jr users get +10 boost, PGA +7, Course +4, Golfer +0
+  if (targetUserType === "Junior") return 10;
+  if (targetUserType === "PGA Professional") return 7;
+  if (targetUserType === "Course") return 4;
+  return 0;
+}
+
+/* ================================================================ */
 /* OPTIMIZED: USER CONTEXT BUILDER                                  */
 /* ================================================================ */
 
@@ -246,6 +274,7 @@ async function buildUserContext(userId: string): Promise<UserContext> {
 
   const context: UserContext = {
     userId,
+    userType: userData.userType || "Golfer",
     partnerIds,
     partnersPartnerIds,
     playerCourses: userData.playerCourses || [],
@@ -259,6 +288,7 @@ async function buildUserContext(userId: string): Promise<UserContext> {
   };
 
   console.log("👤 User context:", {
+    userType: context.userType,
     partners: context.partnerIds.length,
     partnersPartners: context.partnersPartnerIds.length,
     playerCourses: context.playerCourses.length,
@@ -320,74 +350,8 @@ async function getPlayedCourses(userId: string): Promise<number[]> {
 }
 
 /* ================================================================ */
-/* OPTIMIZED LAYER FUNCTIONS                                        */
+/* PRIORITY 1: PARTNER ACTIVITY (100 pts)                          */
 /* ================================================================ */
-
-async function getUserOwnActivity(context: UserContext): Promise<FeedItem[]> {
-  const items: FeedItem[] = [];
-
-  // Parallel fetch
-  const [postsSnap, scoresSnap] = await Promise.all([
-    getDocs(query(
-      collection(db, "thoughts"),
-      where("userId", "==", context.userId),
-      orderBy("createdAt", "desc"),
-      limit(5) // Reduce from 10
-    )),
-    getDocs(query(
-      collection(db, "scores"),
-      where("userId", "==", context.userId),
-      orderBy("createdAt", "desc"),
-      limit(3) // Reduce from 5
-    )),
-  ]);
-
-  const userProfile = await getUserProfile(context.userId);
-  const courseIds = scoresSnap.docs.map((doc) => doc.data().courseId);
-  const lowmanData = await batchCheckLowman(courseIds);
-
-  postsSnap.forEach((doc) => {
-    const data = doc.data();
-    items.push({
-      type: "post",
-      id: doc.id,
-      userId: data.userId,
-      userName: userProfile.displayName,
-      userAvatar: userProfile.avatar,
-      imageUrl: data.imageUrl,
-      caption: data.caption || data.content || "",
-      createdAt: data.createdAt,
-      taggedCourses: data.taggedCourses || [],
-      relevanceScore: 60,
-      relevanceReason: "Your post",
-    });
-  });
-
-  scoresSnap.forEach((doc) => {
-    const data = doc.data();
-    const lowman = lowmanData.get(data.courseId);
-    const isLowman = !lowman || data.netScore < lowman.netScore;
-
-    items.push({
-      type: "score",
-      id: doc.id,
-      userId: data.userId,
-      userName: userProfile.displayName,
-      userAvatar: userProfile.avatar,
-      courseId: data.courseId,
-      courseName: data.courseName,
-      grossScore: data.grossScore,
-      netScore: data.netScore,
-      par: data.par,
-      isLowman,
-      createdAt: data.createdAt,
-      relevanceScore: isLowman ? 62 : 58,
-      relevanceReason: isLowman ? "Your new lowman!" : "Your score",
-    });
-  });
-
-  return items;
-}
 
 async function getPartnerActivity(context: UserContext): Promise<FeedItem[]> {
   if (context.partnerIds.length === 0) return [];
@@ -401,13 +365,13 @@ async function getPartnerActivity(context: UserContext): Promise<FeedItem[]> {
       collection(db, "thoughts"),
       where("userId", "in", batch),
       orderBy("createdAt", "desc"),
-      limit(15) // Reduce from 20
+      limit(20)
     )),
     getDocs(query(
       collection(db, "scores"),
       where("userId", "in", batch),
       orderBy("createdAt", "desc"),
-      limit(15) // Reduce from 20
+      limit(20)
     )),
   ]);
 
@@ -432,6 +396,8 @@ async function getPartnerActivity(context: UserContext): Promise<FeedItem[]> {
       userName: profile.displayName,
       userAvatar: profile.avatar,
       imageUrl: data.imageUrl,
+      videoUrl: data.videoUrl,
+      videoThumbnailUrl: data.videoThumbnailUrl,
       caption: data.caption || data.content || "",
       createdAt: data.createdAt,
       taggedCourses: data.taggedCourses || [],
@@ -459,7 +425,7 @@ async function getPartnerActivity(context: UserContext): Promise<FeedItem[]> {
       par: data.par,
       isLowman,
       createdAt: data.createdAt,
-      relevanceScore: isLowman ? 98 : 95,
+      relevanceScore: isLowman ? 100 : 98,
       relevanceReason: isLowman ? "Partner's new lowman!" : "Partner posted score",
     });
   });
@@ -467,16 +433,51 @@ async function getPartnerActivity(context: UserContext): Promise<FeedItem[]> {
   return items;
 }
 
-async function getNearbyLowmanActivity(context: UserContext): Promise<FeedItem[]> {
+/* ================================================================ */
+/* PRIORITY 2: NEARBY USERS WITH EXPANSION (85-95 pts)             */
+/* ================================================================ */
+
+async function getNearbyUsersWithExpansion(context: UserContext): Promise<FeedItem[]> {
   if (!context.location?.city || !context.location?.state) return [];
 
+  const items: FeedItem[] = [];
+  
+  // Step 1: Same city
+  const sameCityUsers = await getNearbyUsersByLocation(
+    context.location.city,
+    context.location.state,
+    context
+  );
+  
+  items.push(...sameCityUsers);
+  
+  // Step 2: If not enough, expand to same state (different cities)
+  if (items.length < 15) {
+    console.log("📍 Expanding to nearby cities in", context.location.state);
+    const statewideUsers = await getNearbyUsersByState(
+      context.location.state,
+      context.location.city, // Exclude current city
+      context
+    );
+    items.push(...statewideUsers);
+  }
+  
+  console.log("🌍 Nearby users found:", items.length);
+  return items;
+}
+
+async function getNearbyUsersByLocation(
+  city: string,
+  state: string,
+  context: UserContext
+): Promise<FeedItem[]> {
   const items: FeedItem[] = [];
 
   const localUsersSnap = await getDocs(query(
     collection(db, "users"),
-    where("currentCity", "==", context.location.city),
-    where("currentState", "==", context.location.state),
-    limit(20) // Add limit
+    where("currentCity", "==", city),
+    where("currentState", "==", state),
+    limit(30)
   ));
 
   const localUserIds: string[] = [];
@@ -488,16 +489,26 @@ async function getNearbyLowmanActivity(context: UserContext): Promise<FeedItem[]
 
   if (localUserIds.length === 0) return [];
 
+  // Get posts and scores from nearby users
   const batch = localUserIds.slice(0, 10);
-  const scoresSnap = await getDocs(query(
-    collection(db, "scores"),
-    where("userId", "in", batch),
-    orderBy("createdAt", "desc"),
-    limit(10) // Reduce from 20
-  ));
+  const [postsSnap, scoresSnap] = await Promise.all([
+    getDocs(query(
+      collection(db, "thoughts"),
+      where("userId", "in", batch),
+      orderBy("createdAt", "desc"),
+      limit(15)
+    )),
+    getDocs(query(
+      collection(db, "scores"),
+      where("userId", "in", batch),
+      orderBy("createdAt", "desc"),
+      limit(15)
+    )),
+  ]);
 
   const userIds = new Set<string>();
   const courseIds = new Set<number>();
+  postsSnap.forEach((doc) => userIds.add(doc.data().userId));
   scoresSnap.forEach((doc) => {
     userIds.add(doc.data().userId);
     courseIds.add(doc.data().courseId);
@@ -508,34 +519,168 @@ async function getNearbyLowmanActivity(context: UserContext): Promise<FeedItem[]
     batchCheckLowman(Array.from(courseIds)),
   ]);
 
+  // Process posts
+  postsSnap.forEach((doc) => {
+    const data = doc.data();
+    const profile = profiles.get(data.userId)!;
+    const priorityBoost = getUserTypePriorityBoost(profile.userType, context.userType);
+
+    items.push({
+      type: "post",
+      id: doc.id,
+      userId: data.userId,
+      userName: profile.displayName,
+      userAvatar: profile.avatar,
+      imageUrl: data.imageUrl,
+      videoUrl: data.videoUrl,
+      videoThumbnailUrl: data.videoThumbnailUrl,
+      caption: data.caption || data.content || "",
+      createdAt: data.createdAt,
+      taggedCourses: data.taggedCourses || [],
+      relevanceScore: 90 + priorityBoost,
+      relevanceReason: `Nearby in ${city}, ${state}`,
+    });
+  });
+
+  // Process scores
   scoresSnap.forEach((doc) => {
     const data = doc.data();
+    const profile = profiles.get(data.userId)!;
     const lowman = lowmanData.get(data.courseId);
     const isLowman = !lowman || data.netScore < lowman.netScore;
+    const priorityBoost = getUserTypePriorityBoost(profile.userType, context.userType);
 
-    if (isLowman && context.location) {
-      const profile = profiles.get(data.userId)!;
-      items.push({
-        type: "score",
-        id: doc.id,
-        userId: data.userId,
-        userName: profile.displayName,
-        userAvatar: profile.avatar,
-        courseId: data.courseId,
-        courseName: data.courseName,
-        grossScore: data.grossScore,
-        netScore: data.netScore,
-        par: data.par,
-        isLowman: true,
-        createdAt: data.createdAt,
-        relevanceScore: 96,
-        relevanceReason: `🏆 Nearby lowman: ${context.location.city}, ${context.location.state}`,
-      });
-    }
+    items.push({
+      type: "score",
+      id: doc.id,
+      userId: data.userId,
+      userName: profile.displayName,
+      userAvatar: profile.avatar,
+      courseId: data.courseId,
+      courseName: data.courseName,
+      grossScore: data.grossScore,
+      netScore: data.netScore,
+      par: data.par,
+      isLowman,
+      createdAt: data.createdAt,
+      relevanceScore: (isLowman ? 95 : 88) + priorityBoost,
+      relevanceReason: isLowman 
+        ? `🏆 Nearby lowman: ${city}, ${state}`
+        : `Nearby score: ${city}, ${state}`,
+    });
   });
 
   return items;
 }
+
+async function getNearbyUsersByState(
+  state: string,
+  excludeCity: string,
+  context: UserContext
+): Promise<FeedItem[]> {
+  const items: FeedItem[] = [];
+
+  // Get users in same state but different city
+  const stateUsersSnap = await getDocs(query(
+    collection(db, "users"),
+    where("currentState", "==", state),
+    limit(30)
+  ));
+
+  const stateUserIds: string[] = [];
+  stateUsersSnap.forEach((doc) => {
+    const data = doc.data();
+    if (doc.id !== context.userId && data.currentCity !== excludeCity) {
+      stateUserIds.push(doc.id);
+    }
+  });
+
+  if (stateUserIds.length === 0) return [];
+
+  const batch = stateUserIds.slice(0, 10);
+  const [postsSnap, scoresSnap] = await Promise.all([
+    getDocs(query(
+      collection(db, "thoughts"),
+      where("userId", "in", batch),
+      orderBy("createdAt", "desc"),
+      limit(10)
+    )),
+    getDocs(query(
+      collection(db, "scores"),
+      where("userId", "in", batch),
+      orderBy("createdAt", "desc"),
+      limit(10)
+    )),
+  ]);
+
+  const userIds = new Set<string>();
+  const courseIds = new Set<number>();
+  postsSnap.forEach((doc) => userIds.add(doc.data().userId));
+  scoresSnap.forEach((doc) => {
+    userIds.add(doc.data().userId);
+    courseIds.add(doc.data().courseId);
+  });
+
+  const [profiles, lowmanData] = await Promise.all([
+    batchGetUserProfiles(Array.from(userIds)),
+    batchCheckLowman(Array.from(courseIds)),
+  ]);
+
+  postsSnap.forEach((doc) => {
+    const data = doc.data();
+    const profile = profiles.get(data.userId)!;
+    const priorityBoost = getUserTypePriorityBoost(profile.userType, context.userType);
+
+    items.push({
+      type: "post",
+      id: doc.id,
+      userId: data.userId,
+      userName: profile.displayName,
+      userAvatar: profile.avatar,
+      imageUrl: data.imageUrl,
+      videoUrl: data.videoUrl,
+      videoThumbnailUrl: data.videoThumbnailUrl,
+      caption: data.caption || data.content || "",
+      createdAt: data.createdAt,
+      taggedCourses: data.taggedCourses || [],
+      relevanceScore: 85 + priorityBoost,
+      relevanceReason: `Nearby in ${state}`,
+    });
+  });
+
+  scoresSnap.forEach((doc) => {
+    const data = doc.data();
+    const profile = profiles.get(data.userId)!;
+    const lowman = lowmanData.get(data.courseId);
+    const isLowman = !lowman || data.netScore < lowman.netScore;
+    const priorityBoost = getUserTypePriorityBoost(profile.userType, context.userType);
+
+    items.push({
+      type: "score",
+      id: doc.id,
+      userId: data.userId,
+      userName: profile.displayName,
+      userAvatar: profile.avatar,
+      courseId: data.courseId,
+      courseName: data.courseName,
+      grossScore: data.grossScore,
+      netScore: data.netScore,
+      par: data.par,
+      isLowman,
+      createdAt: data.createdAt,
+      relevanceScore: (isLowman ? 88 : 83) + priorityBoost,
+      relevanceReason: isLowman 
+        ? `🏆 Nearby lowman in ${state}`
+        : `Nearby score in ${state}`,
+    });
+  });
+
+  return items;
+}
+
+/* ================================================================ */
+/* PRIORITY 3: YOUR COURSES ACTIVITY (80-85 pts)                   */
+/* ================================================================ */
 
 async function getUserCoursesActivity(context: UserContext): Promise<FeedItem[]> {
   const allCourses = [
@@ -545,7 +690,7 @@ async function getUserCoursesActivity(context: UserContext): Promise<FeedItem[]>
 
   if (allCourses.length === 0) return [];
 
-  const uniqueCourses = Array.from(new Set(allCourses)).slice(0, 10); // Limit courses
+  const uniqueCourses = Array.from(new Set(allCourses)).slice(0, 10);
   const items: FeedItem[] = [];
 
   const batch = uniqueCourses.slice(0, 10);
@@ -553,7 +698,7 @@ async function getUserCoursesActivity(context: UserContext): Promise<FeedItem[]>
     collection(db, "scores"),
     where("courseId", "in", batch),
     orderBy("createdAt", "desc"),
-    limit(20) // Reduce from 30
+    limit(25)
   ));
 
   const userIds = new Set<string>();
@@ -578,6 +723,7 @@ async function getUserCoursesActivity(context: UserContext): Promise<FeedItem[]>
     const profile = profiles.get(data.userId)!;
     const lowman = lowmanData.get(data.courseId);
     const isLowman = !lowman || data.netScore < lowman.netScore;
+    const priorityBoost = getUserTypePriorityBoost(profile.userType, context.userType);
 
     items.push({
       type: "score",
@@ -592,7 +738,7 @@ async function getUserCoursesActivity(context: UserContext): Promise<FeedItem[]>
       par: data.par,
       isLowman,
       createdAt: data.createdAt,
-      relevanceScore: 85,
+      relevanceScore: (isLowman ? 85 : 80) + priorityBoost,
       relevanceReason: isLowman ? "Lowman at your course" : "Score at your course",
     });
   });
@@ -600,17 +746,83 @@ async function getUserCoursesActivity(context: UserContext): Promise<FeedItem[]>
   return items;
 }
 
-async function getPartnersPartnerActivity(context: UserContext): Promise<FeedItem[]> {
-  // Simplified - skip for now to speed up initial load
-  return [];
+/* ================================================================ */
+/* PRIORITY 4: YOUR OWN ACTIVITY (60-70 pts) - REDUCED             */
+/* ================================================================ */
+
+async function getUserOwnActivity(context: UserContext): Promise<FeedItem[]> {
+  const items: FeedItem[] = [];
+
+  // REDUCED: 2 posts + 2 scores instead of 5+3
+  const [postsSnap, scoresSnap] = await Promise.all([
+    getDocs(query(
+      collection(db, "thoughts"),
+      where("userId", "==", context.userId),
+      orderBy("createdAt", "desc"),
+      limit(2) // REDUCED from 5
+    )),
+    getDocs(query(
+      collection(db, "scores"),
+      where("userId", "==", context.userId),
+      orderBy("createdAt", "desc"),
+      limit(2) // REDUCED from 3
+    )),
+  ]);
+
+  const userProfile = await getUserProfile(context.userId);
+  const courseIds = scoresSnap.docs.map((doc) => doc.data().courseId);
+  const lowmanData = await batchCheckLowman(courseIds);
+
+  postsSnap.forEach((doc) => {
+    const data = doc.data();
+    items.push({
+      type: "post",
+      id: doc.id,
+      userId: data.userId,
+      userName: userProfile.displayName,
+      userAvatar: userProfile.avatar,
+      imageUrl: data.imageUrl,
+      videoUrl: data.videoUrl,
+      videoThumbnailUrl: data.videoThumbnailUrl,
+      caption: data.caption || data.content || "",
+      createdAt: data.createdAt,
+      taggedCourses: data.taggedCourses || [],
+      relevanceScore: 65,
+      relevanceReason: "Your post",
+    });
+  });
+
+  scoresSnap.forEach((doc) => {
+    const data = doc.data();
+    const lowman = lowmanData.get(data.courseId);
+    const isLowman = !lowman || data.netScore < lowman.netScore;
+
+    items.push({
+      type: "score",
+      id: doc.id,
+      userId: data.userId,
+      userName: userProfile.displayName,
+      userAvatar: userProfile.avatar,
+      courseId: data.courseId,
+      courseName: data.courseName,
+      grossScore: data.grossScore,
+      netScore: data.netScore,
+      par: data.par,
+      isLowman,
+      createdAt: data.createdAt,
+      relevanceScore: isLowman ? 70 : 62,
+      relevanceReason: isLowman ? "Your new lowman!" : "Your score",
+    });
+  });
+
+  return items;
 }
 
-async function getLocalAreaActivity(context: UserContext): Promise<FeedItem[]> {
-  // Simplified - skip for now
-  return [];
-}
+/* ================================================================ */
+/* PRIORITY 5: GLOBAL FALLBACK WITH JR PRIORITY (30-50 pts)        */
+/* ================================================================ */
 
-async function getGlobalActivity(
+async function getGlobalActivityWithPriority(
   context: UserContext,
   currentItemCount: number
 ): Promise<FeedItem[]> {
@@ -651,6 +863,8 @@ async function getGlobalActivity(
     if (data.userId === context.userId) return;
 
     const profile = profiles.get(data.userId)!;
+    const priorityBoost = getUserTypePriorityBoost(profile.userType, context.userType);
+
     items.push({
       type: "post",
       id: doc.id,
@@ -658,10 +872,12 @@ async function getGlobalActivity(
       userName: profile.displayName,
       userAvatar: profile.avatar,
       imageUrl: data.imageUrl,
+      videoUrl: data.videoUrl,
+      videoThumbnailUrl: data.videoThumbnailUrl,
       caption: data.caption || data.content || "",
       createdAt: data.createdAt,
       taggedCourses: data.taggedCourses || [],
-      relevanceScore: 30,
+      relevanceScore: 35 + priorityBoost,
       relevanceReason: "Global activity",
     });
   });
@@ -671,6 +887,8 @@ async function getGlobalActivity(
     if (data.userId === context.userId) return;
 
     const profile = profiles.get(data.userId)!;
+    const priorityBoost = getUserTypePriorityBoost(profile.userType, context.userType);
+
     items.push({
       type: "score",
       id: doc.id,
@@ -683,7 +901,7 @@ async function getGlobalActivity(
       netScore: data.netScore,
       par: data.par,
       createdAt: data.createdAt,
-      relevanceScore: 25,
+      relevanceScore: 30 + priorityBoost,
       relevanceReason: "Global score",
     });
   });
@@ -704,6 +922,7 @@ async function getUserProfile(userId: string): Promise<any> {
   const profile = {
     displayName: userDoc.data()?.displayName || "Unknown",
     avatar: userDoc.data()?.avatar,
+    userType: userDoc.data()?.userType || "Golfer",
   };
 
   userProfileCache.set(userId, profile);

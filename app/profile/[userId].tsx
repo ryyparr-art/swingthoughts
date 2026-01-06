@@ -1,4 +1,5 @@
 import PartnersModal from "@/components/modals/PartnersModal";
+import UserPostsGalleryModal from "@/components/modals/UserPostsGalleryModal";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import { auth, db } from "@/constants/firebaseConfig";
@@ -52,6 +53,8 @@ export default function ProfileScreen() {
   const [stats, setStats] = useState<Stats>({ swingThoughts: 0, leaderboardScores: 0 });
   const [partnerCount, setPartnerCount] = useState(0);
   const [partnersModalVisible, setPartnersModalVisible] = useState(false);
+  const [galleryModalVisible, setGalleryModalVisible] = useState(false);
+  const [selectedPostId, setSelectedPostId] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -69,6 +72,12 @@ export default function ProfileScreen() {
       if (userDoc.exists()) {
         const data = userDoc.data() as UserProfile;
         setProfile(data);
+      } else {
+        // User deleted or doesn't exist
+        soundPlayer.play('error');
+        setProfile(null);
+        setLoading(false);
+        return;
       }
 
       // Fetch posts
@@ -163,7 +172,8 @@ export default function ProfileScreen() {
       onPress={() => {
         soundPlayer.play('click');
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        router.push(`/post/${item.postId}`);
+        setSelectedPostId(item.postId);
+        setGalleryModalVisible(true);
       }}
     >
       {/* Video post with thumbnail */}
@@ -383,6 +393,21 @@ export default function ProfileScreen() {
           }}
           userId={Array.isArray(userId) ? userId[0] : (userId || '')}
           isOwnProfile={isOwnProfile}
+        />
+      )}
+
+      {/* User Posts Gallery Modal */}
+      {userId && profile && (
+        <UserPostsGalleryModal
+          visible={galleryModalVisible}
+          userId={Array.isArray(userId) ? userId[0] : (userId || '')}
+          initialPostId={selectedPostId}
+          userName={profile.displayName}
+          onClose={() => {
+            soundPlayer.play('click');
+            setGalleryModalVisible(false);
+            setSelectedPostId(undefined);
+          }}
         />
       )}
 
