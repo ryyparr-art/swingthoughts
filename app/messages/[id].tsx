@@ -233,7 +233,7 @@ export default function MessageThreadScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={styles.wrapper}>
       <SafeAreaView edges={["top"]} style={styles.safeTop} />
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -326,7 +326,7 @@ export default function MessageThreadScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
+  wrapper: {
     flex: 1,
     backgroundColor: "#F4EED8",
   },

@@ -231,31 +231,8 @@ export default function RootLayout() {
             console.error("⚠️ Location check failed (non-critical):", locationErr);
           }
 
-          // 🏌️ CACHE NEARBY COURSES FOR NEW USERS
-          try {
-            const { cacheNearbyCourses } = await import("../utils/courseCache");
-            const cachedCourses = userData.cachedCourses || [];
-            
-            // If user has no cached courses, populate them now
-            if (cachedCourses.length === 0) {
-              console.log("📦 No cached courses found, fetching nearby courses...");
-              
-              // Get user location data
-              const userLat = userData.location?.latitude;
-              const userLon = userData.location?.longitude;
-              const userCity = userData.currentCity || userData.homeCity || userData.city;
-              const userState = userData.currentState || userData.homeState || userData.state;
-              
-              if (userLat && userLon) {
-                await cacheNearbyCourses(user.uid, userLat, userLon, userCity, userState);
-                console.log("✅ Nearby courses cached");
-              } else {
-                console.log("⚠️ No GPS coordinates available, skipping course cache");
-              }
-            }
-          } catch (cacheErr) {
-            console.error("⚠️ Course caching failed (non-critical):", cacheErr);
-          }
+          // ✅ Course caching now handled by shared Firestore cache
+          // No need to cache on app launch - courses are cached on-demand
 
           // ✅ Only redirect if user is on public/auth routes - allow all app routes
           if (isPublicRoute || (isAuthRoute && !isInAuthFlow)) {

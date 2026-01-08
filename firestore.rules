@@ -122,8 +122,16 @@ service cloud.firestore {
                          request.resource.data.userId == request.auth.uid &&
                          request.resource.data.content.size() <= 500;
         
+        // ✅ FIXED: Allow comment author to edit content, allow anyone to like/unlike
         allow update: if isSignedIn() && 
-                         (request.auth.uid == resource.data.userId || isAdmin());
+                         (
+                           // Author can edit their own comment content
+                           (request.auth.uid == resource.data.userId) ||
+                           // Anyone can like/unlike (only updating likes and likedBy fields)
+                           (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'likedBy'])) ||
+                           // Admin can do anything
+                           isAdmin()
+                         );
         
         allow delete: if isSignedIn() && 
                          (request.auth.uid == resource.data.userId || isAdmin());

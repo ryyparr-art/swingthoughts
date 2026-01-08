@@ -183,7 +183,7 @@ export default function ClubhouseScreen() {
     if (currentUserId) {
       loadFeed();
     }
-  }, [currentUserId]);
+  }, [currentUserId, highlightPostId]); // ✅ Added highlightPostId dependency
 
   const loadFeed = async () => {
     try {
@@ -406,6 +406,18 @@ export default function ClubhouseScreen() {
         console.log('✅ Filtered to', filteredList.length, 'posts from partners');
       }
 
+      // ✅ NEW: Apply search query filter
+      if (filters.searchQuery) {
+        const searchLower = filters.searchQuery.toLowerCase();
+        console.log('🔍 Filtering by search query:', searchLower);
+        filteredList = filteredList.filter(thought => {
+          const content = (thought.content || "").toLowerCase();
+          const userName = (thought.displayName || "").toLowerCase();
+          return content.includes(searchLower) || userName.includes(searchLower);
+        });
+        console.log('✅ Filtered to', filteredList.length, 'posts matching search');
+      }
+
       setThoughts(filteredList);
       setLoading(false);
     } catch (err) {
@@ -609,7 +621,8 @@ export default function ClubhouseScreen() {
     activeFilters.type || 
     activeFilters.user || 
     activeFilters.course ||
-    activeFilters.partnersOnly
+    activeFilters.partnersOnly ||
+    activeFilters.searchQuery  // ✅ NEW: Include search query
   );
 
   // Optimistic comment count update
@@ -1045,6 +1058,42 @@ export default function ClubhouseScreen() {
           setUseAlgorithmicFeed(Object.keys(f).length === 0);
           loadFeed();
         }}
+        onSelectPost={(postId) => {
+          // ✅ NEW: Handle post selection from filter sheet
+          soundPlayer.play('click');
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          console.log('🎯 Post selected from filter:', postId);
+          
+          // Find the post index in current feed
+          const postIndex = thoughts.findIndex(t => t.id === postId);
+          
+          if (postIndex !== -1) {
+            // Scroll to the post
+            setTimeout(() => {
+              try {
+                flatListRef.current?.scrollToIndex({
+                  index: postIndex,
+                  animated: true,
+                  viewPosition: 0.2, // Show near top of screen
+                });
+                console.log('✅ Scrolled to post');
+              } catch (error) {
+                console.log('⚠️ Scroll error, using offset instead');
+                flatListRef.current?.scrollToOffset({
+                  offset: postIndex * 400,
+                  animated: true,
+                });
+              }
+            }, 300);
+          } else {
+            console.warn('⚠️ Post not found in current feed');
+            soundPlayer.play('error');
+            Alert.alert("Post Not Found", "This post may not match your current filters.");
+          }
+          
+          // Close the filter sheet
+          setFilterSheetVisible(false);
+        }}
         posts={thoughts}
         currentFilters={activeFilters}
       />
@@ -1302,5 +1351,4 @@ const styles = StyleSheet.create({
   actionIconCommented: { tintColor: "#FFD700" },
   actionText: { fontSize: 14, color: "#666", fontWeight: "600" },
 });
-
 

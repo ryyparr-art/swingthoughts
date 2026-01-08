@@ -139,67 +139,83 @@ export default function SelectPartnerScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={["top"]}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity 
-          onPress={() => {
-            soundPlayer.play('click');
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.back();
-          }} 
-          style={styles.headerButton}
-        >
-          <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
-        </TouchableOpacity>
+    <View style={styles.wrapper}>
+      <SafeAreaView edges={["top"]} style={styles.safeTop} />
+      <View style={styles.container}>
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity 
+            onPress={() => {
+              soundPlayer.play('click');
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.back();
+            }} 
+            style={styles.headerButton}
+          >
+            <Image
+              source={require("@/assets/icons/Back.png")}
+              style={styles.backIcon}
+              resizeMode="contain"
+            />
+          </TouchableOpacity>
 
-        <Text style={styles.headerTitle}>New Message</Text>
+          <Text style={styles.headerTitle}>New Message</Text>
 
-        <View style={styles.headerButton} />
-      </View>
-
-      {/* Search Bar */}
-      <View style={styles.searchContainer}>
-        <Ionicons name="search" size={20} color="#999" style={styles.searchIcon} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search partners..."
-          placeholderTextColor="#999"
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-        />
-      </View>
-
-      {/* Partners List */}
-      {loading ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#0D5C3A" />
+          <View style={styles.headerButton} />
         </View>
-      ) : filteredPartners.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <Ionicons name="people-outline" size={64} color="#CCC" />
-          <Text style={styles.emptyText}>
-            {searchQuery ? "No partners found" : "No partners yet"}
-          </Text>
-          <Text style={styles.emptySubtext}>
-            {searchQuery
-              ? "Try a different search"
-              : "Partner up with golfers to send messages"}
-          </Text>
+
+        {/* Search Bar */}
+        <View style={styles.searchContainer}>
+          <Ionicons name="search" size={20} color="#999" style={styles.searchIcon} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search partners..."
+            placeholderTextColor="#999"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
         </View>
-      ) : (
-        <FlatList
-          data={filteredPartners}
-          renderItem={renderPartner}
-          keyExtractor={(item) => item.userId}
-          contentContainerStyle={styles.listContent}
-        />
-      )}
-    </SafeAreaView>
+
+        {/* Partners List */}
+        {loading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#0D5C3A" />
+          </View>
+        ) : filteredPartners.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Ionicons name="people-outline" size={64} color="#CCC" />
+            <Text style={styles.emptyText}>
+              {searchQuery ? "No partners found" : "No partners yet"}
+            </Text>
+            <Text style={styles.emptySubtext}>
+              {searchQuery
+                ? "Try a different search"
+                : "Partner up with golfers to send messages"}
+            </Text>
+          </View>
+        ) : (
+          <FlatList
+            data={filteredPartners}
+            renderItem={renderPartner}
+            keyExtractor={(item) => item.userId}
+            contentContainerStyle={styles.listContent}
+          />
+        )}
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  wrapper: {
+    flex: 1,
+    backgroundColor: "#F4EED8",
+  },
+
+  safeTop: {
+    backgroundColor: "#0D5C3A",
+  },
+
   container: {
     flex: 1,
     backgroundColor: "#F4EED8",
@@ -216,6 +232,14 @@ const styles = StyleSheet.create({
 
   headerButton: {
     width: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  backIcon: {
+    width: 24,
+    height: 24,
+    tintColor: "#FFFFFF",
   },
 
   headerTitle: {

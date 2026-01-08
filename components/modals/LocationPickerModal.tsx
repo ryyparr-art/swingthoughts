@@ -120,9 +120,14 @@ export default function LocationPickerModal({
 
         const uid = auth.currentUser?.uid;
         if (uid) {
-          // Save location to Firebase
+          // ✅ FIXED: Save to currentCity/currentState (dynamic location)
+          // Also update lastLocationUpdate timestamp
           await updateDoc(doc(db, "users", uid), {
-            location: locationData,
+            currentCity: locationData.city,
+            currentState: locationData.state,
+            currentLatitude: locationData.latitude,
+            currentLongitude: locationData.longitude,
+            lastLocationUpdate: new Date(),
           });
 
           // ✅ CACHE NEARBY COURSES (ONE-TIME)
@@ -184,9 +189,13 @@ export default function LocationPickerModal({
 
       const uid = auth.currentUser?.uid;
       if (uid) {
-        // Save location to Firebase
+        // ✅ FIXED: Save to currentCity/currentState (dynamic location)
         await updateDoc(doc(db, "users", uid), {
-          location: locationData,
+          currentCity: locationData.city,
+          currentState: locationData.state,
+          currentLatitude: latitude,
+          currentLongitude: longitude,
+          lastLocationUpdate: new Date(),
         });
 
         // ✅ CACHE NEARBY COURSES (ONE-TIME)

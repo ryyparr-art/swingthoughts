@@ -4,10 +4,12 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { collection, getDocs } from "firebase/firestore";
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  Image,
+  Keyboard,
   StyleSheet,
   Text,
   TextInput,
@@ -25,13 +27,20 @@ interface Player {
 export default function PlayerSearchScreen() {
   const router = useRouter();
   const [playerSearch, setPlayerSearch] = useState("");
+  const [allPlayers, setAllPlayers] = useState<Player[]>([]); // ✅ Store all players
   const [playerResults, setPlayerResults] = useState<Player[]>([]);
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
   const [loadingPlayers, setLoadingPlayers] = useState(false);
+  const [initialLoad, setInitialLoad] = useState(true);
   
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const searchPlayers = async (query: string) => {
+  // ✅ Load all users on mount
+  useEffect(() => {
+    loadAllPlayers();
+  }, []);
+
+  const loadAllPlayers = async () => {
     try {
       setLoadingPlayers(true);
 
@@ -39,13 +48,13 @@ export default function PlayerSearchScreen() {
       const snapshot = await getDocs(usersRef);
 
       const players: Player[] = [];
-      const searchLower = query.toLowerCase();
 
       snapshot.forEach((doc) => {
         const data = doc.data();
         const displayName = data.displayName || "";
         
-        if (displayName.toLowerCase().includes(searchLower)) {
+        // Filter out users without display names and Course accounts
+        if (displayName && data.userType !== "Course") {
           players.push({
             userId: doc.id,
             displayName: displayName,
@@ -54,12 +63,19 @@ export default function PlayerSearchScreen() {
         }
       });
 
-      setPlayerResults(players);
+      // Sort alphabetically by display name
+      players.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+      setAllPlayers(players);
       setLoadingPlayers(false);
+      setInitialLoad(false);
+      
+      console.log(`✅ Loaded ${players.length} players`);
     } catch (err) {
-      console.error("Player search error:", err);
+      console.error("Error loading players:", err);
       soundPlayer.play('error');
       setLoadingPlayers(false);
+      setInitialLoad(false);
     }
   };
 
@@ -76,20 +92,25 @@ export default function PlayerSearchScreen() {
 
       if (!query) {
         setPlayerResults([]);
-        setLoadingPlayers(false);
         return;
       }
 
-      if (query.length >= 2) {
-        searchPlayers(query);
-      }
-    }, 300);
+      // ✅ Filter from already-loaded players
+      const searchLower = query.toLowerCase();
+      const filtered = allPlayers.filter((player) =>
+        player.displayName.toLowerCase().includes(searchLower)
+      );
+
+      setPlayerResults(filtered);
+      console.log(`🔍 Found ${filtered.length} players matching "${query}"`);
+    }, 200); // Faster debounce since we're filtering locally
   };
 
   const handleSelectPlayer = (player: Player) => {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedPlayer(player);
+    Keyboard.dismiss(); // ✅ Hide keyboard when player is selected
   };
 
   const handleApply = () => {
@@ -108,7 +129,9 @@ export default function PlayerSearchScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={["top"]}>
+    <View style={styles.wrapper}>
+      <SafeAreaView edges={["top"]} style={styles.safeTop} />
+      <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity 
@@ -119,7 +142,11 @@ export default function PlayerSearchScreen() {
           }} 
           style={styles.headerButton}
         >
-          <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+          <Image
+            source={require("@/assets/icons/Back.png")}
+            style={styles.backIcon}
+            resizeMode="contain"
+          />
         </TouchableOpacity>
 
         <Text style={styles.headerTitle}>Search Player</Text>
@@ -129,7 +156,7 @@ export default function PlayerSearchScreen() {
 
       <View style={styles.content}>
         <Text style={styles.instructions}>
-          Enter a player name to filter leaderboard scores
+          Search for a player to view their scores across all courses
         </Text>
 
         <View style={styles.searchContainer}>
@@ -155,48 +182,72 @@ export default function PlayerSearchScreen() {
           </View>
         )}
 
-        <FlatList
-          data={playerResults}
-          keyExtractor={(item) => item.userId}
-          style={styles.resultsList}
-          keyboardShouldPersistTaps="handled"
-          renderItem={({ item }) => (
-            <TouchableOpacity 
-              style={[
-                styles.playerItem,
-                selectedPlayer?.userId === item.userId && styles.playerItemSelected
-              ]} 
-              onPress={() => handleSelectPlayer(item)}
-            >
-              <Text style={styles.playerItemName}>{item.displayName}</Text>
-              {selectedPlayer?.userId === item.userId && (
-                <Ionicons name="checkmark-circle" size={20} color="#0D5C3A" />
-              )}
-            </TouchableOpacity>
-          )}
-          ListEmptyComponent={
-            playerSearch.length >= 2 && !loadingPlayers ? (
-              <View style={styles.emptyState}>
-                <Ionicons name="search-outline" size={48} color="#CCC" />
-                <Text style={styles.emptyText}>No players found</Text>
-              </View>
-            ) : null
-          }
-        />
+        {initialLoad && loadingPlayers ? (
+          <View style={styles.loadingState}>
+            <ActivityIndicator size="large" color="#0D5C3A" />
+            <Text style={styles.loadingText}>Loading players...</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={playerResults}
+            keyExtractor={(item) => item.userId}
+            style={styles.resultsList}
+            keyboardShouldPersistTaps="handled"
+            renderItem={({ item }) => (
+              <TouchableOpacity 
+                style={[
+                  styles.playerItem,
+                  selectedPlayer?.userId === item.userId && styles.playerItemSelected
+                ]} 
+                onPress={() => handleSelectPlayer(item)}
+              >
+                <Text style={styles.playerItemName}>{item.displayName}</Text>
+                {selectedPlayer?.userId === item.userId && (
+                  <Ionicons name="checkmark-circle" size={20} color="#0D5C3A" />
+                )}
+              </TouchableOpacity>
+            )}
+            ListEmptyComponent={
+              !initialLoad && playerSearch.length >= 1 && !loadingPlayers ? (
+                <View style={styles.emptyState}>
+                  <Ionicons name="search-outline" size={48} color="#CCC" />
+                  <Text style={styles.emptyText}>No players found</Text>
+                  <Text style={styles.emptyHint}>Try a different name</Text>
+                </View>
+              ) : !initialLoad && playerSearch.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <Ionicons name="people-outline" size={48} color="#CCC" />
+                  <Text style={styles.emptyText}>Start typing to search</Text>
+                  <Text style={styles.emptyHint}>{allPlayers.length} players available</Text>
+                </View>
+              ) : null
+            }
+          />
+        )}
       </View>
 
       {selectedPlayer && (
         <View style={styles.actionButtons}>
           <TouchableOpacity style={styles.applyButton} onPress={handleApply}>
-            <Text style={styles.applyButtonText}>Apply Filter</Text>
+            <Text style={styles.applyButtonText}>View Scores</Text>
           </TouchableOpacity>
         </View>
       )}
-    </SafeAreaView>
+    </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  wrapper: {
+    flex: 1,
+    backgroundColor: "#F4EED8",
+  },
+
+  safeTop: {
+    backgroundColor: "#0D5C3A",
+  },
+
   container: {
     flex: 1,
     backgroundColor: "#F4EED8",
@@ -213,6 +264,14 @@ const styles = StyleSheet.create({
 
   headerButton: {
     width: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  backIcon: {
+    width: 24,
+    height: 24,
+    tintColor: "#FFFFFF",
   },
 
   headerTitle: {
@@ -253,6 +312,20 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 16,
     top: 16,
+  },
+
+  loadingState: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingTop: 60,
+  },
+
+  loadingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: "#666",
+    fontWeight: "600",
   },
 
   selectedPlayerCard: {
@@ -311,6 +384,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#999",
     marginTop: 12,
+    fontWeight: "600",
+  },
+
+  emptyHint: {
+    fontSize: 13,
+    color: "#BBB",
+    marginTop: 4,
   },
 
   actionButtons: {

@@ -1,6 +1,6 @@
 import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
-import { getAllThoughtTypes } from "@/constants/postTypes";
 import { soundPlayer } from "@/utils/soundPlayer";
+import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -31,6 +31,7 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   onApplyFilters: (filters: any) => void;
+  onSelectPost?: (postId: string) => void; // ✅ NEW: Callback when post is selected
   posts: any[];
   currentFilters?: any;
 }
@@ -41,6 +42,7 @@ export default function FilterBottomSheet({
   visible,
   onClose,
   onApplyFilters,
+  onSelectPost,
   posts,
   currentFilters = {},
 }: Props) {
@@ -52,9 +54,56 @@ export default function FilterBottomSheet({
   const [showCourseDropdown, setShowCourseDropdown] = useState(false);
   const [loadingCourses, setLoadingCourses] = useState(false);
   const [partnersOnly, setPartnersOnly] = useState(false);
+  
+  // ✅ NEW: Search state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showUserSuggestions, setShowUserSuggestions] = useState(false);
+  const [userSuggestions, setUserSuggestions] = useState<Array<{userId: string, displayName: string, avatar?: string}>>([]);
 
-  const debounceRef = useRef<number | null>(null);
-  const allThoughtTypes = getAllThoughtTypes();
+  // ✅ NEW: Handle user suggestion selection
+  const handleSelectUser = (userId: string, displayName: string) => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    console.log('👤 User selected:', displayName);
+    
+    // Filter posts by this user
+    setSearchQuery(displayName);
+    setShowUserSuggestions(false);
+  };
+
+  // ✅ NEW: Extract unique users and filter by search query
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setShowUserSuggestions(false);
+      setUserSuggestions([]);
+      return;
+    }
+
+    const query = searchQuery.toLowerCase();
+    
+    // Extract unique users from posts
+    const usersMap = new Map<string, {userId: string, displayName: string, avatar?: string}>();
+    
+    posts.forEach(post => {
+      if (post.userId && post.displayName && !usersMap.has(post.userId)) {
+        usersMap.set(post.userId, {
+          userId: post.userId,
+          displayName: post.displayName,
+          avatar: post.avatarUrl || post.avatar,
+        });
+      }
+    });
+    
+    // Filter users by search query
+    const matchingUsers = Array.from(usersMap.values()).filter(user =>
+      user.displayName.toLowerCase().includes(query)
+    );
+    
+    console.log(`👥 Found ${matchingUsers.length} users matching "${query}"`);
+    
+    setUserSuggestions(matchingUsers.slice(0, 5)); // Limit to 5 suggestions
+    setShowUserSuggestions(matchingUsers.length > 0);
+  }, [searchQuery, posts]);
 
   const initializedRef = useRef(false);
 
@@ -64,6 +113,7 @@ export default function FilterBottomSheet({
       console.log('📥 Initializing from currentFilters:', currentFilters);
       setType(currentFilters.type || null);
       setPartnersOnly(currentFilters.partnersOnly || false);
+      setSearchQuery(currentFilters.searchQuery || "");
       
       if (currentFilters.course && currentFilters.courseId) {
         setSelectedCourse({
@@ -179,6 +229,7 @@ export default function FilterBottomSheet({
     setCourseSearch("");
     setSelectedCourse(null);
     setPartnersOnly(false);
+    setSearchQuery("");
     setCourseResults([]);
     setShowCourseDropdown(false);
     setActiveFilterMode(null);
@@ -196,6 +247,7 @@ export default function FilterBottomSheet({
       course: selectedCourse?.course_name || undefined,
       courseId: selectedCourse?.id || undefined,
       partnersOnly: partnersOnly || undefined,
+      searchQuery: searchQuery.trim() || undefined,
     };
     console.log('✅ APPLY FILTERS CLICKED with:', filters);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -210,6 +262,39 @@ export default function FilterBottomSheet({
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     onClose();
   };
+
+  // ✅ NEW: Handle post selection
+  const handleSelectPost = (postId: string) => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    console.log('📸 Post selected:', postId);
+    
+    if (onSelectPost) {
+      onSelectPost(postId);
+    }
+    
+    handleClose();
+  };
+
+  // ✅ NEW: Filter posts by search query
+  const filteredPosts = searchQuery.trim()
+    ? posts.filter((post) => {
+        const query = searchQuery.toLowerCase();
+        const content = (post.content || "").toLowerCase();
+        const userName = (post.displayName || "").toLowerCase();
+        
+        const contentMatch = content.includes(query);
+        const userMatch = userName.includes(query);
+        
+        if (contentMatch || userMatch) {
+          console.log(`✅ Match found: "${post.displayName}" - content:${contentMatch}, user:${userMatch}`);
+        }
+        
+        return contentMatch || userMatch;
+      })
+    : posts;
+  
+  console.log(`🔍 Search query: "${searchQuery}", Total posts: ${posts.length}, Filtered: ${filteredPosts.length}`);
 
   if (!visible) return null;
 
@@ -240,6 +325,64 @@ export default function FilterBottomSheet({
 
             <View style={styles.closeButton} />
           </View>
+
+          {/* ✅ NEW: SEARCH INPUT */}
+          <View style={styles.searchInputContainer}>
+            <Ionicons name="search" size={20} color="#999" style={styles.searchInputIcon} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search users or content..."
+              placeholderTextColor="#999"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity
+                onPress={() => {
+                  soundPlayer.play("click");
+                  setSearchQuery("");
+                  setShowUserSuggestions(false);
+                }}
+                style={styles.searchClearButton}
+              >
+                <Ionicons name="close-circle" size={20} color="#999" />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* ✅ NEW: USER SUGGESTIONS DROPDOWN */}
+          {showUserSuggestions && userSuggestions.length > 0 && (
+            <View style={styles.userSuggestionsContainer}>
+              <Text style={styles.suggestionLabel}>Users</Text>
+              <ScrollView 
+                style={styles.userSuggestionsList}
+                nestedScrollEnabled={true}
+              >
+                {userSuggestions.map((user) => (
+                  <TouchableOpacity
+                    key={user.userId}
+                    style={styles.userSuggestionItem}
+                    onPress={() => handleSelectUser(user.userId, user.displayName)}
+                  >
+                    {user.avatar ? (
+                      <Image
+                        source={{ uri: user.avatar }}
+                        style={styles.userSuggestionAvatar}
+                      />
+                    ) : (
+                      <View style={styles.userSuggestionAvatarPlaceholder}>
+                        <Text style={styles.userSuggestionAvatarText}>
+                          {user.displayName[0]?.toUpperCase() || "?"}
+                        </Text>
+                      </View>
+                    )}
+                    <Text style={styles.userSuggestionName}>{user.displayName}</Text>
+                    <Ionicons name="chevron-forward" size={16} color="#999" />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
 
           {/* FILTER PILLS */}
           <View style={styles.filterPillsContainer}>
@@ -438,18 +581,14 @@ export default function FilterBottomSheet({
           {/* POST GRID */}
           <View style={styles.postsContainer}>
             <FlatList
-              data={posts}
+              data={filteredPosts}
               numColumns={3}
               keyExtractor={(item) => item.id}
               contentContainerStyle={styles.postGrid}
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={styles.postTile}
-                  onPress={() => {
-                    soundPlayer.play("click");
-                    console.log('📸 Post tile clicked');
-                    handleClose();
-                  }}
+                  onPress={() => handleSelectPost(item.id)}
                 >
                   {item.imageUrl ? (
                     <Image
@@ -457,10 +596,21 @@ export default function FilterBottomSheet({
                       style={styles.postImage}
                       resizeMode="cover"
                     />
+                  ) : item.videoThumbnailUrl ? (
+                    <View>
+                      <Image
+                        source={{ uri: item.videoThumbnailUrl }}
+                        style={styles.postImage}
+                        resizeMode="cover"
+                      />
+                      <View style={styles.videoIndicator}>
+                        <Ionicons name="play-circle" size={32} color="#FFFFFF" />
+                      </View>
+                    </View>
                   ) : (
                     <View style={styles.postPlaceholder}>
                       <Text style={styles.postPlaceholderText} numberOfLines={3}>
-                        {item.content}
+                        {item.content || item.caption}
                       </Text>
                     </View>
                   )}
@@ -475,9 +625,11 @@ export default function FilterBottomSheet({
               ListEmptyComponent={
                 <View style={styles.emptyStateFullScreen}>
                   <Text style={styles.emptyIcon}>🏌️</Text>
-                  <Text style={styles.emptyText}>No posts found</Text>
+                  <Text style={styles.emptyText}>
+                    {searchQuery ? "No posts match your search" : "No posts found"}
+                  </Text>
                   <Text style={styles.emptySubtext}>
-                    Try adjusting your filters
+                    {searchQuery ? "Try a different search term" : "Try adjusting your filters"}
                   </Text>
                 </View>
               }
@@ -554,6 +706,88 @@ const styles = StyleSheet.create({
     fontSize: 18,
     flex: 1,
     textAlign: "center",
+  },
+
+  // ✅ NEW: Search Input
+  searchInputContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    marginHorizontal: 16,
+    marginVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+  },
+  searchInputIcon: {
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: "#333",
+  },
+  searchClearButton: {
+    padding: 4,
+  },
+
+  // ✅ NEW: User Suggestions
+  userSuggestionsContainer: {
+    backgroundColor: "#FFFFFF",
+    marginHorizontal: 16,
+    marginBottom: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+    maxHeight: 200,
+    overflow: "hidden",
+  },
+  suggestionLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#666",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    padding: 12,
+    paddingBottom: 8,
+    backgroundColor: "#F8F8F8",
+  },
+  userSuggestionsList: {
+    maxHeight: 160,
+  },
+  userSuggestionItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F0F0F0",
+    gap: 12,
+  },
+  userSuggestionAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+  },
+  userSuggestionAvatarPlaceholder: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#0D5C3A",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  userSuggestionAvatarText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  userSuggestionName: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#0D5C3A",
   },
 
   // Filter Pills
@@ -706,6 +940,17 @@ const styles = StyleSheet.create({
   postImage: {
     width: "100%",
     height: "100%",
+    borderRadius: 4,
+  },
+  videoIndicator: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.3)",
     borderRadius: 4,
   },
   postPlaceholder: {

@@ -4,11 +4,14 @@ import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { collection, doc, getDocs, query, setDoc, where } from "firebase/firestore";
-import React, { useRef, useState } from "react";
+import { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from "firebase/firestore";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
+  Image,
+  Keyboard,
   StyleSheet,
   Text,
   TextInput,
@@ -37,37 +40,126 @@ export default function CourseSearchScreen() {
   const [courseResults, setCourseResults] = useState<GolfCourse[]>([]);
   const [selectedCourse, setSelectedCourse] = useState<GolfCourse | null>(null);
   const [loadingCourses, setLoadingCourses] = useState(false);
+  const [pinnedCourseId, setPinnedCourseId] = useState<number | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
   
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const searchCourses = async (query: string) => {
-    try {
-      setLoadingCourses(true);
+  useEffect(() => {
+    loadPinnedCourse();
+  }, []);
 
-      const res = await fetch(
-        `${GOLF_COURSE_API_URL}/search?search_query=${encodeURIComponent(query)}`,
-        {
-          method: "GET",
-          headers: {
-            Authorization: `Key ${GOLF_COURSE_API_KEY}`,
-            "Content-Type": "application/json",
-          },
+  const loadPinnedCourse = async () => {
+    try {
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      const userDoc = await getDoc(doc(db, "users", uid));
+      if (userDoc.exists()) {
+        const pinnedLeaderboard = userDoc.data()?.pinnedLeaderboard;
+        if (pinnedLeaderboard) {
+          setPinnedCourseId(pinnedLeaderboard.courseId);
         }
+      }
+    } catch (error) {
+      console.error("Error loading pinned course:", error);
+    }
+  };
+
+  const searchCourses = async (searchQuery: string) => {
+    try {
+      console.log("🔍 Searching courses for:", searchQuery);
+      setLoadingCourses(true);
+      setSearchError(null);
+
+      // First, search Firestore cache
+      const coursesQuery = query(collection(db, "courses"));
+      const coursesSnap = await getDocs(coursesQuery);
+      
+      const cachedCourses: GolfCourse[] = [];
+      coursesSnap.forEach((doc) => {
+        const data = doc.data();
+        const courseName = data.course_name?.toLowerCase() || "";
+        const clubName = data.club_name?.toLowerCase() || "";
+        const searchLower = searchQuery.toLowerCase();
+        
+        if (courseName.includes(searchLower) || clubName.includes(searchLower)) {
+          cachedCourses.push({
+            id: data.id,
+            club_name: data.club_name,
+            course_name: data.course_name,
+            location: data.location,
+            tees: data.tees,
+          });
+        }
+      });
+
+      console.log(`✅ Found ${cachedCourses.length} cached courses`);
+
+      // Deduplicate courses by ID (keep first occurrence)
+      const uniqueCourses = Array.from(
+        new Map(cachedCourses.map(c => [c.id, c])).values()
       );
 
+      console.log(`✅ After deduplication: ${uniqueCourses.length} unique courses`);
+
+      // If we have cached results, show them
+      if (uniqueCourses.length > 0) {
+        setCourseResults(uniqueCourses);
+        setLoadingCourses(false);
+        return;
+      }
+
+      // No cached results, try API
+      console.log("🌐 Searching API...");
+      
+      if (!GOLF_COURSE_API_URL || !GOLF_COURSE_API_KEY) {
+        console.error("❌ API credentials missing");
+        setSearchError("API credentials not configured");
+        setLoadingCourses(false);
+        return;
+      }
+
+      const apiUrl = `${GOLF_COURSE_API_URL}/search?search_query=${encodeURIComponent(searchQuery)}`;
+      console.log("📡 API URL:", apiUrl);
+
+      const res = await fetch(apiUrl, {
+        method: "GET",
+        headers: {
+          Authorization: `Key ${GOLF_COURSE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      console.log("📡 API Response status:", res.status);
+
       if (!res.ok) {
+        const errorText = await res.text();
+        console.error("❌ API Error:", res.status, errorText);
+        setSearchError(`API Error: ${res.status}`);
         soundPlayer.play('error');
         setLoadingCourses(false);
         return;
       }
 
       const data = await res.json();
+      console.log("📦 API Response data:", data);
+      
       const courses: GolfCourse[] = data.courses || [];
+      console.log(`✅ Found ${courses.length} courses from API`);
 
-      setCourseResults(courses);
+      // Deduplicate courses by ID
+      const uniqueApiCourses = Array.from(
+        new Map(courses.map(c => [c.id, c])).values()
+      );
+
+      console.log(`✅ After deduplication: ${uniqueApiCourses.length} unique courses`);
+
+      setCourseResults(uniqueApiCourses);
       setLoadingCourses(false);
     } catch (err) {
-      console.error("Course search error:", err);
+      console.error("❌ Course search error:", err);
+      setSearchError(err instanceof Error ? err.message : "Search failed");
       soundPlayer.play('error');
       setLoadingCourses(false);
     }
@@ -76,6 +168,7 @@ export default function CourseSearchScreen() {
   const handleCourseSearchChange = (text: string) => {
     setCourseSearch(text);
     setSelectedCourse(null);
+    setSearchError(null);
 
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
@@ -100,16 +193,11 @@ export default function CourseSearchScreen() {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedCourse(course);
+    Keyboard.dismiss(); // ✅ Hide keyboard when course is selected
   };
 
   const saveCourseToFirestore = async (course: GolfCourse) => {
     try {
-      const uid = auth.currentUser?.uid;
-      if (!uid) return;
-
-      // Save with userId_courseId format to track who added it
-      const docId = `${uid}_${course.id}`;
-      
       const courseData = {
         id: course.id,
         club_name: course.club_name,
@@ -119,10 +207,66 @@ export default function CourseSearchScreen() {
         cachedAt: new Date().toISOString(),
       };
 
-      await setDoc(doc(db, "courses", docId), courseData, { merge: true });
+      await setDoc(doc(db, "courses", String(course.id)), courseData, { merge: true });
       console.log("💾 Saved course to Firestore:", course.course_name);
     } catch (error) {
       console.error("❌ Error saving course:", error);
+      soundPlayer.play('error');
+    }
+  };
+
+  const handlePinCourse = async (course: GolfCourse) => {
+    try {
+      soundPlayer.play('click');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      // Save course to Firestore first
+      const coursesQuery = query(
+        collection(db, "courses"),
+        where("id", "==", course.id)
+      );
+      const coursesSnap = await getDocs(coursesQuery);
+
+      if (coursesSnap.empty) {
+        await saveCourseToFirestore(course);
+      }
+
+      // Pin the course
+      await updateDoc(doc(db, "users", uid), {
+        pinnedLeaderboard: {
+          courseId: course.id,
+          courseName: course.course_name,
+          pinnedAt: new Date().toISOString(),
+        },
+      });
+
+      setPinnedCourseId(course.id);
+      console.log("✅ Pinned course:", course.course_name);
+    } catch (error) {
+      console.error("Error pinning course:", error);
+      soundPlayer.play('error');
+    }
+  };
+
+  const handleUnpinCourse = async () => {
+    try {
+      soundPlayer.play('click');
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      await updateDoc(doc(db, "users", uid), {
+        pinnedLeaderboard: null,
+      });
+
+      setPinnedCourseId(null);
+      console.log("✅ Unpinned course");
+    } catch (error) {
+      console.error("Error unpinning course:", error);
       soundPlayer.play('error');
     }
   };
@@ -165,7 +309,9 @@ export default function CourseSearchScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={["top"]}>
+    <View style={styles.wrapper}>
+      <SafeAreaView edges={["top"]} style={styles.safeTop} />
+      <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity 
@@ -176,7 +322,11 @@ export default function CourseSearchScreen() {
           }} 
           style={styles.headerButton}
         >
-          <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
+          <Image
+            source={require("@/assets/icons/Back.png")}
+            style={styles.backIcon}
+            resizeMode="contain"
+          />
         </TouchableOpacity>
 
         <Text style={styles.headerTitle}>Search Course</Text>
@@ -186,7 +336,7 @@ export default function CourseSearchScreen() {
 
       <View style={styles.content}>
         <Text style={styles.instructions}>
-          Enter a course name to filter leaderboard scores
+          Search for a course to view or pin to your leaderboard
         </Text>
 
         <View style={styles.searchContainer}>
@@ -203,6 +353,13 @@ export default function CourseSearchScreen() {
           )}
         </View>
 
+        {searchError && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="warning" size={20} color="#B0433B" />
+            <Text style={styles.errorText}>{searchError}</Text>
+          </View>
+        )}
+
         {selectedCourse && (
           <View style={styles.selectedCourseCard}>
             <View style={styles.selectedCourseInfo}>
@@ -217,33 +374,97 @@ export default function CourseSearchScreen() {
 
         <FlatList
           data={courseResults}
-          keyExtractor={(item) => item.id.toString()}
+          keyExtractor={(item, index) => `${item.id}-${index}`}
           style={styles.resultsList}
           keyboardShouldPersistTaps="handled"
-          renderItem={({ item }) => (
-            <TouchableOpacity 
-              style={[
-                styles.courseItem,
-                selectedCourse?.id === item.id && styles.courseItemSelected
-              ]} 
-              onPress={() => handleSelectCourse(item)}
-            >
-              <View style={styles.courseItemContent}>
-                <Text style={styles.courseItemName}>{item.course_name}</Text>
-                <Text style={styles.courseItemLocation}>
-                  {item.location.city}, {item.location.state}
-                </Text>
+          renderItem={({ item }) => {
+            const isPinned = pinnedCourseId === item.id;
+            
+            return (
+              <View style={styles.courseItemContainer}>
+                <TouchableOpacity 
+                  style={[
+                    styles.courseItem,
+                    selectedCourse?.id === item.id && styles.courseItemSelected
+                  ]} 
+                  onPress={() => handleSelectCourse(item)}
+                >
+                  <View style={styles.courseItemContent}>
+                    <Text style={styles.courseItemName}>{item.course_name}</Text>
+                    <Text style={styles.courseItemLocation}>
+                      {item.location.city}, {item.location.state}
+                    </Text>
+                  </View>
+                  {selectedCourse?.id === item.id && (
+                    <Ionicons name="checkmark-circle" size={20} color="#0D5C3A" />
+                  )}
+                </TouchableOpacity>
+                
+                {/* Pin Button */}
+                <TouchableOpacity
+                  style={[styles.pinButton, isPinned && styles.pinButtonActive]}
+                  onPress={() => {
+                    if (isPinned) {
+                      soundPlayer.play('click');
+                      Alert.alert(
+                        "Unpin Course",
+                        `Remove ${item.course_name} from your pinned leaderboard?`,
+                        [
+                          { 
+                            text: "Cancel", 
+                            style: "cancel",
+                            onPress: () => soundPlayer.play('click')
+                          },
+                          { 
+                            text: "Unpin", 
+                            style: "destructive", 
+                            onPress: handleUnpinCourse 
+                          },
+                        ]
+                      );
+                    } else {
+                      if (pinnedCourseId) {
+                        soundPlayer.play('click');
+                        Alert.alert(
+                          "Replace Pinned Course",
+                          `You can only pin 1 course. Replace your current pin with ${item.course_name}?`,
+                          [
+                            { 
+                              text: "Cancel", 
+                              style: "cancel",
+                              onPress: () => soundPlayer.play('click')
+                            },
+                            { 
+                              text: "Replace", 
+                              onPress: () => handlePinCourse(item) 
+                            },
+                          ]
+                        );
+                      } else {
+                        handlePinCourse(item);
+                      }
+                    }
+                  }}
+                >
+                  <Ionicons
+                    name={isPinned ? "pin" : "pin-outline"}
+                    size={20}
+                    color={isPinned ? "#FFD700" : "#666"}
+                  />
+                </TouchableOpacity>
               </View>
-              {selectedCourse?.id === item.id && (
-                <Ionicons name="checkmark-circle" size={20} color="#0D5C3A" />
-              )}
-            </TouchableOpacity>
-          )}
+            );
+          }}
           ListEmptyComponent={
             courseSearch.length >= 2 && !loadingCourses ? (
               <View style={styles.emptyState}>
                 <Ionicons name="search-outline" size={48} color="#CCC" />
-                <Text style={styles.emptyText}>No courses found</Text>
+                <Text style={styles.emptyText}>
+                  {searchError ? "Search failed - try again" : "No courses found"}
+                </Text>
+                <Text style={styles.emptyHint}>
+                  Try searching with a different name
+                </Text>
               </View>
             ) : null
           }
@@ -253,15 +474,25 @@ export default function CourseSearchScreen() {
       {selectedCourse && (
         <View style={styles.actionButtons}>
           <TouchableOpacity style={styles.applyButton} onPress={handleApply}>
-            <Text style={styles.applyButtonText}>Apply Filter</Text>
+            <Text style={styles.applyButtonText}>View Leaderboard</Text>
           </TouchableOpacity>
         </View>
       )}
-    </SafeAreaView>
+    </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  wrapper: {
+    flex: 1,
+    backgroundColor: "#F4EED8",
+  },
+
+  safeTop: {
+    backgroundColor: "#0D5C3A",
+  },
+
   container: {
     flex: 1,
     backgroundColor: "#F4EED8",
@@ -278,6 +509,14 @@ const styles = StyleSheet.create({
 
   headerButton: {
     width: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  backIcon: {
+    width: 24,
+    height: 24,
+    tintColor: "#FFFFFF",
   },
 
   headerTitle: {
@@ -320,6 +559,25 @@ const styles = StyleSheet.create({
     top: 16,
   },
 
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    padding: 12,
+    marginBottom: 16,
+    backgroundColor: "#FFE5E5",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#FFB3B3",
+  },
+
+  errorText: {
+    flex: 1,
+    fontSize: 13,
+    color: "#B0433B",
+    fontWeight: "600",
+  },
+
   selectedCourseCard: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -350,12 +608,18 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  courseItemContainer: {
+    flexDirection: "row",
+    marginBottom: 8,
+    gap: 8,
+  },
+
   courseItem: {
+    flex: 1,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     padding: 16,
-    marginBottom: 8,
     backgroundColor: "#FFFFFF",
     borderRadius: 12,
     borderWidth: 2,
@@ -383,6 +647,19 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
+  pinButton: {
+    width: 44,
+    height: 56,
+    borderRadius: 12,
+    backgroundColor: "#F0F0F0",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  pinButtonActive: {
+    backgroundColor: "#0D5C3A",
+  },
+
   emptyState: {
     alignItems: "center",
     paddingTop: 40,
@@ -392,6 +669,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#999",
     marginTop: 12,
+    fontWeight: "600",
+  },
+
+  emptyHint: {
+    fontSize: 13,
+    color: "#BBB",
+    marginTop: 4,
   },
 
   actionButtons: {

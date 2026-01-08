@@ -242,30 +242,57 @@ export default function VerifyHoleInOneScreen() {
       const thoughtRef = await addDoc(collection(db, "thoughts"), thoughtData);
       console.log("✅ Clubhouse post created:", thoughtRef.id);
 
-      // 3b. Update course_leaders with postId for this hole-in-one
+      // 3b. ✅ FIXED: Update course_leaders with postId for this hole-in-one
       try {
         const courseLeaderRef = doc(db, "course_leaders", scoreData.courseId.toString());
         const courseLeaderDoc = await getDoc(courseLeaderRef);
         
+        const holeInOneEntry = {
+          userId: scoreData.userId,
+          displayName: scoreData.userName,
+          hole: scoreData.holeNumber,
+          achievedAt: serverTimestamp(),
+          postId: thoughtRef.id, // ← THE KEY FIX: Store the postId
+        };
+        
         if (courseLeaderDoc.exists()) {
-          const holeinones = courseLeaderDoc.data()?.holeinones || [];
+          const existingHoleinones = courseLeaderDoc.data()?.holeinones || [];
           
-          // Find and update the hole-in-one entry for this user/hole
-          const updatedHoleinones = holeinones.map((hio: any) => {
-            if (hio.userId === scoreData.userId && hio.hole === scoreData.holeNumber && !hio.postId) {
-              return { ...hio, postId: thoughtRef.id };
-            }
-            return hio;
-          });
+          // Check if this hole-in-one already exists (shouldn't happen, but handle it)
+          const existingIndex = existingHoleinones.findIndex(
+            (hio: any) => hio.userId === scoreData.userId && hio.hole === scoreData.holeNumber
+          );
+          
+          let updatedHoleinones;
+          if (existingIndex >= 0) {
+            // Update existing entry with postId
+            updatedHoleinones = [...existingHoleinones];
+            updatedHoleinones[existingIndex] = {
+              ...updatedHoleinones[existingIndex],
+              postId: thoughtRef.id,
+            };
+            console.log("✅ Updated existing hole-in-one with postId");
+          } else {
+            // Add new hole-in-one entry (most common case)
+            updatedHoleinones = [...existingHoleinones, holeInOneEntry];
+            console.log("✅ Added new hole-in-one entry with postId");
+          }
           
           await updateDoc(courseLeaderRef, {
             holeinones: updatedHoleinones,
           });
-          
-          console.log("✅ Updated hole-in-one with postId");
+        } else {
+          // Course leader doesn't exist yet, create it with hole-in-one
+          await updateDoc(courseLeaderRef, {
+            courseId: scoreData.courseId,
+            courseName: scoreData.courseName,
+            holeinones: [holeInOneEntry],
+          });
+          console.log("✅ Created course_leaders entry with hole-in-one");
         }
       } catch (error) {
         console.error("⚠️ Error updating hole-in-one postId:", error);
+        // Don't fail the entire approval if this fails
       }
 
       // 4. Send notification to poster

@@ -30,7 +30,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -40,7 +39,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 
 interface Props {
@@ -61,6 +60,11 @@ interface Comment {
   likedBy?: string[];
   taggedPartners?: { userId: string; displayName: string }[];
   taggedCourses?: { courseId: number; courseName: string }[];
+  
+  // ✅ Threading fields
+  parentCommentId?: string;  // null/undefined = top-level, commentId = reply
+  depth: number;             // 0 = top-level, 1+ = nested
+  replyCount: number;        // How many direct replies
 }
 
 interface UserProfile {
@@ -88,6 +92,11 @@ export default function CommentsModal({
   // Edit mode
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [originalEditText, setOriginalEditText] = useState("");
+
+  // ✅ Reply mode
+  const [replyingToCommentId, setReplyingToCommentId] = useState<string | null>(null);
+  const [replyingToUsername, setReplyingToUsername] = useState("");
+  const [expandedComments, setExpandedComments] = useState<Set<string>>(new Set());
 
   // @ Mention autocomplete state
   const [taggedPartners, setTaggedPartners] = useState<{ userId: string; displayName: string }[]>([]);
@@ -153,7 +162,7 @@ export default function CommentsModal({
     loadPartners();
   }, [visible, currentUserId]);
 
-  /* ✅ REAL-TIME COMMENTS LISTENER ---------------- */
+  /* ✅ REAL-TIME COMMENTS LISTENER WITH THREADING ---------------- */
   useEffect(() => {
     if (!visible || !thoughtId) return;
 
@@ -166,10 +175,17 @@ export default function CommentsModal({
 
     // ✅ Real-time listener - comments update automatically!
     const unsubscribe = onSnapshot(q, async (snapshot) => {
-      const loaded: Comment[] = snapshot.docs.map((d) => ({
-        id: d.id,
-        ...(d.data() as any),
-      }));
+      const loaded: Comment[] = snapshot.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          ...data,
+          // ✅ Ensure threading fields exist with defaults
+          parentCommentId: data.parentCommentId || null,
+          depth: data.depth ?? 0,
+          replyCount: data.replyCount ?? 0,
+        } as Comment;
+      });
 
       setComments(loaded);
 
@@ -438,7 +454,7 @@ export default function CommentsModal({
     );
   };
 
-  /* ---------------- POST/UPDATE COMMENT ---------------- */
+  /* ---------------- POST/UPDATE COMMENT WITH THREADING ---------------- */
   const post = async () => {
     if (!text.trim() || !currentUserId) return;
 
@@ -476,8 +492,12 @@ export default function CommentsModal({
         setEditingCommentId(null);
         setOriginalEditText("");
       } else {
-        // CREATE new comment
-        const commentRef = await addDoc(collection(db, "thoughts", thoughtId, "comments"), {
+        // CREATE new comment or reply
+        const parentComment = replyingToCommentId 
+          ? comments.find(c => c.id === replyingToCommentId)
+          : null;
+
+        const commentData = {
           content: text.trim(),
           userId: currentUserId,
           createdAt: new Date(),
@@ -485,7 +505,27 @@ export default function CommentsModal({
           likedBy: [],
           taggedPartners: taggedPartners,
           taggedCourses: taggedCourses,
-        });
+          // ✅ Threading fields
+          parentCommentId: replyingToCommentId || null,
+          depth: parentComment ? (parentComment.depth + 1) : 0,
+          replyCount: 0,
+        };
+
+        const commentRef = await addDoc(
+          collection(db, "thoughts", thoughtId, "comments"),
+          commentData
+        );
+
+        // ✅ If replying, increment parent's replyCount
+        if (replyingToCommentId) {
+          const parentRef = doc(db, "thoughts", thoughtId, "comments", replyingToCommentId);
+          await updateDoc(parentRef, {
+            replyCount: increment(1),
+          });
+          
+          // ✅ Auto-expand parent to show new reply
+          setExpandedComments(prev => new Set(prev).add(replyingToCommentId));
+        }
 
         await updateDoc(doc(db, "thoughts", thoughtId), {
           comments: increment(1),
@@ -494,13 +534,24 @@ export default function CommentsModal({
         // Check if post owner was tagged
         const postOwnerWasTagged = taggedPartners.some(p => p.userId === postOwnerId);
 
-        // Create comment notification for post owner (only if NOT tagged)
-        if (postOwnerId && postOwnerId !== currentUserId && !postOwnerWasTagged) {
+        // Create comment notification for post owner (only if NOT tagged and not a reply)
+        if (postOwnerId && postOwnerId !== currentUserId && !postOwnerWasTagged && !replyingToCommentId) {
           await createNotification({
             userId: postOwnerId,
             type: "comment",
             actorId: currentUserId,
             postId: thoughtId,
+          });
+        }
+
+        // ✅ If replying, notify the parent comment author
+        if (replyingToCommentId && parentComment && parentComment.userId !== currentUserId) {
+          await createNotification({
+            userId: parentComment.userId,
+            type: "comment", // Could add "reply" type if desired
+            actorId: currentUserId,
+            postId: thoughtId,
+            commentId: commentRef.id,
           });
         }
 
@@ -556,6 +607,8 @@ export default function CommentsModal({
       setTaggedPartners([]);
       setTaggedCourses([]);
       setSelectedMentions([]);
+      setReplyingToCommentId(null);
+      setReplyingToUsername("");
       
       // ✅ No need to refetch - real-time listener shows new comment automatically!
       setPosting(false);
@@ -625,6 +678,14 @@ export default function CommentsModal({
 
               await deleteDoc(doc(db, "thoughts", thoughtId, "comments", comment.id));
 
+              // ✅ If deleting a reply, decrement parent's replyCount
+              if (comment.parentCommentId) {
+                const parentRef = doc(db, "thoughts", thoughtId, "comments", comment.parentCommentId);
+                await updateDoc(parentRef, {
+                  replyCount: increment(-1),
+                });
+              }
+
               await updateDoc(doc(db, "thoughts", thoughtId), {
                 comments: increment(-1),
               });
@@ -640,6 +701,59 @@ export default function CommentsModal({
         },
       ]
     );
+  };
+
+  /* ---------------- THREADING HELPERS ---------------- */
+  const handleReply = (comment: Comment) => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
+    const user = userMap[comment.userId];
+    setReplyingToCommentId(comment.id);
+    setReplyingToUsername(user?.displayName || "Unknown");
+    inputRef.current?.focus();
+  };
+
+  const handleCancelReply = () => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setReplyingToCommentId(null);
+    setReplyingToUsername("");
+  };
+
+  const toggleReplies = (commentId: string) => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
+    setExpandedComments(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(commentId)) {
+        newSet.delete(commentId);
+      } else {
+        newSet.add(commentId);
+      }
+      return newSet;
+    });
+  };
+
+  // Build threaded comment tree
+  const buildCommentTree = () => {
+    const topLevel: Comment[] = [];
+    const repliesMap: { [key: string]: Comment[] } = {};
+
+    // Separate top-level comments and replies
+    comments.forEach(comment => {
+      if (!comment.parentCommentId) {
+        topLevel.push(comment);
+      } else {
+        if (!repliesMap[comment.parentCommentId]) {
+          repliesMap[comment.parentCommentId] = [];
+        }
+        repliesMap[comment.parentCommentId].push(comment);
+      }
+    });
+
+    return { topLevel, repliesMap };
   };
 
   /* ---------------- LONG PRESS MENU ---------------- */
@@ -726,83 +840,131 @@ export default function CommentsModal({
             {!editingCommentId && <View style={styles.headerButton} />}
           </View>
 
-          {/* LIST */}
+          {/* LIST WITH THREADING */}
           <View style={styles.list}>
             {loading ? (
               <ActivityIndicator />
             ) : comments.length === 0 ? (
               <Text style={styles.empty}>No comments yet</Text>
             ) : (
-              <FlatList
-                data={comments}
-                keyExtractor={(i) => i.id}
-                renderItem={({ item }) => {
-                  const user = userMap[item.userId];
-                  const hasLiked = item.likedBy?.includes(currentUserId || "");
-                  const isOwnComment = item.userId === currentUserId;
+              <ScrollView>
+                {(() => {
+                  const { topLevel, repliesMap } = buildCommentTree();
+                  
+                  const renderComment = (comment: Comment, isReply = false) => {
+                    const user = userMap[comment.userId];
+                    const hasLiked = comment.likedBy?.includes(currentUserId || "");
+                    const isOwnComment = comment.userId === currentUserId;
+                    const replies = repliesMap[comment.id] || [];
+                    const isExpanded = expandedComments.has(comment.id);
 
-                  return (
-                    <TouchableOpacity
-                      style={styles.commentRow}
-                      onLongPress={() => handleLongPressComment(item)}
-                      delayLongPress={500}
-                      activeOpacity={isOwnComment ? 0.7 : 1}
-                    >
-                      <TouchableOpacity
-                        onPress={() => {
-                          soundPlayer.play('click');
-                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                          router.push(`/locker/${item.userId}`);
-                        }}
-                      >
-                        {user?.avatar ? (
-                          <Image
-                            source={{ uri: user.avatar }}
-                            style={styles.avatar}
-                          />
-                        ) : (
-                          <View style={styles.avatarPlaceholder}>
-                            <Text style={styles.avatarText}>
-                              {user?.displayName?.charAt(0).toUpperCase() || "?"}
-                            </Text>
+                    return (
+                      <View key={comment.id}>
+                        <TouchableOpacity
+                          style={[
+                            styles.commentRow,
+                            isReply && styles.commentRowReply,
+                            { marginLeft: comment.depth * 20 } // Indent based on depth
+                          ]}
+                          onLongPress={() => handleLongPressComment(comment)}
+                          delayLongPress={500}
+                          activeOpacity={isOwnComment ? 0.7 : 1}
+                        >
+                          <TouchableOpacity
+                            onPress={() => {
+                              soundPlayer.play('click');
+                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                              router.push(`/locker/${comment.userId}`);
+                            }}
+                          >
+                            {user?.avatar ? (
+                              <Image
+                                source={{ uri: user.avatar }}
+                                style={styles.avatar}
+                              />
+                            ) : (
+                              <View style={styles.avatarPlaceholder}>
+                                <Text style={styles.avatarText}>
+                                  {user?.displayName?.charAt(0).toUpperCase() || "?"}
+                                </Text>
+                              </View>
+                            )}
+                          </TouchableOpacity>
+
+                          <View style={styles.commentBody}>
+                            <TouchableOpacity
+                              onPress={() => {
+                                soundPlayer.play('click');
+                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                router.push(`/locker/${comment.userId}`);
+                              }}
+                            >
+                              <Text style={styles.name}>
+                                {comment.userId === currentUserId
+                                  ? "You"
+                                  : user?.displayName || "Anonymous"}
+                              </Text>
+                            </TouchableOpacity>
+
+                            {renderCommentWithTags(comment)}
+                            
+                            {/* ✅ Reply and View Replies buttons */}
+                            <View style={styles.commentActions}>
+                              <TouchableOpacity 
+                                onPress={() => handleReply(comment)}
+                                style={styles.replyButton}
+                              >
+                                <Text style={styles.replyButtonText}>Reply</Text>
+                              </TouchableOpacity>
+                              
+                              {comment.replyCount > 0 && (
+                                <TouchableOpacity 
+                                  onPress={() => toggleReplies(comment.id)}
+                                  style={styles.viewRepliesButton}
+                                >
+                                  <Text style={styles.viewRepliesText}>
+                                    {isExpanded ? "▼" : "▶"} {comment.replyCount} {comment.replyCount === 1 ? "reply" : "replies"}
+                                  </Text>
+                                </TouchableOpacity>
+                              )}
+                            </View>
+                          </View>
+
+                          <TouchableOpacity
+                            onPress={() => toggleLike(comment)}
+                            style={styles.likeButton}
+                          >
+                            <Image
+                              source={require("@/assets/icons/Throw Darts.png")}
+                              style={[
+                                styles.likeIcon,
+                                hasLiked && styles.likeIconActive,
+                              ]}
+                            />
+                          </TouchableOpacity>
+                        </TouchableOpacity>
+                        
+                        {/* ✅ Render replies if expanded */}
+                        {isExpanded && replies.length > 0 && (
+                          <View style={styles.repliesContainer}>
+                            {replies.map(reply => (
+                              <View key={`reply-${reply.id}`}>
+                                {renderComment(reply, true)}
+                              </View>
+                            ))}
                           </View>
                         )}
-                      </TouchableOpacity>
-
-                      <View style={styles.commentBody}>
-                        <TouchableOpacity
-                          onPress={() => {
-                            soundPlayer.play('click');
-                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                            router.push(`/locker/${item.userId}`);
-                          }}
-                        >
-                          <Text style={styles.name}>
-                            {item.userId === currentUserId
-                              ? "You"
-                              : user?.displayName || "Anonymous"}
-                          </Text>
-                        </TouchableOpacity>
-
-                        {renderCommentWithTags(item)}
                       </View>
-
-                      <TouchableOpacity
-                        onPress={() => toggleLike(item)}
-                        style={styles.likeButton}
-                      >
-                        <Image
-                          source={require("@/assets/icons/Throw Darts.png")}
-                          style={[
-                            styles.likeIcon,
-                            hasLiked && styles.likeIconActive,
-                          ]}
-                        />
-                      </TouchableOpacity>
-                    </TouchableOpacity>
-                  );
-                }}
-              />
+                    );
+                  };
+                  
+                  return topLevel.map(comment => (
+                    <View key={`top-${comment.id}`}>
+                      {renderComment(comment)}
+                    </View>
+                  ));
+                })()}
+              </ScrollView>
             )}
           </View>
 
@@ -834,8 +996,24 @@ export default function CommentsModal({
           )}
 
           {/* INPUT */}
-          <View style={styles.inputRow}>
-            <View style={styles.inputContainer}>
+          <View style={styles.inputWrapper}>
+            {/* ✅ Replying indicator */}
+            {replyingToCommentId && (
+              <View style={styles.replyingIndicator}>
+                <Text style={styles.replyingText}>
+                  Replying to @{replyingToUsername}
+                </Text>
+                <TouchableOpacity onPress={handleCancelReply}>
+                  <Image
+                    source={require("@/assets/icons/Close.png")}
+                    style={styles.replyingCloseIcon}
+                  />
+                </TouchableOpacity>
+              </View>
+            )}
+            
+            <View style={styles.inputRow}>
+              <View style={styles.inputContainer}>
               <TextInput
                 ref={inputRef}
                 style={styles.input}
@@ -880,6 +1058,7 @@ export default function CommentsModal({
                 />
               )}
             </TouchableOpacity>
+            </View>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -941,6 +1120,18 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     marginBottom: 14,
   },
+  
+  commentRowReply: {
+    backgroundColor: "rgba(13, 92, 58, 0.03)",
+    borderLeftWidth: 2,
+    borderLeftColor: "#0D5C3A",
+    paddingLeft: 8,
+    borderRadius: 4,
+  },
+  
+  repliesContainer: {
+    marginTop: -10,
+  },
   avatar: {
     width: 36,
     height: 36,
@@ -978,6 +1169,35 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     color: "#0D5C3A",
+  },
+  
+  commentActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 6,
+  },
+  
+  replyButton: {
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+  },
+  
+  replyButtonText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#0D5C3A",
+  },
+  
+  viewRepliesButton: {
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+  },
+  
+  viewRepliesText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#666",
   },
   likeButton: {
     padding: 6,
@@ -1026,14 +1246,41 @@ const styles = StyleSheet.create({
   },
 
   /* INPUT */
-  inputRow: {
-    flexDirection: "row",
-    alignItems: "flex-end",
+  inputWrapper: {
+    flexDirection: "column",
     padding: 12,
     borderTopWidth: 1,
     borderTopColor: "#DDD",
     backgroundColor: "#E8DCC3",
     gap: 10,
+  },
+  
+  inputRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 10,
+  },
+  
+  replyingIndicator: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "rgba(13, 92, 58, 0.1)",
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+  },
+  
+  replyingText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#0D5C3A",
+  },
+  
+  replyingCloseIcon: {
+    width: 16,
+    height: 16,
+    tintColor: "#0D5C3A",
   },
   
   inputContainer: {

@@ -36,15 +36,25 @@ interface Message {
   senderName: string;
   senderAvatar?: string | null;
   receiverId: string;
+  receiverName?: string;
+  receiverAvatar?: string | null;
   content: string;
   createdAt: any;
   read: boolean;
 }
 
+interface Conversation {
+  otherUserId: string;
+  otherUserName: string;
+  otherUserAvatar?: string | null;
+  lastMessage: Message;
+  unreadCount: number;
+}
+
 export default function MessagesScreen() {
   const router = useRouter();
   const userId = auth.currentUser?.uid;
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -57,17 +67,27 @@ export default function MessagesScreen() {
     if (!userId) return;
 
     try {
-      // Simpler query without orderBy to avoid index requirement
-      const q = query(
+      // Query 1: Messages I received
+      const receivedQuery = query(
         collection(db, "messages"),
         where("receiverId", "==", userId)
       );
 
-      const querySnapshot = await getDocs(q);
-      const messagesData: Message[] = [];
+      // Query 2: Messages I sent
+      const sentQuery = query(
+        collection(db, "messages"),
+        where("senderId", "==", userId)
+      );
 
-      // Fetch sender names
-      for (const docSnap of querySnapshot.docs) {
+      const [receivedSnapshot, sentSnapshot] = await Promise.all([
+        getDocs(receivedQuery),
+        getDocs(sentQuery),
+      ]);
+
+      const allMessages: Message[] = [];
+
+      // Process received messages
+      for (const docSnap of receivedSnapshot.docs) {
         const messageData = docSnap.data() as Message;
         
         // Get sender's display name and avatar
@@ -86,29 +106,86 @@ export default function MessagesScreen() {
           messageData.senderAvatar = null;
         }
 
-        messagesData.push(messageData);
+        allMessages.push(messageData);
       }
 
-      // Sort in JavaScript by timestamp (newest first)
-      messagesData.sort((a, b) => {
+      // Process sent messages
+      for (const docSnap of sentSnapshot.docs) {
+        const messageData = docSnap.data() as Message;
+        
+        // Get receiver's display name and avatar
+        try {
+          const receiverDoc = await getDoc(doc(db, "users", messageData.receiverId));
+          if (receiverDoc.exists()) {
+            const receiverData = receiverDoc.data();
+            messageData.receiverName = receiverData.displayName || "Anonymous";
+            messageData.receiverAvatar = receiverData.avatar || null;
+          } else {
+            messageData.receiverName = "Anonymous";
+            messageData.receiverAvatar = null;
+          }
+        } catch (err) {
+          messageData.receiverName = "Anonymous";
+          messageData.receiverAvatar = null;
+        }
+
+        allMessages.push(messageData);
+      }
+
+      console.log(`📨 Total messages found: ${allMessages.length} (${receivedSnapshot.size} received, ${sentSnapshot.size} sent)`);
+
+      // Sort by timestamp (newest first)
+      allMessages.sort((a, b) => {
         const aTime = a.createdAt?.toMillis?.() || 0;
         const bTime = b.createdAt?.toMillis?.() || 0;
         return bTime - aTime;
       });
 
-      // Group by sender - keep only the most recent message from each sender
-      const groupedBySender = new Map<string, Message>();
-      
-      for (const msg of messagesData) {
-        if (!groupedBySender.has(msg.senderId)) {
-          groupedBySender.set(msg.senderId, msg);
+      // Group messages by conversation partner
+      const conversationsMap = new Map<string, Conversation>();
+
+      for (const msg of allMessages) {
+        // Determine who the "other" user is
+        const otherUserId = msg.senderId === userId ? msg.receiverId : msg.senderId;
+        const otherUserName = msg.senderId === userId 
+          ? (msg.receiverName || "Anonymous")
+          : (msg.senderName || "Anonymous");
+        const otherUserAvatar = msg.senderId === userId
+          ? (msg.receiverAvatar || null)
+          : (msg.senderAvatar || null);
+
+        // If this conversation doesn't exist yet, or this message is newer, update it
+        const existing = conversationsMap.get(otherUserId);
+        
+        if (!existing) {
+          // Count unread messages in this conversation
+          const unreadCount = allMessages.filter(
+            m => m.senderId === otherUserId && m.receiverId === userId && !m.read
+          ).length;
+
+          conversationsMap.set(otherUserId, {
+            otherUserId,
+            otherUserName,
+            otherUserAvatar,
+            lastMessage: msg,
+            unreadCount,
+          });
         }
       }
 
-      // Convert map back to array
-      const uniqueSenders = Array.from(groupedBySender.values());
+      // Convert map to array
+      const conversationsList = Array.from(conversationsMap.values());
 
-      setMessages(uniqueSenders);
+      // Sort by last message timestamp
+      conversationsList.sort((a, b) => {
+        const aTime = a.lastMessage.createdAt?.toMillis?.() || 0;
+        const bTime = b.lastMessage.createdAt?.toMillis?.() || 0;
+        return bTime - aTime;
+      });
+
+      console.log(`💬 Grouped into ${conversationsList.length} conversations`);
+
+      setConversations(conversationsList);
       setLoading(false);
     } catch (error) {
       console.error("Error fetching messages:", error);
@@ -130,11 +207,8 @@ export default function MessagesScreen() {
     router.push("/messages/select-partner");
   };
 
-  const handleDeleteMessage = async (messageId: string, senderId: string) => {
-    // Get fresh userId
+  const handleDeleteConversation = async (otherUserId: string) => {
     const currentUserId = auth.currentUser?.uid;
-    
-    console.log("Delete attempt - userId:", currentUserId, "senderId:", senderId);
     
     if (!currentUserId) {
       soundPlayer.play('error');
@@ -181,18 +255,18 @@ export default function MessagesScreen() {
     if (!shouldDelete) return;
 
     try {
-      console.log("Starting delete with userId:", currentUserId, "senderId:", senderId);
+      console.log("Starting delete with userId:", currentUserId, "otherUserId:", otherUserId);
       
-      // Delete all messages between current user and the sender
+      // Delete all messages between current user and the other user
       const q1 = query(
         collection(db, "messages"),
         where("senderId", "==", currentUserId),
-        where("receiverId", "==", senderId)
+        where("receiverId", "==", otherUserId)
       );
 
       const q2 = query(
         collection(db, "messages"),
-        where("senderId", "==", senderId),
+        where("senderId", "==", otherUserId),
         where("receiverId", "==", currentUserId)
       );
 
@@ -219,7 +293,7 @@ export default function MessagesScreen() {
       console.log("Successfully deleted", deletePromises.length, "messages");
 
       // Remove from local state
-      setMessages((prev) => prev.filter((msg) => msg.senderId !== senderId));
+      setConversations((prev) => prev.filter((conv) => conv.otherUserId !== otherUserId));
 
       if (Platform.OS !== 'web') {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -237,58 +311,63 @@ export default function MessagesScreen() {
     }
   };
 
-  const renderMessage = ({ item }: { item: Message }) => (
-    <View style={styles.messageWrapper}>
-      <TouchableOpacity
-        style={[styles.messageCard, !item.read && styles.unreadCard]}
-        onPress={() => {
-          soundPlayer.play('click');
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          // Navigate to thread with the sender's ID
-          router.push(`/messages/${item.senderId}`);
-        }}
-      >
-        <View style={styles.messageHeader}>
-          <View style={styles.senderInfo}>
-            {item.senderAvatar ? (
-              <Image
-                source={{ uri: item.senderAvatar }}
-                style={styles.avatarImage}
-              />
-            ) : (
-              <View style={styles.avatarCircle}>
-                <Text style={styles.avatarText}>
-                  {item.senderName[0]?.toUpperCase() || "?"}
+  const renderConversation = ({ item }: { item: Conversation }) => {
+    const isMyMessage = item.lastMessage.senderId === userId;
+    const hasUnread = item.unreadCount > 0;
+
+    return (
+      <View style={styles.messageWrapper}>
+        <TouchableOpacity
+          style={[styles.messageCard, hasUnread && styles.unreadCard]}
+          onPress={() => {
+            soundPlayer.play('click');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.push(`/messages/${item.otherUserId}`);
+          }}
+        >
+          <View style={styles.messageHeader}>
+            <View style={styles.senderInfo}>
+              {item.otherUserAvatar ? (
+                <Image
+                  source={{ uri: item.otherUserAvatar }}
+                  style={styles.avatarImage}
+                />
+              ) : (
+                <View style={styles.avatarCircle}>
+                  <Text style={styles.avatarText}>
+                    {item.otherUserName[0]?.toUpperCase() || "?"}
+                  </Text>
+                </View>
+              )}
+              <View>
+                <Text style={styles.senderName}>{item.otherUserName}</Text>
+                <Text style={styles.timestamp}>
+                  {item.lastMessage.createdAt?.toDate?.()?.toLocaleDateString() || "Recently"}
                 </Text>
               </View>
-            )}
-            <View>
-              <Text style={styles.senderName}>{item.senderName}</Text>
-              <Text style={styles.timestamp}>
-                {item.createdAt?.toDate?.()?.toLocaleDateString() || "Recently"}
-              </Text>
             </View>
+            {hasUnread && <View style={styles.unreadBadge} />}
           </View>
-          {!item.read && <View style={styles.unreadBadge} />}
-        </View>
 
-        <Text style={styles.messageContent} numberOfLines={2}>
-          {item.content}
-        </Text>
-      </TouchableOpacity>
+          <Text style={styles.messageContent} numberOfLines={2}>
+            {isMyMessage && <Text style={styles.youText}>You: </Text>}
+            {item.lastMessage.content}
+          </Text>
+        </TouchableOpacity>
 
-      <TouchableOpacity
-        style={styles.deleteButton}
-        onPress={() => {
-          soundPlayer.play('click');
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          handleDeleteMessage(item.messageId, item.senderId);
-        }}
-      >
-        <Ionicons name="trash-outline" size={20} color="#FF3B30" />
-      </TouchableOpacity>
-    </View>
-  );
+        <TouchableOpacity
+          style={styles.deleteButton}
+          onPress={() => {
+            soundPlayer.play('click');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            handleDeleteConversation(item.otherUserId);
+          }}
+        >
+          <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+        </TouchableOpacity>
+      </View>
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -297,7 +376,23 @@ export default function MessagesScreen() {
       <TopNavBar />
 
       <View style={styles.header}>
+        <TouchableOpacity
+          onPress={() => {
+            soundPlayer.play('click');
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            router.push('/clubhouse');
+          }}
+          style={styles.closeButton}
+        >
+          <Image
+            source={require("@/assets/icons/Close.png")}
+            style={styles.closeIcon}
+            resizeMode="contain"
+          />
+        </TouchableOpacity>
+
         <Text style={styles.title}>Locker Notes</Text>
+
         <TouchableOpacity
           onPress={handleComposeNew}
           style={styles.composeButton}
@@ -313,9 +408,9 @@ export default function MessagesScreen() {
         </View>
       ) : (
         <FlatList
-          data={messages}
-          renderItem={renderMessage}
-          keyExtractor={(item) => item.messageId}
+          data={conversations}
+          renderItem={renderConversation}
+          keyExtractor={(item) => item.otherUserId}
           contentContainerStyle={styles.listContent}
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
@@ -349,15 +444,37 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingVertical: 16,
     backgroundColor: "#F4EED8",
   },
 
+  closeButton: {
+    backgroundColor: "#0D5C3A",
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    justifyContent: "center",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+
+  closeIcon: {
+    width: 20,
+    height: 20,
+    tintColor: "#FFFFFF",
+  },
+
   title: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: "700",
     color: "#0D5C3A",
+    flex: 1,
+    textAlign: "center",
   },
 
   composeButton: {
@@ -388,7 +505,7 @@ const styles = StyleSheet.create({
 
   listContent: {
     padding: 16,
-    paddingBottom: 32,
+    paddingBottom: 140,
   },
 
   messageWrapper: {
@@ -474,6 +591,11 @@ const styles = StyleSheet.create({
     fontSize: 18,
     lineHeight: 24,
     color: "#333",
+  },
+
+  youText: {
+    fontWeight: "700",
+    color: "#0D5C3A",
   },
 
   deleteButton: {

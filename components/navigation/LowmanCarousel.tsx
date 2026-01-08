@@ -303,6 +303,7 @@ export default function LowmanCarousel({
     
     onSelectUser?.(item.userId);
     
+    // ✅ Hole-in-ones: Navigate to clubhouse with highlighted post
     if (item.tier === "holeinone") {
       if (item.postId) {
         console.log("🚀 Navigating to clubhouse with highlighted hole-in-one post:", item.postId);
@@ -312,10 +313,11 @@ export default function LowmanCarousel({
           params: { highlightPostId: item.postId },
         });
       } else {
-        console.log("⚠️ No postId for hole-in-one, navigating to clubhouse");
+        console.log("⚠️ No postId for hole-in-one, navigating to generic clubhouse");
         router.push("/clubhouse");
       }
     } else {
+      // ✅ Regular lowman achievements: Navigate to leaderboard
       console.log("🚀 Navigating to leaderboard with:", {
         courseId: item.courseId,
         playerId: item.userId,

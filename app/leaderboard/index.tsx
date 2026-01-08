@@ -1,20 +1,24 @@
+import AllCoursesLeaderboardModal from "@/components/modals/AllCoursesLeaderboardModal";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import LowmanCarousel from "@/components/navigation/LowmanCarousel";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
-import { getCachedCourses } from "@/utils/courseCache";
+import { getNearbyCourses } from "@/utils/courseCache";
+import { milesBetween } from "@/utils/geo";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { batchGetUserProfiles } from "@/utils/userProfileHelpers";
 const LowLeaderTrophy = require("@/assets/icons/LowLeaderTrophy.png");
 
-import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
+import { Ionicons } from "@expo/vector-icons";
+import { collection, doc, getDoc, getDocs, query, updateDoc, where } from "firebase/firestore";
 
 import * as Haptics from "expo-haptics";
 import { router, useLocalSearchParams } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Image,
   StyleSheet,
@@ -52,6 +56,7 @@ interface CourseBoard {
   courseId: number;
   courseName: string;
   scores: Score[];
+  distance?: number; // ✅ Distance in miles from user
   location?: {
     city?: string;
     state?: string;
@@ -63,8 +68,11 @@ interface CourseBoard {
 export default function LeaderboardScreen() {
   const [loading, setLoading] = useState(true);
   const [boards, setBoards] = useState<CourseBoard[]>([]);
+  const [pinnedBoard, setPinnedBoard] = useState<CourseBoard | null>(null);
   const [locationLabel, setLocationLabel] = useState("Nearby");
   const [displayedCourseIds, setDisplayedCourseIds] = useState<number[]>([]);
+  const [loadMoreModalVisible, setLoadMoreModalVisible] = useState(false);
+  const [pinnedCourseId, setPinnedCourseId] = useState<number | null>(null); // ✅ NEW: Track pinned course ID
 
   const LocationIcon = require("@/assets/icons/Location Near Me.png");
 
@@ -259,6 +267,30 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
   }
 };
 
+  /* ---------------------- LOAD PINNED COURSE ID ---------------------- */
+  
+  useEffect(() => {
+    loadPinnedCourseId();
+  }, []);
+
+  const loadPinnedCourseId = async () => {
+    try {
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      const userDoc = await getDoc(doc(db, "users", uid));
+      if (userDoc.exists()) {
+        const pinned = userDoc.data()?.pinnedLeaderboard;
+        if (pinned?.courseId) {
+          setPinnedCourseId(pinned.courseId);
+          console.log("📌 Loaded pinned course ID:", pinned.courseId);
+        }
+      }
+    } catch (error) {
+      console.error("Error loading pinned course ID:", error);
+    }
+  };
+
   /* ---------------------- FETCH LEADERBOARDS ---------------------- */
 
   useEffect(() => {
@@ -382,15 +414,16 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
         // ✅ NEAR ME (DEFAULT)
         console.log("🔍 Filter: Near Me");
         
-        const cachedCourses = await getCachedCourses(uid);
+        // ✅ Get fresh nearby courses from Firestore (distances calculated on-the-fly)
+        const nearbyCourses = await getNearbyCourses(uid, 50); // Within 50 miles
+        console.log("📦 Found", nearbyCourses.length, "courses within 50 miles");
         
-        // Handle carousel navigation and highlight params
-        coursesToShow = cachedCourses.slice(0, 3);
+        coursesToShow = nearbyCourses;
         
         const highlightTarget = highlightCourseId || targetCourseId;
         
         if (highlightTarget && !coursesToShow.find(c => c.courseId === highlightTarget)) {
-          console.log("🎯 Target course not in cached courses, fetching it...");
+          console.log("🎯 Target course not in nearby courses, fetching it...");
           
           const allScoresSnap = await getDocs(query(collection(db, "scores")));
           let targetCourseName = "Unknown Course";
@@ -402,15 +435,28 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
             }
           });
           
+          // ✅ Add target course without duplicates
           coursesToShow = [
             { courseId: highlightTarget, courseName: targetCourseName, distance: 0 },
-            ...coursesToShow.slice(0, 2)
+            ...coursesToShow.filter(c => c.courseId !== highlightTarget)
           ];
           
           console.log("✅ Added target course:", targetCourseName);
         }
         
-        displayedIds = coursesToShow.map(c => c.courseId);
+        // ✅ Remove any duplicate courseIds
+        const uniqueCourses = Array.from(
+          new Map(coursesToShow.map(c => [c.courseId, c])).values()
+        );
+        
+        // ✅ SORT BY DISTANCE (closest first)
+        uniqueCourses.sort((a, b) => (a.distance || 999) - (b.distance || 999));
+        
+        displayedIds = uniqueCourses.map(c => c.courseId);
+        coursesToShow = uniqueCourses;
+        
+        console.log("📍 Showing", coursesToShow.length, "nearby courses, sorted by distance");
+        console.log("🏌️ Course order:", coursesToShow.map(c => `${c.courseName} (${c.distance}mi)`));
       }
 
       console.log("📦 Courses to show:", coursesToShow.length);
@@ -529,6 +575,7 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
           courseId: course.courseId,
           courseName: course.courseName,
           scores: [],
+          distance: course.distance, // ✅ Preserve distance from cached courses
           location: courseDetails?.location ? {
             city: courseDetails.location.city,
             state: courseDetails.location.state,
@@ -551,6 +598,7 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
         
         return {
           ...board,
+          distance: course.distance, // ✅ Ensure distance is preserved
           scores: sorted.slice(0, 3),
         };
       });
@@ -558,8 +606,85 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
       console.log("✅ Built leaderboards for", nextBoards.length, "courses");
       console.log("✅ Displayed course IDs:", displayedIds);
 
-      setBoards(nextBoards);
-      setDisplayedCourseIds(displayedIds);
+      // ============================================================
+      // LOAD PINNED LEADERBOARD (ONLY FOR NEAR ME FILTER)
+      // ============================================================
+      
+      if (filterType === "nearMe") {
+        try {
+          const userDoc = await getDoc(doc(db, "users", uid));
+          const pinnedLeaderboard = userDoc.data()?.pinnedLeaderboard;
+          
+          if (pinnedLeaderboard) {
+            console.log("📌 Found pinned leaderboard:", pinnedLeaderboard.courseName);
+            
+            // ✅ ALWAYS build pinned board (whether in top 3 or not)
+            const pinnedCourseScores = merged.filter(s => s.courseId === pinnedLeaderboard.courseId);
+            const sortedPinnedScores = pinnedCourseScores.sort((a, b) => a.netScore - b.netScore).slice(0, 3);
+            
+            const userData = userDoc.data();
+            
+            // Get course details
+            let courseDetails: any = null;
+            try {
+              const coursesQuery = query(
+                collection(db, "courses"),
+                where("id", "==", pinnedLeaderboard.courseId)
+              );
+              const courseSnap = await getDocs(coursesQuery);
+              if (!courseSnap.empty) {
+                courseDetails = courseSnap.docs[0].data();
+              }
+            } catch (error) {
+              console.log("⚠️ Could not fetch pinned course details");
+            }
+            
+            const pinnedBoardData: CourseBoard = {
+              courseId: pinnedLeaderboard.courseId,
+              courseName: pinnedLeaderboard.courseName,
+              scores: sortedPinnedScores,
+              distance: courseDetails?.location?.latitude && courseDetails?.location?.longitude && userData
+                ? milesBetween(
+                    userData.currentLatitude || userData.latitude,
+                    userData.currentLongitude || userData.longitude,
+                    courseDetails.location.latitude,
+                    courseDetails.location.longitude
+                  )
+                : undefined,
+              location: courseDetails?.location ? {
+                city: courseDetails.location.city,
+                state: courseDetails.location.state,
+              } : undefined,
+            };
+            
+            setPinnedBoard(pinnedBoardData);
+            
+            // ✅ Filter out pinned from nextBoards and keep only top 2 others
+            const boardsWithoutPinned = nextBoards.filter(b => b.courseId !== pinnedLeaderboard.courseId);
+            const top2Boards = boardsWithoutPinned.slice(0, 2);
+            
+            setBoards(top2Boards);
+            setDisplayedCourseIds(top2Boards.map(b => b.courseId));
+            
+            console.log("✅ Set pinned board at top, showing top 2 others below");
+          } else {
+            setPinnedBoard(null);
+            // No pinned board, keep top 3 closest
+            const top3Boards = nextBoards.slice(0, 3);
+            setBoards(top3Boards);
+            setDisplayedCourseIds(top3Boards.map(b => b.courseId));
+          }
+        } catch (error) {
+          console.error("Error loading pinned board:", error);
+          setPinnedBoard(null);
+          setBoards(nextBoards);
+          setDisplayedCourseIds(displayedIds);
+        }
+      } else {
+        setPinnedBoard(null);
+        setBoards(nextBoards);
+        setDisplayedCourseIds(displayedIds);
+      }
       setLoading(false);
     } catch (e) {
       console.error("Leaderboard error:", e);
@@ -624,6 +749,82 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
     return () => clearTimeout(t);
   }, [shouldHighlight, loading, boards]);
 
+  /* ---------------------- PIN/UNPIN HANDLERS ---------------------- */
+
+  const handlePinCourse = async (courseId: number, courseName: string) => {
+    try {
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      // ✅ Check if this course is already pinned
+      if (pinnedCourseId === courseId) {
+        soundPlayer.play("error");
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        Alert.alert("Already Pinned", `${courseName} is already your pinned leaderboard.`);
+        return;
+      }
+
+      // ✅ If there's already a pinned course, ask for confirmation
+      if (pinnedCourseId) {
+        soundPlayer.play("click"); // Sound when opening alert
+        Alert.alert(
+          "Replace Pinned Leaderboard",
+          `You can only pin 1 leaderboard. Replace your current pin with ${courseName}?`,
+          [
+            { 
+              text: "Cancel", 
+              style: "cancel",
+              onPress: () => {
+                soundPlayer.play("click");
+              }
+            },
+            {
+              text: "Replace",
+              onPress: async () => {
+                soundPlayer.play("click");
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+                await updateDoc(doc(db, "users", uid), {
+                  pinnedLeaderboard: {
+                    courseId,
+                    courseName,
+                    pinnedAt: new Date(),
+                  },
+                });
+
+                setPinnedCourseId(courseId);
+                console.log("✅ Replaced pinned leaderboard:", courseName);
+                
+                // Refresh to show pinned board
+                fetchLeaderboards();
+              },
+            },
+          ]
+        );
+      } else {
+        soundPlayer.play("click");
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+        await updateDoc(doc(db, "users", uid), {
+          pinnedLeaderboard: {
+            courseId,
+            courseName,
+            pinnedAt: new Date(),
+          },
+        });
+
+        setPinnedCourseId(courseId);
+        console.log("✅ Pinned leaderboard:", courseName);
+        
+        // Refresh to show pinned board
+        fetchLeaderboards();
+      }
+    } catch (error) {
+      console.error("Error pinning course:", error);
+      soundPlayer.play("error");
+    }
+  };
+
   /* ---------------------- INTERACTIONS ---------------------- */
 
   const goToPlayer = (userId: string) => {
@@ -681,28 +882,190 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
           </Text>
         </View>
       ) : (
-        <FlatList
-          ref={listRef}
-          data={boards}
-          keyExtractor={(b) => String(b.courseId)}
-          contentContainerStyle={{ paddingBottom: 140 }}
+        <>
+          {/* PINNED LEADERBOARD */}
+          {pinnedBoard && filterType === "nearMe" && (
+            <View style={styles.board}>
+              {/* PINNED BADGE + UNPIN BUTTON */}
+              <View style={styles.pinnedHeader}>
+                <View style={styles.pinnedBadge}>
+                  <Text style={styles.pinnedBadgeText}>📌 PINNED</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.unpinButton}
+                  onPress={async () => {
+                    soundPlayer.play("click");
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    try {
+                      const uid = auth.currentUser?.uid;
+                      if (!uid) return;
+                      
+                      await updateDoc(doc(db, "users", uid), {
+                        pinnedLeaderboard: null,
+                      });
+                      
+                      setPinnedBoard(null);
+                      setPinnedCourseId(null);
+                      console.log("✅ Unpinned leaderboard");
+                      
+                      // Reload to show top 3
+                      fetchLeaderboards();
+                    } catch (error) {
+                      console.error("Error unpinning:", error);
+                      soundPlayer.play("error");
+                    }
+                  }}
+                >
+                  <Ionicons name="close-circle" size={20} color="#666" />
+                </TouchableOpacity>
+              </View>
+              
+              {/* COURSE HEADER */}
+              <TouchableOpacity onPress={() => goToCourse(pinnedBoard.courseId)}>
+                <View style={styles.boardHeader}>
+                  <Text style={styles.boardTitle}>
+                    {pinnedBoard.courseName}
+                  </Text>
+                  {pinnedBoard.location && (
+                    <Text style={styles.boardSubtitle}>
+                      {pinnedBoard.location.city}, {pinnedBoard.location.state}
+                      {pinnedBoard.distance && ` • ${pinnedBoard.distance.toFixed(1)} mi`}
+                    </Text>
+                  )}
+                </View>
+              </TouchableOpacity>
+
+              {/* COLUMN HEADER */}
+              <View style={styles.rowHeader}>
+                <Text style={styles.colPos}>POS</Text>
+                <Text style={styles.colPlayer}>PLAYER</Text>
+                <Text style={styles.colScore}>G</Text>
+                <Text style={styles.colScore}>N</Text>
+                <Text style={styles.colScore}>PAR</Text>
+                <Text style={styles.colLow}>LOW</Text>
+              </View>
+
+              {/* ROWS */}
+              {pinnedBoard.scores.length === 0 ? (
+                <TouchableOpacity
+                  style={styles.emptyRow}
+                  onPress={() => goToPostScore(pinnedBoard.courseId)}
+                >
+                  <Text style={styles.emptyTitle}>No Scores Yet</Text>
+                  <Text style={styles.emptyText}>
+                    Be the first to post a score and obtain your achievement! ⛳
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                pinnedBoard.scores.map((s, i) => {
+                  const lowNet = Math.min(...pinnedBoard.scores.map((x) => x.netScore));
+                  const isLowman = s.netScore === lowNet;
+
+                  return (
+                    <View key={s.scoreId} style={styles.row}>
+                      <Text style={styles.colPos}>{i + 1}</Text>
+
+                      <TouchableOpacity
+                        style={styles.playerCell}
+                        onPress={() => goToPlayer(s.userId)}
+                        activeOpacity={0.85}
+                      >
+                        {s.userAvatar ? (
+                          <Image source={{ uri: s.userAvatar }} style={styles.avatar} />
+                        ) : (
+                          <View style={styles.avatarFallback} />
+                        )}
+
+                        <Text style={styles.playerName} numberOfLines={1}>
+                          {s.userName}
+                        </Text>
+                      </TouchableOpacity>
+
+                      <Text style={styles.colScore}>{s.grossScore}</Text>
+                      <Text style={[styles.colScore, isLowman && styles.lowNet]}>
+                        {s.netScore}
+                      </Text>
+                      <Text style={styles.colScore}>{s.par || 72}</Text>
+                      <View style={styles.colLow}>
+                        {isLowman && (
+                          <Image
+                            source={LowLeaderTrophy}
+                            style={styles.trophyIcon}
+                          />
+                        )}
+                      </View>
+                    </View>
+                  );
+                })
+              )}
+            </View>
+          )}
+
+          {/* REGULAR LEADERBOARDS */}
+          <FlatList
+            ref={listRef}
+            data={boards}
+            keyExtractor={(b, index) => `${b.courseId}-${index}`}
+            contentContainerStyle={{ paddingBottom: 140 }}
+            ListFooterComponent={
+            filterType === "nearMe" && boards.length > 0 ? (
+              <View style={styles.loadMoreContainer}>
+                <TouchableOpacity
+                  style={styles.loadMoreButton}
+                  onPress={() => {
+                    soundPlayer.play('click');
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    setLoadMoreModalVisible(true);
+                  }}
+                >
+                  <Text style={styles.loadMoreText}>🔍 Find More Courses</Text>
+                  <Text style={styles.loadMoreSubtext}>
+                    View all courses and pin your favorite
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : null
+          }
           renderItem={({ item }) => {
             const highlightTarget = highlightCourseId || targetCourseId;
             const isHighlightedBoard = shouldHighlight && item.courseId === highlightTarget;
+            const isPinned = pinnedCourseId === item.courseId;
             
             return (
               <View style={styles.board}>
-                {/* COURSE HEADER */}
-                <TouchableOpacity onPress={() => goToCourse(item.courseId)}>
-                  <View style={styles.boardHeader}>
-                    <Text style={styles.boardTitle}>{item.courseName} Leaders</Text>
-                    {item.location && (
-                      <Text style={styles.boardSubtitle}>
-                        {item.location.city}, {item.location.state}
+                {/* ✅ UPDATED: COURSE HEADER WITH PIN BUTTON - Matches modal styling */}
+                <View style={styles.boardHeaderContainer}>
+                  <TouchableOpacity 
+                    onPress={() => goToCourse(item.courseId)}
+                    style={styles.boardHeaderTouchable}
+                  >
+                    <View style={styles.boardHeader}>
+                      <Text style={styles.boardTitle}>
+                        {item.courseName}
                       </Text>
-                    )}
-                  </View>
-                </TouchableOpacity>
+                      {item.location && (
+                        <Text style={styles.boardSubtitle}>
+                          {item.location.city}, {item.location.state}
+                          {item.distance != null && ` • ${item.distance} mi`}
+                        </Text>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* ✅ UPDATED: PIN BUTTON - Matches modal circular style */}
+                  {filterType !== "nearMe" && (
+                    <TouchableOpacity
+                      style={[styles.pinButton, isPinned && styles.pinButtonActive]}
+                      onPress={() => handlePinCourse(item.courseId, item.courseName)}
+                    >
+                      <Ionicons
+                        name={isPinned ? "pin" : "pin-outline"}
+                        size={20}
+                        color={isPinned ? "#FFD700" : "#666"}
+                      />
+                    </TouchableOpacity>
+                  )}
+                </View>
 
                 {/* COLUMN HEADER */}
                 <View style={styles.rowHeader}>
@@ -802,10 +1165,22 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
             );
           }}
         />
+        </>
       )}
 
       <BottomActionBar />
       <SwingFooter />
+      
+      {/* All Courses Leaderboard Modal */}
+      <AllCoursesLeaderboardModal
+        visible={loadMoreModalVisible}
+        onClose={() => setLoadMoreModalVisible(false)}
+        onPinChange={() => {
+          // Refresh leaderboard when pin changes
+          loadPinnedCourseId();
+          fetchLeaderboards();
+        }}
+      />
     </View>
   );
 }
@@ -857,27 +1232,83 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
 
+  pinnedHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 4,
+    backgroundColor: "#FFFEF7",
+    borderBottomWidth: 1,
+    borderBottomColor: "#FFD700",
+  },
+  
+  pinnedBadge: {
+    backgroundColor: "#FFD700",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  
+  pinnedBadgeText: {
+    fontSize: 11,
+    fontWeight: "900",
+    color: "#0D5C3A",
+    letterSpacing: 0.5,
+  },
+  
+  unpinButton: {
+    padding: 4,
+  },
+
   board: {
     marginHorizontal: 16,
     marginBottom: 24,
     borderWidth: 1,
     borderColor: "#DDD",
     backgroundColor: "#FFF",
+    borderRadius: 8,
   },
-  boardHeader: {
-    padding: 12,
+  
+  // ✅ UPDATED: Board header container - matches modal
+  boardHeaderContainer: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
     borderBottomWidth: 1,
     borderColor: "#DDD",
+    paddingRight: 12,
+  },
+  
+  boardHeaderTouchable: {
+    flex: 1,
+  },
+  
+  boardHeader: {
+    padding: 12,
   },
   boardTitle: {
     fontWeight: "900",
-    fontSize: 18,
+    fontSize: 16,
+    color: "#0D5C3A",
   },
   boardSubtitle: {
     fontWeight: "600",
     fontSize: 14,
     color: "#666",
     marginTop: 4,
+  },
+
+  // ✅ UPDATED: Pin button styles - circular like modal
+  pinButton: {
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: "#F0F0F0",
+  },
+  
+  pinButtonActive: {
+    backgroundColor: "#0D5C3A",
   },
 
   rowHeader: {
@@ -955,5 +1386,35 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#666",
     textAlign: "center",
+  },
+  
+  loadMoreContainer: {
+    padding: 16,
+    paddingBottom: 40,
+  },
+  
+  loadMoreButton: {
+    backgroundColor: "#0D5C3A",
+    borderRadius: 12,
+    padding: 20,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  
+  loadMoreText: {
+    fontSize: 18,
+    fontWeight: "900",
+    color: "#FFF",
+    marginBottom: 4,
+  },
+  
+  loadMoreSubtext: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#FFD700",
   },
 });

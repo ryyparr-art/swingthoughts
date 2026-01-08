@@ -9,6 +9,8 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
+  KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
@@ -170,271 +172,281 @@ export default function ModifyLockerScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={styles.wrapper}>
       <SafeAreaView edges={["top"]} style={styles.safeTop} />
-
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity 
-          onPress={() => {
-            soundPlayer.play('click');
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.back();
-          }} 
-          style={styles.headerButton}
-        >
-          <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
-        </TouchableOpacity>
-
-        <Text style={styles.headerTitle}>Update Locker</Text>
-
-        <TouchableOpacity 
-          onPress={handleSave} 
-          style={styles.headerButton}
-          disabled={saving}
-        >
-          {saving ? (
-            <ActivityIndicator size="small" color="#FFFFFF" />
-          ) : (
-            <Ionicons name="checkmark" size={24} color="#FFFFFF" />
-          )}
-        </TouchableOpacity>
-      </View>
-
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
-        {/* Identity Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Golf Identity</Text>
-
-          <View style={styles.inputGroup}>
-            <View style={styles.labelRow}>
-              <View style={styles.labelWithIcon}>
-                <Ionicons name="flag" size={16} color="#0D5C3A" />
-                <Text style={styles.label}>HOME COURSE</Text>
-              </View>
-              {homeCourse !== "" && (
-                <TouchableOpacity 
-                  onPress={() => {
-                    soundPlayer.play('click');
-                    setHomeCourse("");
-                  }}
-                >
-                  <Text style={styles.clearButton}>Clear</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g., Pebble Beach Golf Links"
-              placeholderTextColor="#999"
-              value={homeCourse}
-              onChangeText={setHomeCourse}
-              autoCapitalize="words"
-            />
-          </View>
-
-          <View style={styles.inputGroup}>
-            <View style={styles.labelRow}>
-              <View style={styles.labelWithIcon}>
-                <Ionicons name="chatbubble-ellipses" size={16} color="#0D5C3A" />
-                <Text style={styles.label}>GAME IDENTITY</Text>
-              </View>
-              {gameIdentity !== "" && (
-                <TouchableOpacity 
-                  onPress={() => {
-                    soundPlayer.play('click');
-                    setGameIdentity("");
-                  }}
-                >
-                  <Text style={styles.clearButton}>Clear</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            <TextInput
-              style={styles.input}
-              placeholder='e.g., "Short game king" or "3-putt champion"'
-              placeholderTextColor="#999"
-              value={gameIdentity}
-              onChangeText={setGameIdentity}
-              autoCapitalize="sentences"
-              maxLength={60}
-            />
-          </View>
-        </View>
-
-        {/* Divider */}
-        <View style={styles.divider} />
-
-        {/* Achievements Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Achievements</Text>
-          <Text style={styles.sectionSubtitle}>
-            Select up to 3 badges to display in your locker
-          </Text>
-
-          <TouchableOpacity
-            style={styles.selectBadgesButton}
+      
+      <KeyboardAvoidingView 
+        style={styles.container}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+      >
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity 
             onPress={() => {
               soundPlayer.play('click');
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setShowBadgeModal(true);
-            }}
+              router.back();
+            }} 
+            style={styles.headerButton}
           >
-            <View style={styles.selectBadgesContent}>
-              <Ionicons name="trophy" size={20} color="#0D5C3A" />
-              <Text style={styles.selectBadgesText}>
-                Select Your Achievements to Display
-              </Text>
-              <View style={styles.badgeCount}>
-                <Text style={styles.badgeCountText}>
-                  {selectedBadges.length}/3
-                </Text>
-              </View>
-            </View>
-            <Ionicons name="chevron-forward" size={20} color="#666" />
+            <Image
+              source={require("@/assets/icons/Back.png")}
+              style={styles.backIcon}
+              resizeMode="contain"
+            />
           </TouchableOpacity>
 
-          {selectedBadges.length > 0 && (
-            <View style={styles.selectedBadgesPreview}>
-              <Text style={styles.previewLabel}>Currently Selected:</Text>
-              {selectedBadges.map((badge, index) => (
-                <View key={index} style={styles.previewBadge}>
-                  <Text style={styles.previewBadgeNumber}>{index + 1}.</Text>
-                  <Text style={styles.previewBadgeText}>
-                    {badge.displayName}
-                    {badge.courseName && ` • ${badge.courseName}`}
+          <Text style={styles.headerTitle}>Update Locker</Text>
+
+          <TouchableOpacity 
+            onPress={handleSave} 
+            style={styles.headerButton}
+            disabled={saving}
+          >
+            {saving ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <Ionicons name="checkmark" size={24} color="#FFFFFF" />
+            )}
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+          {/* Identity Section */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Golf Identity</Text>
+
+            <View style={styles.inputGroup}>
+              <View style={styles.labelRow}>
+                <View style={styles.labelWithIcon}>
+                  <Ionicons name="flag" size={16} color="#0D5C3A" />
+                  <Text style={styles.label}>HOME COURSE</Text>
+                </View>
+                {homeCourse !== "" && (
+                  <TouchableOpacity 
+                    onPress={() => {
+                      soundPlayer.play('click');
+                      setHomeCourse("");
+                    }}
+                  >
+                    <Text style={styles.clearButton}>Clear</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., Pebble Beach Golf Links"
+                placeholderTextColor="#999"
+                value={homeCourse}
+                onChangeText={setHomeCourse}
+                autoCapitalize="words"
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <View style={styles.labelRow}>
+                <View style={styles.labelWithIcon}>
+                  <Ionicons name="chatbubble-ellipses" size={16} color="#0D5C3A" />
+                  <Text style={styles.label}>GAME IDENTITY</Text>
+                </View>
+                {gameIdentity !== "" && (
+                  <TouchableOpacity 
+                    onPress={() => {
+                      soundPlayer.play('click');
+                      setGameIdentity("");
+                    }}
+                  >
+                    <Text style={styles.clearButton}>Clear</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder='e.g., "Short game king" or "3-putt champion"'
+                placeholderTextColor="#999"
+                value={gameIdentity}
+                onChangeText={setGameIdentity}
+                autoCapitalize="sentences"
+                maxLength={60}
+              />
+            </View>
+          </View>
+
+          {/* Divider */}
+          <View style={styles.divider} />
+
+          {/* Achievements Section */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Achievements</Text>
+            <Text style={styles.sectionSubtitle}>
+              Select up to 3 badges to display in your locker
+            </Text>
+
+            <TouchableOpacity
+              style={styles.selectBadgesButton}
+              onPress={() => {
+                soundPlayer.play('click');
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowBadgeModal(true);
+              }}
+            >
+              <View style={styles.selectBadgesContent}>
+                <Ionicons name="trophy" size={20} color="#0D5C3A" />
+                <Text style={styles.selectBadgesText}>
+                  Select Your Achievements to Display
+                </Text>
+                <View style={styles.badgeCount}>
+                  <Text style={styles.badgeCountText}>
+                    {selectedBadges.length}/3
                   </Text>
                 </View>
-              ))}
-            </View>
-          )}
-        </View>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
 
-        {/* Divider */}
-        <View style={styles.divider} />
-
-        {/* Equipment Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Equipment</Text>
-          <Text style={styles.sectionSubtitle}>
-            Leave fields blank if you don't want to display them
-          </Text>
-
-          {/* Driver */}
-          <View style={styles.inputGroup}>
-            <View style={styles.labelRow}>
-              <Text style={styles.label}>DRIVER</Text>
-              {clubs.driver !== "" && (
-                <TouchableOpacity onPress={() => handleClear("driver")}>
-                  <Text style={styles.clearButton}>Clear</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g., TaylorMade Stealth • 9°"
-              placeholderTextColor="#999"
-              value={clubs.driver}
-              onChangeText={(text) => setClubs({ ...clubs, driver: text })}
-            />
+            {selectedBadges.length > 0 && (
+              <View style={styles.selectedBadgesPreview}>
+                <Text style={styles.previewLabel}>Currently Selected:</Text>
+                {selectedBadges.map((badge, index) => (
+                  <View key={index} style={styles.previewBadge}>
+                    <Text style={styles.previewBadgeNumber}>{index + 1}.</Text>
+                    <Text style={styles.previewBadgeText}>
+                      {badge.displayName}
+                      {badge.courseName && ` • ${badge.courseName}`}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
           </View>
 
-          {/* Irons */}
-          <View style={styles.inputGroup}>
-            <View style={styles.labelRow}>
-              <Text style={styles.label}>IRONS</Text>
-              {clubs.irons !== "" && (
-                <TouchableOpacity onPress={() => handleClear("irons")}>
-                  <Text style={styles.clearButton}>Clear</Text>
-                </TouchableOpacity>
-              )}
+          {/* Divider */}
+          <View style={styles.divider} />
+
+          {/* Equipment Section */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Equipment</Text>
+            <Text style={styles.sectionSubtitle}>
+              Leave fields blank if you don't want to display them
+            </Text>
+
+            {/* Driver */}
+            <View style={styles.inputGroup}>
+              <View style={styles.labelRow}>
+                <Text style={styles.label}>DRIVER</Text>
+                {clubs.driver !== "" && (
+                  <TouchableOpacity onPress={() => handleClear("driver")}>
+                    <Text style={styles.clearButton}>Clear</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., TaylorMade Stealth • 9°"
+                placeholderTextColor="#999"
+                value={clubs.driver}
+                onChangeText={(text) => setClubs({ ...clubs, driver: text })}
+              />
             </View>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g., Titleist T200"
-              placeholderTextColor="#999"
-              value={clubs.irons}
-              onChangeText={(text) => setClubs({ ...clubs, irons: text })}
-            />
+
+            {/* Irons */}
+            <View style={styles.inputGroup}>
+              <View style={styles.labelRow}>
+                <Text style={styles.label}>IRONS</Text>
+                {clubs.irons !== "" && (
+                  <TouchableOpacity onPress={() => handleClear("irons")}>
+                    <Text style={styles.clearButton}>Clear</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., Titleist T200"
+                placeholderTextColor="#999"
+                value={clubs.irons}
+                onChangeText={(text) => setClubs({ ...clubs, irons: text })}
+              />
+            </View>
+
+            {/* Wedges */}
+            <View style={styles.inputGroup}>
+              <View style={styles.labelRow}>
+                <Text style={styles.label}>WEDGES</Text>
+                {clubs.wedges !== "" && (
+                  <TouchableOpacity onPress={() => handleClear("wedges")}>
+                    <Text style={styles.clearButton}>Clear</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., Vokey SM9 • 52° 56° 60°"
+                placeholderTextColor="#999"
+                value={clubs.wedges}
+                onChangeText={(text) => setClubs({ ...clubs, wedges: text })}
+              />
+            </View>
+
+            {/* Putter */}
+            <View style={styles.inputGroup}>
+              <View style={styles.labelRow}>
+                <Text style={styles.label}>PUTTER</Text>
+                {clubs.putter !== "" && (
+                  <TouchableOpacity onPress={() => handleClear("putter")}>
+                    <Text style={styles.clearButton}>Clear</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., Scotty Cameron Newport 2"
+                placeholderTextColor="#999"
+                value={clubs.putter}
+                onChangeText={(text) => setClubs({ ...clubs, putter: text })}
+              />
+            </View>
+
+            {/* Ball */}
+            <View style={styles.inputGroup}>
+              <View style={styles.labelRow}>
+                <Text style={styles.label}>BALL</Text>
+                {clubs.ball !== "" && (
+                  <TouchableOpacity onPress={() => handleClear("ball")}>
+                    <Text style={styles.clearButton}>Clear</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., Titleist Pro V1"
+                placeholderTextColor="#999"
+                value={clubs.ball}
+                onChangeText={(text) => setClubs({ ...clubs, ball: text })}
+              />
+            </View>
           </View>
 
-          {/* Wedges */}
-          <View style={styles.inputGroup}>
-            <View style={styles.labelRow}>
-              <Text style={styles.label}>WEDGES</Text>
-              {clubs.wedges !== "" && (
-                <TouchableOpacity onPress={() => handleClear("wedges")}>
-                  <Text style={styles.clearButton}>Clear</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g., Vokey SM9 • 52° 56° 60°"
-              placeholderTextColor="#999"
-              value={clubs.wedges}
-              onChangeText={(text) => setClubs({ ...clubs, wedges: text })}
-            />
-          </View>
-
-          {/* Putter */}
-          <View style={styles.inputGroup}>
-            <View style={styles.labelRow}>
-              <Text style={styles.label}>PUTTER</Text>
-              {clubs.putter !== "" && (
-                <TouchableOpacity onPress={() => handleClear("putter")}>
-                  <Text style={styles.clearButton}>Clear</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g., Scotty Cameron Newport 2"
-              placeholderTextColor="#999"
-              value={clubs.putter}
-              onChangeText={(text) => setClubs({ ...clubs, putter: text })}
-            />
-          </View>
-
-          {/* Ball */}
-          <View style={styles.inputGroup}>
-            <View style={styles.labelRow}>
-              <Text style={styles.label}>BALL</Text>
-              {clubs.ball !== "" && (
-                <TouchableOpacity onPress={() => handleClear("ball")}>
-                  <Text style={styles.clearButton}>Clear</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g., Titleist Pro V1"
-              placeholderTextColor="#999"
-              value={clubs.ball}
-              onChangeText={(text) => setClubs({ ...clubs, ball: text })}
-            />
-          </View>
-        </View>
-
-        {/* Save Button */}
-        <TouchableOpacity 
-          style={[styles.saveButton, saving && styles.saveButtonDisabled]} 
-          onPress={handleSave}
-          disabled={saving}
-        >
-          {saving ? (
-            <>
-              <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
-              <Text style={styles.saveButtonText}>Saving...</Text>
-            </>
-          ) : (
-            <>
-              <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
-              <Text style={styles.saveButtonText}>Save All Changes</Text>
-            </>
-          )}
-        </TouchableOpacity>
-      </ScrollView>
+          {/* Save Button */}
+          <TouchableOpacity 
+            style={[styles.saveButton, saving && styles.saveButtonDisabled]} 
+            onPress={handleSave}
+            disabled={saving}
+          >
+            {saving ? (
+              <>
+                <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
+                <Text style={styles.saveButtonText}>Saving...</Text>
+              </>
+            ) : (
+              <>
+                <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+                <Text style={styles.saveButtonText}>Save All Changes</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </ScrollView>
+      </KeyboardAvoidingView>
 
       {/* Badge Selection Modal */}
       <BadgeSelectionModal
@@ -453,13 +465,18 @@ export default function ModifyLockerScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
+  wrapper: {
     flex: 1,
     backgroundColor: "#F4EED8",
   },
 
   safeTop: {
     backgroundColor: "#0D5C3A",
+  },
+
+  container: {
+    flex: 1,
+    backgroundColor: "#F4EED8",
   },
 
   header: {
@@ -474,6 +491,13 @@ const styles = StyleSheet.create({
   headerButton: {
     width: 40,
     alignItems: "center",
+    justifyContent: "center",
+  },
+
+  backIcon: {
+    width: 24,
+    height: 24,
+    tintColor: "#FFFFFF",
   },
 
   headerTitle: {

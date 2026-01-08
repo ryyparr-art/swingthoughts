@@ -4,9 +4,10 @@ import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, updateDoc } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
+  Image,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -19,9 +20,16 @@ export default function LeaderboardFiltersScreen() {
   const [filterType, setFilterType] = useState<"nearMe" | "course" | "player" | "partnersOnly">("nearMe");
   const [locationModalVisible, setLocationModalVisible] = useState(false);
   const [cachedLocation, setCachedLocation] = useState<string>("Loading...");
+  
+  // ✅ NEW: Track pinned leaderboard
+  const [pinnedLeaderboard, setPinnedLeaderboard] = useState<{
+    courseId: number;
+    courseName: string;
+  } | null>(null);
 
   useEffect(() => {
     loadCachedLocation();
+    loadPinnedLeaderboard();
   }, []);
 
   const loadCachedLocation = async () => {
@@ -31,9 +39,13 @@ export default function LeaderboardFiltersScreen() {
 
       const userDoc = await getDoc(doc(db, "users", uid));
       if (userDoc.exists()) {
-        const location = userDoc.data().location;
-        if (location?.city && location?.state) {
-          setCachedLocation(`${location.city}, ${location.state}`);
+        const userData = userDoc.data();
+        
+        const city = userData.currentCity || userData.city;
+        const state = userData.currentState || userData.state;
+        
+        if (city && state) {
+          setCachedLocation(`${city}, ${state}`);
         } else {
           setCachedLocation("No location set");
         }
@@ -45,12 +57,74 @@ export default function LeaderboardFiltersScreen() {
     }
   };
 
+  // ✅ NEW: Load pinned leaderboard
+  const loadPinnedLeaderboard = async () => {
+    try {
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      const userDoc = await getDoc(doc(db, "users", uid));
+      if (userDoc.exists()) {
+        const pinned = userDoc.data()?.pinnedLeaderboard;
+        if (pinned?.courseId && pinned?.courseName) {
+          setPinnedLeaderboard({
+            courseId: pinned.courseId,
+            courseName: pinned.courseName,
+          });
+          console.log("📌 Loaded pinned leaderboard:", pinned.courseName);
+        } else {
+          setPinnedLeaderboard(null);
+        }
+      }
+    } catch (error) {
+      console.error("Error loading pinned leaderboard:", error);
+      soundPlayer.play('error');
+    }
+  };
+
+  // ✅ Unpin leaderboard - Matches leaderboard/index.tsx behavior
+  const handleUnpinLeaderboard = async () => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    try {
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      await updateDoc(doc(db, "users", uid), {
+        pinnedLeaderboard: null,
+      });
+
+      setPinnedLeaderboard(null);
+      console.log("✅ Unpinned leaderboard");
+    } catch (error) {
+      console.error("Error unpinning:", error);
+      soundPlayer.play("error");
+    }
+  };
+
+  // ✅ NEW: Go to pinned leaderboard
+  const handleGoToPinned = () => {
+    if (!pinnedLeaderboard) return;
+    
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    router.push({
+      pathname: "/leaderboard",
+      params: {
+        filterType: "course",
+        courseId: pinnedLeaderboard.courseId.toString(),
+        courseName: pinnedLeaderboard.courseName,
+      },
+    });
+  };
+
   const handleSelectFilterType = (type: "nearMe" | "course" | "player" | "partnersOnly") => {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     
     if (type === "nearMe") {
-      // Open LocationPickerModal immediately
       setLocationModalVisible(true);
     } else {
       setFilterType(type);
@@ -63,11 +137,12 @@ export default function LeaderboardFiltersScreen() {
     latitude?: number;
     longitude?: number;
   }) => {
-    // Location is cached in modal, update display
     soundPlayer.play('click');
     setCachedLocation(`${location.city}, ${location.state}`);
     setFilterType("nearMe");
     setLocationModalVisible(false);
+    
+    await loadCachedLocation();
   };
 
   const handleApplyFilter = () => {
@@ -80,13 +155,10 @@ export default function LeaderboardFiltersScreen() {
         params: { filterType: "nearMe" },
       });
     } else if (filterType === "course") {
-      // Navigate to course search screen
       router.push("/leaderboard-filters/course-search");
     } else if (filterType === "player") {
-      // Navigate to player search screen
       router.push("/leaderboard-filters/player-search");
     } else if (filterType === "partnersOnly") {
-      // Navigate to leaderboard with partners filter
       router.push({
         pathname: "/leaderboard",
         params: { filterType: "partnersOnly" },
@@ -107,7 +179,9 @@ export default function LeaderboardFiltersScreen() {
   const canApplyFilter = filterType === "nearMe" || filterType === "course" || filterType === "player" || filterType === "partnersOnly";
 
   return (
-    <SafeAreaView style={styles.container} edges={["top"]}>
+    <View style={styles.wrapper}>
+      <SafeAreaView edges={["top"]} style={styles.safeTop} />
+      <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity 
@@ -118,7 +192,11 @@ export default function LeaderboardFiltersScreen() {
           }} 
           style={styles.headerButton}
         >
-          <Ionicons name="close" size={28} color="#FFFFFF" />
+          <Image
+            source={require("@/assets/icons/Close.png")}
+            style={styles.closeIcon}
+            resizeMode="contain"
+          />
         </TouchableOpacity>
 
         <Text style={styles.headerTitle}>Filter Leaderboard</Text>
@@ -127,6 +205,36 @@ export default function LeaderboardFiltersScreen() {
       </View>
 
       <View style={styles.content}>
+        {/* ✅ Pinned Leaderboard Section - Matches leaderboard/index.tsx */}
+        {pinnedLeaderboard && (
+          <View style={styles.pinnedBoard}>
+            {/* PINNED BADGE + UNPIN BUTTON - Exact match from leaderboard/index.tsx */}
+            <View style={styles.pinnedHeader}>
+              <View style={styles.pinnedBadge}>
+                <Text style={styles.pinnedBadgeText}>📌 PINNED</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.unpinButton}
+                onPress={handleUnpinLeaderboard}
+              >
+                <Ionicons name="close-circle" size={20} color="#666" />
+              </TouchableOpacity>
+            </View>
+            
+            {/* COURSE HEADER - Tappable to view leaderboard */}
+            <TouchableOpacity onPress={handleGoToPinned}>
+              <View style={styles.boardHeader}>
+                <Text style={styles.boardTitle}>
+                  {pinnedLeaderboard.courseName}
+                </Text>
+                <Text style={styles.boardSubtitle}>
+                  Tap to view full leaderboard
+                </Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Filter Options */}
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Show Scores From</Text>
@@ -173,6 +281,8 @@ export default function LeaderboardFiltersScreen() {
                   Specific Course
                 </Text>
                 <Text style={styles.filterOptionDescription}>Search for a golf course</Text>
+                {/* ✅ NEW: Show pinning hint */}
+                <Text style={styles.filterOptionHint}>Pin your favorite course to keep it at the top</Text>
               </View>
             </View>
             <View style={[styles.radio, filterType === "course" && styles.radioActive]}>
@@ -203,7 +313,7 @@ export default function LeaderboardFiltersScreen() {
             </View>
           </TouchableOpacity>
 
-          {/* Partners Only - NEW */}
+          {/* Partners Only */}
           <TouchableOpacity
             style={[styles.filterOption, filterType === "partnersOnly" && styles.filterOptionActive]}
             onPress={() => handleSelectFilterType("partnersOnly")}
@@ -258,11 +368,21 @@ export default function LeaderboardFiltersScreen() {
         }}
         onLocationSet={handleLocationSet}
       />
-    </SafeAreaView>
+    </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  wrapper: {
+    flex: 1,
+    backgroundColor: "#F4EED8",
+  },
+
+  safeTop: {
+    backgroundColor: "#0D5C3A",
+  },
+
   container: {
     flex: 1,
     backgroundColor: "#F4EED8",
@@ -273,13 +393,20 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 16,
     backgroundColor: "#0D5C3A",
   },
 
   headerButton: {
     width: 40,
     alignItems: "center",
+    justifyContent: "center",
+  },
+
+  closeIcon: {
+    width: 24,
+    height: 24,
+    tintColor: "#FFFFFF",
   },
 
   headerTitle: {
@@ -291,10 +418,70 @@ const styles = StyleSheet.create({
 
   content: {
     flex: 1,
-    padding: 16,
+    paddingTop: 8,
+  },
+
+  // ✅ Pinned Board Styles - Exact match from leaderboard/index.tsx
+  pinnedBoard: {
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: "#DDD",
+    backgroundColor: "#FFF",
+    borderRadius: 8,
+  },
+
+  pinnedHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 4,
+    backgroundColor: "#FFFEF7",
+    borderBottomWidth: 1,
+    borderBottomColor: "#FFD700",
+  },
+  
+  pinnedBadge: {
+    backgroundColor: "#FFD700",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  
+  pinnedBadgeText: {
+    fontSize: 11,
+    fontWeight: "900",
+    color: "#0D5C3A",
+    letterSpacing: 0.5,
+  },
+  
+  unpinButton: {
+    padding: 4,
+  },
+
+  boardHeader: {
+    padding: 12,
+    borderBottomWidth: 1,
+    borderColor: "#DDD",
+  },
+
+  boardTitle: {
+    fontWeight: "900",
+    fontSize: 18,
+  },
+
+  boardSubtitle: {
+    fontWeight: "600",
+    fontSize: 14,
+    color: "#666",
+    marginTop: 4,
   },
 
   section: {
+    marginHorizontal: 16,
     marginBottom: 24,
   },
 
@@ -311,12 +498,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: 16,
-    marginBottom: 12,
+    padding: 18,
+    marginBottom: 16,
     backgroundColor: "#FFFFFF",
     borderRadius: 12,
     borderWidth: 2,
     borderColor: "#E0E0E0",
+    marginHorizontal: 0,
   },
 
   filterOptionActive: {
