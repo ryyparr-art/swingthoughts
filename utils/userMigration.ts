@@ -1,147 +1,195 @@
 import { db } from "@/constants/firebaseConfig";
-import { collection, doc, getDocs, writeBatch } from "firebase/firestore";
+import { REGIONS } from "@/constants/regions";
+import { collection, getDocs, serverTimestamp, writeBatch } from "firebase/firestore";
+import geohash from "ngeohash";
 
-/**
- * MIGRATION SCRIPT: Add Anti-Bot Fields to Existing Users
- * 
- * Run this ONCE after deploying anti-bot features.
- * This adds required fields to all existing user documents.
- */
+// ============================================================
+// CONFIG
+// ============================================================
 
-export async function migrateUsersForAntiBotFeatures(): Promise<{
-  success: boolean;
-  migratedCount: number;
-  errors: number;
-}> {
-  try {
-    console.log("🔄 Starting user migration for anti-bot features...");
+const GEOHASH_PRECISION = 5;
+const MAX_USERS_PER_RUN = 50; // hard safety limit
 
-    // Get all users
-    const usersSnapshot = await getDocs(collection(db, "users"));
-    
-    if (usersSnapshot.empty) {
-      console.log("✅ No users to migrate");
-      return { success: true, migratedCount: 0, errors: 0 };
-    }
+// ============================================================
+// DISTANCE (pure function)
+// ============================================================
 
-    console.log(`📊 Found ${usersSnapshot.size} users to migrate`);
+const toRad = (v: number) => (v * Math.PI) / 180;
 
-    // Firestore allows max 500 operations per batch
-    const batchSize = 500;
-    let currentBatch = writeBatch(db);
-    let batchCount = 0;
-    let totalMigrated = 0;
-    let errors = 0;
+const distanceMiles = (
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+) => {
+  const R = 3959;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
 
-    for (const userDoc of usersSnapshot.docs) {
-      try {
-        const userData = userDoc.data();
-        const updates: any = {};
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) ** 2;
 
-        // Add displayNameLower if displayName exists but displayNameLower doesn't
-        if (userData.displayName && !userData.displayNameLower) {
-          updates.displayNameLower = userData.displayName.toLowerCase().trim();
-        }
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+};
 
-        // Add rate limit timestamps if they don't exist
-        if (!("lastPostTime" in userData)) {
-          updates.lastPostTime = null;
-        }
-        if (!("lastCommentTime" in userData)) {
-          updates.lastCommentTime = null;
-        }
-        if (!("lastMessageTime" in userData)) {
-          updates.lastMessageTime = null;
-        }
-        if (!("lastScoreTime" in userData)) {
-          updates.lastScoreTime = null;
-        }
+// ============================================================
+// REGION RESOLVER (pure, sync)
+// ============================================================
 
-        // Add ban status if it doesn't exist
-        if (!("banned" in userData)) {
-          updates.banned = false;
-        }
+function resolveRegionKey(lat: number, lng: number): string {
+  const hash = geohash.encode(lat, lng, GEOHASH_PRECISION);
 
-        // Only update if there are changes
-        if (Object.keys(updates).length > 0) {
-          currentBatch.update(doc(db, "users", userDoc.id), updates);
-          batchCount++;
-          totalMigrated++;
+  // 1️⃣ Geohash prefix match
+  const prefixMatches = REGIONS.filter(
+    r =>
+      !r.isFallback &&
+      r.geohashPrefixes?.some((p: string) => hash.startsWith(p))
+  );
 
-          console.log(`✅ Queued user ${userDoc.id} for migration (${Object.keys(updates).length} fields)`);
-        }
-
-        // Commit batch if we've reached the limit
-        if (batchCount >= batchSize) {
-          await currentBatch.commit();
-          console.log(`💾 Committed batch of ${batchCount} users`);
-          currentBatch = writeBatch(db);
-          batchCount = 0;
-        }
-      } catch (error) {
-        console.error(`❌ Error processing user ${userDoc.id}:`, error);
-        errors++;
-      }
-    }
-
-    // Commit remaining batch
-    if (batchCount > 0) {
-      await currentBatch.commit();
-      console.log(`💾 Committed final batch of ${batchCount} users`);
-    }
-
-    console.log(`
-✅ Migration complete!
-📊 Total users migrated: ${totalMigrated}
-❌ Errors: ${errors}
-    `);
-
-    return { success: true, migratedCount: totalMigrated, errors };
-  } catch (error) {
-    console.error("❌ Migration failed:", error);
-    return { success: false, migratedCount: 0, errors: 1 };
+  if (prefixMatches.length === 1) {
+    return prefixMatches[0].key;
   }
+
+  if (prefixMatches.length > 1) {
+    return prefixMatches.reduce((closest, r) => {
+      const d1 = distanceMiles(
+        lat,
+        lng,
+        closest.centerPoint.lat,
+        closest.centerPoint.lon
+      );
+      const d2 = distanceMiles(
+        lat,
+        lng,
+        r.centerPoint.lat,
+        r.centerPoint.lon
+      );
+      return d2 < d1 ? r : closest;
+    }).key;
+  }
+
+  // 2️⃣ Radius fallback
+  const radiusMatches = REGIONS.filter(
+    r =>
+      !r.isFallback &&
+      distanceMiles(
+        lat,
+        lng,
+        r.centerPoint.lat,
+        r.centerPoint.lon
+      ) <= r.radiusMiles
+  );
+
+  if (radiusMatches.length > 0) {
+    return radiusMatches.reduce((closest, r) => {
+      const d1 = distanceMiles(
+        lat,
+        lng,
+        closest.centerPoint.lat,
+        closest.centerPoint.lon
+      );
+      const d2 = distanceMiles(
+        lat,
+        lng,
+        r.centerPoint.lat,
+        r.centerPoint.lon
+      );
+      return d2 < d1 ? r : closest;
+    }).key;
+  }
+
+  // 3️⃣ Fallback region (guaranteed)
+  const fallback = REGIONS.find(r => r.isFallback);
+  if (!fallback) {
+    throw new Error("No fallback region configured");
+  }
+
+  return fallback.key;
 }
 
-/**
- * Check if migration is needed
- */
-export async function checkMigrationStatus(): Promise<{
-  needsMigration: boolean;
-  usersWithoutFields: number;
-  totalUsers: number;
+// ============================================================
+// MIGRATION FUNCTION (EXPO-GO SAFE)
+// ============================================================
+
+export async function migrateUsersForRegionKey(): Promise<{
+  success: boolean;
+  migrated: number;
+  skipped: number;
 }> {
-  try {
-    const usersSnapshot = await getDocs(collection(db, "users"));
-    let usersWithoutFields = 0;
+  console.log("🔄 Starting regionKey migration (Expo Go)");
 
-    usersSnapshot.forEach((doc) => {
-      const data = doc.data();
-      
-      // Check if user is missing any anti-bot fields
-      if (
-        (data.displayName && !data.displayNameLower) ||
-        !("lastPostTime" in data) ||
-        !("lastCommentTime" in data) ||
-        !("lastMessageTime" in data) ||
-        !("lastScoreTime" in data) ||
-        !("banned" in data)
-      ) {
-        usersWithoutFields++;
-      }
-    });
+  const snapshot = await getDocs(collection(db, "users"));
 
-    return {
-      needsMigration: usersWithoutFields > 0,
-      usersWithoutFields,
-      totalUsers: usersSnapshot.size,
-    };
-  } catch (error) {
-    console.error("Error checking migration status:", error);
-    return {
-      needsMigration: false,
-      usersWithoutFields: 0,
-      totalUsers: 0,
-    };
+  let migrated = 0;
+  let skipped = 0;
+
+  const batch = writeBatch(db);
+  let operations = 0;
+
+  for (const userDoc of snapshot.docs.slice(0, MAX_USERS_PER_RUN)) {
+    const user = userDoc.data();
+
+    // Skip if already migrated
+    if (user.regionKey) {
+      skipped++;
+      continue;
+    }
+
+    // Require lat/lng
+    if (
+      typeof user.latitude !== "number" ||
+      typeof user.longitude !== "number"
+    ) {
+      console.warn(`⏭️ Skipping ${userDoc.id} (no lat/lng)`);
+      skipped++;
+      continue;
+    }
+
+    try {
+      const regionKey = resolveRegionKey(
+        user.latitude,
+        user.longitude
+      );
+
+      const userGeohash = geohash.encode(
+        user.latitude,
+        user.longitude,
+        GEOHASH_PRECISION
+      );
+
+      batch.update(userDoc.ref, {
+        regionKey,
+        geohash: userGeohash,
+        regionUpdatedAt: serverTimestamp(),
+      });
+
+      operations++;
+      migrated++;
+
+      console.log(`✅ ${userDoc.id} → ${regionKey}`);
+    } catch (err) {
+      console.error(`❌ Failed for ${userDoc.id}`, err);
+      skipped++;
+    }
   }
+
+  if (operations > 0) {
+    await batch.commit();
+    console.log(`💾 Committed ${operations} updates`);
+  }
+
+  console.log(`
+✅ Region migration complete
+Migrated: ${migrated}
+Skipped: ${skipped}
+  `);
+
+  return {
+    success: true,
+    migrated,
+    skipped,
+  };
 }

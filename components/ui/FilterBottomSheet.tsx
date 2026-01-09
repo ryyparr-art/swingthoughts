@@ -1,7 +1,9 @@
 import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
+import { getAllThoughtTypes } from "@/constants/postTypes";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import { useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -46,6 +48,7 @@ export default function FilterBottomSheet({
   posts,
   currentFilters = {},
 }: Props) {
+  const router = useRouter();
   const [activeFilterMode, setActiveFilterMode] = useState<FilterMode>(null);
   const [type, setType] = useState<string | null>(null);
   const [courseSearch, setCourseSearch] = useState("");
@@ -60,15 +63,20 @@ export default function FilterBottomSheet({
   const [showUserSuggestions, setShowUserSuggestions] = useState(false);
   const [userSuggestions, setUserSuggestions] = useState<Array<{userId: string, displayName: string, avatar?: string}>>([]);
 
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const allThoughtTypes: any[] = getAllThoughtTypes();
+
   // ✅ NEW: Handle user suggestion selection
   const handleSelectUser = (userId: string, displayName: string) => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    console.log('👤 User selected:', displayName);
+    console.log('👤 User selected, navigating to locker:', displayName, userId);
     
-    // Filter posts by this user
-    setSearchQuery(displayName);
-    setShowUserSuggestions(false);
+    // Navigate to user's locker
+    router.push(`/locker/${userId}`);
+    
+    // Close the modal
+    onClose();
   };
 
   // ✅ NEW: Extract unique users and filter by search query
@@ -411,7 +419,7 @@ export default function FilterBottomSheet({
                   ]}
                 >
                   {type 
-                    ? allThoughtTypes.find(t => t.id === type)?.label || "Swing Thought"
+                    ? allThoughtTypes.find((t: any) => t.id === type)?.label || "Swing Thought"
                     : "Swing Thought"}
                 </Text>
                 {type && (
@@ -497,7 +505,7 @@ export default function FilterBottomSheet({
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.typeChipsContent}
               >
-                {allThoughtTypes.map((t) => (
+                {allThoughtTypes.map((t: any) => (
                   <TouchableOpacity
                     key={t.id}
                     style={[

@@ -4,10 +4,17 @@ import LowmanCarousel from "@/components/navigation/LowmanCarousel";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
-import { getNearbyCourses } from "@/utils/courseCache";
+import { getCourseById } from "@/utils/courseHelpers";
 import { milesBetween } from "@/utils/geo";
+import {
+  getLeaderboard,
+  getLeaderboardsByPartners,
+  getLeaderboardsByPlayer,
+  getLeaderboardsByRegion,
+  hydrateLeaderboardsForRegion,
+} from "@/utils/leaderboardHelpers";
+import { findNearestRegions } from "@/utils/regionHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
-import { batchGetUserProfiles } from "@/utils/userProfileHelpers";
 const LowLeaderTrophy = require("@/assets/icons/LowLeaderTrophy.png");
 
 import { Ionicons } from "@expo/vector-icons";
@@ -40,23 +47,19 @@ interface Score {
   grossScore: number;
   netScore: number;
   par: number;
+  tees: string;
+  teePar: number;
+  teeYardage: number;
   createdAt: any;
   userName?: string;
   userAvatar?: string | null;
-  hadHoleInOne?: boolean;
-}
-
-interface UserProfile {
-  displayName?: string;
-  avatar?: string | null;
-  userType?: string;
 }
 
 interface CourseBoard {
   courseId: number;
   courseName: string;
   scores: Score[];
-  distance?: number; // ✅ Distance in miles from user
+  distance?: number;
   location?: {
     city?: string;
     state?: string;
@@ -72,7 +75,7 @@ export default function LeaderboardScreen() {
   const [locationLabel, setLocationLabel] = useState("Nearby");
   const [displayedCourseIds, setDisplayedCourseIds] = useState<number[]>([]);
   const [loadMoreModalVisible, setLoadMoreModalVisible] = useState(false);
-  const [pinnedCourseId, setPinnedCourseId] = useState<number | null>(null); // ✅ NEW: Track pinned course ID
+  const [pinnedCourseId, setPinnedCourseId] = useState<number | null>(null);
 
   const LocationIcon = require("@/assets/icons/Location Near Me.png");
 
@@ -95,19 +98,19 @@ export default function LeaderboardScreen() {
   const filterCourseName = useMemo(() => {
     let raw = params?.courseName;
     if (Array.isArray(raw)) raw = raw[0];
-    return raw as string || null;
+    return (raw as string) || null;
   }, [params?.courseName]);
 
   const filterPlayerId = useMemo(() => {
     let raw = params?.playerId;
     if (Array.isArray(raw)) raw = raw[0];
-    return raw as string || null;
+    return (raw as string) || null;
   }, [params?.playerId]);
 
   const filterPlayerName = useMemo(() => {
     let raw = params?.playerName;
     if (Array.isArray(raw)) raw = raw[0];
-    return raw as string || null;
+    return (raw as string) || null;
   }, [params?.playerName]);
 
   // ✅ HIGHLIGHT PARAMS (from notifications)
@@ -121,21 +124,18 @@ export default function LeaderboardScreen() {
   const highlightUserId = useMemo(() => {
     let raw = params?.highlightUserId;
     if (Array.isArray(raw)) raw = raw[0];
-    return raw as string || null;
+    return (raw as string) || null;
   }, [params?.highlightUserId]);
 
   const highlightScoreId = useMemo(() => {
     let raw = params?.highlightScoreId;
     if (Array.isArray(raw)) raw = raw[0];
-    return raw as string || null;
+    return (raw as string) || null;
   }, [params?.highlightScoreId]);
 
-  // ✅ CAROUSEL NAVIGATION PARAMS (separate from filter)
+  // ✅ CAROUSEL NAVIGATION PARAMS
   const targetCourseId = useMemo(() => {
-    // Prefer highlight params from notifications
     if (highlightCourseId) return highlightCourseId;
-    
-    // Only use for carousel navigation, not for filter
     if (filterType === "course" && filterCourseId) return null;
     let raw = params?.courseId;
     if (Array.isArray(raw)) raw = raw[0];
@@ -144,49 +144,15 @@ export default function LeaderboardScreen() {
   }, [params?.courseId, filterType, filterCourseId, highlightCourseId]);
 
   const targetPlayerId = useMemo(() => {
-    console.log("🔍 targetPlayerId calculation:", {
-      highlightUserId,
-      paramsPlayerId: params?.playerId,
-      filterType,
-      filterPlayerId,
-    });
-    
-    // Prefer highlight params from notifications
-    if (highlightUserId) {
-      console.log("✅ Using highlightUserId:", highlightUserId);
-      return highlightUserId;
-    }
-    
-    // Get playerId from params (carousel navigation)
+    if (highlightUserId) return highlightUserId;
     let playerId = params?.playerId;
     if (Array.isArray(playerId)) playerId = playerId[0];
-    
-    console.log("📝 Extracted playerId from params:", playerId);
-    
-    // Don't use as target if it's being used as a filter
-    if (filterType === "player" && filterPlayerId === playerId) {
-      console.log("⚠️ Not using as target - it's a filter");
-      return null;
-    }
-    
-    console.log("✅ Final targetPlayerId:", playerId || null);
+    if (filterType === "player" && filterPlayerId === playerId) return null;
     return (playerId as string) || null;
   }, [params?.playerId, filterType, filterPlayerId, highlightUserId]);
 
-  const shouldHighlight = !!(targetCourseId && targetPlayerId) || !!(highlightCourseId && highlightScoreId);
-
-  console.log("✨ Filter type:", filterType);
-  console.log("✨ shouldHighlight:", shouldHighlight, { 
-    targetCourseId, 
-    targetPlayerId,
-    highlightCourseId,
-    highlightUserId,
-    highlightScoreId,
-    calculation: {
-      fromCarousel: !!(targetCourseId && targetPlayerId),
-      fromNotification: !!(highlightCourseId && highlightScoreId)
-    }
-  });
+  const shouldHighlight =
+    !!(targetCourseId && targetPlayerId) || !!(highlightCourseId && highlightScoreId);
 
   const listRef = useRef<FlatList<CourseBoard>>(null);
   const hasReordered = useRef(false);
@@ -195,31 +161,26 @@ export default function LeaderboardScreen() {
 
   useEffect(() => {
     hasReordered.current = false;
-    console.log("🔄 Reset reorder flag - new navigation params");
   }, [targetCourseId, targetPlayerId, highlightCourseId, highlightScoreId]);
 
   /* ---------------------- LOAD USER LOCATION ---------------------- */
 
   useEffect(() => {
     const loadLocation = async () => {
-      // Set label based on filter type
       if (filterType === "partnersOnly") {
         setLocationLabel("Partners");
         return;
       }
-      
+
       const uid = auth.currentUser?.uid;
       if (!uid) return;
 
       const snap = await getDoc(doc(db, "users", uid));
       if (snap.exists()) {
         const userData = snap.data();
-        
-        // Use currentCity/currentState (dynamic location for leaderboards)
-        // Fall back to city/state for users not migrated yet
         const city = userData.currentCity || userData.city;
         const state = userData.currentState || userData.state;
-        
+
         if (city && state) {
           setLocationLabel(`${city}, ${state}`);
         }
@@ -229,46 +190,46 @@ export default function LeaderboardScreen() {
     loadLocation();
   }, [filterType]);
 
-/* ---------------------- LOAD PARTNER USER IDS ---------------------- */
+  /* ---------------------- LOAD PARTNER USER IDS ---------------------- */
 
-const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
-  try {
-    const partnersQuery1 = query(
-      collection(db, "partners"),
-      where("user1Id", "==", userId)
-    );
-    const partnersQuery2 = query(
-      collection(db, "partners"),
-      where("user2Id", "==", userId)
-    );
+  const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
+    try {
+      const partnersQuery1 = query(
+        collection(db, "partners"),
+        where("user1Id", "==", userId)
+      );
+      const partnersQuery2 = query(
+        collection(db, "partners"),
+        where("user2Id", "==", userId)
+      );
 
-    const [snap1, snap2] = await Promise.all([
-      getDocs(partnersQuery1),
-      getDocs(partnersQuery2),
-    ]);
+      const [snap1, snap2] = await Promise.all([
+        getDocs(partnersQuery1),
+        getDocs(partnersQuery2),
+      ]);
 
-    const partnerIds = new Set<string>();
+      const partnerIds = new Set<string>();
 
-    snap1.forEach((doc) => {
-      const data = doc.data();
-      partnerIds.add(data.user2Id);
-    });
+      snap1.forEach((doc) => {
+        const data = doc.data();
+        partnerIds.add(data.user2Id);
+      });
 
-    snap2.forEach((doc) => {
-      const data = doc.data();
-      partnerIds.add(data.user1Id);
-    });
+      snap2.forEach((doc) => {
+        const data = doc.data();
+        partnerIds.add(data.user1Id);
+      });
 
-    return Array.from(partnerIds);
-  } catch (error) {
-    console.error("Error loading partners:", error);
-    soundPlayer.play('error');
-    return [];
-  }
-};
+      return Array.from(partnerIds);
+    } catch (error) {
+      console.error("Error loading partners:", error);
+      soundPlayer.play("error");
+      return [];
+    }
+  };
 
   /* ---------------------- LOAD PINNED COURSE ID ---------------------- */
-  
+
   useEffect(() => {
     loadPinnedCourseId();
   }, []);
@@ -305,14 +266,32 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
 
       if (!uid) {
         console.log("❌ No user authenticated");
-        soundPlayer.play('error');
+        soundPlayer.play("error");
         setLoading(false);
         return;
       }
 
-      let coursesToShow: any[] = [];
+      // Get user data
+      const userDoc = await getDoc(doc(db, "users", uid));
+      if (!userDoc.exists()) {
+        console.log("❌ User document not found");
+        setLoading(false);
+        return;
+      }
+
+      const userData = userDoc.data();
+      const userRegionKey = userData.regionKey;
+      const userLat = userData.currentLatitude || userData.latitude;
+      const userLon = userData.currentLongitude || userData.longitude;
+
+      if (!userRegionKey) {
+        console.log("⚠️ User has no regionKey - needs migration");
+        setLoading(false);
+        return;
+      }
+
+      let leaderboards: any[] = [];
       let displayedIds: number[] = [];
-      let allPartnerScoreDocs: any[] = [];
 
       // ============================================================
       // HANDLE DIFFERENT FILTER TYPES
@@ -321,22 +300,44 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
       if (filterType === "course" && filterCourseId) {
         // ✅ SPECIFIC COURSE FILTER
         console.log("🔍 Filter: Specific Course -", filterCourseName);
-        
-        coursesToShow = [{
-          courseId: filterCourseId,
-          courseName: filterCourseName || "Unknown Course",
-          distance: 0
-        }];
-        
+
+        // Get course to find its regionKey
+        const course = await getCourseById(filterCourseId);
+
+        if (!course) {
+          console.log("⚠️ Course not found:", filterCourseId);
+          setBoards([]);
+          setDisplayedCourseIds([]);
+          setLoading(false);
+          return;
+        }
+
+        // Fetch leaderboard from course's region
+        const leaderboard = await getLeaderboard(course.regionKey, filterCourseId);
+
+        if (leaderboard) {
+          leaderboards = [leaderboard];
+        } else {
+          // No leaderboard exists - show empty state
+          leaderboards = [
+            {
+              courseId: filterCourseId,
+              courseName: filterCourseName || course.course_name,
+              topScores: [],
+              location: course.location
+                ? { city: course.location.city, state: course.location.state }
+                : undefined,
+            },
+          ];
+        }
+
         displayedIds = [filterCourseId];
-        
       } else if (filterType === "partnersOnly") {
         // ✅ PARTNERS ONLY FILTER
         console.log("🔍 Filter: Partners Only");
-        
-        // Get current user's partner IDs
+
         const partnerIds = await loadPartnerUserIds(uid);
-        
+
         if (partnerIds.length === 0) {
           console.log("⚠️ User has no partners");
           setBoards([]);
@@ -344,126 +345,72 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
           setLoading(false);
           return;
         }
-        
+
         console.log(`📊 User has ${partnerIds.length} partners`);
-        
-        // Fetch scores from all partners (batch if >10 partners)
-        allPartnerScoreDocs = [];
-        
-        for (let i = 0; i < partnerIds.length; i += 10) {
-          const batch = partnerIds.slice(i, i + 10);
-          const batchQuery = query(
-            collection(db, "scores"),
-            where("userId", "in", batch)
-          );
-          const batchSnap = await getDocs(batchQuery);
-          batchSnap.forEach(doc => allPartnerScoreDocs.push(doc));
-        }
-        
-        console.log(`📊 Fetched ${allPartnerScoreDocs.length} scores from partners`);
-        
-        // Extract unique courses
-        const partnerCourses = new Map<number, string>();
-        allPartnerScoreDocs.forEach((doc) => {
-          const data = doc.data();
-          if (!partnerCourses.has(data.courseId)) {
-            partnerCourses.set(data.courseId, data.courseName);
-          }
-        });
-        
-        coursesToShow = Array.from(partnerCourses.entries()).map(([courseId, courseName]) => ({
-          courseId,
-          courseName,
-          distance: 0
-        }));
-        
-        displayedIds = Array.from(partnerCourses.keys());
-        
-        console.log("📊 Partners have scores at", displayedIds.length, "courses");
-        
+
+        // Query leaderboards where partners appear in top 3
+        leaderboards = await getLeaderboardsByPartners(partnerIds);
+
+        displayedIds = leaderboards.map((lb: any) => lb.courseId);
+
+        console.log("📊 Partners have top scores at", displayedIds.length, "courses");
       } else if (filterType === "player" && filterPlayerId) {
         // ✅ SPECIFIC PLAYER FILTER
         console.log("🔍 Filter: Specific Player -", filterPlayerName);
-        
-        // Get all scores for this player
-        const playerScoresQuery = query(
-          collection(db, "scores"),
-          where("userId", "==", filterPlayerId)
-        );
-        const playerScoresSnap = await getDocs(playerScoresQuery);
-        
-        const playerCourses = new Map<number, string>();
-        playerScoresSnap.forEach((d) => {
-          const data = d.data();
-          if (!playerCourses.has(data.courseId)) {
-            playerCourses.set(data.courseId, data.courseName);
-          }
-        });
-        
-        coursesToShow = Array.from(playerCourses.entries()).map(([courseId, courseName]) => ({
-          courseId,
-          courseName,
-          distance: 0
-        }));
-        
-        displayedIds = Array.from(playerCourses.keys());
-        
-        console.log("📊 Player has scores at", displayedIds.length, "courses");
-        
+
+        // Query leaderboards where player appears in top 3
+        leaderboards = await getLeaderboardsByPlayer(filterPlayerId);
+
+        displayedIds = leaderboards.map((lb: any) => lb.courseId);
+
+        console.log("📊 Player has top scores at", displayedIds.length, "courses");
       } else {
         // ✅ NEAR ME (DEFAULT)
         console.log("🔍 Filter: Near Me");
-        
-        // ✅ Get fresh nearby courses from Firestore (distances calculated on-the-fly)
-        const nearbyCourses = await getNearbyCourses(uid, 50); // Within 50 miles
-        console.log("📦 Found", nearbyCourses.length, "courses within 50 miles");
-        
-        coursesToShow = nearbyCourses;
-        
-        const highlightTarget = highlightCourseId || targetCourseId;
-        
-        if (highlightTarget && !coursesToShow.find(c => c.courseId === highlightTarget)) {
-          console.log("🎯 Target course not in nearby courses, fetching it...");
-          
-          const allScoresSnap = await getDocs(query(collection(db, "scores")));
-          let targetCourseName = "Unknown Course";
-          
-          allScoresSnap.forEach((d) => {
-            const data = d.data();
-            if (data.courseId === highlightTarget && data.courseName) {
-              targetCourseName = data.courseName;
-            }
-          });
-          
-          // ✅ Add target course without duplicates
-          coursesToShow = [
-            { courseId: highlightTarget, courseName: targetCourseName, distance: 0 },
-            ...coursesToShow.filter(c => c.courseId !== highlightTarget)
-          ];
-          
-          console.log("✅ Added target course:", targetCourseName);
+
+        // Query leaderboards in user's region
+        leaderboards = await getLeaderboardsByRegion(userRegionKey);
+
+        console.log(`📦 Found ${leaderboards.length} leaderboards in ${userRegionKey}`);
+
+        // If no leaderboards, try to hydrate
+        if (leaderboards.length === 0) {
+          console.log("⚠️ No leaderboards in region, attempting hydration...");
+
+          const hydrated = await hydrateLeaderboardsForRegion(userRegionKey);
+
+          if (hydrated > 0) {
+            // Re-fetch after hydration
+            leaderboards = await getLeaderboardsByRegion(userRegionKey);
+            console.log(`✅ After hydration: ${leaderboards.length} leaderboards`);
+          } else {
+            console.log("⚠️ No courses to hydrate in region");
+          }
         }
-        
-        // ✅ Remove any duplicate courseIds
-        const uniqueCourses = Array.from(
-          new Map(coursesToShow.map(c => [c.courseId, c])).values()
-        );
-        
-        // ✅ SORT BY DISTANCE (closest first)
-        uniqueCourses.sort((a, b) => (a.distance || 999) - (b.distance || 999));
-        
-        displayedIds = uniqueCourses.map(c => c.courseId);
-        coursesToShow = uniqueCourses;
-        
-        console.log("📍 Showing", coursesToShow.length, "nearby courses, sorted by distance");
-        console.log("🏌️ Course order:", coursesToShow.map(c => `${c.courseName} (${c.distance}mi)`));
+
+        // If still no leaderboards, expand to nearby regions
+        if (leaderboards.length < 3 && userLat && userLon) {
+          console.log("📍 Expanding to nearby regions...");
+
+          const nearbyRegions = findNearestRegions(userLat, userLon, 3, 100);
+
+          for (const { region } of nearbyRegions) {
+            if (leaderboards.length >= 3) break;
+
+            const moreBoards = await getLeaderboardsByRegion(region.key);
+            leaderboards.push(...moreBoards);
+
+            console.log(`✅ Added ${moreBoards.length} from ${region.displayName}`);
+          }
+        }
+
+        displayedIds = leaderboards.map((lb: any) => lb.courseId);
       }
 
-      console.log("📦 Courses to show:", coursesToShow.length);
-      console.log("📦 Course IDs:", displayedIds);
+      console.log("📦 Total leaderboards to show:", leaderboards.length);
 
-      if (coursesToShow.length === 0) {
-        console.log("⚠️ No courses to display");
+      if (leaderboards.length === 0) {
+        console.log("⚠️ No leaderboards to display");
         setBoards([]);
         setDisplayedCourseIds([]);
         setLoading(false);
@@ -471,224 +418,166 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
       }
 
       // ============================================================
-      // LOAD SCORES
+      // CALCULATE DISTANCES & BUILD BOARDS
       // ============================================================
-      
-      const scores: Score[] = [];
-      const userIds = new Set<string>();
 
-      if (filterType === "partnersOnly") {
-        // Use the partner scores we already fetched
-        allPartnerScoreDocs.forEach((d) => {
-          const data = d.data();
-          scores.push({
-            scoreId: d.id,
-            userId: data.userId,
-            courseId: data.courseId,
-            courseName: data.courseName,
-            grossScore: data.grossScore,
-            netScore: data.netScore,
-            par: data.par,
-            createdAt: data.createdAt,
-          });
-          if (data.userId) userIds.add(data.userId);
-        });
-      } else {
-        const scoresQuery = filterType === "player" && filterPlayerId
-          ? query(collection(db, "scores"), where("userId", "==", filterPlayerId))
-          : query(collection(db, "scores"));
-          
-        const scoresSnap = await getDocs(scoresQuery);
+      const boardsWithDistance: CourseBoard[] = [];
 
-        scoresSnap.forEach((d) => {
-          const data = d.data();
-          scores.push({
-            scoreId: d.id,
-            userId: data.userId,
-            courseId: data.courseId,
-            courseName: data.courseName,
-            grossScore: data.grossScore,
-            netScore: data.netScore,
-            par: data.par,
-            createdAt: data.createdAt,
-          });
-          if (data.userId) userIds.add(data.userId);
-        });
-      }
+      for (const leaderboard of leaderboards) {
+        // Get course details for distance calculation
+        const courseQuery = query(
+          collection(db, "courses"),
+          where("id", "==", leaderboard.courseId)
+        );
+        const courseSnap = await getDocs(courseQuery);
 
+        let distance: number | undefined;
+        let location = leaderboard.location;
 
-      /* ---- LOAD USER PROFILES WITH HELPER ---- */
-
-      // ✅ USE HELPER FUNCTION - Handles deleted users automatically
-      const profileMap = await batchGetUserProfiles(Array.from(userIds));
-      const profiles: Record<string, UserProfile> = {};
-
-      profileMap.forEach((profile, userId) => {
-        profiles[userId] = {
-          displayName: profile.displayName, // "[Deleted User]" if deleted
-          avatar: profile.avatar,
-          userType: profile.userType,
-        };
-      });
-
-      /* ---- MERGE + FILTER OUT COURSE ACCOUNTS + HOLE-IN-ONE SCORES ---- */
-
-      const merged = scores
-        .filter((s) => profiles[s.userId]?.userType !== "Course")
-        .filter((s) => s.hadHoleInOne !== true) // Filter out hole-in-one scores
-        .filter((s) => s.grossScore != null && s.netScore != null) // Ensure scores exist
-        .map((s) => ({
-          ...s,
-          userName: profiles[s.userId]?.displayName || "[Deleted User]",
-          userAvatar: profiles[s.userId]?.avatar ?? null,
-        }));
-
-      /* ---- GROUP BY DISPLAYED COURSES ---- */
-
-      const grouped: Record<number, CourseBoard> = {};
-
-      // Fetch course details from Firestore to get location info
-      const courseDetailsMap: Record<number, any> = {};
-      
-      for (const course of coursesToShow) {
-        try {
-          const coursesQuery = query(
-            collection(db, "courses"),
-            where("id", "==", course.courseId)
-          );
-          const courseSnap = await getDocs(coursesQuery);
-          
-          if (!courseSnap.empty) {
-            const courseData = courseSnap.docs[0].data();
-            courseDetailsMap[course.courseId] = courseData;
+        if (!courseSnap.empty) {
+          const courseData = courseSnap.docs[0].data();
+          if (courseData.location?.latitude && courseData.location?.longitude && userLat && userLon) {
+            distance = milesBetween(
+              userLat,
+              userLon,
+              courseData.location.latitude,
+              courseData.location.longitude
+            );
           }
-        } catch (error) {
-          console.log("⚠️ Could not fetch details for course:", course.courseId);
-        }
-      }
 
-      // Initialize boards for displayed courses
-      coursesToShow.forEach((course) => {
-        const courseDetails = courseDetailsMap[course.courseId];
-        
-        grouped[course.courseId] = {
-          courseId: course.courseId,
-          courseName: course.courseName,
-          scores: [],
-          distance: course.distance, // ✅ Preserve distance from cached courses
-          location: courseDetails?.location ? {
-            city: courseDetails.location.city,
-            state: courseDetails.location.state,
-          } : undefined,
-        };
-      });
-
-      // Add scores to matching courses
-      merged.forEach((s) => {
-        if (grouped[s.courseId]) {
-          grouped[s.courseId].scores.push(s);
-        }
-      });
-
-      /* ---- SORT + TOP 3 PER COURSE ---- */
-
-      const nextBoards: CourseBoard[] = coursesToShow.map((course) => {
-        const board = grouped[course.courseId];
-        const sorted = [...board.scores].sort((a, b) => a.netScore - b.netScore);
-        
-        return {
-          ...board,
-          distance: course.distance, // ✅ Ensure distance is preserved
-          scores: sorted.slice(0, 3),
-        };
-      });
-
-      console.log("✅ Built leaderboards for", nextBoards.length, "courses");
-      console.log("✅ Displayed course IDs:", displayedIds);
-
-      // ============================================================
-      // LOAD PINNED LEADERBOARD (ONLY FOR NEAR ME FILTER)
-      // ============================================================
-      
-      if (filterType === "nearMe") {
-        try {
-          const userDoc = await getDoc(doc(db, "users", uid));
-          const pinnedLeaderboard = userDoc.data()?.pinnedLeaderboard;
-          
-          if (pinnedLeaderboard) {
-            console.log("📌 Found pinned leaderboard:", pinnedLeaderboard.courseName);
-            
-            // ✅ ALWAYS build pinned board (whether in top 3 or not)
-            const pinnedCourseScores = merged.filter(s => s.courseId === pinnedLeaderboard.courseId);
-            const sortedPinnedScores = pinnedCourseScores.sort((a, b) => a.netScore - b.netScore).slice(0, 3);
-            
-            const userData = userDoc.data();
-            
-            // Get course details
-            let courseDetails: any = null;
-            try {
-              const coursesQuery = query(
-                collection(db, "courses"),
-                where("id", "==", pinnedLeaderboard.courseId)
-              );
-              const courseSnap = await getDocs(coursesQuery);
-              if (!courseSnap.empty) {
-                courseDetails = courseSnap.docs[0].data();
-              }
-            } catch (error) {
-              console.log("⚠️ Could not fetch pinned course details");
-            }
-            
-            const pinnedBoardData: CourseBoard = {
-              courseId: pinnedLeaderboard.courseId,
-              courseName: pinnedLeaderboard.courseName,
-              scores: sortedPinnedScores,
-              distance: courseDetails?.location?.latitude && courseDetails?.location?.longitude && userData
-                ? milesBetween(
-                    userData.currentLatitude || userData.latitude,
-                    userData.currentLongitude || userData.longitude,
-                    courseDetails.location.latitude,
-                    courseDetails.location.longitude
-                  )
-                : undefined,
-              location: courseDetails?.location ? {
-                city: courseDetails.location.city,
-                state: courseDetails.location.state,
-              } : undefined,
+          if (!location && courseData.location) {
+            location = {
+              city: courseData.location.city,
+              state: courseData.location.state,
             };
-            
-            setPinnedBoard(pinnedBoardData);
-            
-            // ✅ Filter out pinned from nextBoards and keep only top 2 others
-            const boardsWithoutPinned = nextBoards.filter(b => b.courseId !== pinnedLeaderboard.courseId);
-            const top2Boards = boardsWithoutPinned.slice(0, 2);
-            
-            setBoards(top2Boards);
-            setDisplayedCourseIds(top2Boards.map(b => b.courseId));
-            
-            console.log("✅ Set pinned board at top, showing top 2 others below");
-          } else {
-            setPinnedBoard(null);
-            // No pinned board, keep top 3 closest
-            const top3Boards = nextBoards.slice(0, 3);
-            setBoards(top3Boards);
-            setDisplayedCourseIds(top3Boards.map(b => b.courseId));
           }
-        } catch (error) {
-          console.error("Error loading pinned board:", error);
+        }
+
+        boardsWithDistance.push({
+          courseId: leaderboard.courseId,
+          courseName: leaderboard.courseName,
+          scores: leaderboard.topScores || [],
+          distance,
+          location,
+        });
+      }
+
+      // Sort by distance (closest first)
+      boardsWithDistance.sort((a, b) => (a.distance || 999) - (b.distance || 999));
+
+      console.log("✅ Built leaderboards with distances");
+
+      // ============================================================
+      // HANDLE PINNED LEADERBOARD (ONLY FOR NEAR ME)
+      // ============================================================
+
+      if (filterType === "nearMe") {
+        const pinnedLeaderboard = userData.pinnedLeaderboard;
+
+        if (pinnedLeaderboard?.courseId) {
+          console.log("📌 Loading pinned leaderboard:", pinnedLeaderboard.courseName);
+
+          // Get course to find its regionKey
+          const pinnedCourse = await getCourseById(pinnedLeaderboard.courseId);
+
+          if (pinnedCourse) {
+            // Fetch pre-computed leaderboard
+            const pinnedLB = await getLeaderboard(
+              pinnedCourse.regionKey,
+              pinnedLeaderboard.courseId
+            );
+
+            if (pinnedLB) {
+              // Calculate distance
+              let pinnedDistance: number | undefined;
+              if (
+                pinnedCourse.location?.latitude &&
+                pinnedCourse.location?.longitude &&
+                userLat &&
+                userLon
+              ) {
+                pinnedDistance = milesBetween(
+                  userLat,
+                  userLon,
+                  pinnedCourse.location.latitude,
+                  pinnedCourse.location.longitude
+                );
+              }
+
+              const pinnedBoardData: CourseBoard = {
+                courseId: pinnedLB.courseId,
+                courseName: pinnedLB.courseName,
+                scores: pinnedLB.topScores || [],
+                distance: pinnedDistance,
+                location: pinnedCourse.location
+                  ? {
+                      city: pinnedCourse.location.city,
+                      state: pinnedCourse.location.state,
+                    }
+                  : undefined,
+              };
+
+              setPinnedBoard(pinnedBoardData);
+
+              // Remove pinned from main boards and keep top 2
+              const boardsWithoutPinned = boardsWithDistance.filter(
+                (b) => b.courseId !== pinnedLeaderboard.courseId
+              );
+              const top2Boards = boardsWithoutPinned.slice(0, 2);
+
+              setBoards(top2Boards);
+              setDisplayedCourseIds(top2Boards.map((b) => b.courseId));
+
+              console.log("✅ Set pinned board at top, showing top 2 others below");
+            } else {
+              // No leaderboard for pinned course - create empty
+              const pinnedBoardData: CourseBoard = {
+                courseId: pinnedLeaderboard.courseId,
+                courseName: pinnedLeaderboard.courseName,
+                scores: [],
+                location: pinnedCourse.location
+                  ? {
+                      city: pinnedCourse.location.city,
+                      state: pinnedCourse.location.state,
+                    }
+                  : undefined,
+              };
+
+              setPinnedBoard(pinnedBoardData);
+
+              const boardsWithoutPinned = boardsWithDistance.filter(
+                (b) => b.courseId !== pinnedLeaderboard.courseId
+              );
+              const top2Boards = boardsWithoutPinned.slice(0, 2);
+
+              setBoards(top2Boards);
+              setDisplayedCourseIds(top2Boards.map((b) => b.courseId));
+            }
+          } else {
+            // Pinned course not found
+            setPinnedBoard(null);
+            const top3Boards = boardsWithDistance.slice(0, 3);
+            setBoards(top3Boards);
+            setDisplayedCourseIds(top3Boards.map((b) => b.courseId));
+          }
+        } else {
+          // No pinned board
           setPinnedBoard(null);
-          setBoards(nextBoards);
-          setDisplayedCourseIds(displayedIds);
+          const top3Boards = boardsWithDistance.slice(0, 3);
+          setBoards(top3Boards);
+          setDisplayedCourseIds(top3Boards.map((b) => b.courseId));
         }
       } else {
+        // Other filters don't show pinned
         setPinnedBoard(null);
-        setBoards(nextBoards);
+        setBoards(boardsWithDistance);
         setDisplayedCourseIds(displayedIds);
       }
+
       setLoading(false);
     } catch (e) {
       console.error("Leaderboard error:", e);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       setLoading(false);
     }
   };
@@ -697,23 +586,18 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
 
   useEffect(() => {
     const highlightTarget = highlightCourseId || targetCourseId;
-    
+
     if (!shouldHighlight || !highlightTarget || !boards.length) return;
     if (hasReordered.current) return;
 
     const targetIdx = boards.findIndex((b) => b.courseId === highlightTarget);
-    
-    console.log("🔍 Checking reorder - targetIdx:", targetIdx, "current first:", boards[0]?.courseName);
-    
+
     if (targetIdx < 0) {
-      console.log("⚠️ Target course not found in current location's boards");
-      console.log("⚠️ Target courseId:", highlightTarget, "Available:", boards.map(b => b.courseId));
       hasReordered.current = true;
       return;
     }
 
     if (targetIdx === 0) {
-      console.log("✅ Target already at position 0");
       hasReordered.current = true;
       return;
     }
@@ -722,7 +606,6 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
     const [targetBoard] = reordered.splice(targetIdx, 1);
     reordered.unshift(targetBoard);
 
-    console.log("🔄 Reordering boards - moving", targetBoard.courseName, "from index", targetIdx, "to position 0");
     hasReordered.current = true;
     setBoards(reordered);
   }, [shouldHighlight, targetCourseId, highlightCourseId, boards]);
@@ -740,7 +623,6 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
           offset: 0,
           animated: true,
         });
-        console.log("✅ Scrolled to top to show reordered board");
       } catch (err) {
         console.log("⚠️ Scroll error:", err);
       }
@@ -756,7 +638,6 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
       const uid = auth.currentUser?.uid;
       if (!uid) return;
 
-      // ✅ Check if this course is already pinned
       if (pinnedCourseId === courseId) {
         soundPlayer.play("error");
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -764,19 +645,18 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
         return;
       }
 
-      // ✅ If there's already a pinned course, ask for confirmation
       if (pinnedCourseId) {
-        soundPlayer.play("click"); // Sound when opening alert
+        soundPlayer.play("click");
         Alert.alert(
           "Replace Pinned Leaderboard",
           `You can only pin 1 leaderboard. Replace your current pin with ${courseName}?`,
           [
-            { 
-              text: "Cancel", 
+            {
+              text: "Cancel",
               style: "cancel",
               onPress: () => {
                 soundPlayer.play("click");
-              }
+              },
             },
             {
               text: "Replace",
@@ -793,9 +673,6 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
                 });
 
                 setPinnedCourseId(courseId);
-                console.log("✅ Replaced pinned leaderboard:", courseName);
-                
-                // Refresh to show pinned board
                 fetchLeaderboards();
               },
             },
@@ -814,9 +691,6 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
         });
 
         setPinnedCourseId(courseId);
-        console.log("✅ Pinned leaderboard:", courseName);
-        
-        // Refresh to show pinned board
         fetchLeaderboards();
       }
     } catch (error) {
@@ -828,19 +702,19 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
   /* ---------------------- INTERACTIONS ---------------------- */
 
   const goToPlayer = (userId: string) => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/locker/${userId}`);
   };
 
   const goToCourse = (courseId: number) => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/locker/course/${courseId}`);
   };
 
   const goToPostScore = (courseId: number) => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     router.push({
       pathname: "/post-score",
@@ -870,15 +744,17 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
         <View style={styles.loading}>
           <ActivityIndicator size="large" color="#0D5C3A" />
         </View>
-      ) : boards.length === 0 ? (
+      ) : boards.length === 0 && !pinnedBoard ? (
         <View style={styles.emptyState}>
-          <Text style={styles.emptyStateTitle}>No Courses Found</Text>
+          <Text style={styles.emptyStateTitle}>No Leaderboards Found</Text>
           <Text style={styles.emptyStateText}>
-            {filterType === "player" 
-              ? `${filterPlayerName} hasn't posted any scores yet`
+            {filterType === "player"
+              ? `${filterPlayerName} hasn't made it to any top 3 leaderboards yet`
               : filterType === "partnersOnly"
-              ? "You have no partners yet, or your partners haven't posted any scores"
-              : "Set your location to see nearby courses and leaderboards"}
+              ? "Your partners haven't made it to any top 3 leaderboards yet"
+              : filterType === "course"
+              ? "No scores posted at this course yet"
+              : "No courses found in your area. Try searching for a course!"}
           </Text>
         </View>
       ) : (
@@ -899,16 +775,13 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
                     try {
                       const uid = auth.currentUser?.uid;
                       if (!uid) return;
-                      
+
                       await updateDoc(doc(db, "users", uid), {
                         pinnedLeaderboard: null,
                       });
-                      
+
                       setPinnedBoard(null);
                       setPinnedCourseId(null);
-                      console.log("✅ Unpinned leaderboard");
-                      
-                      // Reload to show top 3
                       fetchLeaderboards();
                     } catch (error) {
                       console.error("Error unpinning:", error);
@@ -919,13 +792,11 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
                   <Ionicons name="close-circle" size={20} color="#666" />
                 </TouchableOpacity>
               </View>
-              
+
               {/* COURSE HEADER */}
               <TouchableOpacity onPress={() => goToCourse(pinnedBoard.courseId)}>
                 <View style={styles.boardHeader}>
-                  <Text style={styles.boardTitle}>
-                    {pinnedBoard.courseName}
-                  </Text>
+                  <Text style={styles.boardTitle}>{pinnedBoard.courseName}</Text>
                   {pinnedBoard.location && (
                     <Text style={styles.boardSubtitle}>
                       {pinnedBoard.location.city}, {pinnedBoard.location.state}
@@ -988,10 +859,7 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
                       <Text style={styles.colScore}>{s.par || 72}</Text>
                       <View style={styles.colLow}>
                         {isLowman && (
-                          <Image
-                            source={LowLeaderTrophy}
-                            style={styles.trophyIcon}
-                          />
+                          <Image source={LowLeaderTrophy} style={styles.trophyIcon} />
                         )}
                       </View>
                     </View>
@@ -1008,175 +876,158 @@ const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
             keyExtractor={(b, index) => `${b.courseId}-${index}`}
             contentContainerStyle={{ paddingBottom: 140 }}
             ListFooterComponent={
-            filterType === "nearMe" && boards.length > 0 ? (
-              <View style={styles.loadMoreContainer}>
-                <TouchableOpacity
-                  style={styles.loadMoreButton}
-                  onPress={() => {
-                    soundPlayer.play('click');
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                    setLoadMoreModalVisible(true);
-                  }}
-                >
-                  <Text style={styles.loadMoreText}>🔍 Find More Courses</Text>
-                  <Text style={styles.loadMoreSubtext}>
-                    View all courses and pin your favorite
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            ) : null
-          }
-          renderItem={({ item }) => {
-            const highlightTarget = highlightCourseId || targetCourseId;
-            const isHighlightedBoard = shouldHighlight && item.courseId === highlightTarget;
-            const isPinned = pinnedCourseId === item.courseId;
-            
-            return (
-              <View style={styles.board}>
-                {/* ✅ UPDATED: COURSE HEADER WITH PIN BUTTON - Matches modal styling */}
-                <View style={styles.boardHeaderContainer}>
-                  <TouchableOpacity 
-                    onPress={() => goToCourse(item.courseId)}
-                    style={styles.boardHeaderTouchable}
-                  >
-                    <View style={styles.boardHeader}>
-                      <Text style={styles.boardTitle}>
-                        {item.courseName}
-                      </Text>
-                      {item.location && (
-                        <Text style={styles.boardSubtitle}>
-                          {item.location.city}, {item.location.state}
-                          {item.distance != null && ` • ${item.distance} mi`}
-                        </Text>
-                      )}
-                    </View>
-                  </TouchableOpacity>
-
-                  {/* ✅ UPDATED: PIN BUTTON - Matches modal circular style */}
-                  {filterType !== "nearMe" && (
-                    <TouchableOpacity
-                      style={[styles.pinButton, isPinned && styles.pinButtonActive]}
-                      onPress={() => handlePinCourse(item.courseId, item.courseName)}
-                    >
-                      <Ionicons
-                        name={isPinned ? "pin" : "pin-outline"}
-                        size={20}
-                        color={isPinned ? "#FFD700" : "#666"}
-                      />
-                    </TouchableOpacity>
-                  )}
-                </View>
-
-                {/* COLUMN HEADER */}
-                <View style={styles.rowHeader}>
-                  <Text style={styles.colPos}>POS</Text>
-                  <Text style={styles.colPlayer}>PLAYER</Text>
-                  <Text style={styles.colScore}>G</Text>
-                  <Text style={styles.colScore}>N</Text>
-                  <Text style={styles.colScore}>PAR</Text>
-                  <Text style={styles.colLow}>LOW</Text>
-                </View>
-
-                {/* ROWS */}
-                {item.scores.length === 0 ? (
+              filterType === "nearMe" && boards.length > 0 ? (
+                <View style={styles.loadMoreContainer}>
                   <TouchableOpacity
-                    style={styles.emptyRow}
-                    onPress={() => goToPostScore(item.courseId)}
+                    style={styles.loadMoreButton}
+                    onPress={() => {
+                      soundPlayer.play("click");
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                      setLoadMoreModalVisible(true);
+                    }}
                   >
-                    <Text style={styles.emptyTitle}>No Scores Yet</Text>
-                    <Text style={styles.emptyText}>
-                      Be the first to post a score and obtain your achievement! ⛳
+                    <Text style={styles.loadMoreText}>🔍 Find More Courses</Text>
+                    <Text style={styles.loadMoreSubtext}>
+                      View all courses and pin your favorite
                     </Text>
                   </TouchableOpacity>
-                ) : (
-                  item.scores.map((s, i) => {
-                    const lowNet = Math.min(...item.scores.map((x) => x.netScore));
-                    const isLowman = s.netScore === lowNet;
+                </View>
+              ) : null
+            }
+            renderItem={({ item }) => {
+              const highlightTarget = highlightCourseId || targetCourseId;
+              const isHighlightedBoard = shouldHighlight && item.courseId === highlightTarget;
+              const isPinned = pinnedCourseId === item.courseId;
 
-                    if (i === 0) {
-                      console.log(`🏆 ${item.courseName} - Low Net: ${lowNet}, Player: ${s.userName}, Net: ${s.netScore}, isLowman: ${isLowman}`);
-                    }
-
-                    // Highlight logic:
-                    // - If highlightScoreId is provided, only highlight that specific score
-                    // - If highlightUserId is provided on the highlighted board, only highlight if they're in position 1
-                    // - If targetPlayerId is provided on the highlighted board, only highlight if they're in position 1
-                    const isTargetRow =
-                      (highlightScoreId && s.scoreId === highlightScoreId) ||
-                      (highlightUserId && s.userId === highlightUserId && isHighlightedBoard && i === 0) ||
-                      (targetPlayerId && s.userId === targetPlayerId && isHighlightedBoard && i === 0);
-
-                    if (isTargetRow) {
-                      console.log("🎯 Highlighting row:", { 
-                        userName: s.userName, 
-                        courseId: item.courseId,
-                        position: i + 1,
-                        reason: highlightScoreId ? 'scoreId' : highlightUserId ? 'userId at pos 1' : 'targetPlayer at pos 1'
-                      });
-                    }
-
-                    return (
-                      <View
-                        key={s.scoreId}
-                        style={[styles.row, isTargetRow && styles.rowHighlighted]}
-                      >
-                        <Text style={styles.colPos}>{i + 1}</Text>
-
-                        <TouchableOpacity
-                          style={styles.playerCell}
-                          onPress={() => goToPlayer(s.userId)}
-                          activeOpacity={0.85}
-                        >
-                          {s.userAvatar ? (
-                            <Image source={{ uri: s.userAvatar }} style={styles.avatar} />
-                          ) : (
-                            <View style={styles.avatarFallback} />
-                          )}
-
-                          <Text
-                            style={[
-                              styles.playerName,
-                              isTargetRow && styles.playerNameHighlighted,
-                            ]}
-                            numberOfLines={1}
-                          >
-                            {s.userName}
+              return (
+                <View style={styles.board}>
+                  {/* COURSE HEADER WITH PIN BUTTON */}
+                  <View style={styles.boardHeaderContainer}>
+                    <TouchableOpacity
+                      onPress={() => goToCourse(item.courseId)}
+                      style={styles.boardHeaderTouchable}
+                    >
+                      <View style={styles.boardHeader}>
+                        <Text style={styles.boardTitle}>{item.courseName}</Text>
+                        {item.location && (
+                          <Text style={styles.boardSubtitle}>
+                            {item.location.city}, {item.location.state}
+                            {item.distance != null && ` • ${item.distance.toFixed(1)} mi`}
                           </Text>
-                        </TouchableOpacity>
-
-                        <Text style={styles.colScore}>{s.grossScore}</Text>
-                        <Text style={[styles.colScore, isLowman && styles.lowNet]}>
-                          {s.netScore}
-                        </Text>
-                        <Text style={styles.colScore}>{s.par || 72}</Text>
-                        <View style={styles.colLow}>
-                          {isLowman && (
-                            <Image
-                              source={LowLeaderTrophy}
-                              style={styles.trophyIcon}
-                            />
-                          )}
-                        </View>
+                        )}
                       </View>
-                    );
-                  })
-                )}
-              </View>
-            );
-          }}
-        />
+                    </TouchableOpacity>
+
+                    {/* PIN BUTTON */}
+                    {filterType !== "nearMe" && (
+                      <TouchableOpacity
+                        style={[styles.pinButton, isPinned && styles.pinButtonActive]}
+                        onPress={() => handlePinCourse(item.courseId, item.courseName)}
+                      >
+                        <Ionicons
+                          name={isPinned ? "pin" : "pin-outline"}
+                          size={20}
+                          color={isPinned ? "#FFD700" : "#666"}
+                        />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+
+                  {/* COLUMN HEADER */}
+                  <View style={styles.rowHeader}>
+                    <Text style={styles.colPos}>POS</Text>
+                    <Text style={styles.colPlayer}>PLAYER</Text>
+                    <Text style={styles.colScore}>G</Text>
+                    <Text style={styles.colScore}>N</Text>
+                    <Text style={styles.colScore}>PAR</Text>
+                    <Text style={styles.colLow}>LOW</Text>
+                  </View>
+
+                  {/* ROWS */}
+                  {item.scores.length === 0 ? (
+                    <TouchableOpacity
+                      style={styles.emptyRow}
+                      onPress={() => goToPostScore(item.courseId)}
+                    >
+                      <Text style={styles.emptyTitle}>No Scores Yet</Text>
+                      <Text style={styles.emptyText}>
+                        Be the first to post a score and obtain your achievement! ⛳
+                      </Text>
+                    </TouchableOpacity>
+                  ) : (
+                    item.scores.map((s, i) => {
+                      const lowNet = Math.min(...item.scores.map((x) => x.netScore));
+                      const isLowman = s.netScore === lowNet;
+
+                      const isTargetRow =
+                        (highlightScoreId && s.scoreId === highlightScoreId) ||
+                        (highlightUserId &&
+                          s.userId === highlightUserId &&
+                          isHighlightedBoard &&
+                          i === 0) ||
+                        (targetPlayerId &&
+                          s.userId === targetPlayerId &&
+                          isHighlightedBoard &&
+                          i === 0);
+
+                      return (
+                        <View
+                          key={s.scoreId}
+                          style={[styles.row, isTargetRow && styles.rowHighlighted]}
+                        >
+                          <Text style={styles.colPos}>{i + 1}</Text>
+
+                          <TouchableOpacity
+                            style={styles.playerCell}
+                            onPress={() => goToPlayer(s.userId)}
+                            activeOpacity={0.85}
+                          >
+                            {s.userAvatar ? (
+                              <Image source={{ uri: s.userAvatar }} style={styles.avatar} />
+                            ) : (
+                              <View style={styles.avatarFallback} />
+                            )}
+
+                            <Text
+                              style={[
+                                styles.playerName,
+                                isTargetRow && styles.playerNameHighlighted,
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {s.userName}
+                            </Text>
+                          </TouchableOpacity>
+
+                          <Text style={styles.colScore}>{s.grossScore}</Text>
+                          <Text style={[styles.colScore, isLowman && styles.lowNet]}>
+                            {s.netScore}
+                          </Text>
+                          <Text style={styles.colScore}>{s.par || 72}</Text>
+                          <View style={styles.colLow}>
+                            {isLowman && (
+                              <Image source={LowLeaderTrophy} style={styles.trophyIcon} />
+                            )}
+                          </View>
+                        </View>
+                      );
+                    })
+                  )}
+                </View>
+              );
+            }}
+          />
         </>
       )}
 
       <BottomActionBar />
       <SwingFooter />
-      
+
       {/* All Courses Leaderboard Modal */}
       <AllCoursesLeaderboardModal
         visible={loadMoreModalVisible}
         onClose={() => setLoadMoreModalVisible(false)}
         onPinChange={() => {
-          // Refresh leaderboard when pin changes
           loadPinnedCourseId();
           fetchLeaderboards();
         }}
@@ -1243,21 +1094,21 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#FFD700",
   },
-  
+
   pinnedBadge: {
     backgroundColor: "#FFD700",
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
   },
-  
+
   pinnedBadgeText: {
     fontSize: 11,
     fontWeight: "900",
     color: "#0D5C3A",
     letterSpacing: 0.5,
   },
-  
+
   unpinButton: {
     padding: 4,
   },
@@ -1270,8 +1121,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFF",
     borderRadius: 8,
   },
-  
-  // ✅ UPDATED: Board header container - matches modal
+
   boardHeaderContainer: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1280,11 +1130,11 @@ const styles = StyleSheet.create({
     borderColor: "#DDD",
     paddingRight: 12,
   },
-  
+
   boardHeaderTouchable: {
     flex: 1,
   },
-  
+
   boardHeader: {
     padding: 12,
   },
@@ -1300,13 +1150,12 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
-  // ✅ UPDATED: Pin button styles - circular like modal
   pinButton: {
     padding: 8,
     borderRadius: 20,
     backgroundColor: "#F0F0F0",
   },
-  
+
   pinButtonActive: {
     backgroundColor: "#0D5C3A",
   },
@@ -1387,12 +1236,12 @@ const styles = StyleSheet.create({
     color: "#666",
     textAlign: "center",
   },
-  
+
   loadMoreContainer: {
     padding: 16,
     paddingBottom: 40,
   },
-  
+
   loadMoreButton: {
     backgroundColor: "#0D5C3A",
     borderRadius: 12,
@@ -1404,14 +1253,14 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     elevation: 3,
   },
-  
+
   loadMoreText: {
     fontSize: 18,
     fontWeight: "900",
     color: "#FFF",
     marginBottom: 4,
   },
-  
+
   loadMoreSubtext: {
     fontSize: 13,
     fontWeight: "600",

@@ -51,3 +51,4 @@ app-example
 firebase.json
 google-services.json
 GoogleService-Info.plist
+serviceAccountKey.json

@@ -24,6 +24,8 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
+  FlatList,
   Image,
   Keyboard,
   KeyboardAvoidingView,
@@ -43,12 +45,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 function canWrite(userData: any): boolean {
   if (!userData) return false;
   
-  // Golfers and Juniors only need to accept terms
   if (userData.userType === "Golfer" || userData.userType === "Junior") {
     return userData.acceptedTerms === true;
   }
   
-  // Courses and PGA Professionals need verification
   if (userData.userType === "Course" || userData.userType === "PGA Professional") {
     return userData.verified === true || userData.verification?.status === "approved";
   }
@@ -56,12 +56,71 @@ function canWrite(userData: any): boolean {
   return false;
 }
 
+/**
+ * Calculate geohash for posts (5-char precision = 2.4 miles)
+ */
+function encodeGeohash(latitude: number, longitude: number, precision: number = 5): string {
+  const BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz";
+  let idx = 0;
+  let bit = 0;
+  let evenBit = true;
+  let geohash = "";
+
+  let latMin = -90;
+  let latMax = 90;
+  let lonMin = -180;
+  let lonMax = 180;
+
+  while (geohash.length < precision) {
+    if (evenBit) {
+      const lonMid = (lonMin + lonMax) / 2;
+      if (longitude > lonMid) {
+        idx |= (1 << (4 - bit));
+        lonMin = lonMid;
+      } else {
+        lonMax = lonMid;
+      }
+    } else {
+      const latMid = (latMin + latMax) / 2;
+      if (latitude > latMid) {
+        idx |= (1 << (4 - bit));
+        latMin = latMid;
+      } else {
+        latMax = latMid;
+      }
+    }
+    evenBit = !evenBit;
+
+    if (bit < 4) {
+      bit++;
+    } else {
+      geohash += BASE32[idx];
+      bit = 0;
+      idx = 0;
+    }
+  }
+
+  return geohash;
+}
+
+/**
+ * Extract hashtags from content
+ */
+function extractHashtags(content: string): string[] {
+  const hashtagRegex = /#(\w+)/g;
+  const matches = content.match(hashtagRegex) || [];
+  return matches.map(tag => tag.toLowerCase());
+}
+
 /* -------------------------------- CONFIG -------------------------------- */
 
 const MAX_CHARACTERS = 280;
-const MAX_VIDEO_DURATION = 30; // seconds
-const MAX_IMAGE_WIDTH = 1080; // Compress images to max 1080px width
-const IMAGE_QUALITY = 0.7; // JPEG quality
+const MAX_VIDEO_DURATION = 30;
+const MAX_IMAGE_WIDTH = 1080;
+const IMAGE_QUALITY = 0.7;
+const MAX_IMAGES = 3;
+
+const SCREEN_WIDTH = Dimensions.get('window').width;
 
 /* -------------------------------- TYPES -------------------------------- */
 
@@ -88,22 +147,28 @@ interface GolfCourse {
 /* ======================================================================== */
 
 export default function CreateScreen() {
+  console.log("🎨 CREATE SCREEN MOUNTED");
+  
   const router = useRouter();
   const { editId } = useLocalSearchParams();
 
   const [selectedType, setSelectedType] = useState("swing-thought");
   const [content, setContent] = useState("");
-  const [mediaUri, setMediaUri] = useState<string | null>(null);
-  const [mediaType, setMediaType] = useState<"image" | "video" | null>(null);
+  
+  // Media states - multi-image OR single video
+  const [mediaType, setMediaType] = useState<"images" | "video" | null>(null);
+  const [imageUris, setImageUris] = useState<string[]>([]);
+  const [videoUri, setVideoUri] = useState<string | null>(null);
   const [videoThumbnailUri, setVideoThumbnailUri] = useState<string | null>(null);
   const [isPosting, setIsPosting] = useState(false);
   const [isProcessingMedia, setIsProcessingMedia] = useState(false);
 
-  // Video trimming states
+  // Video states
   const [videoDuration, setVideoDuration] = useState(0);
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(30);
   const [showVideoTrimmer, setShowVideoTrimmer] = useState(false);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
 
   const videoRef = useRef<Video>(null);
   const scrollViewRef = useRef<ScrollView>(null);
@@ -115,15 +180,16 @@ export default function CreateScreen() {
   const [autocompleteType, setAutocompleteType] = useState<"partner" | "course" | null>(null);
   const [autocompleteResults, setAutocompleteResults] = useState<any[]>([]);
   const [currentMention, setCurrentMention] = useState("");
-  const [selectedMentions, setSelectedMentions] = useState<string[]>([]); // Track validated mentions
+  const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
 
   const [allPartners, setAllPartners] = useState<Partner[]>([]);
 
-  // Edit mode states
   const [isEditMode, setIsEditMode] = useState(false);
   const [editingPostId, setEditingPostId] = useState<string | null>(null);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [currentImageIndex, setCurrentImageIndex] = useState(0);
 
   /* --------------------------- KEYBOARD HANDLING --------------------------- */
 
@@ -131,7 +197,6 @@ export default function CreateScreen() {
     const keyboardDidShowListener = Keyboard.addListener(
       'keyboardDidShow',
       () => {
-        // Scroll to bottom when keyboard shows
         setTimeout(() => {
           scrollViewRef.current?.scrollToEnd({ animated: true });
         }, 100);
@@ -154,9 +219,7 @@ export default function CreateScreen() {
       if (snap.exists()) {
         setUserData(snap.data());
         
-        // Load user's partners
         const partners = snap.data()?.partners || [];
-        console.log("👥 Raw partners array:", partners);
         
         if (Array.isArray(partners) && partners.length > 0) {
           const partnerDocs = await Promise.all(
@@ -170,11 +233,9 @@ export default function CreateScreen() {
               displayName: d.data()?.displayName || "Unknown",
             }));
           
-          console.log("✅ Loaded partners:", partnerList);
           setAllPartners(partnerList);
         } else {
-          console.log("❌ No partners found in user document");
-          setAllPartners([]); // Set empty array
+          setAllPartners([]);
         }
       }
     };
@@ -198,7 +259,6 @@ export default function CreateScreen() {
 
         const postData = postDoc.data();
         
-        // Check if current user owns this post
         if (postData.userId !== auth.currentUser?.uid) {
           soundPlayer.play('error');
           Alert.alert("Error", "You can only edit your own posts");
@@ -206,22 +266,24 @@ export default function CreateScreen() {
           return;
         }
 
-        // Load post data into form
         setIsEditMode(true);
         setEditingPostId(editId);
         setContent(postData.content || "");
         setSelectedType(postData.postType || "swing-thought");
         
-        // Load media
-        if (postData.imageUrl) {
-          setMediaUri(postData.imageUrl);
-          setMediaType("image");
+        // Load media - handle both old (single) and new (multiple) formats
+        if (postData.imageUrls && postData.imageUrls.length > 0) {
+          setImageUris(postData.imageUrls);
+          setMediaType("images");
+        } else if (postData.imageUrl) {
+          setImageUris([postData.imageUrl]);
+          setMediaType("images");
         } else if (postData.videoUrl) {
-          setMediaUri(postData.videoUrl);
+          setVideoUri(postData.videoUrl);
+          setVideoThumbnailUri(postData.videoThumbnailUrl || null);
           setMediaType("video");
         }
         
-        // Populate selectedMentions from existing tags
         const existingMentions: string[] = [];
         
         if (postData.taggedPartners) {
@@ -272,7 +334,7 @@ export default function CreateScreen() {
     } catch (error) {
       console.error("Image compression error:", error);
       soundPlayer.play('error');
-      return uri; // Return original if compression fails
+      return uri;
     }
   };
 
@@ -285,8 +347,8 @@ export default function CreateScreen() {
         uri,
         {
           compressionMethod: 'auto',
-          maxSize: 1080, // Max 1080p
-          bitrate: 2000000, // 2 Mbps
+          maxSize: 1080,
+          bitrate: 2000000,
         },
         (progress) => {
           console.log(`📊 Compression progress: ${(progress * 100).toFixed(0)}%`);
@@ -297,7 +359,7 @@ export default function CreateScreen() {
     } catch (error) {
       console.error("Video compression error:", error);
       soundPlayer.play('error');
-      return uri; // Return original if compression fails
+      return uri;
     }
   };
 
@@ -307,7 +369,7 @@ export default function CreateScreen() {
     try {
       console.log("📸 Generating video thumbnail...");
       const { uri } = await VideoThumbnails.getThumbnailAsync(videoUri, {
-        time: 0, // Get first frame (0 milliseconds)
+        time: 0,
         quality: 0.8,
       });
       console.log("✅ Thumbnail generated:", uri);
@@ -315,19 +377,17 @@ export default function CreateScreen() {
     } catch (error) {
       console.error("❌ Thumbnail generation error:", error);
       soundPlayer.play('error');
-      return videoUri; // Fallback to video URI if thumbnail generation fails
+      return videoUri;
     }
   };
 
-  /* --------------------------- MEDIA PICKER --------------------------- */
+  /* --------------------------- UNIFIED MEDIA PICKER --------------------------- */
 
-  const pickMedia = async (type: "image" | "video") => {
+  const pickMedia = async () => {
     try {
-      // Play click sound for media selection
       soundPlayer.play('click');
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-      // ✅ REQUEST PERMISSIONS FIRST
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       
       if (status !== 'granted') {
@@ -339,19 +399,11 @@ export default function CreateScreen() {
             { 
               text: 'Cancel', 
               style: 'cancel',
-              onPress: () => {
-                soundPlayer.play('click');
-              }
+              onPress: () => soundPlayer.play('click')
             },
             { 
               text: 'Open Settings', 
-              onPress: () => {
-                soundPlayer.play('click');
-                // On iOS, this will open app settings
-                if (Platform.OS === 'ios') {
-                  // Linking.openURL('app-settings:');
-                }
-              }
+              onPress: () => soundPlayer.play('click')
             }
           ]
         );
@@ -360,59 +412,49 @@ export default function CreateScreen() {
 
       setIsProcessingMedia(true);
 
+      // Allow both images and videos
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: type === "image" 
-          ? ["images"]
-          : ["videos"],
-        allowsEditing: true, // ✅ Enable editing for BOTH image and video (iOS will let users crop/trim)
-        aspect: [4, 3], // ✅ Force 4:3 aspect ratio for consistency across all media
+        mediaTypes: ["images", "videos"],
+        allowsMultipleSelection: true, // Enable multi-select for images
+        allowsEditing: false, // Disable to allow multiple selection
         quality: 0.8,
-        videoMaxDuration: 60, // Allow up to 60s, we'll trim to 30s
+        videoMaxDuration: 60,
       });
 
-      if (!result.canceled && result.assets[0]) {
-        const asset = result.assets[0];
-
-        if (type === "image") {
-          // Compress image
-          const compressedUri = await compressImage(asset.uri);
-          setMediaUri(compressedUri);
-          setMediaType("image");
-          setIsProcessingMedia(false);
-        } else {
-          // Video handling
-          const duration = asset.duration || 0;
+      if (!result.canceled && result.assets.length > 0) {
+        const firstAsset = result.assets[0];
+        
+        // Check if it's a video
+        if (firstAsset.type === 'video' || firstAsset.duration) {
+          // VIDEO HANDLING
+          const duration = firstAsset.duration || 0;
           
-          // ✅ Validate video duration
           if (duration / 1000 > 60) {
             soundPlayer.play('error');
             Alert.alert(
               "Video Too Long",
-              "Please select a video shorter than 60 seconds. You can trim it to 30 seconds in the next step.",
+              "Please select a video shorter than 60 seconds.",
               [{ text: "OK", onPress: () => soundPlayer.play('click') }]
             );
             setIsProcessingMedia(false);
             return;
           }
           
-          // Compress video
-          const compressedUri = await compressVideo(asset.uri);
-          
-          // ✅ Generate thumbnail from first frame
+          const compressedUri = await compressVideo(firstAsset.uri);
           const thumbnailUri = await generateVideoThumbnail(compressedUri);
           
-          setVideoDuration(duration / 1000); // Convert to seconds
-          setMediaUri(compressedUri);
+          setVideoDuration(duration / 1000);
+          setVideoUri(compressedUri);
+          setVideoThumbnailUri(thumbnailUri);
           setMediaType("video");
-          setVideoThumbnailUri(thumbnailUri); // Store thumbnail URI
+          setImageUris([]); // Clear images
+          setIsVideoPlaying(false);
 
           if (duration / 1000 > MAX_VIDEO_DURATION) {
-            // Show trimmer if video is longer than 30s
             setTrimStart(0);
             setTrimEnd(MAX_VIDEO_DURATION);
             setShowVideoTrimmer(true);
             
-            // Show helpful message
             soundPlayer.play('click');
             Alert.alert(
               "Trim Your Video",
@@ -426,6 +468,22 @@ export default function CreateScreen() {
           }
           
           setIsProcessingMedia(false);
+        } else {
+          // IMAGE HANDLING (up to 3)
+          const selectedImages = result.assets.slice(0, MAX_IMAGES);
+          
+          const compressedImages: string[] = [];
+          for (const asset of selectedImages) {
+            const compressed = await compressImage(asset.uri);
+            compressedImages.push(compressed);
+          }
+          
+          setImageUris(compressedImages);
+          setMediaType("images");
+          setVideoUri(null); // Clear video
+          setVideoThumbnailUri(null);
+          setCurrentImageIndex(0);
+          setIsProcessingMedia(false);
         }
       } else {
         setIsProcessingMedia(false);
@@ -438,12 +496,75 @@ export default function CreateScreen() {
     }
   };
 
+  /* --------------------------- ADD MORE IMAGES --------------------------- */
+
+  const addMoreImages = async () => {
+    if (imageUris.length >= MAX_IMAGES) {
+      soundPlayer.play('error');
+      Alert.alert("Maximum Reached", `You can only add up to ${MAX_IMAGES} images.`);
+      return;
+    }
+
+    try {
+      soundPlayer.play('click');
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') return;
+
+      setIsProcessingMedia(true);
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsMultipleSelection: true,
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets.length > 0) {
+        const remainingSlots = MAX_IMAGES - imageUris.length;
+        const newImages = result.assets.slice(0, remainingSlots);
+        
+        const compressedImages: string[] = [];
+        for (const asset of newImages) {
+          const compressed = await compressImage(asset.uri);
+          compressedImages.push(compressed);
+        }
+        
+        setImageUris([...imageUris, ...compressedImages]);
+        setIsProcessingMedia(false);
+      } else {
+        setIsProcessingMedia(false);
+      }
+    } catch (error) {
+      console.error("Add images error:", error);
+      soundPlayer.play('error');
+      setIsProcessingMedia(false);
+    }
+  };
+
+  /* --------------------------- REMOVE IMAGE --------------------------- */
+
+  const removeImage = (index: number) => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
+    const newUris = imageUris.filter((_, i) => i !== index);
+    setImageUris(newUris);
+    
+    if (newUris.length === 0) {
+      setMediaType(null);
+    }
+    
+    if (currentImageIndex >= newUris.length) {
+      setCurrentImageIndex(Math.max(0, newUris.length - 1));
+    }
+  };
+
   /* --------------------------- AUTOCOMPLETE LOGIC --------------------------- */
 
   const handleContentChange = (text: string) => {
     setContent(text);
 
-    // Clean up selectedMentions - remove any that are no longer in the content
     const cleanedMentions = selectedMentions.filter((mention) => 
       text.includes(mention)
     );
@@ -451,17 +572,14 @@ export default function CreateScreen() {
       setSelectedMentions(cleanedMentions);
     }
 
-    // Detect @ mention
     const lastAtIndex = text.lastIndexOf("@");
     if (lastAtIndex === -1) {
       setShowAutocomplete(false);
       return;
     }
 
-    // Get text after last @
     const afterAt = text.slice(lastAtIndex + 1);
     
-    // Close autocomplete if user types double space (end of mention)
     if (afterAt.endsWith("  ") || afterAt.includes("\n")) {
       setShowAutocomplete(false);
       return;
@@ -469,7 +587,6 @@ export default function CreateScreen() {
     
     setCurrentMention(afterAt);
 
-    // Debounce search - trigger after 1 character now
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
     }
@@ -483,12 +600,10 @@ export default function CreateScreen() {
 
   const searchMentions = async (searchText: string) => {
     try {
-      // Search partners
       const partnerResults = allPartners.filter((p) =>
         p.displayName.toLowerCase().includes(searchText.toLowerCase())
       );
 
-      // Search cached courses
       const coursesQuery = query(collection(db, "courses"));
       const coursesSnap = await getDocs(coursesQuery);
       
@@ -509,7 +624,6 @@ export default function CreateScreen() {
         }
       });
 
-      // If we have both, show partners first, then courses
       if (partnerResults.length > 0 || courseResults.length > 0) {
         const combined = [
           ...partnerResults.map((p) => ({ ...p, type: "partner" })),
@@ -520,7 +634,6 @@ export default function CreateScreen() {
         return;
       }
 
-      // If no cached courses, try API
       if (courseResults.length === 0) {
         searchCoursesAutocomplete(searchText);
       }
@@ -532,7 +645,6 @@ export default function CreateScreen() {
 
   const searchCoursesAutocomplete = async (searchText: string) => {
     try {
-      // Search cached courses first
       const coursesQuery = query(collection(db, "courses"));
       const coursesSnap = await getDocs(coursesQuery);
       
@@ -559,7 +671,6 @@ export default function CreateScreen() {
         return;
       }
 
-      // Fall back to API
       const res = await fetch(
         `${GOLF_COURSE_API_URL}/search?search_query=${encodeURIComponent(searchText)}`,
         {
@@ -595,7 +706,6 @@ export default function CreateScreen() {
   };
 
   const handleSelectMention = async (item: any) => {
-    // Play click sound for mention selection
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
@@ -606,15 +716,12 @@ export default function CreateScreen() {
     let mentionText = "";
     
     if (item.type === "partner") {
-      // Insert partner displayName with @ (keeping spaces)
       mentionText = `@${item.displayName}`;
       setContent(`${beforeAt}${mentionText} ${afterMention}`);
     } else if (item.type === "course") {
-      // Insert course name with @ (keeping spaces)
       mentionText = `@${item.courseName}`;
       setContent(`${beforeAt}${mentionText} ${afterMention}`);
       
-      // Save course to Firestore if it doesn't exist yet
       try {
         const courseQuery = query(
           collection(db, "courses"),
@@ -623,7 +730,6 @@ export default function CreateScreen() {
         const courseSnap = await getDocs(courseQuery);
         
         if (courseSnap.empty) {
-          // Course doesn't exist in Firestore, add it
           await addDoc(collection(db, "courses"), {
             id: item.courseId,
             course_name: item.courseName,
@@ -632,15 +738,13 @@ export default function CreateScreen() {
               state: item.location.split(", ")[1]
             } : null,
           });
-          console.log("✅ Saved new course to Firestore:", item.courseName);
         }
       } catch (err) {
-        console.error("Error saving course to Firestore:", err);
+        console.error("Error saving course:", err);
         soundPlayer.play('error');
       }
     }
 
-    // Add to validated mentions list
     if (mentionText && !selectedMentions.includes(mentionText)) {
       setSelectedMentions([...selectedMentions, mentionText]);
     }
@@ -654,8 +758,7 @@ export default function CreateScreen() {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-    // If there's content or media, show warning
-    if (content.trim() || mediaUri) {
+    if (content.trim() || imageUris.length > 0 || videoUri) {
       const shouldDiscard = await new Promise<boolean>((resolve) => {
         Alert.alert(
           "Discard Thought?",
@@ -686,7 +789,6 @@ export default function CreateScreen() {
         router.back();
       }
     } else {
-      // No content, just close
       router.back();
     }
   };
@@ -696,7 +798,6 @@ export default function CreateScreen() {
   const handleDelete = async () => {
     if (!editingPostId) return;
 
-    // Play click sound for delete button
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
@@ -752,11 +853,9 @@ export default function CreateScreen() {
   /* --------------------------- POST HANDLING ---------------------------- */
 
   const handlePost = async () => {
-    // Play click sound for post button
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // ✅ ANTI-BOT CHECK 1: Email Verification
     const emailVerified = await isEmailVerified();
     if (!emailVerified) {
       soundPlayer.play('error');
@@ -764,7 +863,6 @@ export default function CreateScreen() {
       return;
     }
 
-    // ✅ ANTI-BOT CHECK 2: Rate Limiting (skip for edit mode)
     if (!isEditMode) {
       const { allowed, remainingSeconds } = await checkRateLimit("post");
       if (!allowed) {
@@ -774,7 +872,6 @@ export default function CreateScreen() {
       }
     }
 
-    // Existing checks
     if (!writable) {
       soundPlayer.play('error');
       Alert.alert(
@@ -793,110 +890,169 @@ export default function CreateScreen() {
     setIsPosting(true);
 
     try {
-      let uploadedMediaUrl = mediaUri; // Keep existing URL if not changed
-      let uploadedThumbnailUrl: string | null = null;
-      let mediaUrlField: "imageUrl" | "videoUrl" | null = null;
+      const uid = auth.currentUser?.uid;
+      if (!uid) throw new Error("No user");
 
-      // Only upload new media if mediaUri is a local file (starts with file://)
-      if (mediaUri && mediaUri.startsWith('file://')) {
-        const response = await fetch(mediaUri);
-        const blob = await response.blob();
-        
-        const fileExtension = mediaType === "video" ? "mp4" : "jpg";
-        const path = `posts/${auth.currentUser?.uid}/${Date.now()}.${fileExtension}`;
-        const storageRef = ref(storage, path);
+      // Get user's location data for region/geohash
+      const userDoc = await getDoc(doc(db, "users", uid));
+      const currentUserData = userDoc.data();
+      
+      if (!currentUserData) throw new Error("No user data");
 
-        await uploadBytes(storageRef, blob);
-        uploadedMediaUrl = await getDownloadURL(storageRef);
-        
-        mediaUrlField = mediaType === "video" ? "videoUrl" : "imageUrl";
-        console.log(`✅ Uploaded ${mediaType} to:`, uploadedMediaUrl);
+      const userLat = currentUserData.currentLatitude || currentUserData.latitude;
+      const userLon = currentUserData.currentLongitude || currentUserData.longitude;
+      const userCity = currentUserData.currentCity || currentUserData.city || "";
+      const userState = currentUserData.currentState || currentUserData.state || "";
 
-        // ✅ If video, also upload thumbnail
-        if (mediaType === "video" && videoThumbnailUri) {
-          try {
-            console.log("📸 Uploading video thumbnail...");
-            const thumbnailResponse = await fetch(videoThumbnailUri);
-            const thumbnailBlob = await thumbnailResponse.blob();
-            const thumbnailPath = `posts/${auth.currentUser?.uid}/${Date.now()}_thumb.jpg`;
-            const thumbnailRef = ref(storage, thumbnailPath);
+      // Calculate geohash (5-char precision)
+      const geohash = userLat && userLon ? encodeGeohash(userLat, userLon, 5) : "";
+
+      // Upload images (if any)
+      const uploadedImageUrls: string[] = [];
+      if (mediaType === "images" && imageUris.length > 0) {
+        for (let i = 0; i < imageUris.length; i++) {
+          const uri = imageUris[i];
+          
+          // Only upload if local file
+          if (uri.startsWith('file://')) {
+            const response = await fetch(uri);
+            const blob = await response.blob();
             
-            await uploadBytes(thumbnailRef, thumbnailBlob);
-            uploadedThumbnailUrl = await getDownloadURL(thumbnailRef);
-            console.log("✅ Thumbnail uploaded to:", uploadedThumbnailUrl);
-          } catch (thumbError) {
-            console.error("⚠️ Thumbnail upload failed:", thumbError);
-            // Continue without thumbnail if upload fails
+            const path = `posts/${uid}/${Date.now()}_${i}.jpg`;
+            const storageRef = ref(storage, path);
+            
+            await uploadBytes(storageRef, blob);
+            const url = await getDownloadURL(storageRef);
+            uploadedImageUrls.push(url);
+          } else {
+            // Existing URL (edit mode)
+            uploadedImageUrls.push(uri);
           }
         }
-      } else if (mediaUri) {
-        // Existing media URL from edit mode
-        mediaUrlField = mediaType === "video" ? "videoUrl" : "imageUrl";
       }
 
-      // Extract @mentions from content using same regex as rendering
+      // Upload video (if any)
+      let uploadedVideoUrl: string | null = null;
+      let uploadedThumbnailUrl: string | null = null;
+
+      if (mediaType === "video" && videoUri) {
+        if (videoUri.startsWith('file://')) {
+          const response = await fetch(videoUri);
+          const blob = await response.blob();
+          
+          const path = `posts/${uid}/${Date.now()}.mp4`;
+          const storageRef = ref(storage, path);
+          
+          await uploadBytes(storageRef, blob);
+          uploadedVideoUrl = await getDownloadURL(storageRef);
+
+          // Upload thumbnail
+          if (videoThumbnailUri) {
+            try {
+              const thumbnailResponse = await fetch(videoThumbnailUri);
+              const thumbnailBlob = await thumbnailResponse.blob();
+              const thumbnailPath = `posts/${uid}/${Date.now()}_thumb.jpg`;
+              const thumbnailRef = ref(storage, thumbnailPath);
+              
+              await uploadBytes(thumbnailRef, thumbnailBlob);
+              uploadedThumbnailUrl = await getDownloadURL(thumbnailRef);
+            } catch (thumbError) {
+              console.error("⚠️ Thumbnail upload failed:", thumbError);
+            }
+          }
+        } else {
+          uploadedVideoUrl = videoUri;
+          uploadedThumbnailUrl = videoThumbnailUri;
+        }
+      }
+
+      // Extract mentions
       const mentionRegex = /@([\w\s]+?)(?=\s{2,}|$|@|\n)/g;
       const mentions = content.match(mentionRegex) || [];
-      
-      console.log("🔍 Extracted mentions from content:", mentions);
       
       const extractedPartners: Partner[] = [];
       const extractedCourses: Course[] = [];
       
-      // Match mentions against partners and courses
       for (const mention of mentions) {
-        const mentionText = mention.substring(1).trim(); // Remove @ and trim
+        const mentionText = mention.substring(1).trim();
         
-        console.log("🔎 Checking mention:", mentionText);
-        
-        // Check if it's a partner
         const matchedPartner = allPartners.find(
           (p) => p.displayName.toLowerCase() === mentionText.toLowerCase()
         );
         
         if (matchedPartner && !extractedPartners.find((p) => p.userId === matchedPartner.userId)) {
-          console.log("✅ Matched partner:", matchedPartner.displayName);
           extractedPartners.push(matchedPartner);
           continue;
         }
         
-        // Check if it's a course (from cached courses)
         try {
           const coursesQuery = query(collection(db, "courses"));
           const coursesSnap = await getDocs(coursesQuery);
           
-          let foundCourse = false;
           coursesSnap.forEach((doc) => {
             const data = doc.data();
             const courseName = data.course_name || data.courseName || "";
             
-            console.log("📍 Comparing with course:", courseName);
-            
             if (courseName.toLowerCase() === mentionText.toLowerCase() &&
                 !extractedCourses.find((c) => c.courseId === data.id)) {
-              console.log("✅ Matched course:", courseName);
               extractedCourses.push({
                 courseId: data.id,
                 courseName: courseName,
               });
-              foundCourse = true;
             }
           });
-          
-          if (!foundCourse) {
-            console.log("❌ No course match found for:", mentionText);
-          }
         } catch (err) {
           console.error("Error matching course mentions:", err);
         }
       }
-      
-      console.log("📦 Final extracted partners:", extractedPartners);
-      console.log("📦 Final extracted courses:", extractedCourses);
 
+      // Build post data with full architecture
       const postData: any = {
         content: content.trim(),
         postType: selectedType,
+        
+        // Region data
+        regionKey: currentUserData.regionKey || "",
+        geohash: geohash,
+        location: {
+          city: userCity,
+          state: userState,
+          latitude: userLat || null,
+          longitude: userLon || null,
+        },
+        
+        // Denormalized user data
+        userName: currentUserData.displayName || "Unknown",
+        userAvatar: currentUserData.avatar || null,
+        userHandicap: currentUserData.handicap || null,
+        userType: currentUserData.userType || "Golfer",
+        userVerified: currentUserData.verified === true || currentUserData.verification?.status === "approved",
+        
+        // Media
+        hasMedia: uploadedImageUrls.length > 0 || uploadedVideoUrl !== null,
+        mediaType: uploadedImageUrls.length > 0 ? "images" : uploadedVideoUrl ? "video" : null,
+        imageUrls: uploadedImageUrls,
+        imageCount: uploadedImageUrls.length,
+        imageUrl: null, // Deprecated
+        videoUrl: uploadedVideoUrl,
+        videoThumbnailUrl: uploadedThumbnailUrl,
+        videoDuration: uploadedVideoUrl ? (trimEnd - trimStart) : null,
+        videoTrimStart: uploadedVideoUrl ? trimStart : null,
+        videoTrimEnd: uploadedVideoUrl ? trimEnd : null,
+        
+        // Engagement
+        likes: 0,
+        likedBy: [],
+        comments: 0,
+        engagementScore: 0,
+        lastActivityAt: new Date(),
+        viewCount: 0,
+        
+        // Search
+        contentLowercase: content.trim().toLowerCase(),
+        hashtags: extractHashtags(content),
+        
+        // Tags
         taggedPartners: extractedPartners.map((p) => ({
           userId: p.userId,
           displayName: p.displayName,
@@ -905,59 +1061,39 @@ export default function CreateScreen() {
           courseId: c.courseId,
           courseName: c.courseName,
         })),
+        
+        // Moderation
+        isReported: false,
+        reportCount: 0,
+        isHidden: false,
+        moderatedAt: null,
+        moderatedBy: null,
+        
+        // Performance
+        createdAtTimestamp: Date.now(),
       };
 
-      // Add media URL to appropriate field
-      if (mediaUrlField === "imageUrl") {
-        postData.imageUrl = uploadedMediaUrl;
-        postData.videoUrl = null; // Clear video if switching to image
-        postData.videoThumbnailUrl = null; // Clear thumbnail
-      } else if (mediaUrlField === "videoUrl") {
-        postData.videoUrl = uploadedMediaUrl;
-        postData.imageUrl = null; // Clear image if switching to video
-        postData.videoThumbnailUrl = uploadedThumbnailUrl; // Add thumbnail URL
-        
-        // Add video metadata
-        postData.videoDuration = trimEnd - trimStart;
-        postData.videoTrimStart = trimStart;
-        postData.videoTrimEnd = trimEnd;
-      } else {
-        // No media
-        postData.imageUrl = null;
-        postData.videoUrl = null;
-        postData.videoThumbnailUrl = null;
-      }
-
       if (isEditMode && editingPostId) {
-        // UPDATE existing post
         await updateDoc(doc(db, "thoughts", editingPostId), postData);
         soundPlayer.play('postThought');
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         Alert.alert("Updated ✏️", "Your thought has been updated.");
       } else {
-        // CREATE new post
         const newPostRef = await addDoc(collection(db, "thoughts"), {
           thoughtId: `thought_${Date.now()}`,
-          userId: auth.currentUser?.uid,
-          userType: userData?.userType,
+          userId: uid,
           ...postData,
           createdAt: new Date(),
-          likes: 0,
-          likedBy: [],
-          comments: 0,
         });
 
-        // ✅ ANTI-BOT: Update rate limit timestamp
         await updateRateLimitTimestamp("post");
 
-        // Create mention notifications for tagged partners
-        const currentUserId = auth.currentUser?.uid;
-        if (extractedPartners.length > 0 && currentUserId) {
+        if (extractedPartners.length > 0) {
           extractedPartners.forEach(async (partner) => {
             await createNotification({
               userId: partner.userId,
               type: "mention_post",
-              actorId: currentUserId,
+              actorId: uid,
               postId: newPostRef.id,
             });
           });
@@ -977,11 +1113,24 @@ export default function CreateScreen() {
     }
   };
 
+  /* --------------------------- TOGGLE VIDEO PLAYBACK --------------------------- */
+
+  const toggleVideoPlayback = async () => {
+    if (!videoRef.current) return;
+    
+    if (isVideoPlaying) {
+      await videoRef.current.pauseAsync();
+      setIsVideoPlaying(false);
+    } else {
+      await videoRef.current.playAsync();
+      setIsVideoPlaying(true);
+    }
+  };
+
   /* --------------------------- UI ---------------------------- */
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
-      {/* HEADER - Outside KeyboardAvoidingView so it stays fixed */}
       <View style={styles.header}>
         <TouchableOpacity 
           onPress={handleClose}
@@ -999,7 +1148,6 @@ export default function CreateScreen() {
         </Text>
 
         <View style={styles.headerRightButtons}>
-          {/* Delete button (only in edit mode) */}
           {isEditMode && (
             <TouchableOpacity
               onPress={handleDelete}
@@ -1010,7 +1158,6 @@ export default function CreateScreen() {
             </TouchableOpacity>
           )}
 
-          {/* Submit button */}
           <TouchableOpacity
             onPress={handlePost}
             disabled={!writable || isPosting}
@@ -1024,7 +1171,6 @@ export default function CreateScreen() {
         </View>
       </View>
 
-      {/* LOCK BANNER */}
       {!writable && (
         <View style={styles.lockBanner}>
           <Text style={styles.lockText}>
@@ -1033,7 +1179,6 @@ export default function CreateScreen() {
         </View>
       )}
 
-      {/* Content wrapped in KeyboardAvoidingView */}
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={styles.flex1}
@@ -1045,125 +1190,185 @@ export default function CreateScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* MEDIA PREVIEW */}
+          {/* MEDIA SECTION */}
           <View style={styles.section}>
             {isProcessingMedia ? (
               <View style={styles.mediaPreviewBox}>
                 <ActivityIndicator size="large" color="#0D5C3A" />
-                <Text style={styles.processingText}>Compressing media...</Text>
+                <Text style={styles.processingText}>Processing media...</Text>
               </View>
-            ) : mediaUri ? (
+            ) : (imageUris.length > 0 || videoUri) ? (
               <View>
-                <View style={styles.mediaPreviewBox}>
-                  {mediaType === "image" ? (
-                    <Image source={{ uri: mediaUri }} style={styles.mediaPreview} />
-                  ) : (
-                    <Video
-                      ref={videoRef}
-                      source={{ uri: mediaUri }}
-                      style={styles.mediaPreview}
-                      resizeMode={ResizeMode.COVER}
-                      shouldPlay
-                      isLooping
-                      isMuted
+                {/* IMAGE CAROUSEL */}
+                {imageUris.length > 0 && (
+                  <View>
+                    <FlatList
+                      data={imageUris}
+                      horizontal
+                      pagingEnabled
+                      showsHorizontalScrollIndicator={false}
+                      onMomentumScrollEnd={(event) => {
+                        const index = Math.round(
+                          event.nativeEvent.contentOffset.x / (SCREEN_WIDTH - 32)
+                        );
+                        setCurrentImageIndex(index);
+                      }}
+                      renderItem={({ item, index }) => (
+                        <View style={[styles.imageCarouselItem, { width: SCREEN_WIDTH - 32 }]}>
+                          <Image source={{ uri: item }} style={styles.carouselImage} />
+                          <TouchableOpacity
+                            style={styles.removeImageButton}
+                            onPress={() => removeImage(index)}
+                          >
+                            <Text style={styles.removeImageText}>✕</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                      keyExtractor={(item, index) => `image-${index}`}
                     />
-                  )}
-                </View>
-
-                {/* Video Trimmer */}
-                {mediaType === "video" && showVideoTrimmer && (
-                  <View style={styles.videoTrimmer}>
-                    <Text style={styles.trimmerLabel}>
-                      Trim Video: {trimStart.toFixed(1)}s - {trimEnd.toFixed(1)}s 
-                      ({(trimEnd - trimStart).toFixed(1)}s clip)
-                    </Text>
                     
-                    <View style={styles.sliderContainer}>
-                      <Text style={styles.sliderLabel}>Start</Text>
-                      <Slider
-                        style={styles.slider}
-                        minimumValue={0}
-                        maximumValue={Math.max(0, videoDuration - 1)}
-                        value={trimStart}
-                        onValueChange={(value) => {
-                          setTrimStart(value);
-                          if (trimEnd - value > MAX_VIDEO_DURATION) {
-                            setTrimEnd(value + MAX_VIDEO_DURATION);
-                          }
-                        }}
-                        minimumTrackTintColor="#0D5C3A"
-                        maximumTrackTintColor="#E0E0E0"
-                        thumbTintColor="#0D5C3A"
-                      />
-                      <Text style={styles.sliderValue}>{trimStart.toFixed(1)}s</Text>
-                    </View>
-
-                    <View style={styles.sliderContainer}>
-                      <Text style={styles.sliderLabel}>End</Text>
-                      <Slider
-                        style={styles.slider}
-                        minimumValue={trimStart + 1}
-                        maximumValue={Math.min(videoDuration, trimStart + MAX_VIDEO_DURATION)}
-                        value={trimEnd}
-                        onValueChange={setTrimEnd}
-                        minimumTrackTintColor="#0D5C3A"
-                        maximumTrackTintColor="#E0E0E0"
-                        thumbTintColor="#0D5C3A"
-                      />
-                      <Text style={styles.sliderValue}>{trimEnd.toFixed(1)}s</Text>
-                    </View>
+                    {/* Pagination Dots */}
+                    {imageUris.length > 1 && (
+                      <View style={styles.paginationDots}>
+                        {imageUris.map((_, index) => (
+                          <View
+                            key={index}
+                            style={[
+                              styles.dot,
+                              currentImageIndex === index && styles.dotActive,
+                            ]}
+                          />
+                        ))}
+                      </View>
+                    )}
+                    
+                    {/* Add More Button */}
+                    {imageUris.length < MAX_IMAGES && (
+                      <TouchableOpacity
+                        style={styles.addMoreButton}
+                        onPress={addMoreImages}
+                      >
+                        <Text style={styles.addMoreText}>
+                          + Add More ({imageUris.length}/{MAX_IMAGES})
+                        </Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 )}
 
-                {/* Media Type Toggle & Remove Button */}
-                <View style={styles.mediaActions}>
-                  <TouchableOpacity
-                    style={styles.changeMediaButton}
-                    onPress={() => pickMedia(mediaType === "image" ? "video" : "image")}
-                  >
-                    <Text style={styles.changeMediaText}>
-                      Switch to {mediaType === "image" ? "Video 🎥" : "Image 📸"}
-                    </Text>
-                  </TouchableOpacity>
+                {/* VIDEO PREVIEW */}
+                {videoUri && (
+                  <View>
+                    <View style={styles.mediaPreviewBox}>
+                      <Video
+                        ref={videoRef}
+                        source={{ uri: videoUri }}
+                        style={styles.mediaPreview}
+                        resizeMode={ResizeMode.COVER}
+                        isLooping
+                        isMuted
+                        shouldPlay={false}
+                      />
+                      
+                      {/* Play Button Overlay */}
+                      {!isVideoPlaying && (
+                        <TouchableOpacity
+                          style={styles.videoPlayOverlay}
+                          onPress={toggleVideoPlayback}
+                        >
+                          <View style={styles.playButton}>
+                            <Text style={styles.playIcon}>▶</Text>
+                          </View>
+                        </TouchableOpacity>
+                      )}
+                      
+                      {isVideoPlaying && (
+                        <TouchableOpacity
+                          style={styles.videoPauseOverlay}
+                          onPress={toggleVideoPlayback}
+                        >
+                          <View style={styles.pauseButton}>
+                            <Text style={styles.pauseIcon}>⏸</Text>
+                          </View>
+                        </TouchableOpacity>
+                      )}
+                    </View>
 
-                  <TouchableOpacity
-                    style={styles.removeMediaButton}
-                    onPress={() => {
-                      soundPlayer.play('click');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setMediaUri(null);
-                      setMediaType(null);
-                      setVideoThumbnailUri(null); // Clear thumbnail
-                      setShowVideoTrimmer(false);
-                    }}
-                  >
-                    <Text style={styles.removeMediaText}>✕ Remove</Text>
-                  </TouchableOpacity>
-                </View>
+                    {/* Video Trimmer */}
+                    {showVideoTrimmer && (
+                      <View style={styles.videoTrimmer}>
+                        <Text style={styles.trimmerLabel}>
+                          Trim Video: {trimStart.toFixed(1)}s - {trimEnd.toFixed(1)}s 
+                          ({(trimEnd - trimStart).toFixed(1)}s clip)
+                        </Text>
+                        
+                        <View style={styles.sliderContainer}>
+                          <Text style={styles.sliderLabel}>Start</Text>
+                          <Slider
+                            style={styles.slider}
+                            minimumValue={0}
+                            maximumValue={Math.max(0, videoDuration - 1)}
+                            value={trimStart}
+                            onValueChange={(value) => {
+                              setTrimStart(value);
+                              if (trimEnd - value > MAX_VIDEO_DURATION) {
+                                setTrimEnd(value + MAX_VIDEO_DURATION);
+                              }
+                            }}
+                            minimumTrackTintColor="#0D5C3A"
+                            maximumTrackTintColor="#E0E0E0"
+                            thumbTintColor="#0D5C3A"
+                          />
+                          <Text style={styles.sliderValue}>{trimStart.toFixed(1)}s</Text>
+                        </View>
+
+                        <View style={styles.sliderContainer}>
+                          <Text style={styles.sliderLabel}>End</Text>
+                          <Slider
+                            style={styles.slider}
+                            minimumValue={trimStart + 1}
+                            maximumValue={Math.min(videoDuration, trimStart + MAX_VIDEO_DURATION)}
+                            value={trimEnd}
+                            onValueChange={setTrimEnd}
+                            minimumTrackTintColor="#0D5C3A"
+                            maximumTrackTintColor="#E0E0E0"
+                            thumbTintColor="#0D5C3A"
+                          />
+                          <Text style={styles.sliderValue}>{trimEnd.toFixed(1)}s</Text>
+                        </View>
+                      </View>
+                    )}
+
+                    {/* Remove Video Button */}
+                    <TouchableOpacity
+                      style={styles.removeVideoButton}
+                      onPress={() => {
+                        soundPlayer.play('click');
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setVideoUri(null);
+                        setVideoThumbnailUri(null);
+                        setMediaType(null);
+                        setShowVideoTrimmer(false);
+                        setIsVideoPlaying(false);
+                      }}
+                    >
+                      <Text style={styles.removeMediaText}>✕ Remove Video</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
               </View>
             ) : (
-              <View style={styles.mediaPickerButtons}>
-                <TouchableOpacity
-                  style={styles.mediaPickerButton}
-                  onPress={() => pickMedia("image")}
-                  disabled={!writable}
-                >
-                  <Text style={styles.mediaPickerIcon}>📸</Text>
-                  <Text style={styles.mediaPickerText}>Add Image</Text>
-                  <Text style={styles.mediaPickerHint}>Photos get 3x more likes</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.mediaPickerButton}
-                  onPress={() => pickMedia("video")}
-                  disabled={!writable}
-                >
-                  <Text style={styles.mediaPickerIcon}>🎥</Text>
-                  <Text style={styles.mediaPickerText}>Add Video</Text>
-                  <Text style={styles.mediaPickerHint}>Up to 30 seconds</Text>
-                  <Text style={styles.mediaPickerHint2}>✂️ Crop & trim in picker</Text>
-                </TouchableOpacity>
-              </View>
+              /* UNIFIED MEDIA PICKER */
+              <TouchableOpacity
+                style={styles.mediaPickerButton}
+                onPress={pickMedia}
+                disabled={!writable}
+              >
+                <Text style={styles.mediaPickerIcon}>📷</Text>
+                <Text style={styles.mediaPickerText}>Select Media</Text>
+                <Text style={styles.mediaPickerHint}>Add up to 3 photos</Text>
+                <Text style={styles.mediaPickerHint}>or 1 video (30s max)</Text>
+              </TouchableOpacity>
             )}
           </View>
 
@@ -1217,7 +1422,6 @@ export default function CreateScreen() {
               textAlignVertical="top"
             />
             
-            {/* Show validated mentions below input */}
             {selectedMentions.length > 0 && (
               <View style={styles.mentionsPreview}>
                 <Text style={styles.mentionsLabel}>Tagged:</Text>
@@ -1262,7 +1466,6 @@ export default function CreateScreen() {
             )}
           </View>
 
-          {/* Extra padding for keyboard */}
           <View style={{ height: 100 }} />
         </ScrollView>
       </KeyboardAvoidingView>
@@ -1369,15 +1572,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
 
-  // Media Picker Buttons
-  mediaPickerButtons: {
-    flexDirection: "row",
-    gap: 12,
-  },
-
+  // Unified Media Picker
   mediaPickerButton: {
-    flex: 1,
-    height: 160,
+    height: 180,
     borderRadius: 12,
     backgroundColor: "#FFF",
     borderWidth: 2,
@@ -1385,44 +1582,103 @@ const styles = StyleSheet.create({
     borderStyle: "dashed",
     alignItems: "center",
     justifyContent: "center",
-    padding: 12,
+    padding: 16,
   },
 
   mediaPickerIcon: {
-    fontSize: 40,
-    marginBottom: 8,
+    fontSize: 48,
+    marginBottom: 12,
   },
 
   mediaPickerText: {
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: "700",
     color: "#0D5C3A",
-    marginBottom: 4,
+    marginBottom: 8,
   },
 
   mediaPickerHint: {
-    fontSize: 11,
+    fontSize: 13,
     color: "#666",
     textAlign: "center",
+    marginTop: 2,
   },
 
-  mediaPickerHint2: {
-    fontSize: 10,
-    color: "#0D5C3A",
-    textAlign: "center",
-    marginTop: 4,
+  // Image Carousel
+  imageCarouselItem: {
+    height: 240,
+    borderRadius: 12,
+    overflow: "hidden",
+    position: "relative",
+  },
+
+  carouselImage: {
+    width: "100%",
+    height: "100%",
+  },
+
+  removeImageButton: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  removeImageText: {
+    color: "#FFF",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+
+  paginationDots: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 12,
+    gap: 6,
+  },
+
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#CCC",
+  },
+
+  dotActive: {
+    backgroundColor: "#0D5C3A",
+    width: 24,
+  },
+
+  addMoreButton: {
+    marginTop: 12,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: "#0D5C3A",
+    alignItems: "center",
+  },
+
+  addMoreText: {
+    color: "#FFF",
     fontWeight: "600",
+    fontSize: 14,
   },
 
   // Media Preview
   mediaPreviewBox: {
     width: "100%",
-    height: 200,
+    height: 240,
     borderRadius: 12,
     overflow: "hidden",
     backgroundColor: "#000",
     alignItems: "center",
     justifyContent: "center",
+    position: "relative",
   },
 
   mediaPreview: {
@@ -1437,41 +1693,61 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  // Media Actions
-  mediaActions: {
-    flexDirection: "row",
-    gap: 8,
-    marginTop: 12,
-  },
-
-  changeMediaButton: {
-    flex: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: "#0D5C3A",
-    borderRadius: 8,
-    alignItems: "center",
-  },
-
-  changeMediaText: {
-    color: "#FFF",
-    fontWeight: "600",
-    fontSize: 13,
-  },
-
-  removeMediaButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    backgroundColor: "#FF3B30",
-    borderRadius: 8,
+  // Video Controls
+  videoPlayOverlay: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.3)",
+  },
+
+  videoPauseOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  playButton: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: "rgba(255,255,255,0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  playIcon: {
+    fontSize: 28,
+    color: "#0D5C3A",
+    marginLeft: 4,
+  },
+
+  pauseButton: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: "rgba(255,255,255,0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  pauseIcon: {
+    fontSize: 24,
+    color: "#0D5C3A",
+  },
+
+  removeVideoButton: {
+    marginTop: 12,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: "#FF3B30",
+    alignItems: "center",
   },
 
   removeMediaText: {
     color: "#FFF",
     fontWeight: "600",
-    fontSize: 13,
+    fontSize: 14,
   },
 
   // Video Trimmer

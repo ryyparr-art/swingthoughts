@@ -31,6 +31,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   FlatList,
   Image,
   Platform,
@@ -48,6 +49,8 @@ import FilterBottomSheet from "@/components/ui/FilterBottomSheet";
 import FilterFAB from "@/components/ui/FilterFAB";
 import { Ionicons } from "@expo/vector-icons";
 
+const SCREEN_WIDTH = Dimensions.get('window').width;
+
 interface Thought {
   id: string;
   thoughtId: string;
@@ -55,22 +58,56 @@ interface Thought {
   userType: string;
   content: string;
   postType?: string;
-  imageUrl?: string;
+  
+  // NEW: Multi-image support
+  imageUrl?: string; // Deprecated, kept for backwards compat
+  imageUrls?: string[]; // NEW: Array of images
+  imageCount?: number;
+  
   videoUrl?: string;
+  videoThumbnailUrl?: string;
   videoDuration?: number;
   videoTrimStart?: number;
   videoTrimEnd?: number;
+  
   createdAt: any;
   likes: number;
   likedBy?: string[];
   comments?: number;
+  
+  // NEW: Denormalized user data (from post)
+  userName?: string;
+  userAvatar?: string;
+  userHandicap?: number;
+  userVerified?: boolean;
+  
+  // Legacy fields (for fetched profiles)
   displayName?: string;
-  courseName?: string;
   avatarUrl?: string;
+  
+  courseName?: string;
   taggedPartners?: Array<{ userId: string; displayName: string }>;
   taggedCourses?: Array<{ courseId: number; courseName: string }>;
   ownedCourseId?: number;
   linkedCourseId?: number;
+  
+  // NEW: Region data
+  regionKey?: string;
+  geohash?: string;
+  location?: {
+    city: string;
+    state: string;
+    latitude?: number;
+    longitude?: number;
+  };
+  
+  // NEW: Engagement metrics
+  engagementScore?: number;
+  viewCount?: number;
+  
+  // NEW: Media metadata
+  hasMedia?: boolean;
+  mediaType?: "images" | "video" | null;
 }
 
 /* ------------------ WEB VIDEO COMPONENT ------------------ */
@@ -133,6 +170,9 @@ export default function ClubhouseScreen() {
   const [playingVideos, setPlayingVideos] = useState<Set<string>>(new Set());
   const videoRefs = useRef<{ [key: string]: any }>({});
   
+  // Image carousel states
+  const [currentImageIndexes, setCurrentImageIndexes] = useState<{ [key: string]: number }>({});
+  
   // Get highlight param from navigation
   const highlightPostId = Array.isArray(params.highlightPostId) 
     ? params.highlightPostId[0] 
@@ -183,13 +223,12 @@ export default function ClubhouseScreen() {
     if (currentUserId) {
       loadFeed();
     }
-  }, [currentUserId, highlightPostId]); // ✅ Added highlightPostId dependency
+  }, [currentUserId, highlightPostId]);
 
   const loadFeed = async () => {
     try {
       setLoading(true);
       
-      // ✅ FIX: If there's a highlighted post, fetch it first
       let highlightedThought: Thought | null = null;
       if (highlightPostId) {
         console.log("🎯 Fetching highlighted post first:", highlightPostId);
@@ -198,38 +237,7 @@ export default function ClubhouseScreen() {
           
           if (postDoc.exists()) {
             const data = postDoc.data();
-            highlightedThought = {
-              id: postDoc.id,
-              thoughtId: data.thoughtId || postDoc.id,
-              userId: data.userId,
-              userType: data.userType || "Golfer",
-              content: data.content || data.caption || "",
-              postType: data.postType,
-              imageUrl: data.imageUrl,
-              videoUrl: data.videoUrl,
-              videoDuration: data.videoDuration,
-              videoTrimStart: data.videoTrimStart,
-              videoTrimEnd: data.videoTrimEnd,
-              createdAt: data.createdAt,
-              likes: data.likes || 0,
-              likedBy: data.likedBy || [],
-              comments: data.comments || 0,
-              courseName: data.courseName,
-              taggedPartners: data.taggedPartners || [],
-              taggedCourses: data.taggedCourses || [],
-              ownedCourseId: data.ownedCourseId,
-              linkedCourseId: data.linkedCourseId,
-            };
-            
-            // Fetch user profile
-            try {
-              const userProfile = await getUserProfile(highlightedThought.userId);
-              highlightedThought.displayName = userProfile.displayName;
-              highlightedThought.avatarUrl = userProfile.avatar || undefined;
-            } catch {
-              highlightedThought.displayName = "[Deleted User]";
-            }
-            
+            highlightedThought = convertPostDataToThought(postDoc.id, data);
             console.log("✅ Highlighted post fetched successfully");
           }
         } catch (error) {
@@ -239,17 +247,13 @@ export default function ClubhouseScreen() {
       }
       
       if (useAlgorithmicFeed && Object.keys(activeFilters).length === 0) {
-        // Use algorithmic feed when no filters are active
         console.log("🎯 Using algorithmic feed");
         const feed = await generateAlgorithmicFeed(currentUserId, 50);
         setFeedItems(feed);
         
-        // Convert feed items to thoughts
         const thoughtsFromFeed = await convertFeedToThoughts(feed);
         
-        // ✅ FIX: If we have a highlighted post, add it to the TOP
         if (highlightedThought) {
-          // Remove it if it already exists in the feed
           const filteredThoughts = thoughtsFromFeed.filter(t => t.id !== highlightPostId);
           setThoughts([highlightedThought, ...filteredThoughts]);
           console.log("✅ Added highlighted post to top of algorithmic feed");
@@ -257,11 +261,9 @@ export default function ClubhouseScreen() {
           setThoughts(thoughtsFromFeed);
         }
       } else {
-        // Use traditional fetch when filters are active
         console.log("🔍 Using filtered feed");
         await fetchThoughts(activeFilters);
         
-        // ✅ FIX: If we have a highlighted post, add it to the TOP of filtered feed too
         if (highlightedThought) {
           setThoughts(prev => {
             const filteredPrev = prev.filter(t => t.id !== highlightPostId);
@@ -279,6 +281,76 @@ export default function ClubhouseScreen() {
     }
   };
 
+  /**
+   * Convert raw Firestore post data to Thought object
+   * Uses denormalized user data from post if available
+   */
+  const convertPostDataToThought = (postId: string, data: any): Thought => {
+    // NEW: Get images array (handle both old single imageUrl and new imageUrls array)
+    let images: string[] = [];
+    if (data.imageUrls && Array.isArray(data.imageUrls) && data.imageUrls.length > 0) {
+      images = data.imageUrls;
+    } else if (data.imageUrl) {
+      images = [data.imageUrl];
+    }
+    
+    const thought: Thought = {
+      id: postId,
+      thoughtId: data.thoughtId || postId,
+      userId: data.userId,
+      userType: data.userType || "Golfer",
+      content: data.content || data.caption || "",
+      postType: data.postType,
+      
+      // NEW: Multi-image support
+      imageUrls: images,
+      imageCount: images.length,
+      imageUrl: data.imageUrl, // Keep for backwards compat
+      
+      videoUrl: data.videoUrl,
+      videoThumbnailUrl: data.videoThumbnailUrl,
+      videoDuration: data.videoDuration,
+      videoTrimStart: data.videoTrimStart,
+      videoTrimEnd: data.videoTrimEnd,
+      
+      createdAt: data.createdAt,
+      likes: data.likes || 0,
+      likedBy: data.likedBy || [],
+      comments: data.comments || 0,
+      
+      // NEW: Use denormalized user data from post (if available)
+      userName: data.userName,
+      userAvatar: data.userAvatar,
+      userHandicap: data.userHandicap,
+      userVerified: data.userVerified,
+      
+      // Legacy fields (will be populated if denormalized data not present)
+      displayName: data.userName || data.displayName,
+      avatarUrl: data.userAvatar || data.avatarUrl,
+      
+      courseName: data.courseName,
+      taggedPartners: data.taggedPartners || [],
+      taggedCourses: data.taggedCourses || [],
+      ownedCourseId: data.ownedCourseId,
+      linkedCourseId: data.linkedCourseId,
+      
+      // NEW: Region data
+      regionKey: data.regionKey,
+      geohash: data.geohash,
+      location: data.location,
+      
+      // NEW: Engagement metrics
+      engagementScore: data.engagementScore,
+      viewCount: data.viewCount,
+      
+      // NEW: Media metadata
+      hasMedia: data.hasMedia,
+      mediaType: data.mediaType,
+    };
+    
+    return thought;
+  };
+
   const convertFeedToThoughts = async (feedItems: FeedItem[]): Promise<Thought[]> => {
     const thoughts: Thought[] = [];
     
@@ -286,37 +358,18 @@ export default function ClubhouseScreen() {
       if (item.type === "post") {
         const postItem = item as FeedPost;
         
-        // Fetch full post data
         const postDoc = await getDoc(doc(db, "thoughts", postItem.id));
         if (postDoc.exists()) {
           const data = postDoc.data();
-          thoughts.push({
-            id: postDoc.id,
-            thoughtId: data.thoughtId || postDoc.id,
-            userId: data.userId,
-            userType: data.userType || "Golfer",
-            content: data.content || data.caption || "",
-            postType: data.postType,
-            imageUrl: data.imageUrl,
-            videoUrl: data.videoUrl,
-            videoDuration: data.videoDuration,
-            videoTrimStart: data.videoTrimStart,
-            videoTrimEnd: data.videoTrimEnd,
-            createdAt: data.createdAt,
-            likes: data.likes || 0,
-            likedBy: data.likedBy || [],
-            comments: data.comments || 0,
-            displayName: postItem.userName,
-            avatarUrl: postItem.userAvatar,
-            courseName: data.courseName,
-            taggedPartners: data.taggedPartners || [],
-            taggedCourses: postItem.taggedCourses || [],
-            ownedCourseId: data.ownedCourseId,
-            linkedCourseId: data.linkedCourseId,
-          });
+          const thought = convertPostDataToThought(postDoc.id, data);
+          
+          // Use feed item's denormalized data if post data doesn't have it
+          if (!thought.displayName) thought.displayName = postItem.userName;
+          if (!thought.avatarUrl) thought.avatarUrl = postItem.userAvatar;
+          
+          thoughts.push(thought);
         }
       } else {
-        // Score item - create a synthetic post
         const scoreItem = item as FeedScore;
         
         thoughts.push({
@@ -348,7 +401,6 @@ export default function ClubhouseScreen() {
       let q: any = collection(db, "thoughts");
       const conditions: any[] = [];
 
-      // Only add where clauses if the filter value is actually defined
       if (filters.type) conditions.push(where("postType", "==", filters.type));
       if (filters.user) conditions.push(where("displayName", "==", filters.user));
 
@@ -359,27 +411,23 @@ export default function ClubhouseScreen() {
       const list: Thought[] = [];
 
       for (const docSnap of snapshot.docs) {
-        const data = docSnap.data() as Thought;
-
-        const thought: Thought = {
-          ...data,
-          id: docSnap.id,
-          thoughtId: data.thoughtId || docSnap.id,
-        };
-
-        // ✅ USE HELPER FUNCTION - Handles deleted users automatically
-        try {
-          const userProfile = await getUserProfile(thought.userId);
-          thought.displayName = userProfile.displayName; // "[Deleted User]" if deleted
-          thought.avatarUrl = userProfile.avatar || undefined;
-        } catch {
-          thought.displayName = "[Deleted User]";
+        const data = docSnap.data();
+        const thought = convertPostDataToThought(docSnap.id, data);
+        
+        // NEW: If denormalized user data not present, fetch profile
+        if (!thought.displayName || !thought.userName) {
+          try {
+            const userProfile = await getUserProfile(thought.userId);
+            thought.displayName = userProfile.displayName;
+            thought.avatarUrl = userProfile.avatar || undefined;
+          } catch {
+            thought.displayName = "[Deleted User]";
+          }
         }
 
         list.push(thought);
       }
 
-      // Apply client-side filters
       let filteredList = list;
       
       if (filters.course) {
@@ -406,7 +454,6 @@ export default function ClubhouseScreen() {
         console.log('✅ Filtered to', filteredList.length, 'posts from partners');
       }
 
-      // ✅ NEW: Apply search query filter
       if (filters.searchQuery) {
         const searchLower = filters.searchQuery.toLowerCase();
         console.log('🔍 Filtering by search query:', searchLower);
@@ -422,7 +469,6 @@ export default function ClubhouseScreen() {
       setLoading(false);
     } catch (err) {
       console.error("Fetch error:", err);
-      // Play error sound on fetch failure
       soundPlayer.play('error');
       setLoading(false);
     }
@@ -438,8 +484,6 @@ export default function ClubhouseScreen() {
 
     try {
       console.log("🎬 Video overlay pressed for:", thoughtId);
-      
-      // Play click sound when toggling video
       soundPlayer.play('click');
       
       if (Platform.OS === 'web') {
@@ -485,7 +529,6 @@ export default function ClubhouseScreen() {
       }
     } catch (error) {
       console.error("❌ Video playback error:", error);
-      // Play error sound on video failure
       soundPlayer.play('error');
       Alert.alert("Video Error", "Failed to play video. Please try again.");
     }
@@ -504,7 +547,6 @@ export default function ClubhouseScreen() {
     if (!videoRef) return;
 
     try {
-      // Play click sound on replay
       soundPlayer.play('click');
       
       if (Platform.OS === 'web') {
@@ -524,21 +566,17 @@ export default function ClubhouseScreen() {
 
   /* ------------------ LIKE ------------------ */
   const handleLike = async (thought: Thought) => {
-    // ✅ FIXED: Only check if user is signed in, not email verification
-    // Users should be able to like posts once they're in the app
     if (!currentUserId) {
       soundPlayer.play('error');
       return Alert.alert("Please sign in to like posts");
     }
 
     if (thought.userId === currentUserId) {
-      // Play error sound for own post like
       soundPlayer.play('error');
       return Alert.alert("You can't like your own post");
     }
 
     try {
-      // Play dart sound + medium haptic for like
       soundPlayer.play('dart');
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
@@ -576,7 +614,6 @@ export default function ClubhouseScreen() {
       );
     } catch (err) {
       console.error("Like error:", err);
-      // Play error sound on like failure
       soundPlayer.play('error');
     }
   };
@@ -584,7 +621,6 @@ export default function ClubhouseScreen() {
   /* ------------------ COMMENTS ------------------ */
   const handleComments = (thought: Thought) => {
     if (!canWrite) {
-      // Play error sound for verification required
       soundPlayer.play('error');
       return Alert.alert(
         "Verification Required",
@@ -592,7 +628,6 @@ export default function ClubhouseScreen() {
       );
     }
 
-    // Play click sound + light haptic for opening comments
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedThought(thought);
@@ -601,7 +636,6 @@ export default function ClubhouseScreen() {
 
   /* ------------------ EDIT POST ------------------ */
   const handleEditPost = (thought: Thought) => {
-    // Play click sound + light haptic for edit
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/create?editId=${thought.id}`);
@@ -609,31 +643,26 @@ export default function ClubhouseScreen() {
 
   /* ------------------ REPORT POST ------------------ */
   const handleReportPost = (thought: Thought) => {
-    // Play click sound + light haptic for report
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setReportingThought(thought);
     setReportModalVisible(true);
   };
 
-  // Check if any filters are active
   const hasActiveFilters = !!(
     activeFilters.type || 
     activeFilters.user || 
     activeFilters.course ||
     activeFilters.partnersOnly ||
-    activeFilters.searchQuery  // ✅ NEW: Include search query
+    activeFilters.searchQuery
   );
 
-  // Optimistic comment count update
   const handleCommentAdded = () => {
     if (!selectedThought) return;
 
-    // ✅ Play success sound when comment is added
     soundPlayer.play('postThought');
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    // ✅ Update the comment count optimistically
     setThoughts((prev) =>
       prev.map((t) =>
         t.id === selectedThought.id
@@ -642,7 +671,6 @@ export default function ClubhouseScreen() {
       )
     );
 
-    // ✅ Update the selectedThought so the modal reflects the new count
     setSelectedThought((prev) => 
       prev ? { ...prev, comments: (prev.comments || 0) + 1 } : prev
     );
@@ -665,7 +693,6 @@ export default function ClubhouseScreen() {
     console.log("🎯 Scrolling to highlighted post:", highlightPostId);
     console.log("📊 Thoughts count:", thoughts.length);
     
-    // Post should be at index 0 since we add it to top in loadFeed
     const postIndex = thoughts.findIndex((t) => t.id === highlightPostId);
     
     if (postIndex !== -1) {
@@ -676,7 +703,7 @@ export default function ClubhouseScreen() {
           flatListRef.current?.scrollToIndex({
             index: postIndex,
             animated: true,
-            viewPosition: 0.2, // Show near top of screen
+            viewPosition: 0.2,
           });
           console.log("✅ Scrolled to highlighted post");
         } catch (error) {
@@ -730,7 +757,6 @@ export default function ClubhouseScreen() {
                 key={index}
                 style={styles.mention}
                 onPress={() => {
-                  // Play click sound + light haptic for mention tap
                   soundPlayer.play('click');
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   if (mention.type === 'partner') {
@@ -748,6 +774,69 @@ export default function ClubhouseScreen() {
           return <Text key={index}>{part}</Text>;
         })}
       </Text>
+    );
+  };
+
+  /* ------------------ RENDER IMAGES CAROUSEL ------------------ */
+  const renderImagesCarousel = (thought: Thought) => {
+    const images = thought.imageUrls || (thought.imageUrl ? [thought.imageUrl] : []);
+    if (images.length === 0) return null;
+    
+    const currentIndex = currentImageIndexes[thought.id] || 0;
+    
+    return (
+      <View>
+        <FlatList
+          data={images}
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          onMomentumScrollEnd={(event) => {
+            const index = Math.round(
+              event.nativeEvent.contentOffset.x / SCREEN_WIDTH
+            );
+            setCurrentImageIndexes(prev => ({
+              ...prev,
+              [thought.id]: index
+            }));
+          }}
+          renderItem={({ item }) => (
+            <View style={{ width: SCREEN_WIDTH }}>
+              <Image 
+                source={{ uri: item }} 
+                style={styles.thoughtImage}
+                resizeMode="cover"
+              />
+            </View>
+          )}
+          keyExtractor={(item, index) => `${thought.id}-image-${index}`}
+        />
+        
+        {/* Pagination Dots */}
+        {images.length > 1 && (
+          <View style={styles.imagePaginationDots}>
+            {images.map((_, index) => (
+              <View
+                key={index}
+                style={[
+                  styles.imageDot,
+                  currentIndex === index && styles.imageDotActive,
+                ]}
+              />
+            ))}
+          </View>
+        )}
+        
+        {/* Image Counter Badge */}
+        {images.length > 1 && (
+          <View style={styles.imageCountBadge}>
+            <Ionicons name="images" size={14} color="#FFF" />
+            <Text style={styles.imageCountText}>
+              {currentIndex + 1}/{images.length}
+            </Text>
+          </View>
+        )}
+      </View>
     );
   };
 
@@ -797,6 +886,10 @@ export default function ClubhouseScreen() {
         year: postDate.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
       });
     };
+    
+    // NEW: Get display name and avatar (prefer denormalized data)
+    const displayName = item.userName || item.displayName || "Unknown";
+    const avatarUrl = item.userAvatar || item.avatarUrl;
 
     return (
       <View style={[
@@ -807,7 +900,6 @@ export default function ClubhouseScreen() {
           <TouchableOpacity 
             style={styles.headerLeft}
             onPress={() => {
-              // Play click sound + light haptic for profile navigation
               soundPlayer.play('click');
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               if (item.userType === 'Course') {
@@ -817,21 +909,21 @@ export default function ClubhouseScreen() {
               }
             }}
           >
-            {item.avatarUrl ? (
+            {avatarUrl ? (
               <Image
-                source={{ uri: item.avatarUrl }}
+                source={{ uri: avatarUrl }}
                 style={styles.avatar}
               />
             ) : (
               <View style={styles.avatarPlaceholder}>
                 <Text style={styles.avatarPlaceholderText}>
-                  {item.displayName?.charAt(0).toUpperCase() || "?"}
+                  {displayName?.charAt(0).toUpperCase() || "?"}
                 </Text>
               </View>
             )}
             <View style={styles.headerInfo}>
               <View style={styles.headerTextContainer}>
-                <Text style={styles.displayName}>{item.displayName}</Text>
+                <Text style={styles.displayName}>{displayName}</Text>
                 {headerText && (
                   <Text style={styles.headerActionText}> {headerText}</Text>
                 )}
@@ -871,9 +963,8 @@ export default function ClubhouseScreen() {
           </View>
         </View>
 
-        {item.imageUrl && (
-          <Image source={{ uri: item.imageUrl}} style={styles.thoughtImage} />
-        )}
+        {/* NEW: Image Carousel */}
+        {renderImagesCarousel(item)}
 
         {item.videoUrl && (
           <View style={styles.videoContainer}>
@@ -1034,7 +1125,6 @@ export default function ClubhouseScreen() {
 
       <FilterFAB 
         onPress={() => {
-          // Play click sound when opening filter
           soundPlayer.play('click');
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           setFilterSheetVisible(true);
@@ -1045,13 +1135,11 @@ export default function ClubhouseScreen() {
       <FilterBottomSheet
         visible={filterSheetVisible}
         onClose={() => {
-          // Play click sound when closing filter
           soundPlayer.play('click');
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           setFilterSheetVisible(false);
         }}
         onApplyFilters={(f) => {
-          // Play click sound when applying filters
           soundPlayer.play('click');
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           setActiveFilters(f);
@@ -1059,22 +1147,19 @@ export default function ClubhouseScreen() {
           loadFeed();
         }}
         onSelectPost={(postId) => {
-          // ✅ NEW: Handle post selection from filter sheet
           soundPlayer.play('click');
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           console.log('🎯 Post selected from filter:', postId);
           
-          // Find the post index in current feed
           const postIndex = thoughts.findIndex(t => t.id === postId);
           
           if (postIndex !== -1) {
-            // Scroll to the post
             setTimeout(() => {
               try {
                 flatListRef.current?.scrollToIndex({
                   index: postIndex,
                   animated: true,
-                  viewPosition: 0.2, // Show near top of screen
+                  viewPosition: 0.2,
                 });
                 console.log('✅ Scrolled to post');
               } catch (error) {
@@ -1091,7 +1176,6 @@ export default function ClubhouseScreen() {
             Alert.alert("Post Not Found", "This post may not match your current filters.");
           }
           
-          // Close the filter sheet
           setFilterSheetVisible(false);
         }}
         posts={thoughts}
@@ -1105,7 +1189,6 @@ export default function ClubhouseScreen() {
           postContent={selectedThought.content}
           postOwnerId={selectedThought.userId}
           onClose={() => {
-            // Play click sound when closing comments
             soundPlayer.play('click');
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             setCommentsModalVisible(false);
@@ -1118,7 +1201,6 @@ export default function ClubhouseScreen() {
       <ReportModal
         visible={reportModalVisible}
         onClose={() => {
-          // Play click sound when closing report
           soundPlayer.play('click');
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           setReportModalVisible(false);
@@ -1253,6 +1335,49 @@ const styles = StyleSheet.create({
     width: "100%", 
     height: 300 
   },
+  
+  // NEW: Image Carousel Styles
+  imagePaginationDots: {
+    position: "absolute",
+    bottom: 12,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 6,
+  },
+  imageDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "rgba(255, 255, 255, 0.6)",
+    borderWidth: 1,
+    borderColor: "rgba(0, 0, 0, 0.2)",
+  },
+  imageDotActive: {
+    backgroundColor: "#FFD700",
+    width: 24,
+    borderColor: "rgba(0, 0, 0, 0.3)",
+  },
+  imageCountBadge: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(0, 0, 0, 0.75)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  imageCountText: {
+    color: "#FFF",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  
   videoContainer: {
     width: "100%",
     height: 300,

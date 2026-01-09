@@ -1,11 +1,11 @@
 import { auth, db } from "@/constants/firebaseConfig";
-import { getNearbyCourses } from "@/utils/courseCache";
+import { getLeaderboardsByRegion } from "@/utils/leaderboardHelpers";
+import { findNearestRegions } from "@/utils/regionHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
-import { batchGetUserProfiles } from "@/utils/userProfileHelpers";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
-import { collection, doc, getDoc, getDocs, updateDoc } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, query, updateDoc, where } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -30,6 +30,9 @@ interface Score {
   grossScore: number;
   netScore: number;
   par: number;
+  tees: string;
+  teePar: number;
+  teeYardage: number;
   createdAt: any;
   userName?: string;
   userAvatar?: string | null;
@@ -38,15 +41,19 @@ interface Score {
 interface CourseBoard {
   courseId: number;
   courseName: string;
-  distance: number;
+  distance?: number;
   scores: Score[];
   isPinned: boolean;
+  location?: {
+    city?: string;
+    state?: string;
+  };
 }
 
 interface AllCoursesLeaderboardModalProps {
   visible: boolean;
   onClose: () => void;
-  onPinChange?: () => void; // Callback to refresh main leaderboard
+  onPinChange?: () => void;
 }
 
 export default function AllCoursesLeaderboardModal({
@@ -75,85 +82,130 @@ export default function AllCoursesLeaderboardModal({
         return;
       }
 
-      // Get user's pinned leaderboard
+      // Get user data
       const userDoc = await getDoc(doc(db, "users", uid));
-      const pinnedLeaderboard = userDoc.data()?.pinnedLeaderboard;
+      if (!userDoc.exists()) {
+        console.log("❌ User document not found");
+        setLoading(false);
+        return;
+      }
+
+      const userData = userDoc.data();
+      const userRegionKey = userData.regionKey;
+      const userLat = userData.currentLatitude || userData.latitude;
+      const userLon = userData.currentLongitude || userData.longitude;
+      const pinnedLeaderboard = userData.pinnedLeaderboard;
+
       setPinnedCourseId(pinnedLeaderboard?.courseId || null);
 
-      // Get all nearby courses (within 50 miles)
-      const nearbyCourses = await getNearbyCourses(uid, 50);
-      console.log(`📦 [Modal] Found ${nearbyCourses.length} courses within 50 miles`);
-
-      if (nearbyCourses.length === 0) {
+      if (!userRegionKey) {
+        console.log("⚠️ User has no regionKey");
         setBoards([]);
         setLoading(false);
         return;
       }
 
-      // Load all scores
-      const scoresSnap = await getDocs(collection(db, "scores"));
-      const userIds = new Set<string>();
-      const scores: Score[] = [];
+      console.log(`📦 Loading all courses in region: ${userRegionKey}`);
 
-      scoresSnap.forEach((d) => {
-        const data = d.data();
-        scores.push({
-          scoreId: d.id,
-          userId: data.userId,
-          courseId: data.courseId,
-          courseName: data.courseName,
-          grossScore: data.grossScore,
-          netScore: data.netScore,
-          par: data.par,
-          createdAt: data.createdAt,
+      // Get all leaderboards in user's region
+      let leaderboards = await getLeaderboardsByRegion(userRegionKey);
+
+      console.log(`📦 Found ${leaderboards.length} leaderboards in ${userRegionKey}`);
+
+      // Expand to nearby regions to get more courses
+      if (userLat && userLon) {
+        const nearbyRegions = findNearestRegions(userLat, userLon, 5, 100);
+        
+        for (const { region } of nearbyRegions) {
+          if (region.key === userRegionKey) continue; // Skip user's own region
+          
+          const moreBoards = await getLeaderboardsByRegion(region.key);
+          leaderboards.push(...moreBoards);
+          
+          console.log(`✅ Added ${moreBoards.length} from ${region.displayName}`);
+        }
+      }
+
+      console.log(`📦 Total leaderboards: ${leaderboards.length}`);
+
+      if (leaderboards.length === 0) {
+        setBoards([]);
+        setLoading(false);
+        return;
+      }
+
+      // Calculate distances for each course
+      const boardsWithDistance: CourseBoard[] = [];
+
+      for (const leaderboard of leaderboards) {
+        // Get course details for distance
+        const courseQuery = query(
+          collection(db, "courses"),
+          where("id", "==", leaderboard.courseId)
+        );
+        const courseSnap = await getDocs(courseQuery);
+
+        let distance: number | undefined;
+        let location = leaderboard.location;
+
+        if (!courseSnap.empty) {
+          const courseData = courseSnap.docs[0].data();
+          if (courseData.location?.latitude && courseData.location?.longitude && userLat && userLon) {
+            distance = milesBetween(
+              userLat,
+              userLon,
+              courseData.location.latitude,
+              courseData.location.longitude
+            );
+          }
+
+          if (!location && courseData.location) {
+            location = {
+              city: courseData.location.city,
+              state: courseData.location.state,
+            };
+          }
+        }
+
+        boardsWithDistance.push({
+          courseId: leaderboard.courseId,
+          courseName: leaderboard.courseName,
+          distance,
+          scores: leaderboard.topScores || [],
+          isPinned: leaderboard.courseId === pinnedCourseId,
+          location,
         });
-        if (data.userId) userIds.add(data.userId);
+      }
+
+      // Sort by distance (closest first)
+      boardsWithDistance.sort((a, b) => {
+        if (a.distance === undefined && b.distance === undefined) return 0;
+        if (a.distance === undefined) return 1;
+        if (b.distance === undefined) return -1;
+        return a.distance - b.distance;
       });
 
-      // Load user profiles
-      const profileMap = await batchGetUserProfiles(Array.from(userIds));
-      const profiles: Record<string, any> = {};
-
-      profileMap.forEach((profile, userId) => {
-        profiles[userId] = {
-          displayName: profile.displayName,
-          avatar: profile.avatar,
-          userType: profile.userType,
-        };
-      });
-
-      // Merge scores with user data and filter out course accounts
-      const mergedScores = scores
-        .filter((s) => profiles[s.userId]?.userType !== "Course")
-        .filter((s) => s.grossScore != null && s.netScore != null)
-        .map((s) => ({
-          ...s,
-          userName: profiles[s.userId]?.displayName || "[Deleted User]",
-          userAvatar: profiles[s.userId]?.avatar ?? null,
-        }));
-
-      // Build boards for each course
-      const courseBoards: CourseBoard[] = nearbyCourses.map((course) => {
-        const courseScores = mergedScores.filter((s) => s.courseId === course.courseId);
-        const sortedScores = courseScores.sort((a, b) => a.netScore - b.netScore).slice(0, 3);
-
-        return {
-          courseId: course.courseId,
-          courseName: course.courseName,
-          distance: course.distance,
-          scores: sortedScores,
-          isPinned: course.courseId === pinnedCourseId,
-        };
-      });
-
-      console.log(`✅ [Modal] Built ${courseBoards.length} course leaderboards`);
-      setBoards(courseBoards);
+      console.log(`✅ Built ${boardsWithDistance.length} course leaderboards`);
+      setBoards(boardsWithDistance);
       setLoading(false);
     } catch (error) {
       console.error("[Modal] Error loading courses:", error);
       soundPlayer.play("error");
       setLoading(false);
     }
+  };
+
+  const milesBetween = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
+    const toRad = (v: number) => (v * Math.PI) / 180;
+    const R = 3958.8;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+
+    return 2 * R * Math.asin(Math.sqrt(a));
   };
 
   const handlePinCourse = async (courseId: number, courseName: string) => {
@@ -164,7 +216,6 @@ export default function AllCoursesLeaderboardModal({
       const uid = auth.currentUser?.uid;
       if (!uid) return;
 
-      // Update user's pinned leaderboard
       await updateDoc(doc(db, "users", uid), {
         pinnedLeaderboard: {
           courseId,
@@ -175,7 +226,6 @@ export default function AllCoursesLeaderboardModal({
 
       setPinnedCourseId(courseId);
 
-      // Update boards to reflect pin change
       setBoards((prev) =>
         prev.map((board) => ({
           ...board,
@@ -185,7 +235,6 @@ export default function AllCoursesLeaderboardModal({
 
       console.log("✅ Pinned leaderboard:", courseName);
 
-      // Notify parent to refresh
       if (onPinChange) onPinChange();
     } catch (error) {
       console.error("Error pinning course:", error);
@@ -201,14 +250,12 @@ export default function AllCoursesLeaderboardModal({
       const uid = auth.currentUser?.uid;
       if (!uid) return;
 
-      // Remove pinned leaderboard
       await updateDoc(doc(db, "users", uid), {
         pinnedLeaderboard: null,
       });
 
       setPinnedCourseId(null);
 
-      // Update boards
       setBoards((prev) =>
         prev.map((board) => ({
           ...board,
@@ -218,7 +265,6 @@ export default function AllCoursesLeaderboardModal({
 
       console.log("✅ Unpinned leaderboard");
 
-      // Notify parent to refresh
       if (onPinChange) onPinChange();
     } catch (error) {
       console.error("Error unpinning course:", error);
@@ -247,15 +293,20 @@ export default function AllCoursesLeaderboardModal({
         <TouchableOpacity onPress={() => goToCourse(item.courseId)}>
           <View style={styles.boardHeader}>
             <View style={styles.boardHeaderLeft}>
-              <Text style={styles.boardTitle}>
-                {item.courseName} - {item.distance} mi
-              </Text>
+              <Text style={styles.boardTitle}>{item.courseName}</Text>
+              {item.location && (
+                <Text style={styles.boardSubtitle}>
+                  {item.location.city}, {item.location.state}
+                  {item.distance !== undefined && ` • ${item.distance.toFixed(1)} mi`}
+                </Text>
+              )}
             </View>
 
             {/* PIN BUTTON */}
             <TouchableOpacity
               style={[styles.pinButton, item.isPinned && styles.pinButtonActive]}
-              onPress={() => {
+              onPress={(e) => {
+                e.stopPropagation();
                 if (item.isPinned) {
                   Alert.alert(
                     "Unpin Leaderboard",
@@ -368,7 +419,11 @@ export default function AllCoursesLeaderboardModal({
                 }}
                 style={styles.closeButton}
               >
-                <Ionicons name="close" size={28} color="#FFFFFF" />
+                <Image
+                  source={require("@/assets/icons/Close.png")}
+                  style={styles.closeIcon}
+                  resizeMode="contain"
+                />
               </TouchableOpacity>
             </View>
           </SafeAreaView>
@@ -378,7 +433,7 @@ export default function AllCoursesLeaderboardModal({
             <Text style={styles.subtitleText}>
               {loading
                 ? "Loading..."
-                : `${boards.length} courses within 50 miles • Tap 📌 to pin`}
+                : `${boards.length} courses in your region • Tap 📌 to pin`}
             </Text>
           </View>
 
@@ -391,7 +446,7 @@ export default function AllCoursesLeaderboardModal({
               <Ionicons name="golf-outline" size={64} color="#CCC" />
               <Text style={styles.emptyTitle}>No Courses Found</Text>
               <Text style={styles.emptyText}>
-                No golf courses found within 50 miles of your location
+                No golf courses found in your region yet
               </Text>
             </View>
           ) : (
@@ -407,12 +462,8 @@ export default function AllCoursesLeaderboardModal({
                     onPress={() => {
                       soundPlayer.play("click");
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                      // Don't close modal, just navigate to open filter
-                      router.push({
-                        pathname: "/leaderboard",
-                        params: { openFilter: "course" }, // Opens filter with course search selected
-                      });
-                      onClose(); // Close after navigation
+                      onClose(); // Close modal first
+                      router.push("/leaderboard-filters/course-search"); // Navigate to course search
                     }}
                   >
                     <Ionicons name="search" size={20} color="#0D5C3A" />
@@ -458,6 +509,12 @@ const styles = StyleSheet.create({
 
   closeButton: {
     padding: 4,
+  },
+
+  closeIcon: {
+    width: 24,
+    height: 24,
+    tintColor: "#FFFFFF",
   },
 
   subtitle: {
@@ -533,10 +590,18 @@ const styles = StyleSheet.create({
     color: "#0D5C3A",
   },
 
+  boardSubtitle: {
+    fontWeight: "600",
+    fontSize: 14,
+    color: "#666",
+    marginTop: 4,
+  },
+
   pinButton: {
     padding: 8,
     borderRadius: 20,
     backgroundColor: "#F0F0F0",
+    marginLeft: 8,
   },
 
   pinButtonActive: {

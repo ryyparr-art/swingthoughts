@@ -1,11 +1,18 @@
 import { db } from "@/constants/firebaseConfig";
+import { assignRegionFromLocation, getRegionByKey } from "@/utils/regionHelpers";
 import * as Location from "expo-location";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { Alert } from "react-native";
 
+// ============================================================
+// TYPES
+// ============================================================
+
 interface LocationData {
   city: string;
   state: string;
+  latitude: number;
+  longitude: number;
 }
 
 interface LocationHistory {
@@ -16,450 +23,357 @@ interface LocationHistory {
   scoreCount: number;
 }
 
-/**
- * Calculate distance between two coordinates in miles
- */
+// ============================================================
+// GEO HELPERS
+// ============================================================
+
+const toRad = (degrees: number): number => (degrees * Math.PI) / 180;
+
 export const calculateDistance = (
   lat1: number,
   lon1: number,
   lat2: number,
   lon2: number
 ): number => {
-  const R = 3959; // Earth's radius in miles
+  const R = 3959;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
 
   const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) *
       Math.cos(toRad(lat2)) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
+      Math.sin(dLon / 2) ** 2;
 
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  const distance = R * c;
-
-  return Math.round(distance * 10) / 10; // Round to 1 decimal
+  return Math.round((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))) * 10) / 10;
 };
 
-const toRad = (degrees: number): number => {
-  return (degrees * Math.PI) / 180;
-};
+// ============================================================
+// LOCATION RESOLUTION
+// ============================================================
 
-/**
- * Get current GPS location and reverse geocode to city/state
- */
 export const getCurrentLocation = async (): Promise<LocationData | null> => {
   try {
     const { status } = await Location.getForegroundPermissionsAsync();
-    if (status !== "granted") {
-      return null;
-    }
+    if (status !== "granted") return null;
 
     const position = await Location.getCurrentPositionAsync({
       accuracy: Location.Accuracy.Balanced,
     });
 
-    const [geocode] = await Location.reverseGeocodeAsync({
+    const [geo] = await Location.reverseGeocodeAsync(position.coords);
+
+    if (!geo?.region) return null;
+
+    return {
+      city: geo.city || geo.subregion || "",
+      state: geo.region,
       latitude: position.coords.latitude,
       longitude: position.coords.longitude,
-    });
-
-    const city = geocode.city || geocode.subregion || "";
-    const state = geocode.region || "";
-
-    if (!city || !state) return null;
-
-    return { city, state };
-  } catch (error) {
-    console.error("Error getting current location:", error);
+    };
+  } catch (e) {
+    console.error("Error getting current location", e);
     return null;
   }
 };
 
-/**
- * Get coordinates for a city/state (for distance calculations)
- */
-export const getCityCoordinates = async (
-  city: string,
-  state: string
-): Promise<{ latitude: number; longitude: number } | null> => {
-  try {
-    const results = await Location.geocodeAsync(`${city}, ${state}`);
-    if (results && results.length > 0) {
-      return {
-        latitude: results[0].latitude,
-        longitude: results[0].longitude,
-      };
-    }
-    return null;
-  } catch (error) {
-    console.error("Error geocoding city:", error);
-    return null;
-  }
-};
+// ============================================================
+// HISTORY
+// ============================================================
 
-/**
- * Add entry to location history
- */
 const addLocationHistory = async (
   userId: string,
   city: string,
   state: string
 ) => {
   try {
-    const userRef = doc(db, "users", userId);
-    const userDoc = await getDoc(userRef);
+    const ref = doc(db, "users", userId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return;
 
-    if (!userDoc.exists()) return;
-
-    const history: LocationHistory[] = userDoc.data().locationHistory || [];
+    const history: LocationHistory[] = snap.data().locationHistory || [];
     const now = new Date().toISOString();
 
-    // Close current active location (if exists)
-    const activeIndex = history.findIndex((h) => h.to === null);
-    if (activeIndex !== -1) {
-      history[activeIndex].to = now;
-    }
+    const active = history.find((h: LocationHistory) => h.to === null);
+    if (active) active.to = now;
 
-    // Check if we're returning to a previous location
-    const existingIndex = history.findIndex(
-      (h) => h.city === city && h.state === state
-    );
-
-    if (existingIndex !== -1) {
-      // Returning to previous location - reopen it
-      history[existingIndex].to = null;
-      history[existingIndex].from = now;
-    } else {
-      // New location - add to history
-      history.push({
-        city,
-        state,
-        from: now,
-        to: null,
-        scoreCount: 0,
-      });
-    }
-
-    await updateDoc(userRef, {
-      locationHistory: history,
+    history.push({
+      city,
+      state,
+      from: now,
+      to: null,
+      scoreCount: 0,
     });
+
+    await updateDoc(ref, { locationHistory: history });
   } catch (error) {
-    console.error("Error updating location history:", error);
+    console.error("Error adding location history:", error);
   }
 };
 
-/**
- * Increment score count for current location in history
- */
-export const incrementLocationScoreCount = async (userId: string) => {
+export const incrementLocationScoreCount = async (userId: string): Promise<void> => {
   try {
-    const userRef = doc(db, "users", userId);
-    const userDoc = await getDoc(userRef);
+    const ref = doc(db, "users", userId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return;
 
-    if (!userDoc.exists()) return;
-
-    const history: LocationHistory[] = userDoc.data().locationHistory || [];
-    const activeIndex = history.findIndex((h) => h.to === null);
+    const history: LocationHistory[] = snap.data().locationHistory || [];
+    const activeIndex = history.findIndex((h: LocationHistory) => h.to === null);
 
     if (activeIndex !== -1) {
       history[activeIndex].scoreCount += 1;
-      await updateDoc(userRef, { locationHistory: history });
+      await updateDoc(ref, { locationHistory: history });
     }
   } catch (error) {
     console.error("Error incrementing score count:", error);
   }
 };
 
-/**
- * Check if user should update home location (been away 7+ days)
- */
-const shouldPromptHomeLocationChange = async (
-  userId: string,
-  newCity: string,
-  newState: string
-): Promise<boolean> => {
-  try {
-    const userRef = doc(db, "users", userId);
-    const userDoc = await getDoc(userRef);
+// ============================================================
+// MAIN UPDATE
+// ============================================================
 
-    if (!userDoc.exists()) return false;
-
-    const userData = userDoc.data();
-    const homeCity = userData.homeCity;
-    const homeState = userData.homeState;
-    const currentLocationUpdatedAt = userData.currentLocationUpdatedAt;
-
-    // If new location matches home, no prompt needed
-    if (newCity === homeCity && newState === homeState) return false;
-
-    // Check if been away for 7+ days
-    if (currentLocationUpdatedAt) {
-      const daysSinceUpdate =
-        (Date.now() - new Date(currentLocationUpdatedAt).getTime()) /
-        (1000 * 60 * 60 * 24);
-
-      // Also check distance from home
-      const homeCoords = await getCityCoordinates(homeCity, homeState);
-      const newCoords = await getCityCoordinates(newCity, newState);
-
-      if (homeCoords && newCoords) {
-        const distance = calculateDistance(
-          homeCoords.latitude,
-          homeCoords.longitude,
-          newCoords.latitude,
-          newCoords.longitude
-        );
-
-        // Prompt if 100+ miles away for 7+ days
-        return distance > 100 && daysSinceUpdate >= 7;
-      }
-    }
-
-    return false;
-  } catch (error) {
-    console.error("Error checking home location change:", error);
-    return false;
-  }
-};
-
-/**
- * Prompt user to update home location
- */
-const promptHomeLocationChange = (
-  city: string,
-  state: string,
-  onConfirm: () => void
-) => {
-  Alert.alert(
-    "Update Home Location?",
-    `You've been playing in ${city}, ${state} for a while. Would you like to update your home location?`,
-    [
-      {
-        text: "Keep Current Home",
-        style: "cancel",
-      },
-      {
-        text: "Update Home",
-        onPress: onConfirm,
-      },
-    ]
-  );
-};
-
-/**
- * Update current location (active location for leaderboards)
- */
 export const updateCurrentLocation = async (
   userId: string,
-  city: string,
-  state: string,
-  silent: boolean = true
-): Promise<boolean> => {
+  location: LocationData,
+  method: "gps" | "manual"
+): Promise<void> => {
   try {
-    const userRef = doc(db, "users", userId);
-    const now = new Date().toISOString();
+    const ref = doc(db, "users", userId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return;
 
-    await updateDoc(userRef, {
-      currentCity: city,
-      currentState: state,
-      currentLocation: { city, state },
-      currentLocationUpdatedAt: now,
-      locationMethod: silent ? "gps" : "manual",
-    });
+    const user = snap.data();
+    const currentRegionKey = user.regionKey;
 
-    // Add to location history
-    await addLocationHistory(userId, city, state);
+    // ✅ Use regionHelpers for consistent region assignment
+    const newRegionKey = assignRegionFromLocation(
+      location.latitude,
+      location.longitude,
+      location.city,
+      location.state
+    );
 
-    return true;
+    const region = getRegionByKey(newRegionKey);
+
+    if (!region) {
+      console.error(`❌ Region not found for key: ${newRegionKey}`);
+      return;
+    }
+
+    console.log(`📍 Updating location: ${location.city}, ${location.state} → ${region.displayName}`);
+
+    const updates: any = {
+      currentCity: location.city,
+      currentState: location.state,
+      currentLatitude: location.latitude, // ✅ Added
+      currentLongitude: location.longitude, // ✅ Added
+      currentLocationUpdatedAt: new Date().toISOString(),
+      locationMethod: method,
+    };
+
+    // Only update regionKey if it changed
+    if (currentRegionKey !== newRegionKey) {
+      updates.regionKey = newRegionKey;
+      updates.regionUpdatedAt = new Date().toISOString();
+      console.log(`🔄 Region changed: ${currentRegionKey} → ${newRegionKey}`);
+    }
+
+    await updateDoc(ref, updates);
+    await addLocationHistory(userId, location.city, location.state);
+
+    console.log(`✅ Location updated successfully`);
   } catch (error) {
-    console.error("Error updating current location:", error);
-    return false;
+    console.error("❌ Error updating current location:", error);
   }
 };
 
-/**
- * Update home location (identity/profile location)
- */
+// ============================================================
+// HOME LOCATION
+// ============================================================
+
 export const updateHomeLocation = async (
   userId: string,
   city: string,
-  state: string
+  state: string,
+  latitude: number,
+  longitude: number
 ): Promise<boolean> => {
   try {
-    const userRef = doc(db, "users", userId);
+    const ref = doc(db, "users", userId);
 
-    await updateDoc(userRef, {
+    // Assign region for home location too
+    const regionKey = assignRegionFromLocation(latitude, longitude, city, state);
+
+    await updateDoc(ref, {
       homeCity: city,
       homeState: state,
+      homeLatitude: latitude,
+      homeLongitude: longitude,
       homeLocation: { city, state },
       // Also update current location to match
       currentCity: city,
       currentState: state,
+      currentLatitude: latitude,
+      currentLongitude: longitude,
       currentLocation: { city, state },
       currentLocationUpdatedAt: new Date().toISOString(),
+      regionKey,
+      regionUpdatedAt: new Date().toISOString(),
     });
 
-    // Add to location history
     await addLocationHistory(userId, city, state);
 
+    console.log(`✅ Home location updated: ${city}, ${state} → ${regionKey}`);
     return true;
   } catch (error) {
-    console.error("Error updating home location:", error);
+    console.error("❌ Error updating home location:", error);
     return false;
   }
 };
 
-/**
- * Main location check - called on app launch or score submission
- */
+// ============================================================
+// LOCATION CHECK (APP LAUNCH / SCORE POST)
+// ============================================================
+
 export const checkAndUpdateLocation = async (
   userId: string,
   options: {
-    courseCity?: string;
-    courseState?: string;
+    onScoreSubmission?: boolean;
     courseLatitude?: number;
     courseLongitude?: number;
-    onScoreSubmission?: boolean;
+    courseCity?: string;
+    courseState?: string;
   } = {}
 ): Promise<void> => {
   try {
-    // Get user data
-    const userRef = doc(db, "users", userId);
-    const userDoc = await getDoc(userRef);
+    const ref = doc(db, "users", userId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return;
 
-    if (!userDoc.exists()) return;
-
-    const userData = userDoc.data();
-    const hasLocationPermission = userData.locationPermission === true;
-    const currentCity = userData.currentCity || userData.homeCity;
-    const currentState = userData.currentState || userData.homeState;
+    const user = snap.data();
+    const hasPermission = user.locationPermission === true;
 
     // ========== GPS USERS (Auto-update) ==========
-    if (hasLocationPermission) {
-      const newLocation = await getCurrentLocation();
+    if (hasPermission) {
+      const loc = await getCurrentLocation();
+      if (!loc) return;
 
-      if (newLocation && newLocation.city && newLocation.state) {
-        // Get coordinates for distance calculation
-        const currentCoords = await getCityCoordinates(currentCity, currentState);
-        const newCoords = await getCityCoordinates(
-          newLocation.city,
-          newLocation.state
-        );
+      const currentLat = user.currentLatitude || user.latitude;
+      const currentLon = user.currentLongitude || user.longitude;
 
-        if (currentCoords && newCoords) {
-          const distance = calculateDistance(
-            currentCoords.latitude,
-            currentCoords.longitude,
-            newCoords.latitude,
-            newCoords.longitude
-          );
-
-          console.log(
-            `📍 Distance from current location: ${distance} miles`
-          );
-
-          // AUTO-UPDATE if 15+ miles away
-          if (distance >= 15) {
-            console.log(
-              `✅ Auto-updating location to ${newLocation.city}, ${newLocation.state}`
-            );
-
-            await updateCurrentLocation(
-              userId,
-              newLocation.city,
-              newLocation.state,
-              true
-            );
-
-            // Check if should prompt home location change
-            const shouldPrompt = await shouldPromptHomeLocationChange(
-              userId,
-              newLocation.city,
-              newLocation.state
-            );
-
-            if (shouldPrompt) {
-              promptHomeLocationChange(
-                newLocation.city,
-                newLocation.state,
-                async () => {
-                  await updateHomeLocation(
-                    userId,
-                    newLocation.city,
-                    newLocation.state
-                  );
-                }
-              );
-            }
-          }
-        }
+      if (!currentLat || !currentLon) {
+        // First time setting location
+        console.log("📍 Setting initial location");
+        await updateCurrentLocation(userId, loc, "gps");
+        return;
       }
+
+      // Check if user moved 15+ miles
+      const distance = calculateDistance(
+        currentLat,
+        currentLon,
+        loc.latitude,
+        loc.longitude
+      );
+
+      console.log(`📏 Distance from last location: ${distance} miles`);
+
+      if (distance >= 15) {
+        console.log(`🚗 User moved ${distance} miles - updating location`);
+        await updateCurrentLocation(userId, loc, "gps");
+      }
+
       return;
     }
 
     // ========== NON-GPS USERS (Course-based detection) ==========
     if (
       options.onScoreSubmission &&
-      options.courseCity &&
-      options.courseState &&
       options.courseLatitude &&
-      options.courseLongitude
+      options.courseLongitude &&
+      options.courseCity &&
+      options.courseState
     ) {
-      const currentCoords = await getCityCoordinates(currentCity, currentState);
+      const currentLat = user.currentLatitude || user.latitude;
+      const currentLon = user.currentLongitude || user.longitude;
 
-      if (currentCoords) {
-        const distance = calculateDistance(
-          currentCoords.latitude,
-          currentCoords.longitude,
-          options.courseLatitude,
-          options.courseLongitude
-        );
-
-        console.log(
-          `📍 Course distance from saved location: ${distance} miles`
-        );
-
-        // PROMPT if course is 25+ miles away
-        if (distance >= 25) {
-          Alert.alert(
-            "Update Location?",
-            `You played in ${options.courseCity}, ${options.courseState} (${distance} miles from your saved location). Update your active location?`,
-            [
-              {
-                text: "No Thanks",
-                style: "cancel",
+      if (!currentLat || !currentLon) {
+        // No saved location - prompt to set it
+        Alert.alert(
+          "Set Location?",
+          `Set your active location to ${options.courseCity}, ${options.courseState}?`,
+          [
+            { text: "Not Now", style: "cancel" },
+            {
+              text: "Set Location",
+              onPress: async () => {
+                await updateCurrentLocation(
+                  userId,
+                  {
+                    city: options.courseCity!,
+                    state: options.courseState!,
+                    latitude: options.courseLatitude!,
+                    longitude: options.courseLongitude!,
+                  },
+                  "manual"
+                );
               },
-              {
-                text: "Update",
-                onPress: async () => {
-                  await updateCurrentLocation(
-                    userId,
-                    options.courseCity!,
-                    options.courseState!,
-                    false
-                  );
+            },
+          ]
+        );
+        return;
+      }
 
-                  Alert.alert(
-                    "Location Updated",
-                    `Your active location is now ${options.courseCity}, ${options.courseState}`
-                  );
-                },
+      const distance = calculateDistance(
+        currentLat,
+        currentLon,
+        options.courseLatitude,
+        options.courseLongitude
+      );
+
+      console.log(`📍 Course distance from saved location: ${distance} miles`);
+
+      // Prompt if course is 25+ miles away
+      if (distance >= 25) {
+        Alert.alert(
+          "Update Location?",
+          `You played in ${options.courseCity}, ${options.courseState} (${distance} miles from your saved location). Update your active location?`,
+          [
+            { text: "No Thanks", style: "cancel" },
+            {
+              text: "Update",
+              onPress: async () => {
+                await updateCurrentLocation(
+                  userId,
+                  {
+                    city: options.courseCity!,
+                    state: options.courseState!,
+                    latitude: options.courseLatitude!,
+                    longitude: options.courseLongitude!,
+                  },
+                  "manual"
+                );
+
+                Alert.alert(
+                  "Location Updated",
+                  `Your active location is now ${options.courseCity}, ${options.courseState}`
+                );
               },
-            ]
-          );
-        }
+            },
+          ]
+        );
       }
     }
   } catch (error) {
-    console.error("Error in checkAndUpdateLocation:", error);
+    console.error("❌ Error in checkAndUpdateLocation:", error);
   }
 };
 
-/**
- * Request location permissions
- */
+// ============================================================
+// PERMISSIONS
+// ============================================================
+
 export const requestLocationPermission = async (): Promise<boolean> => {
   try {
     const { status } = await Location.requestForegroundPermissionsAsync();
@@ -470,9 +384,6 @@ export const requestLocationPermission = async (): Promise<boolean> => {
   }
 };
 
-/**
- * Check if user has location permissions
- */
 export const hasLocationPermission = async (): Promise<boolean> => {
   try {
     const { status } = await Location.getForegroundPermissionsAsync();

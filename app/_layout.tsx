@@ -107,6 +107,7 @@ export default function RootLayout() {
             hasAcceptedTerms: userData.acceptedTerms,
             lockerCompleted: userData.lockerCompleted,
             userType: userData.userType,
+            regionKey: userData.regionKey,
           });
 
           const hasUserType =
@@ -221,18 +222,28 @@ export default function RootLayout() {
             }
           }
 
-          // 📍 CHECK AND UPDATE LOCATION (silent background check)
+          // 📍 CHECK AND UPDATE LOCATION + REGION (silent background check)
           try {
             const { checkAndUpdateLocation } = await import("../utils/locationHelpers");
-            console.log("📍 Checking location on app launch...");
+            console.log("📍 Checking location and region on app launch...");
             await checkAndUpdateLocation(user.uid);
-            console.log("✅ Location check complete");
+            console.log("✅ Location and region check complete");
           } catch (locationErr) {
             console.error("⚠️ Location check failed (non-critical):", locationErr);
           }
 
-          // ✅ Course caching now handled by shared Firestore cache
-          // No need to cache on app launch - courses are cached on-demand
+          // ✅ REGION-BASED ARCHITECTURE
+          // - Courses are now cached on-demand in leaderboard/index.tsx
+          // - Leaderboards are hydrated when user visits their region
+          // - No need for upfront course caching on app launch
+          // - User's regionKey is assigned/updated via locationHelpers
+          
+          // ⚠️ Check if user has regionKey (for migration period)
+          if (!userData.regionKey) {
+            console.log("⚠️ User missing regionKey - will be assigned on next location update");
+            // This is fine - regionKey will be assigned next time location is checked
+            // or when user visits leaderboards
+          }
 
           // ✅ Only redirect if user is on public/auth routes - allow all app routes
           if (isPublicRoute || (isAuthRoute && !isInAuthFlow)) {
@@ -268,17 +279,3 @@ export default function RootLayout() {
 
   return <Slot />;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-

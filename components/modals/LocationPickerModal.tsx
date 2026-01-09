@@ -1,5 +1,5 @@
 import { auth, db } from "@/constants/firebaseConfig";
-import { cacheNearbyCourses } from "@/utils/courseCache";
+import { assignRegionFromLocation } from "@/utils/regionHelpers";
 import * as Haptics from "expo-haptics";
 import * as Location from "expo-location";
 import { doc, updateDoc } from "firebase/firestore";
@@ -38,7 +38,7 @@ const US_STATES = [
   "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"
 ];
 
-// Major US cities for autocomplete (can expand this list)
+// Major US cities for autocomplete
 const POPULAR_CITIES = [
   "New York", "Los Angeles", "Chicago", "Houston", "Phoenix",
   "Philadelphia", "San Antonio", "San Diego", "Dallas", "San Jose",
@@ -120,26 +120,28 @@ export default function LocationPickerModal({
 
         const uid = auth.currentUser?.uid;
         if (uid) {
-          // ✅ FIXED: Save to currentCity/currentState (dynamic location)
-          // Also update lastLocationUpdate timestamp
-          await updateDoc(doc(db, "users", uid), {
-            currentCity: locationData.city,
-            currentState: locationData.state,
-            currentLatitude: locationData.latitude,
-            currentLongitude: locationData.longitude,
-            lastLocationUpdate: new Date(),
-          });
-
-          // ✅ CACHE NEARBY COURSES (ONE-TIME)
-          console.log("🔍 Caching nearby courses for GPS location...");
-          await cacheNearbyCourses(
-            uid,
+          // ✅ Assign region based on location
+          const regionKey = assignRegionFromLocation(
             locationData.latitude,
             locationData.longitude,
             locationData.city,
             locationData.state
           );
-          console.log("✅ Courses cached successfully");
+
+          console.log(`📍 Assigned region: ${regionKey}`);
+
+          // ✅ Save location + regionKey to user document
+          await updateDoc(doc(db, "users", uid), {
+            currentCity: locationData.city,
+            currentState: locationData.state,
+            currentLatitude: locationData.latitude,
+            currentLongitude: locationData.longitude,
+            regionKey,
+            regionUpdatedAt: new Date().toISOString(),
+            lastLocationUpdate: new Date(),
+          });
+
+          console.log("✅ Location and region saved successfully");
         }
 
         onLocationSet(locationData);
@@ -189,37 +191,28 @@ export default function LocationPickerModal({
 
       const uid = auth.currentUser?.uid;
       if (uid) {
-        // ✅ FIXED: Save to currentCity/currentState (dynamic location)
+        // ✅ Assign region (even without exact lat/lon, will use state fallback)
+        const regionKey = assignRegionFromLocation(
+          latitude || 0,
+          longitude || 0,
+          locationData.city,
+          locationData.state
+        );
+
+        console.log(`📍 Assigned region: ${regionKey}`);
+
+        // ✅ Save location + regionKey to user document
         await updateDoc(doc(db, "users", uid), {
           currentCity: locationData.city,
           currentState: locationData.state,
           currentLatitude: latitude,
           currentLongitude: longitude,
+          regionKey,
+          regionUpdatedAt: new Date().toISOString(),
           lastLocationUpdate: new Date(),
         });
 
-        // ✅ CACHE NEARBY COURSES (ONE-TIME)
-        if (latitude && longitude) {
-          console.log("🔍 Caching nearby courses for manual location...");
-          await cacheNearbyCourses(
-            uid,
-            latitude,
-            longitude,
-            locationData.city,
-            locationData.state
-          );
-          console.log("✅ Courses cached successfully");
-        } else {
-          console.warn("⚠️ No coordinates - caching by state only");
-          // Fallback: cache by state only
-          await cacheNearbyCourses(
-            uid,
-            0, // Dummy lat
-            0, // Dummy lon
-            locationData.city,
-            locationData.state
-          );
-        }
+        console.log("✅ Location and region saved successfully");
       }
 
       onLocationSet(locationData);
@@ -391,7 +384,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     width: "100%",
-    paddingBottom: Platform.OS === "ios" ? 40 : 20, // Account for iPhone home indicator
+    paddingBottom: Platform.OS === "ios" ? 40 : 20,
   },
   scrollContent: {
     padding: 24,
@@ -422,7 +415,7 @@ const styles = StyleSheet.create({
   gpsIcon: {
     width: 48,
     height: 48,
-    tintColor: "#B0433B", // Red color
+    tintColor: "#B0433B",
   },
   gpsButtonText: {
     color: "#FFF",
