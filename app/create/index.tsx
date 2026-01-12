@@ -1021,12 +1021,12 @@ export default function CreateScreen() {
           longitude: userLon || null,
         },
         
-        // Denormalized user data
-        userName: currentUserData.displayName || "Unknown",
-        userAvatar: currentUserData.avatar || null,
-        userHandicap: currentUserData.handicap || null,
+        // ✅ Denormalized user data - using consistent naming (displayName, not userName)
+        displayName: currentUserData.displayName || "Unknown",
+        avatar: currentUserData.avatar || null,
+        handicap: currentUserData.handicap || null,
         userType: currentUserData.userType || "Golfer",
-        userVerified: currentUserData.verified === true || currentUserData.verification?.status === "approved",
+        verified: currentUserData.verified === true || currentUserData.verification?.status === "approved",
         
         // Media
         hasMedia: uploadedImageUrls.length > 0 || uploadedVideoUrl !== null,

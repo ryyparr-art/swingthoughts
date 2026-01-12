@@ -2,16 +2,18 @@ import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
+import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { soundPlayer } from "@/utils/soundPlayer";
 
 import { Ionicons } from "@expo/vector-icons";
 import { Redirect, useFocusEffect, useRouter } from "expo-router";
-import { doc, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, onSnapshot } from "firebase/firestore";
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Image,
   ImageBackground,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -28,55 +30,141 @@ const HoleInOne = require("@/assets/icons/HoleinOne.png");
 export default function LockerScreen() {
   const router = useRouter();
   const currentUserId = auth.currentUser?.uid;
+  const { getCache, setCache } = useCache(); // ✅ Add cache hook
 
   const [profile, setProfile] = useState<any>(null);
   const [clubs, setClubs] = useState<any>(null);
   const [badges, setBadges] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showingCached, setShowingCached] = useState(false); // ✅ Cache indicator
+  const [refreshing, setRefreshing] = useState(false); // ✅ Pull to refresh
 
-  /* ========================= LOAD USER ========================= */
+  /* ========================= LOAD USER WITH CACHE ========================= */
 
   useFocusEffect(
     useCallback(() => {
       if (!currentUserId) return;
 
-      const userRef = doc(db, "users", currentUserId);
+      let unsubscribe: (() => void) | undefined;
 
-      const unsubscribe = onSnapshot(
-        userRef,
-        (snap) => {
-          if (snap.exists()) {
-            const data = snap.data();
-            setProfile(data);
-            setClubs(data.clubs || {});
-            
-            // Parse badges from Firestore structure
-            const badgesData = data.Badges || [];
-            console.log("Raw badges data:", badgesData);
-            
-            // Filter out empty/invalid badges
-            const validBadges = badgesData.filter((badge: any) => {
-              if (!badge) return false;
-              if (typeof badge === "string" && badge.trim() === "") return false;
-              return true;
-            });
-            
-            // ✅ Use displayBadges if available, otherwise fallback to first 3
-            const displayBadges = data.displayBadges || validBadges.slice(0, 3);
-            setBadges(displayBadges);
+      const loadUserWithCache = async () => {
+        try {
+          // Step 1: Try to load from cache (instant)
+          const cached = await getCache(CACHE_KEYS.LOCKER(currentUserId));
+          
+          if (cached) {
+            console.log("⚡ Using cached locker data");
+            setProfile(cached.profile);
+            setClubs(cached.clubs);
+            setBadges(cached.badges);
+            setShowingCached(true);
+            setLoading(false);
           }
-          setLoading(false);
-        },
-        (error) => {
-          console.error("Error loading user:", error);
-          soundPlayer.play('error');
+
+          // Step 2: Set up real-time listener (always)
+          const userRef = doc(db, "users", currentUserId);
+
+          unsubscribe = onSnapshot(
+            userRef,
+            async (snap) => {
+              if (snap.exists()) {
+                const data = snap.data();
+                
+                // Parse badges
+                const badgesData = data.Badges || [];
+                const validBadges = badgesData.filter((badge: any) => {
+                  if (!badge) return false;
+                  if (typeof badge === "string" && badge.trim() === "") return false;
+                  return true;
+                });
+                
+                const displayBadges = data.displayBadges || validBadges.slice(0, 3);
+                
+                // Update state
+                setProfile(data);
+                setClubs(data.clubs || {});
+                setBadges(displayBadges);
+                
+                // Step 3: Update cache
+                await setCache(CACHE_KEYS.LOCKER(currentUserId), {
+                  profile: data,
+                  clubs: data.clubs || {},
+                  badges: displayBadges,
+                });
+                console.log("✅ Locker data cached");
+                
+                setShowingCached(false);
+              }
+              setLoading(false);
+            },
+            (error) => {
+              console.error("Error loading user:", error);
+              soundPlayer.play('error');
+              setShowingCached(false);
+              setLoading(false);
+            }
+          );
+        } catch (error) {
+          console.error("❌ Locker cache error:", error);
           setLoading(false);
         }
-      );
+      };
 
-      return () => unsubscribe();
+      loadUserWithCache();
+
+      return () => {
+        if (unsubscribe) {
+          unsubscribe();
+        }
+      };
     }, [currentUserId])
   );
+
+  /* ========================= PULL TO REFRESH ========================= */
+
+  const onRefresh = useCallback(async () => {
+    if (!currentUserId) return;
+    
+    setRefreshing(true);
+    setShowingCached(false);
+    
+    try {
+      // Fetch fresh data
+      const userRef = doc(db, "users", currentUserId);
+      const snap = await getDoc(userRef);
+      
+      if (snap.exists()) {
+        const data = snap.data();
+        
+        // Parse badges
+        const badgesData = data.Badges || [];
+        const validBadges = badgesData.filter((badge: any) => {
+          if (!badge) return false;
+          if (typeof badge === "string" && badge.trim() === "") return false;
+          return true;
+        });
+        
+        const displayBadges = data.displayBadges || validBadges.slice(0, 3);
+        
+        // Update state
+        setProfile(data);
+        setClubs(data.clubs || {});
+        setBadges(displayBadges);
+        
+        // Update cache
+        await setCache(CACHE_KEYS.LOCKER(currentUserId), {
+          profile: data,
+          clubs: data.clubs || {},
+          badges: displayBadges,
+        });
+      }
+    } catch (error) {
+      console.error("Error refreshing locker:", error);
+      soundPlayer.play('error');
+    }
+    
+    setRefreshing(false);
+  }, [currentUserId]);
 
   /* ========================= HELPERS ========================= */
 
@@ -205,11 +293,13 @@ export default function LockerScreen() {
 
   /* ========================= UI ========================= */
 
-  if (loading) {
+  if (loading && !showingCached) {
     return (
       <View style={styles.container}>
         <SafeAreaView edges={["top"]} style={styles.safeTop} />
-        <ActivityIndicator size="large" color="#0D5C3A" />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#0D5C3A" />
+        </View>
       </View>
     );
   }
@@ -225,9 +315,25 @@ export default function LockerScreen() {
       >
         <TopNavBar />
 
+        {/* Cache indicator - only show when cache is displayed */}
+        {showingCached && !loading && (
+          <View style={styles.cacheIndicator}>
+            <ActivityIndicator size="small" color="#0D5C3A" />
+            <Text style={styles.cacheText}>Updating locker...</Text>
+          </View>
+        )}
+
         <ScrollView
           contentContainerStyle={styles.contentContainer}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor="#FFF"
+              colors={["#FFF"]}
+            />
+          }
         >
           {/* PROFILE */}
           <View style={styles.profileSection}>
@@ -235,6 +341,37 @@ export default function LockerScreen() {
             <Text style={styles.handicap}>
               Handicap: {profile?.handicap ?? "N/A"}
             </Text>
+
+            {/* CAREER STATS ROW - Always visible */}
+            <View style={styles.careerStatsContainer}>
+              <View style={styles.statItem}>
+                <Text style={styles.statEmoji}>🦩</Text>
+                <Text style={styles.statCount}>
+                  {profile?.totalBirdies > 0 ? profile.totalBirdies : "-"}
+                </Text>
+              </View>
+              
+              <View style={styles.statItem}>
+                <Text style={styles.statEmoji}>🦅</Text>
+                <Text style={styles.statCount}>
+                  {profile?.totalEagles > 0 ? profile.totalEagles : "-"}
+                </Text>
+              </View>
+              
+              <View style={styles.statItem}>
+                <Text style={styles.statEmoji}>🦢</Text>
+                <Text style={styles.statCount}>
+                  {profile?.totalAlbatross > 0 ? profile.totalAlbatross : "-"}
+                </Text>
+              </View>
+              
+              <View style={styles.statItem}>
+                <Image source={HoleInOne} style={styles.statIcon} />
+                <Text style={styles.statCount}>
+                  {profile?.totalHoleInOnes > 0 ? profile.totalHoleInOnes : "-"}
+                </Text>
+              </View>
+            </View>
 
             {/* HOME COURSE & GAME IDENTITY */}
             {(profile?.homeCourse || profile?.gameIdentity) && (
@@ -362,6 +499,29 @@ const styles = StyleSheet.create({
   safeTop: { backgroundColor: "#0D5C3A" },
   background: { flex: 1 },
 
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  cacheIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: "rgba(255, 243, 205, 0.95)",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 236, 181, 0.95)",
+  },
+  
+  cacheText: {
+    fontSize: 12,
+    color: "#664D03",
+    fontWeight: "600",
+  },
+
   contentContainer: {
     paddingHorizontal: 20,
     paddingTop: 24,
@@ -383,6 +543,41 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "rgba(255,255,255,0.95)",
     marginBottom: 12,
+  },
+
+  // ✅ Career Stats Row
+  careerStatsContainer: {
+    flexDirection: "row",
+    backgroundColor: "rgba(0,0,0,0.3)",
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    marginBottom: 16,
+    gap: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  statItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+
+  statEmoji: {
+    fontSize: 24,
+  },
+
+  statIcon: {
+    width: 24,
+    height: 24,
+    resizeMode: "contain",
+  },
+
+  statCount: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "white",
   },
 
   identityContainer: {
@@ -508,7 +703,6 @@ const styles = StyleSheet.create({
     color: "white",
   },
 });
-
 
 
 

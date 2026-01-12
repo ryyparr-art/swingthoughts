@@ -1,9 +1,7 @@
 {
   "functions": [
     {
-      "source": "functions",
       "codebase": "default",
-      "runtime": "nodejs20",
       "disallowLegacyRuntimeConfig": true,
       "ignore": [
         "node_modules",
@@ -15,7 +13,9 @@
       "predeploy": [
         "npm --prefix \"$RESOURCE_DIR\" run lint",
         "npm --prefix \"$RESOURCE_DIR\" run build"
-      ]
+      ],
+      "source": "functions",
+      "runtime": "nodejs20"
     }
   ],
   "firestore": {

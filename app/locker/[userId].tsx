@@ -2,6 +2,7 @@ import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
+import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { soundPlayer } from "@/utils/soundPlayer";
 
 import {
@@ -14,13 +15,14 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
-import { doc, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, onSnapshot } from "firebase/firestore";
 import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   Image,
   ImageBackground,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -38,6 +40,7 @@ const HoleInOne = require("@/assets/icons/HoleinOne.png");
 export default function LockerUserScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
+  const { getCache, setCache, cleanupOldProfiles } = useCache(); // ✅ Add cache hook
 
   const currentUserId = auth.currentUser?.uid;
   const viewingUserId = params.userId as string;
@@ -49,80 +52,185 @@ export default function LockerUserScreen() {
   const [partnershipStatus, setPartnershipStatus] =
     useState<"none" | "pending_sent" | "pending_received" | "partners">("none");
   const [loading, setLoading] = useState(true);
+  const [showingCached, setShowingCached] = useState(false); // ✅ Cache indicator
+  const [refreshing, setRefreshing] = useState(false); // ✅ Pull to refresh
   const [actionLoading, setActionLoading] = useState(false);
 
-  /* ========================= LOAD USER ========================= */
+  /* ========================= LOAD USER WITH CACHE ========================= */
 
   useFocusEffect(
     useCallback(() => {
       if (!viewingUserId) return;
 
-      const userRef = doc(db, "users", viewingUserId);
+      let unsubscribe: (() => void) | undefined;
 
-      const unsubscribe = onSnapshot(
-        userRef,
-        (snap) => {
-          if (snap.exists()) {
-            const data = snap.data();
-            setProfile(data);
-            setClubs(data.clubs || {});
-            
-            // Parse badges from Firestore structure
-            const badgesData = data.Badges || [];
-            console.log("Raw badges data:", badgesData);
-            
-            // Filter out empty/invalid badges
-            const validBadges = badgesData.filter((badge: any) => {
-              if (!badge) return false;
-              if (typeof badge === "string" && badge.trim() === "") return false;
-              return true;
-            });
-            
-            // ✅ Use displayBadges if available, otherwise fallback to first 3
-            const displayBadges = data.displayBadges || validBadges.slice(0, 3);
-            setBadges(displayBadges);
+      const loadUserWithCache = async () => {
+        try {
+          // Step 1: Try to load from cache (instant)
+          const cached = await getCache(CACHE_KEYS.USER_PROFILE(viewingUserId));
+          
+          if (cached) {
+            console.log("⚡ User locker cache hit:", viewingUserId);
+            setProfile(cached.profile);
+            setClubs(cached.clubs);
+            setBadges(cached.badges);
+            if (cached.partnershipStatus) {
+              setPartnershipStatus(cached.partnershipStatus);
+            }
+            setShowingCached(true);
+            setLoading(false);
           }
-          setLoading(false);
-        },
-        (error) => {
-          console.error("Error loading user:", error);
-          soundPlayer.play('error');
+
+          // Step 2: Set up real-time listener (always)
+          const userRef = doc(db, "users", viewingUserId);
+
+          unsubscribe = onSnapshot(
+            userRef,
+            async (snap) => {
+              if (snap.exists()) {
+                const data = snap.data();
+                
+                // Parse badges
+                const badgesData = data.Badges || [];
+                const validBadges = badgesData.filter((badge: any) => {
+                  if (!badge) return false;
+                  if (typeof badge === "string" && badge.trim() === "") return false;
+                  return true;
+                });
+                
+                const displayBadges = data.displayBadges || validBadges.slice(0, 3);
+                
+                // Update state
+                setProfile(data);
+                setClubs(data.clubs || {});
+                setBadges(displayBadges);
+                
+                // Check partnership status
+                let currentPartnershipStatus = partnershipStatus;
+                if (!isOwnLocker && currentUserId) {
+                  currentPartnershipStatus = await checkPartnershipStatus();
+                }
+                
+                // Step 3: Update cache
+                await setCache(CACHE_KEYS.USER_PROFILE(viewingUserId), {
+                  profile: data,
+                  clubs: data.clubs || {},
+                  badges: displayBadges,
+                  partnershipStatus: currentPartnershipStatus,
+                });
+                console.log("✅ User locker cached");
+                
+                setShowingCached(false);
+              }
+              setLoading(false);
+            },
+            (error) => {
+              console.error("Error loading user:", error);
+              soundPlayer.play('error');
+              setShowingCached(false);
+              setLoading(false);
+            }
+          );
+
+          // Step 4: Cleanup old profiles periodically (10% of the time)
+          if (Math.random() < 0.1) {
+            cleanupOldProfiles();
+          }
+        } catch (error) {
+          console.error("❌ User locker cache error:", error);
           setLoading(false);
         }
-      );
+      };
 
-      if (!isOwnLocker && currentUserId) {
-        checkPartnershipStatus();
-      }
+      loadUserWithCache();
 
-      return () => unsubscribe();
+      return () => {
+        if (unsubscribe) {
+          unsubscribe();
+        }
+      };
     }, [viewingUserId, currentUserId, isOwnLocker])
   );
 
+  /* ========================= PULL TO REFRESH ========================= */
+
+  const onRefresh = useCallback(async () => {
+    if (!viewingUserId) return;
+    
+    setRefreshing(true);
+    setShowingCached(false);
+    
+    try {
+      // Fetch fresh data
+      const userRef = doc(db, "users", viewingUserId);
+      const snap = await getDoc(userRef);
+      
+      if (snap.exists()) {
+        const data = snap.data();
+        
+        // Parse badges
+        const badgesData = data.Badges || [];
+        const validBadges = badgesData.filter((badge: any) => {
+          if (!badge) return false;
+          if (typeof badge === "string" && badge.trim() === "") return false;
+          return true;
+        });
+        
+        const displayBadges = data.displayBadges || validBadges.slice(0, 3);
+        
+        // Update state
+        setProfile(data);
+        setClubs(data.clubs || {});
+        setBadges(displayBadges);
+        
+        // Check partnership status
+        let currentPartnershipStatus = partnershipStatus;
+        if (!isOwnLocker && currentUserId) {
+          currentPartnershipStatus = await checkPartnershipStatus();
+        }
+        
+        // Update cache
+        await setCache(CACHE_KEYS.USER_PROFILE(viewingUserId), {
+          profile: data,
+          clubs: data.clubs || {},
+          badges: displayBadges,
+          partnershipStatus: currentPartnershipStatus,
+        });
+      }
+    } catch (error) {
+      console.error("Error refreshing user locker:", error);
+      soundPlayer.play('error');
+    }
+    
+    setRefreshing(false);
+  }, [viewingUserId, currentUserId, isOwnLocker]);
+
   const checkPartnershipStatus = async () => {
-    if (!currentUserId || !viewingUserId) return;
+    if (!currentUserId || !viewingUserId) return "none";
 
     try {
       if (await arePartnersAlready(currentUserId, viewingUserId)) {
         setPartnershipStatus("partners");
-        return;
+        return "partners";
       }
 
       const existingRequest = await checkExistingRequest(currentUserId, viewingUserId);
       if (existingRequest.exists) {
         if (existingRequest.sentByMe) {
           setPartnershipStatus("pending_sent");
+          return "pending_sent";
         } else if (existingRequest.sentToMe) {
           setPartnershipStatus("pending_received");
+          return "pending_received";
         }
-        return;
       }
 
       setPartnershipStatus("none");
+      return "none";
     } catch (error) {
       console.log("⚠️ Error checking partnership status (likely permissions):", error);
-      // Default to "none" if we can't check
       setPartnershipStatus("none");
+      return "none";
     }
   };
 
@@ -259,12 +367,32 @@ export default function LockerUserScreen() {
         await acceptPartnerRequest(currentUserId, viewingUserId);
         soundPlayer.play('postThought');
         setPartnershipStatus("partners");
+        
+        // Update cache with new partnership status
+        const cached = await getCache(CACHE_KEYS.USER_PROFILE(viewingUserId));
+        if (cached) {
+          await setCache(CACHE_KEYS.USER_PROFILE(viewingUserId), {
+            ...cached,
+            partnershipStatus: "partners",
+          });
+        }
+        
         Alert.alert("Partners! 🤝", "You're now partners!");
       } else {
         // Send a new request
         await sendPartnerRequest(currentUserId, viewingUserId);
         soundPlayer.play('postThought');
         setPartnershipStatus("pending_sent");
+        
+        // Update cache with new partnership status
+        const cached = await getCache(CACHE_KEYS.USER_PROFILE(viewingUserId));
+        if (cached) {
+          await setCache(CACHE_KEYS.USER_PROFILE(viewingUserId), {
+            ...cached,
+            partnershipStatus: "pending_sent",
+          });
+        }
+        
         Alert.alert("Request Sent", "Your partner request is pending.");
       }
     } catch (e: any) {
@@ -293,11 +421,13 @@ export default function LockerUserScreen() {
 
   /* ========================= UI ========================= */
 
-  if (loading) {
+  if (loading && !showingCached) {
     return (
       <View style={styles.container}>
         <SafeAreaView edges={["top"]} style={styles.safeTop} />
-        <ActivityIndicator size="large" color="#0D5C3A" />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#0D5C3A" />
+        </View>
       </View>
     );
   }
@@ -313,9 +443,25 @@ export default function LockerUserScreen() {
       >
         <TopNavBar />
 
+        {/* Cache indicator - only show when cache is displayed */}
+        {showingCached && !loading && (
+          <View style={styles.cacheIndicator}>
+            <ActivityIndicator size="small" color="#0D5C3A" />
+            <Text style={styles.cacheText}>Updating locker...</Text>
+          </View>
+        )}
+
         <ScrollView
           contentContainerStyle={styles.contentContainer}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor="#FFF"
+              colors={["#FFF"]}
+            />
+          }
         >
           {/* PROFILE */}
           <View style={styles.profileSection}>
@@ -323,6 +469,37 @@ export default function LockerUserScreen() {
             <Text style={styles.handicap}>
               Handicap: {profile?.handicap ?? "N/A"}
             </Text>
+
+            {/* CAREER STATS ROW - Always visible */}
+            <View style={styles.careerStatsContainer}>
+              <View style={styles.statItem}>
+                <Text style={styles.statEmoji}>🦩</Text>
+                <Text style={styles.statCount}>
+                  {profile?.totalBirdies > 0 ? profile.totalBirdies : "-"}
+                </Text>
+              </View>
+              
+              <View style={styles.statItem}>
+                <Text style={styles.statEmoji}>🦅</Text>
+                <Text style={styles.statCount}>
+                  {profile?.totalEagles > 0 ? profile.totalEagles : "-"}
+                </Text>
+              </View>
+              
+              <View style={styles.statItem}>
+                <Text style={styles.statEmoji}>🦢</Text>
+                <Text style={styles.statCount}>
+                  {profile?.totalAlbatross > 0 ? profile.totalAlbatross : "-"}
+                </Text>
+              </View>
+              
+              <View style={styles.statItem}>
+                <Image source={HoleInOne} style={styles.statIcon} />
+                <Text style={styles.statCount}>
+                  {profile?.totalHoleInOnes > 0 ? profile.totalHoleInOnes : "-"}
+                </Text>
+              </View>
+            </View>
 
             {/* HOME COURSE & GAME IDENTITY */}
             {(profile?.homeCourse || profile?.gameIdentity) && (
@@ -503,6 +680,29 @@ const styles = StyleSheet.create({
   safeTop: { backgroundColor: "#0D5C3A" },
   background: { flex: 1 },
 
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  cacheIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: "rgba(255, 243, 205, 0.95)",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 236, 181, 0.95)",
+  },
+  
+  cacheText: {
+    fontSize: 12,
+    color: "#664D03",
+    fontWeight: "600",
+  },
+
   contentContainer: {
     paddingHorizontal: 20,
     paddingTop: 24,
@@ -524,6 +724,41 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "rgba(255,255,255,0.95)",
     marginBottom: 12,
+  },
+
+  // ✅ Career Stats Row
+  careerStatsContainer: {
+    flexDirection: "row",
+    backgroundColor: "rgba(0,0,0,0.3)",
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    marginBottom: 16,
+    gap: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  statItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+
+  statEmoji: {
+    fontSize: 24,
+  },
+
+  statIcon: {
+    width: 24,
+    height: 24,
+    resizeMode: "contain",
+  },
+
+  statCount: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "white",
   },
 
   identityContainer: {

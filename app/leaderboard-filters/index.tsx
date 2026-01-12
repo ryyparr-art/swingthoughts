@@ -18,10 +18,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 export default function LeaderboardFiltersScreen() {
   const router = useRouter();
   const [filterType, setFilterType] = useState<"nearMe" | "course" | "player" | "partnersOnly">("nearMe");
+  const [holeCount, setHoleCount] = useState<"9" | "18">("18"); // ✅ NEW: Hole count filter
   const [locationModalVisible, setLocationModalVisible] = useState(false);
   const [cachedLocation, setCachedLocation] = useState<string>("Loading...");
   
-  // ✅ NEW: Track pinned leaderboard
   const [pinnedLeaderboard, setPinnedLeaderboard] = useState<{
     courseId: number;
     courseName: string;
@@ -57,7 +57,6 @@ export default function LeaderboardFiltersScreen() {
     }
   };
 
-  // ✅ NEW: Load pinned leaderboard
   const loadPinnedLeaderboard = async () => {
     try {
       const uid = auth.currentUser?.uid;
@@ -82,7 +81,6 @@ export default function LeaderboardFiltersScreen() {
     }
   };
 
-  // ✅ Unpin leaderboard - Matches leaderboard/index.tsx behavior
   const handleUnpinLeaderboard = async () => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -103,7 +101,6 @@ export default function LeaderboardFiltersScreen() {
     }
   };
 
-  // ✅ NEW: Go to pinned leaderboard
   const handleGoToPinned = () => {
     if (!pinnedLeaderboard) return;
     
@@ -116,6 +113,7 @@ export default function LeaderboardFiltersScreen() {
         filterType: "course",
         courseId: pinnedLeaderboard.courseId.toString(),
         courseName: pinnedLeaderboard.courseName,
+        holeCount, // ✅ Pass hole count
       },
     });
   };
@@ -129,6 +127,13 @@ export default function LeaderboardFiltersScreen() {
     } else {
       setFilterType(type);
     }
+  };
+
+  // ✅ NEW: Handle hole count selection
+  const handleSelectHoleCount = (count: "9" | "18") => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setHoleCount(count);
   };
 
   const handleLocationSet = async (location: {
@@ -152,16 +157,28 @@ export default function LeaderboardFiltersScreen() {
     if (filterType === "nearMe") {
       router.push({
         pathname: "/leaderboard",
-        params: { filterType: "nearMe" },
+        params: { 
+          filterType: "nearMe",
+          holeCount, // ✅ Pass hole count
+        },
       });
     } else if (filterType === "course") {
-      router.push("/leaderboard-filters/course-search");
+      router.push({
+        pathname: "/leaderboard-filters/course-search",
+        params: { holeCount }, // ✅ Pass hole count
+      });
     } else if (filterType === "player") {
-      router.push("/leaderboard-filters/player-search");
+      router.push({
+        pathname: "/leaderboard-filters/player-search",
+        params: { holeCount }, // ✅ Pass hole count
+      });
     } else if (filterType === "partnersOnly") {
       router.push({
         pathname: "/leaderboard",
-        params: { filterType: "partnersOnly" },
+        params: { 
+          filterType: "partnersOnly",
+          holeCount, // ✅ Pass hole count
+        },
       });
     }
   };
@@ -170,9 +187,13 @@ export default function LeaderboardFiltersScreen() {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setFilterType("nearMe");
+    setHoleCount("18"); // ✅ Reset to default
     router.push({
       pathname: "/leaderboard",
-      params: { filterType: "nearMe" },
+      params: { 
+        filterType: "nearMe",
+        holeCount: "18",
+      },
     });
   };
 
@@ -205,10 +226,9 @@ export default function LeaderboardFiltersScreen() {
       </View>
 
       <View style={styles.content}>
-        {/* ✅ Pinned Leaderboard Section - Matches leaderboard/index.tsx */}
+        {/* Pinned Leaderboard Section */}
         {pinnedLeaderboard && (
           <View style={styles.pinnedBoard}>
-            {/* PINNED BADGE + UNPIN BUTTON - Exact match from leaderboard/index.tsx */}
             <View style={styles.pinnedHeader}>
               <View style={styles.pinnedBadge}>
                 <Text style={styles.pinnedBadgeText}>📌 PINNED</Text>
@@ -221,7 +241,6 @@ export default function LeaderboardFiltersScreen() {
               </TouchableOpacity>
             </View>
             
-            {/* COURSE HEADER - Tappable to view leaderboard */}
             <TouchableOpacity onPress={handleGoToPinned}>
               <View style={styles.boardHeader}>
                 <Text style={styles.boardTitle}>
@@ -281,7 +300,6 @@ export default function LeaderboardFiltersScreen() {
                   Specific Course
                 </Text>
                 <Text style={styles.filterOptionDescription}>Search for a golf course</Text>
-                {/* ✅ NEW: Show pinning hint */}
                 <Text style={styles.filterOptionHint}>Pin your favorite course to keep it at the top</Text>
               </View>
             </View>
@@ -333,6 +351,57 @@ export default function LeaderboardFiltersScreen() {
             </View>
             <View style={[styles.radio, filterType === "partnersOnly" && styles.radioActive]}>
               {filterType === "partnersOnly" && <View style={styles.radioDot} />}
+            </View>
+          </TouchableOpacity>
+        </View>
+
+        {/* ✅ NEW: Hole Count Filter Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Score Type</Text>
+
+          {/* 18-Hole */}
+          <TouchableOpacity
+            style={[styles.filterOption, holeCount === "18" && styles.filterOptionActive]}
+            onPress={() => handleSelectHoleCount("18")}
+          >
+            <View style={styles.filterOptionLeft}>
+              <Ionicons
+                name="flag-outline"
+                size={24}
+                color={holeCount === "18" ? "#0D5C3A" : "#666"}
+              />
+              <View style={styles.filterOptionText}>
+                <Text style={[styles.filterOptionTitle, holeCount === "18" && styles.filterOptionTitleActive]}>
+                  18-Hole Scores
+                </Text>
+                <Text style={styles.filterOptionDescription}>Full round scores with achievements</Text>
+              </View>
+            </View>
+            <View style={[styles.radio, holeCount === "18" && styles.radioActive]}>
+              {holeCount === "18" && <View style={styles.radioDot} />}
+            </View>
+          </TouchableOpacity>
+
+          {/* 9-Hole */}
+          <TouchableOpacity
+            style={[styles.filterOption, holeCount === "9" && styles.filterOptionActive]}
+            onPress={() => handleSelectHoleCount("9")}
+          >
+            <View style={styles.filterOptionLeft}>
+              <Ionicons
+                name="golf-outline"
+                size={24}
+                color={holeCount === "9" ? "#0D5C3A" : "#666"}
+              />
+              <View style={styles.filterOptionText}>
+                <Text style={[styles.filterOptionTitle, holeCount === "9" && styles.filterOptionTitleActive]}>
+                  9-Hole Scores
+                </Text>
+                <Text style={styles.filterOptionDescription}>Half round scores</Text>
+              </View>
+            </View>
+            <View style={[styles.radio, holeCount === "9" && styles.radioActive]}>
+              {holeCount === "9" && <View style={styles.radioDot} />}
             </View>
           </TouchableOpacity>
         </View>
@@ -421,7 +490,6 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
 
-  // ✅ Pinned Board Styles - Exact match from leaderboard/index.tsx
   pinnedBoard: {
     marginHorizontal: 16,
     marginTop: 16,

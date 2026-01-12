@@ -44,7 +44,6 @@ interface UserSettings {
   handicap?: string | number;
   accountPrivacy?: "public" | "private";
   partnerRequests?: "anyone" | "partners_of_partners" | "no_one";
-  defaultTees?: "back" | "forward";
 }
 
 export default function SettingsScreen() {
@@ -58,7 +57,6 @@ export default function SettingsScreen() {
     handicap: "",
     accountPrivacy: "public",
     partnerRequests: "anyone",
-    defaultTees: "back",
   });
 
   const [loading, setLoading] = useState(true);
@@ -116,7 +114,6 @@ export default function SettingsScreen() {
           handicap: data.handicap || "N/A",
           accountPrivacy: data.accountPrivacy || "public",
           partnerRequests: data.partnerRequests || "anyone",
-          defaultTees: data.defaultTees || "back",
         });
       }
       
@@ -149,7 +146,6 @@ export default function SettingsScreen() {
         displayName: settings.displayName.trim(),
         accountPrivacy: settings.accountPrivacy,
         partnerRequests: settings.partnerRequests,
-        defaultTees: settings.defaultTees,
       });
 
       soundPlayer.play('postThought');
@@ -709,14 +705,36 @@ export default function SettingsScreen() {
           Private: Only partners can see your profile
         </Text>
 
-        {/* PUSH NOTIFICATIONS (Placeholder) */}
-        <View style={[styles.settingRow, styles.disabledSetting]}>
+        {/* PUSH NOTIFICATIONS */}
+        <View style={styles.settingRow}>
           <View style={styles.settingLeft}>
-            <Ionicons name="notifications-outline" size={20} color="#999" />
-            <Text style={styles.settingLabelDisabled}>Push Notifications</Text>
+            <Ionicons name="notifications-outline" size={20} color="#0D5C3A" />
+            <View>
+              <Text style={styles.settingLabel}>Push Notifications</Text>
+              <Text style={styles.settingSubtext}>
+                Manage in device settings
+              </Text>
+            </View>
           </View>
-          <Text style={styles.comingSoonBadge}>Coming Soon</Text>
+          <TouchableOpacity
+            style={styles.settingsLinkButton}
+            onPress={() => {
+              soundPlayer.play('click');
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              if (Platform.OS === 'ios') {
+                Linking.openURL('app-settings:');
+              } else {
+                Linking.openSettings();
+              }
+            }}
+          >
+            <Text style={styles.settingsLinkText}>Open Settings</Text>
+            <Ionicons name="chevron-forward" size={16} color="#0D5C3A" />
+          </TouchableOpacity>
         </View>
+        <Text style={styles.settingHelperText}>
+          Push notifications are managed through your device settings. You'll receive alerts for likes, comments, messages, partner activity, and more.
+        </Text>
 
         {/* EMAIL NOTIFICATIONS (Placeholder) */}
         <View style={[styles.settingRow, styles.disabledSetting]}>
@@ -976,68 +994,6 @@ export default function SettingsScreen() {
           <Text style={styles.dangerButtonText}>Delete Account</Text>
           <Ionicons name="chevron-forward" size={20} color="#FF3B30" />
         </TouchableOpacity>
-
-        {/* ==================== APP PREFERENCES ==================== */}
-        <Text style={styles.sectionTitle}>APP PREFERENCES</Text>
-
-        {/* DEFAULT TEES */}
-        <View style={styles.settingRow}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="golf-outline" size={20} color="#0D5C3A" />
-            <Text style={styles.settingLabel}>Default Tees</Text>
-          </View>
-          <View style={styles.toggleContainer}>
-            <TouchableOpacity
-              style={[
-                styles.toggleOption,
-                settings.defaultTees === "back" && styles.toggleOptionActive,
-              ]}
-              onPress={() => {
-                soundPlayer.play('click');
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                setSettings({ ...settings, defaultTees: "back" });
-              }}
-            >
-              <Text
-                style={[
-                  styles.toggleText,
-                  settings.defaultTees === "back" && styles.toggleTextActive,
-                ]}
-              >
-                Back
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.toggleOption,
-                settings.defaultTees === "forward" && styles.toggleOptionActive,
-              ]}
-              onPress={() => {
-                soundPlayer.play('click');
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                setSettings({ ...settings, defaultTees: "forward" });
-              }}
-            >
-              <Text
-                style={[
-                  styles.toggleText,
-                  settings.defaultTees === "forward" && styles.toggleTextActive,
-                ]}
-              >
-                Forward
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* THEME (Placeholder) */}
-        <View style={[styles.settingRow, styles.disabledSetting]}>
-          <View style={styles.settingLeft}>
-            <Ionicons name="moon-outline" size={20} color="#999" />
-            <Text style={styles.settingLabelDisabled}>Theme</Text>
-          </View>
-          <Text style={styles.comingSoonBadge}>Coming Soon</Text>
-        </View>
 
         {/* ==================== LEGAL & SUPPORT ==================== */}
         <Text style={styles.sectionTitle}>LEGAL & SUPPORT</Text>
@@ -1547,7 +1503,24 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     fontStyle: "italic",
   },
+  settingsLinkButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#E8F5E9",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#0D5C3A",
+  },
 
+  settingsLinkText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#0D5C3A",
+  },
+  
   comingSoonBadge: {
     fontSize: 12,
     fontWeight: "600",

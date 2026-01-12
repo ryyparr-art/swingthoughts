@@ -3,6 +3,7 @@ import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
+import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { soundPlayer } from "@/utils/soundPlayer";
 
 import { Ionicons } from "@expo/vector-icons";
@@ -15,6 +16,7 @@ import {
   Alert,
   Image,
   ImageBackground,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -27,11 +29,14 @@ export default function CourseLockerScreen() {
   const params = useLocalSearchParams();
   const courseId = params.courseId as string;
   const currentUserId = auth.currentUser?.uid;
+  const { getCache, setCache, cleanupOldProfiles } = useCache();
 
   const [courseData, setCourseData] = useState<any>(null);
   const [leaders, setLeaders] = useState<any[]>([]);
   const [holeInOnes, setHoleInOnes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showingCached, setShowingCached] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [isPlayer, setIsPlayer] = useState(false);
   const [isMember, setIsMember] = useState(false);
   const [isPendingMembership, setIsPendingMembership] = useState(false);
@@ -40,170 +45,187 @@ export default function CourseLockerScreen() {
   const [claimedByUserId, setClaimedByUserId] = useState<string | null>(null);
   const [membershipModalVisible, setMembershipModalVisible] = useState(false);
 
-  /* ========================= LOAD COURSE DATA ========================= */
-
   useFocusEffect(
     useCallback(() => {
       if (!courseId) return;
 
-      const fetchCourseData = async () => {
+      const fetchCourseDataWithCache = async () => {
         try {
-          setLoading(true);
-
-          // 1. Get course_leaders data (courseName, holeinones)
-          const leaderRef = doc(db, "course_leaders", courseId);
-          const leaderSnap = await getDoc(leaderRef);
+          const cached = await getCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""));
           
-          let courseName = "Course";
-          let holeinones: any[] = [];
-          
-          if (leaderSnap.exists()) {
-            const data = leaderSnap.data();
-            courseName = data.courseName || "Course";
-            holeinones = data.holeinones || [];
+          if (cached) {
+            console.log("⚡ Course locker cache hit:", courseId);
+            setCourseData(cached.courseData);
+            setLeaders(cached.leaders);
+            setHoleInOnes(cached.holeInOnes);
+            setIsClaimed(cached.isClaimed || false);
+            setClaimedByUserId(cached.claimedByUserId || null);
+            setIsPlayer(cached.isPlayer || false);
+            setIsMember(cached.isMember || false);
+            setIsPendingMembership(cached.isPendingMembership || false);
+            setMembershipStatus(cached.membershipStatus || "none");
+            setShowingCached(true);
+            setLoading(false);
           }
 
-          // 2. Get course details (par, slope, location, claimed status) from courses collection
-          const coursesQuery = query(
-            collection(db, "courses"),
-            where("id", "==", Number(courseId))
-          );
-          const coursesSnap = await getDocs(coursesQuery);
-          
-          let courseDetails: any = {};
-          
-          if (!coursesSnap.empty) {
-            courseDetails = coursesSnap.docs[0].data();
-            setIsClaimed(courseDetails.claimed || false);
-            setClaimedByUserId(courseDetails.claimedByUserId || null);
-          } else {
-            // Fallback: Fetch from API if not cached
-            console.log("Course not in cache, fetching from API...");
-            // TODO: Add API fetch here if needed
+          await fetchCourseData();
+
+          if (Math.random() < 0.1) {
+            cleanupOldProfiles();
           }
-
-          setCourseData({
-            courseId: Number(courseId),
-            courseName,
-            par: courseDetails.par || 72,
-            slope: courseDetails.slope || null,
-            location: courseDetails.location || null,
-          });
-
-          // 3. Check if current user is a player or member of this course
-          if (currentUserId) {
-            const userDoc = await getDoc(doc(db, "users", currentUserId));
-            if (userDoc.exists()) {
-              const userData = userDoc.data();
-              const playerCourses = userData.playerCourses || [];
-              const memberCourses = userData.declaredMemberCourses || [];
-              const pendingCourses = userData.pendingMembershipCourses || [];
-              
-              setIsPlayer(playerCourses.includes(Number(courseId)));
-              setIsMember(memberCourses.includes(Number(courseId)));
-              setIsPendingMembership(pendingCourses.includes(Number(courseId)));
-
-              // Check membership status from course_memberships collection
-              const membershipQuery = query(
-                collection(db, "course_memberships"),
-                where("userId", "==", currentUserId),
-                where("courseId", "==", Number(courseId))
-              );
-              const membershipSnap = await getDocs(membershipQuery);
-
-              if (!membershipSnap.empty) {
-                const membershipDoc = membershipSnap.docs[0];
-                const status = membershipDoc.data().status as "pending" | "approved" | "rejected";
-                setMembershipStatus(status);
-              } else {
-                setMembershipStatus("none");
-              }
-            }
-          }
-
-          // 4. Get top 6 scores for this course (matching leaderboard logic)
-          const scoresQuery = query(
-            collection(db, "scores"),
-            where("courseId", "==", Number(courseId))
-          );
-          const scoresSnap = await getDocs(scoresQuery);
-
-          const scores: any[] = [];
-          const userIds = new Set<string>();
-
-          scoresSnap.forEach((d) => {
-            const data = d.data();
-            scores.push({
-              scoreId: d.id,
-              userId: data.userId,
-              courseId: data.courseId,
-              courseName: data.courseName,
-              grossScore: data.grossScore,
-              netScore: data.netScore,
-              par: data.par,
-              createdAt: data.createdAt,
-            });
-            if (data.userId) userIds.add(data.userId);
-          });
-
-          // 5. Load user profiles
-          const profiles: Record<string, any> = {};
-          const ids = Array.from(userIds);
-
-          for (let i = 0; i < ids.length; i += 10) {
-            const batch = ids.slice(i, i + 10);
-            const uq = query(collection(db, "users"), where("__name__", "in", batch));
-            const us = await getDocs(uq);
-            us.forEach((u) => {
-              profiles[u.id] = u.data();
-            });
-          }
-
-          // 6. Filter out Course accounts & merge with profiles (MATCH LEADERBOARD)
-          const merged = scores
-            .filter((s) => profiles[s.userId]?.userType !== "Course")
-            .map((s) => ({
-              ...s,
-              userName: profiles[s.userId]?.displayName || "Player",
-              userAvatar: profiles[s.userId]?.avatar ?? null,
-            }));
-
-          // 7. Sort by netScore and take top 6 (MATCH LEADERBOARD LOGIC)
-          const sorted = merged.sort((a, b) => a.netScore - b.netScore);
-          const top6 = sorted.slice(0, 6);
-
-          setLeaders(top6);
-
-          // 8. Process hole-in-ones with user data
-          const hioWithUsers = await Promise.all(
-            holeinones.slice(0, 6).map(async (hio: any) => {
-              const userProfile = profiles[hio.userId] || {};
-              return {
-                ...hio,
-                userName: userProfile.displayName || "Player",
-                userAvatar: userProfile.avatar || null,
-              };
-            })
-          );
-
-          setHoleInOnes(hioWithUsers);
-          setLoading(false);
         } catch (error) {
-          console.error("Error loading course data:", error);
-          soundPlayer.play('error');
-          setLoading(false);
+          console.error("❌ Course locker cache error:", error);
+          await fetchCourseData();
         }
       };
 
-      fetchCourseData();
+      fetchCourseDataWithCache();
     }, [courseId, currentUserId])
   );
 
-  /* ========================= HELPERS ========================= */
+  const fetchCourseData = async () => {
+    try {
+      setLoading(true);
+
+      // Get course data from leaderboards
+      const leaderboardsQuery = query(
+        collection(db, "leaderboards"),
+        where("courseId", "==", Number(courseId))
+      );
+      const leaderboardsSnap = await getDocs(leaderboardsQuery);
+
+      let courseName = "Course";
+      let holeinones: any[] = [];
+      const allScores: any[] = [];
+
+      if (!leaderboardsSnap.empty) {
+        const firstDoc = leaderboardsSnap.docs[0].data();
+        courseName = firstDoc.courseName || "Course";
+
+        leaderboardsSnap.forEach(doc => {
+          const data = doc.data();
+          if (data.topScores18 && Array.isArray(data.topScores18)) {
+            allScores.push(...data.topScores18);
+          }
+          if (data.holesInOne && Array.isArray(data.holesInOne)) {
+            holeinones.push(...data.holesInOne);
+          }
+        });
+      }
+
+      // Get course details from courses collection
+      const courseDocRef = doc(db, "courses", courseId);
+      const courseSnap = await getDoc(courseDocRef);
+      
+      let courseDetails: any = {};
+      
+      if (courseSnap.exists()) {
+        courseDetails = courseSnap.data();
+        setIsClaimed(courseDetails.claimed || false);
+        setClaimedByUserId(courseDetails.claimedByUserId || null);
+      }
+
+      const courseDataObj = {
+        courseId: Number(courseId),
+        courseName,
+        par: courseDetails.par || 72,
+        slope: courseDetails.slope || null,
+        location: courseDetails.location || null,
+      };
+
+      setCourseData(courseDataObj);
+
+      // Check user membership status
+      let userIsPlayer = false;
+      let userIsMember = false;
+      let userIsPending = false;
+      let userMembershipStatus: "none" | "pending" | "approved" | "rejected" = "none";
+
+      if (currentUserId) {
+        const userDoc = await getDoc(doc(db, "users", currentUserId));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          const playerCourses = userData.playerCourses || [];
+          const memberCourses = userData.declaredMemberCourses || [];
+          const pendingCourses = userData.pendingMembershipCourses || [];
+          
+          userIsPlayer = playerCourses.includes(Number(courseId));
+          userIsMember = memberCourses.includes(Number(courseId));
+          userIsPending = pendingCourses.includes(Number(courseId));
+
+          setIsPlayer(userIsPlayer);
+          setIsMember(userIsMember);
+          setIsPendingMembership(userIsPending);
+
+          const membershipQuery = query(
+            collection(db, "course_memberships"),
+            where("userId", "==", currentUserId),
+            where("courseId", "==", Number(courseId))
+          );
+          const membershipSnap = await getDocs(membershipQuery);
+
+          if (!membershipSnap.empty) {
+            const membershipDoc = membershipSnap.docs[0];
+            const status = membershipDoc.data().status as "pending" | "approved" | "rejected";
+            userMembershipStatus = status;
+            setMembershipStatus(status);
+          } else {
+            setMembershipStatus("none");
+          }
+        }
+      }
+
+      // Process scores
+      allScores.sort((a, b) => a.netScore - b.netScore);
+      const top6 = allScores.slice(0, 6).map(score => ({
+        ...score,
+        userName: score.displayName || score.userName || "Player",
+        userAvatar: score.userAvatar || null,
+      }));
+
+      setLeaders(top6);
+
+      // Process hole-in-ones
+      const hioWithUsers = holeinones.slice(0, 6).map((hio: any) => ({
+        ...hio,
+        userName: hio.displayName || "Player",
+        userAvatar: hio.userAvatar || null,
+      }));
+
+      setHoleInOnes(hioWithUsers);
+
+      await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), {
+        courseData: courseDataObj,
+        leaders: top6,
+        holeInOnes: hioWithUsers,
+        isClaimed: courseDetails.claimed || false,
+        claimedByUserId: courseDetails.claimedByUserId || null,
+        isPlayer: userIsPlayer,
+        isMember: userIsMember,
+        isPendingMembership: userIsPending,
+        membershipStatus: userMembershipStatus,
+      });
+      console.log("✅ Course locker cached");
+
+      setShowingCached(false);
+      setLoading(false);
+    } catch (error) {
+      console.error("Error loading course data:", error);
+      soundPlayer.play('error');
+      setShowingCached(false);
+      setLoading(false);
+    }
+  };
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    setShowingCached(false);
+    await fetchCourseData();
+    setRefreshing(false);
+  }, [courseId, currentUserId]);
 
   const formatDate = (timestamp: any) => {
     if (!timestamp) return "";
-    
     try {
       const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
       return date.toLocaleDateString("en-US", { 
@@ -216,19 +238,14 @@ export default function CourseLockerScreen() {
     }
   };
 
-  /* ========================= INTERACTIONS ========================= */
-
   const goToPlayer = (userId: string) => {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/locker/${userId}`);
   };
 
-  /* ========================= ACTIONS ========================= */
-
   const handleBecomePlayer = async () => {
     if (!currentUserId) return;
-
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
@@ -236,20 +253,36 @@ export default function CourseLockerScreen() {
       const userRef = doc(db, "users", currentUserId);
 
       if (isPlayer) {
-        // Remove from player courses
         await updateDoc(userRef, {
           playerCourses: arrayRemove(Number(courseId))
         });
         soundPlayer.play('postThought');
         setIsPlayer(false);
+        
+        const cached = await getCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""));
+        if (cached) {
+          await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), {
+            ...cached,
+            isPlayer: false,
+          });
+        }
+        
         Alert.alert("Removed", `You're no longer a player of ${courseData?.courseName}`);
       } else {
-        // Add to player courses
         await updateDoc(userRef, {
           playerCourses: arrayUnion(Number(courseId))
         });
         soundPlayer.play('postThought');
         setIsPlayer(true);
+        
+        const cached = await getCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""));
+        if (cached) {
+          await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), {
+            ...cached,
+            isPlayer: true,
+          });
+        }
+        
         Alert.alert("Player! ⛳", `You're now a player of ${courseData?.courseName}`);
       }
     } catch (error) {
@@ -261,11 +294,9 @@ export default function CourseLockerScreen() {
 
   const handleDeclareMembership = async () => {
     if (!currentUserId) return;
-
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    // If pending, show alert
     if (membershipStatus === "pending") {
       soundPlayer.play('error');
       Alert.alert(
@@ -275,7 +306,6 @@ export default function CourseLockerScreen() {
       return;
     }
 
-    // If rejected, show rejection reason and allow resubmission
     if (membershipStatus === "rejected") {
       Alert.alert(
         "Previous Request Not Approved",
@@ -294,7 +324,6 @@ export default function CourseLockerScreen() {
       return;
     }
 
-    // If approved (isMember), allow removal
     if (membershipStatus === "approved" && isMember) {
       Alert.alert(
         "Remove Membership?",
@@ -307,13 +336,10 @@ export default function CourseLockerScreen() {
             onPress: async () => {
               try {
                 const userRef = doc(db, "users", currentUserId);
-
-                // Remove from member courses
                 await updateDoc(userRef, {
                   declaredMemberCourses: arrayRemove(Number(courseId))
                 });
 
-                // Delete membership document
                 const membershipQuery = query(
                   collection(db, "course_memberships"),
                   where("userId", "==", currentUserId),
@@ -331,6 +357,16 @@ export default function CourseLockerScreen() {
                 soundPlayer.play('postThought');
                 setIsMember(false);
                 setMembershipStatus("none");
+                
+                const cached = await getCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""));
+                if (cached) {
+                  await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), {
+                    ...cached,
+                    isMember: false,
+                    membershipStatus: "none",
+                  });
+                }
+                
                 Alert.alert("Removed", `Membership removed from ${courseData?.courseName}`);
               } catch (error) {
                 console.error("Error removing membership:", error);
@@ -344,7 +380,6 @@ export default function CourseLockerScreen() {
       return;
     }
 
-    // Default: Open membership request modal
     setMembershipModalVisible(true);
   };
 
@@ -373,8 +408,6 @@ export default function CourseLockerScreen() {
 
   const handleMembershipSuccess = async () => {
     soundPlayer.play('postThought');
-    
-    // Refresh membership status after successful submission
     if (!currentUserId) return;
 
     try {
@@ -382,10 +415,10 @@ export default function CourseLockerScreen() {
       if (userDoc.exists()) {
         const userData = userDoc.data();
         const pendingCourses = userData.pendingMembershipCourses || [];
-        setIsPendingMembership(pendingCourses.includes(Number(courseId)));
+        const isPending = pendingCourses.includes(Number(courseId));
+        setIsPendingMembership(isPending);
       }
 
-      // Check membership status from course_memberships collection
       const membershipQuery = query(
         collection(db, "course_memberships"),
         where("userId", "==", currentUserId),
@@ -397,6 +430,15 @@ export default function CourseLockerScreen() {
         const membershipDoc = membershipSnap.docs[0];
         const status = membershipDoc.data().status as "pending" | "approved" | "rejected";
         setMembershipStatus(status);
+        
+        const cached = await getCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""));
+        if (cached) {
+          await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), {
+            ...cached,
+            membershipStatus: status,
+            isPendingMembership: status === "pending",
+          });
+        }
       }
     } catch (error) {
       console.error("Error refreshing membership status:", error);
@@ -404,13 +446,13 @@ export default function CourseLockerScreen() {
     }
   };
 
-  /* ========================= UI ========================= */
-
-  if (loading) {
+  if (loading && !showingCached) {
     return (
       <View style={styles.container}>
         <SafeAreaView edges={["top"]} style={styles.safeTop} />
-        <ActivityIndicator size="large" color="#0D5C3A" />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#0D5C3A" />
+        </View>
       </View>
     );
   }
@@ -427,7 +469,14 @@ export default function CourseLockerScreen() {
           resizeMode="cover"
           style={styles.background}
         >
-          {/* COMPACT BRASS PLAQUE HEADER - Absolute positioned */}
+          {showingCached && !loading && (
+            <View style={styles.cacheIndicator}>
+              <ActivityIndicator size="small" color="#0D5C3A" />
+              <Text style={styles.cacheText}>Updating course locker...</Text>
+            </View>
+          )}
+
+          {/* HEADER - Absolute positioned */}
           <View style={styles.headerArea}>
             <View style={styles.brassPlaque}>
               <Text style={styles.courseName}>
@@ -442,7 +491,6 @@ export default function CourseLockerScreen() {
               </Text>
             </View>
 
-            {/* ACTION BUTTONS - Below header */}
             {currentUserId && (
               <View style={styles.actionRow}>
                 <TouchableOpacity
@@ -508,7 +556,7 @@ export default function CourseLockerScreen() {
             )}
           </View>
 
-          {/* SHELF 1 - CURRENT LOW LEADERS - Absolute positioned */}
+          {/* SHELF 1 - Absolute positioned SIBLING to ScrollView */}
           <View style={styles.shelf1}>
             <Text style={styles.shelfTitle}>CURRENT LOW LEADERS</Text>
             
@@ -520,7 +568,7 @@ export default function CourseLockerScreen() {
               >
                 {leaders.map((leader, index) => (
                   <TouchableOpacity
-                    key={leader.scoreId}
+                    key={leader.scoreId || index}
                     style={styles.smallCard}
                     onPress={() => goToPlayer(leader.userId)}
                   >
@@ -550,7 +598,7 @@ export default function CourseLockerScreen() {
             )}
           </View>
 
-          {/* SHELF 2 - HOLE-IN-ONES - Absolute positioned */}
+          {/* SHELF 2 - Absolute positioned SIBLING to ScrollView */}
           <View style={styles.shelf2}>
             <Text style={styles.shelfTitle}>HOLE-IN-ONES</Text>
             
@@ -594,7 +642,7 @@ export default function CourseLockerScreen() {
             )}
           </View>
 
-          {/* SHELF 3 - COMING SOON - Absolute positioned */}
+          {/* SHELF 3 - Absolute positioned SIBLING to ScrollView */}
           <View style={styles.shelf3}>
             <Text style={styles.shelfTitle}>COMING SOON</Text>
             
@@ -604,9 +652,21 @@ export default function CourseLockerScreen() {
               </Text>
             </View>
           </View>
+
+          {/* Invisible ScrollView for pull-to-refresh */}
+          <ScrollView
+            style={styles.refreshScrollView}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor="#8B6914"
+                colors={["#8B6914"]}
+              />
+            }
+          />
         </ImageBackground>
 
-        {/* Membership Request Modal */}
         <MembershipRequestModal
           visible={membershipModalVisible}
           onClose={() => {
@@ -626,8 +686,6 @@ export default function CourseLockerScreen() {
   );
 }
 
-/* ========================= STYLES ========================= */
-
 const styles = StyleSheet.create({
   container: { 
     flex: 1, 
@@ -637,22 +695,53 @@ const styles = StyleSheet.create({
   safeTop: { 
     backgroundColor: "#0D5C3A" 
   },
+
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  cacheIndicator: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: "rgba(255, 243, 205, 0.95)",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(255, 236, 181, 0.95)",
+    zIndex: 100,
+  },
+  
+  cacheText: {
+    fontSize: 12,
+    color: "#664D03",
+    fontWeight: "600",
+  },
   
   lockerContainer: {
     flex: 1,
-    backgroundColor: "#F4EED8", // Cream background to fill transparent areas
+    backgroundColor: "#F4EED8",
   },
 
   background: { 
     flex: 1,
   },
 
-  contentContainer: {
-    flexGrow: 1,
-    paddingHorizontal: 20,
+  refreshScrollView: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    opacity: 0,
   },
 
-  /* HEADER AREA - 4.6% to 11.2% */
   headerArea: {
     position: 'absolute',
     top: '4.6%',
@@ -663,9 +752,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 24,
     gap: 8,
+    zIndex: 10,
   },
 
-  /* COMPACT BRASS PLAQUE HEADER */
   brassPlaque: {
     backgroundColor: "#D4AF37",
     borderRadius: 6,
@@ -699,7 +788,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
 
-  /* ACTION BUTTONS */
   actionRow: {
     flexDirection: "row",
     gap: 4,
@@ -709,8 +797,8 @@ const styles = StyleSheet.create({
   },
 
   actionButton: {
-    flex: 1, // Each button takes equal space
-    flexDirection: "column", // Stack icon above text
+    flex: 1,
+    flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
     gap: 2,
@@ -747,7 +835,6 @@ const styles = StyleSheet.create({
     maxWidth: "100%",
   },
 
-  /* SHELF 1 - 14.6% to 39.8% (25.2% height) */
   shelf1: {
     position: 'absolute',
     top: '20%',
@@ -759,7 +846,6 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
 
-  /* SHELF 2 - 42.8% to 67.3% (24.5% height) */
   shelf2: {
     position: 'absolute',
     top: '47%',
@@ -771,7 +857,6 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
 
-  /* SHELF 3 - 70.5% to 100% (29.5% height) */
   shelf3: {
     position: 'absolute',
     top: '73%',
@@ -783,7 +868,6 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
 
-  /* SHELF TITLE PLAQUES */
   shelfTitle: {
     fontSize: 9,
     fontWeight: "900",
@@ -806,14 +890,12 @@ const styles = StyleSheet.create({
     elevation: 14,
   },
 
-  /* HORIZONTAL SCROLLING ROW */
   cardRow: {
     flexDirection: "row",
     paddingHorizontal: 4,
     gap: 6,
   },
 
-  /* SMALL COMPACT CARDS */
   smallCard: {
     width: 95,
     height: 95,
@@ -875,7 +957,6 @@ const styles = StyleSheet.create({
     lineHeight: 10,
   },
 
-  /* EMPTY STATES */
   emptyPlaque: {
     backgroundColor: "#E8D7B8",
     borderRadius: 8,
@@ -893,7 +974,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
 
-  /* COMING SOON */
   comingSoonPlaque: {
     backgroundColor: "#D4C4A8",
     borderRadius: 8,

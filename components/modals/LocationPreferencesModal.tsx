@@ -1,26 +1,25 @@
 import { db } from "@/constants/firebaseConfig";
 import {
-    getCurrentLocation,
-    hasLocationPermission,
-    requestLocationPermission,
-    updateCurrentLocation,
-    updateHomeLocation,
+  getCurrentLocation,
+  hasLocationPermission,
+  requestLocationPermission,
+  updateCurrentLocation,
 } from "@/utils/locationHelpers";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Image,
-    Modal,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  Image,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from "react-native";
 
 interface LocationPreferencesModalProps {
@@ -38,8 +37,6 @@ export default function LocationPreferencesModal({
 }: LocationPreferencesModalProps) {
   const [loading, setLoading] = useState(true);
   
-  const [homeCity, setHomeCity] = useState("");
-  const [homeState, setHomeState] = useState("");
   const [currentCity, setCurrentCity] = useState("");
   const [currentState, setCurrentState] = useState("");
   const [locationPermission, setLocationPermission] = useState(false);
@@ -58,10 +55,8 @@ export default function LocationPreferencesModal({
       const userDoc = await getDoc(doc(db, "users", userId));
       if (userDoc.exists()) {
         const data = userDoc.data();
-        setHomeCity(data.homeCity || data.city || "");
-        setHomeState(data.homeState || data.state || "");
-        setCurrentCity(data.currentCity || data.city || "");
-        setCurrentState(data.currentState || data.state || "");
+        setCurrentCity(data.city || "");
+        setCurrentState(data.state || "");
         setLocationMethod(data.locationMethod || "manual");
         
         const hasPermission = await hasLocationPermission();
@@ -84,10 +79,7 @@ export default function LocationPreferencesModal({
       // Get current location and update
       const location = await getCurrentLocation();
       if (location) {
-        await updateDoc(doc(db, "users", userId), {
-          locationPermission: true,
-          locationMethod: "gps",
-        });
+        await updateCurrentLocation(userId, location, "gps");
         
         Alert.alert(
           "Location Services Enabled",
@@ -103,10 +95,10 @@ export default function LocationPreferencesModal({
     }
   };
 
-  const handleChangeHomeLocation = () => {
+  const handleChangeLocation = () => {
     Alert.alert(
-      "Change Home Location",
-      "How would you like to set your home location?",
+      "Change Location",
+      "How would you like to update your location?",
       [
         {
           text: "Cancel",
@@ -117,13 +109,11 @@ export default function LocationPreferencesModal({
           onPress: async () => {
             const location = await getCurrentLocation();
             if (location) {
-              await updateHomeLocation(userId, location.city, location.state);
-              setHomeCity(location.city);
-              setHomeState(location.state);
+              await updateCurrentLocation(userId, location, "gps");
               setCurrentCity(location.city);
               setCurrentState(location.state);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              Alert.alert("Success", `Home location set to ${location.city}, ${location.state}`);
+              Alert.alert("Success", `Location set to ${location.city}, ${location.state}`);
               onUpdate();
             } else {
               Alert.alert("Error", "Could not get GPS location. Please enable location services.");
@@ -132,46 +122,13 @@ export default function LocationPreferencesModal({
         },
         {
           text: "Enter Manually",
-          onPress: () => handleManualEntry("home"),
+          onPress: () => handleManualEntry(),
         },
       ]
     );
   };
 
-  const handleChangeActiveLocation = () => {
-    Alert.alert(
-      "Change Active Location",
-      "How would you like to set your active location?",
-      [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-        {
-          text: "Use GPS",
-          onPress: async () => {
-            const location = await getCurrentLocation();
-            if (location) {
-              await updateCurrentLocation(userId, location.city, location.state, true);
-              setCurrentCity(location.city);
-              setCurrentState(location.state);
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              Alert.alert("Success", `Active location set to ${location.city}, ${location.state}`);
-              onUpdate();
-            } else {
-              Alert.alert("Error", "Could not get GPS location. Please enable location services.");
-            }
-          },
-        },
-        {
-          text: "Enter Manually",
-          onPress: () => handleManualEntry("current"),
-        },
-      ]
-    );
-  };
-
-  const handleManualEntry = (type: "home" | "current") => {
+  const handleManualEntry = () => {
     if (Platform.OS === 'web') {
       // Web doesn't support Alert.prompt, use a different approach
       Alert.alert("Manual Entry", "Please use the mobile app to manually enter location");
@@ -181,29 +138,36 @@ export default function LocationPreferencesModal({
     Alert.prompt(
       "Enter City",
       "What city?",
-      async (city) => {
-        if (!city || !city.trim()) return;
+      async (cityInput?: string) => {
+        const city = cityInput || "";
+        if (!city.trim()) return;
 
         Alert.prompt(
           "Enter State",
           "What state? (e.g., NC, CA, TX)",
-          async (state) => {
-            if (!state || !state.trim()) return;
+          async (stateInput?: string) => {
+            const state = stateInput || "";
+            if (!state.trim()) return;
 
             const cleanCity = city.trim();
             const cleanState = state.trim().toUpperCase();
 
-            if (type === "home") {
-              await updateHomeLocation(userId, cleanCity, cleanState);
-              setHomeCity(cleanCity);
-              setHomeState(cleanState);
-              setCurrentCity(cleanCity);
-              setCurrentState(cleanState);
-            } else {
-              await updateCurrentLocation(userId, cleanCity, cleanState, false);
-              setCurrentCity(cleanCity);
-              setCurrentState(cleanState);
-            }
+            // Get current location to use as coordinates (or use dummy coordinates)
+            const loc = await getCurrentLocation();
+            
+            await updateCurrentLocation(
+              userId,
+              {
+                city: cleanCity,
+                state: cleanState,
+                latitude: loc?.latitude || 0,
+                longitude: loc?.longitude || 0,
+              },
+              "manual"
+            );
+            
+            setCurrentCity(cleanCity);
+            setCurrentState(cleanState);
 
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             Alert.alert("Success", `Location set to ${cleanCity}, ${cleanState}`);
@@ -228,7 +192,7 @@ export default function LocationPreferencesModal({
           {
             text: "Update",
             onPress: async () => {
-              await updateCurrentLocation(userId, location.city, location.state, true);
+              await updateCurrentLocation(userId, location, "gps");
               setCurrentCity(location.city);
               setCurrentState(location.state);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -269,38 +233,14 @@ export default function LocationPreferencesModal({
           </View>
 
           <ScrollView style={styles.modalContent}>
-            {/* HOME LOCATION */}
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Ionicons name="home" size={20} color="#0D5C3A" />
-                <Text style={styles.sectionTitle}>Home Location</Text>
-              </View>
-              <Text style={styles.sectionSubtext}>
-                Your primary location shown on your profile
-              </Text>
-              
-              <View style={styles.locationDisplay}>
-                <Text style={styles.locationText}>
-                  {homeCity && homeState ? `📍 ${homeCity}, ${homeState}` : "Not set"}
-                </Text>
-              </View>
-
-              <TouchableOpacity
-                style={styles.changeButton}
-                onPress={handleChangeHomeLocation}
-              >
-                <Text style={styles.changeButtonText}>Change Home Location</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* CURRENT/ACTIVE LOCATION */}
+            {/* CURRENT LOCATION - NO MORE HOME LOCATION */}
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <Ionicons name="location" size={20} color="#0D5C3A" />
-                <Text style={styles.sectionTitle}>Active Location</Text>
+                <Text style={styles.sectionTitle}>Your Location</Text>
               </View>
               <Text style={styles.sectionSubtext}>
-                Used for leaderboards and finding nearby courses
+                Used for leaderboards, finding nearby courses, and feed content
               </Text>
               
               <View style={styles.locationDisplay}>
@@ -316,14 +256,12 @@ export default function LocationPreferencesModal({
                 )}
               </View>
 
-              {!locationPermission && (
-                <TouchableOpacity
-                  style={styles.changeButton}
-                  onPress={handleChangeActiveLocation}
-                >
-                  <Text style={styles.changeButtonText}>Update Active Location</Text>
-                </TouchableOpacity>
-              )}
+              <TouchableOpacity
+                style={styles.changeButton}
+                onPress={handleChangeLocation}
+              >
+                <Text style={styles.changeButtonText}>Change Location</Text>
+              </TouchableOpacity>
             </View>
 
             {/* LOCATION SERVICES */}
@@ -381,9 +319,8 @@ export default function LocationPreferencesModal({
             <View style={styles.infoBox}>
               <Ionicons name="information-circle" size={20} color="#0D5C3A" />
               <Text style={styles.infoText}>
-                With location services enabled, your active location updates automatically
-                when you're 15+ miles from your last location. Your home location stays
-                the same unless you manually change it.
+                With location services enabled, your location updates automatically
+                when you're 15+ miles from your last location.
               </Text>
             </View>
           </ScrollView>

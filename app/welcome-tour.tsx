@@ -19,81 +19,60 @@ const { width, height } = Dimensions.get("window");
 
 interface TourStep {
   background: any;
-  title?: string;
+  title: string;
   message: string;
-  spotlight?: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
 }
 
 const TOUR_STEPS: TourStep[] = [
   {
-    background: require("@/assets/welcome-tour/clubhouse.png"),
-    title: "Welcome to SwingThoughts",
-    message: "Your golf community in one place.\nConnect, compete, and share your journey.",
+    background: require("@/assets/guided-tour/TopNav.png"),
+    title: "Welcome to the Clubhouse",
+    message: "Explore Swing Thoughts, achievements, and activity from other golfers in your region.\n\nThis is the Top Navigation bar where you can navigate from the Clubhouse, to Leaderboards, or to your Locker.",
   },
   {
-    background: require("@/assets/welcome-tour/clubhouse.png"),
-    title: "The Clubhouse",
-    message: "Share your swing thoughts, celebrate wins, and connect with golfers.\n\nTap the Create button to post thoughts or photos.",
-    spotlight: {
-      x: 40,
-      y: height - 90,
-      width: 70,
-      height: 40,
-    },
+    background: require("@/assets/guided-tour/Low Leader.png"),
+    title: "Low Leaders",
+    message: "This shows active Low Leader scores from golfers and courses in your region.",
   },
   {
-    background: require("@/assets/welcome-tour/clubhouse.png"),
-    title: "Low Leader Carousel",
-    message: "See who's dominating courses near you.\n\nCompete for badges: Lowman, Scratch, Ace, and Hole-in-One!",
-    spotlight: {
-      x: 0,
-      y: 65,
-      width: width,
-      height: 50,
-    },
+    background: require("@/assets/guided-tour/Bottom Action Bar.png"),
+    title: "Bottom Action Bar",
+    message: "Here you can create Swing Thoughts, check your notifications, and read notes left in your locker.",
   },
   {
-    background: require("@/assets/welcome-tour/leaderboard.png"),
+    background: require("@/assets/guided-tour/Club House Wander.png"),
+    title: "Wander the Clubhouse",
+    message: "Find more thoughts, explore different posts, or discover other golfers in your area.",
+  },
+  {
+    background: require("@/assets/guided-tour/LeaderBoard.png"),
     title: "Leaderboards",
-    message: "Rankings by your location, tier, and time period.\n\nPost scores to climb the ranks and earn badges!",
-    spotlight: {
-      x: 16,
-      y: 184,
-      width: width - 32,
-      height: height - 400,
-    },
+    message: "Displays leaderboard scores from courses in your region.\n\nCompete for top spots and earn badges!",
   },
   {
-    background: require("@/assets/welcome-tour/leaderboard.png"),
-    title: "Post Your Score",
-    message: "Tap 'Post Score' to log your rounds and compete on the leaderboards!",
-    spotlight: {
-      x: 40,
-      y: height - 90,
-      width: 90,
-      height: 40,
-    },
+    background: require("@/assets/guided-tour/Post Score Filter.png"),
+    title: "Post a Score",
+    message: "Post a score and become a Low Leader!\n\nOr filter the leaderboard to find partners, specific courses, or explore other regions.",
   },
   {
-    background: require("@/assets/welcome-tour/locker.png"),
+    background: require("@/assets/guided-tour/Locker.png"),
     title: "Your Locker",
-    message: "Showcase your achievements and golf equipment.\n\nTap 'Update Locker' to customize your badges and clubs!",
-    spotlight: {
-      x: 40,
-      y: height - 90,
-      width: 110,
-      height: 40,
-    },
+    message: "This is your locker. Show off your achievements, your current game identity, and what gear you're currently using.\n\nYou can also request to Partner-up with other golfers when viewing their locker.",
   },
   {
-    background: require("@/assets/welcome-tour/clubhouse.png"),
-    title: "You're Ready!",
-    message: "Start sharing your golf journey.\n\nPost scores, earn badges, and connect with golfers in your area.",
+    background: require("@/assets/guided-tour/Update Locker.png"),
+    title: "Update Your Locker",
+    message: "Update your locker to your liking, or view your profile.",
+  },
+  {
+    background: require("@/assets/guided-tour/Profile.png"),
+    title: "Your Profile",
+    message: "This is your profile which captures your thoughts, scores, and more.\n\nYou can also access your settings here.",
+  },
+  {
+    background: require("@/assets/guided-tour/Locker Notes.png"),
+    title: "Locker Notes",
+    message: "Leave notes for your partners, or read notes left for you.\n\nStay connected with your golf community!",
   },
 ];
 
@@ -104,6 +83,7 @@ export default function WelcomeTourScreen() {
 
   const step = TOUR_STEPS[currentStep];
   const isLastStep = currentStep === TOUR_STEPS.length - 1;
+  const isFirstStep = currentStep === 0;
 
   // Auto-advance after 30 seconds
   useEffect(() => {
@@ -127,6 +107,16 @@ export default function WelcomeTourScreen() {
       handleDone();
     } else {
       setCurrentStep(currentStep + 1);
+    }
+  };
+
+  const handleBack = () => {
+    if (autoAdvanceTimer) {
+      clearTimeout(autoAdvanceTimer);
+    }
+
+    if (currentStep > 0) {
+      setCurrentStep(currentStep - 1);
     }
   };
 
@@ -154,86 +144,20 @@ export default function WelcomeTourScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Clear background with no blur */}
+      {/* Background screenshot with subtle dark overlay */}
       <ImageBackground
         source={step.background}
         style={styles.background}
         blurRadius={0}
         resizeMode="cover"
       >
-        {/* Dark overlay with spotlight cutouts */}
-        {step.spotlight ? (
-          <>
-            {/* Top overlay */}
-            <View
-              style={[
-                styles.overlaySection,
-                {
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  height: step.spotlight.y,
-                },
-              ]}
-            />
-            {/* Left overlay */}
-            <View
-              style={[
-                styles.overlaySection,
-                {
-                  top: step.spotlight.y,
-                  left: 0,
-                  width: step.spotlight.x,
-                  height: step.spotlight.height,
-                },
-              ]}
-            />
-            {/* Right overlay */}
-            <View
-              style={[
-                styles.overlaySection,
-                {
-                  top: step.spotlight.y,
-                  left: step.spotlight.x + step.spotlight.width,
-                  right: 0,
-                  height: step.spotlight.height,
-                },
-              ]}
-            />
-            {/* Bottom overlay */}
-            <View
-              style={[
-                styles.overlaySection,
-                {
-                  top: step.spotlight.y + step.spotlight.height,
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                },
-              ]}
-            />
-
-            {/* Golden border around spotlight */}
-            <View
-              style={[
-                styles.spotlightBorder,
-                {
-                  top: step.spotlight.y - 4,
-                  left: step.spotlight.x - 4,
-                  width: step.spotlight.width + 8,
-                  height: step.spotlight.height + 8,
-                },
-              ]}
-            />
-          </>
-        ) : (
-          <View style={styles.darkOverlay} />
-        )}
+        {/* Subtle dark overlay for readability */}
+        <View style={styles.darkOverlay} />
 
         <SafeAreaView style={styles.safeArea}>
           <View style={styles.content}>
-            {/* Welcome Icon (Page 1 only) */}
-            {currentStep === 0 && (
+            {/* Welcome Icon (First page only) */}
+            {isFirstStep && (
               <Image
                 source={require("@/assets/icons/Clubhouse.png")}
                 style={styles.welcomeIcon}
@@ -247,9 +171,7 @@ export default function WelcomeTourScreen() {
 
             {/* Tooltip Dialog */}
             <View style={styles.tooltip}>
-              {step.title && (
-                <Text style={styles.tooltipTitle}>{step.title}</Text>
-              )}
+              <Text style={styles.tooltipTitle}>{step.title}</Text>
               <Text style={styles.tooltipMessage}>{step.message}</Text>
             </View>
 
@@ -270,19 +192,34 @@ export default function WelcomeTourScreen() {
 
             {/* Buttons */}
             <View style={styles.buttons}>
-              <TouchableOpacity
-                onPress={handleSkip}
-                style={styles.skipButton}
-              >
-                <Text style={styles.skipText}>Skip Tour</Text>
-              </TouchableOpacity>
+              {/* Back Button (only show after first step) */}
+              {!isFirstStep && (
+                <TouchableOpacity
+                  onPress={handleBack}
+                  style={styles.backButton}
+                >
+                  <Ionicons name="arrow-back" size={20} color="#FFFFFF" />
+                  <Text style={styles.backText}>Back</Text>
+                </TouchableOpacity>
+              )}
 
+              {/* Skip Button (only show before last step) */}
+              {!isLastStep && (
+                <TouchableOpacity
+                  onPress={handleSkip}
+                  style={[styles.skipButton, !isFirstStep && styles.skipButtonSmaller]}
+                >
+                  <Text style={styles.skipText}>Skip Tour</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* Next/Get Started Button */}
               <TouchableOpacity
                 onPress={handleNext}
-                style={styles.nextButton}
+                style={[styles.nextButton, isFirstStep && styles.nextButtonWide]}
               >
                 <Text style={styles.nextText}>
-                  {isLastStep ? "Get Started" : "Next"}
+                  {isLastStep ? "You're next on the Tee" : "Next"}
                 </Text>
                 {!isLastStep && (
                   <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
@@ -310,24 +247,7 @@ const styles = StyleSheet.create({
 
   darkOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0, 0, 0, 0.75)",
-  },
-
-  overlaySection: {
-    position: "absolute",
     backgroundColor: "rgba(0, 0, 0, 0.5)",
-  },
-
-  spotlightBorder: {
-    position: "absolute",
-    borderWidth: 5,
-    borderColor: "#FFD700",
-    borderRadius: 12,
-    shadowColor: "#FFD700",
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 1,
-    shadowRadius: 25,
-    elevation: 25,
   },
 
   safeArea: {
@@ -378,6 +298,9 @@ const styles = StyleSheet.create({
   dotsContainer: {
     flexDirection: "row",
     gap: 8,
+    flexWrap: "wrap",
+    justifyContent: "center",
+    maxWidth: width - 40,
   },
 
   dot: {
@@ -397,9 +320,28 @@ const styles = StyleSheet.create({
 
   buttons: {
     flexDirection: "row",
-    gap: 16,
+    gap: 12,
     width: "100%",
     paddingHorizontal: 20,
+  },
+
+  backButton: {
+    flexDirection: "row",
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    borderRadius: 12,
+    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 2,
+    borderColor: "rgba(255, 255, 255, 0.3)",
+  },
+
+  backText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFFFFF",
   },
 
   skipButton: {
@@ -410,6 +352,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderWidth: 2,
     borderColor: "rgba(255, 255, 255, 0.3)",
+  },
+
+  skipButtonSmaller: {
+    flex: 0,
+    paddingHorizontal: 20,
   },
 
   skipText: {
@@ -432,6 +379,10 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.4,
     shadowRadius: 8,
     elevation: 10,
+  },
+
+  nextButtonWide: {
+    flex: 2,
   },
 
   nextText: {

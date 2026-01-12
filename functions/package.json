@@ -2,11 +2,9 @@
   "name": "functions",
   "private": true,
   "main": "lib/index.js",
-
   "engines": {
     "node": "18"
   },
-
   "scripts": {
     "lint": "echo \"Lint skipped (ESLint config mismatch)\"",
     "build": "tsc",
@@ -17,15 +15,13 @@
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log"
   },
-
   "dependencies": {
+    "expo-server-sdk": "^4.0.0",
     "firebase-admin": "^13.6.0",
     "firebase-functions": "^7.0.0"
   },
-
   "devDependencies": {
     "firebase-functions-test": "^3.4.1",
     "typescript": "^5.7.3"
   }
 }
-

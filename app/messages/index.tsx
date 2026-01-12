@@ -2,6 +2,7 @@ import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
+import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { EMAIL_VERIFICATION_MESSAGE, isEmailVerified } from "@/utils/rateLimitHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
@@ -23,6 +24,7 @@ import {
   FlatList,
   Image,
   Platform,
+  RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -54,19 +56,52 @@ interface Conversation {
 export default function MessagesScreen() {
   const router = useRouter();
   const userId = auth.currentUser?.uid;
+  const { getCache, setCache } = useCache(); // ✅ Add cache hook
+  
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showingCached, setShowingCached] = useState(false); // ✅ Cache indicator
+  const [refreshing, setRefreshing] = useState(false); // ✅ Pull to refresh
 
   useEffect(() => {
     if (userId) {
-      fetchMessages();
+      fetchMessagesWithCache();
     }
   }, [userId]);
 
-  const fetchMessages = async () => {
+  /* ========================= FETCH WITH CACHE ========================= */
+
+  const fetchMessagesWithCache = async () => {
     if (!userId) return;
 
     try {
+      // Step 1: Try to load from cache (instant)
+      const cached = await getCache(CACHE_KEYS.LOCKER_NOTES(userId));
+      
+      if (cached) {
+        console.log("⚡ Using cached locker notes");
+        setConversations(cached);
+        setShowingCached(true);
+        setLoading(false);
+      }
+
+      // Step 2: Fetch fresh data (always)
+      await fetchMessages(true);
+
+    } catch (error) {
+      console.error("❌ Locker notes cache error:", error);
+      await fetchMessages();
+    }
+  };
+
+  const fetchMessages = async (isBackgroundRefresh: boolean = false) => {
+    if (!userId) return;
+
+    try {
+      if (!isBackgroundRefresh) {
+        setLoading(true);
+      }
+
       // Query 1: Messages I received
       const receivedQuery = query(
         collection(db, "messages"),
@@ -186,13 +221,35 @@ export default function MessagesScreen() {
       console.log(`💬 Grouped into ${conversationsList.length} conversations`);
 
       setConversations(conversationsList);
+
+      // ✅ Step 3: Update cache
+      await setCache(CACHE_KEYS.LOCKER_NOTES(userId), conversationsList);
+      console.log("✅ Locker notes cached");
+
+      setShowingCached(false);
       setLoading(false);
     } catch (error) {
       console.error("Error fetching messages:", error);
       soundPlayer.play('error');
+      setShowingCached(false);
       setLoading(false);
     }
   };
+
+  /* ========================= PULL TO REFRESH ========================= */
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    // Clear cache indicator on manual refresh
+    setShowingCached(false);
+    await fetchMessages();
+    
+    setRefreshing(false);
+  };
+
+  /* ========================= HANDLERS ========================= */
 
   const handleComposeNew = () => {
     // ✅ ANTI-BOT: Check email verification before allowing compose
@@ -293,7 +350,11 @@ export default function MessagesScreen() {
       console.log("Successfully deleted", deletePromises.length, "messages");
 
       // Remove from local state
-      setConversations((prev) => prev.filter((conv) => conv.otherUserId !== otherUserId));
+      const updatedConversations = conversations.filter((conv) => conv.otherUserId !== otherUserId);
+      setConversations(updatedConversations);
+
+      // ✅ Update cache after deletion
+      await setCache(CACHE_KEYS.LOCKER_NOTES(currentUserId), updatedConversations);
 
       if (Platform.OS !== 'web') {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -401,7 +462,15 @@ export default function MessagesScreen() {
         </TouchableOpacity>
       </View>
 
-      {loading ? (
+      {/* Cache indicator - only show when cache is displayed */}
+      {showingCached && !loading && (
+        <View style={styles.cacheIndicator}>
+          <ActivityIndicator size="small" color="#0D5C3A" />
+          <Text style={styles.cacheText}>Updating locker notes...</Text>
+        </View>
+      )}
+
+      {loading && !showingCached ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#0D5C3A" />
           <Text style={styles.loadingText}>Loading messages...</Text>
@@ -412,6 +481,14 @@ export default function MessagesScreen() {
           renderItem={renderConversation}
           keyExtractor={(item) => item.otherUserId}
           contentContainerStyle={styles.listContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor="#0D5C3A"
+              colors={["#0D5C3A"]}
+            />
+          }
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <Ionicons name="mail-outline" size={64} color="#999" />
@@ -489,6 +566,23 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 4,
+  },
+
+  cacheIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: "#FFF3CD",
+    borderBottomWidth: 1,
+    borderBottomColor: "#FFECB5",
+  },
+  
+  cacheText: {
+    fontSize: 12,
+    color: "#664D03",
+    fontWeight: "600",
   },
 
   loadingContainer: {

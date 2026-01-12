@@ -4,6 +4,7 @@ import LowmanCarousel from "@/components/navigation/LowmanCarousel";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
+import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { getCourseById } from "@/utils/courseHelpers";
 import { milesBetween } from "@/utils/geo";
 import {
@@ -28,6 +29,7 @@ import {
   Alert,
   FlatList,
   Image,
+  RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -69,13 +71,18 @@ interface CourseBoard {
 /* ------------------------------------------------------------------ */
 
 export default function LeaderboardScreen() {
+  const { getCache, setCache } = useCache();
+  
   const [loading, setLoading] = useState(true);
+  const [showingCached, setShowingCached] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [boards, setBoards] = useState<CourseBoard[]>([]);
   const [pinnedBoard, setPinnedBoard] = useState<CourseBoard | null>(null);
   const [locationLabel, setLocationLabel] = useState("Nearby");
   const [displayedCourseIds, setDisplayedCourseIds] = useState<number[]>([]);
   const [loadMoreModalVisible, setLoadMoreModalVisible] = useState(false);
   const [pinnedCourseId, setPinnedCourseId] = useState<number | null>(null);
+  const [userRegionKey, setUserRegionKey] = useState<string>("");
 
   const LocationIcon = require("@/assets/icons/Location Near Me.png");
 
@@ -112,6 +119,13 @@ export default function LeaderboardScreen() {
     if (Array.isArray(raw)) raw = raw[0];
     return (raw as string) || null;
   }, [params?.playerName]);
+
+  // ✅ HOLE COUNT FILTER (default to 18)
+  const holeCount = useMemo(() => {
+    let raw = params?.holeCount;
+    if (Array.isArray(raw)) raw = raw[0];
+    return (raw as "9" | "18") || "18";
+  }, [params?.holeCount]);
 
   // ✅ HIGHLIGHT PARAMS (from notifications)
   const highlightCourseId = useMemo(() => {
@@ -180,6 +194,9 @@ export default function LeaderboardScreen() {
         const userData = snap.data();
         const city = userData.currentCity || userData.city;
         const state = userData.currentState || userData.state;
+        
+        // Store regionKey for caching
+        setUserRegionKey(userData.regionKey || "");
 
         if (city && state) {
           setLocationLabel(`${city}, ${state}`);
@@ -252,16 +269,53 @@ export default function LeaderboardScreen() {
     }
   };
 
-  /* ---------------------- FETCH LEADERBOARDS ---------------------- */
+  /* ---------------------- FETCH LEADERBOARDS WITH CACHE ---------------------- */
 
   useEffect(() => {
-    fetchLeaderboards();
+    if (userRegionKey) {
+      fetchLeaderboardsWithCache();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterType, filterCourseId, filterPlayerId]);
+  }, [filterType, filterCourseId, filterPlayerId, userRegionKey, holeCount]);
 
-  const fetchLeaderboards = async () => {
+  const fetchLeaderboardsWithCache = async () => {
     try {
-      setLoading(true);
+      const uid = auth.currentUser?.uid;
+      if (!uid) return;
+
+      // Only use cache for "nearMe" view
+      if (filterType === "nearMe" && userRegionKey) {
+        // Step 1: Try to load from cache
+        const cached = await getCache(
+          CACHE_KEYS.LEADERBOARD(uid, userRegionKey, holeCount),
+          userRegionKey
+        );
+
+        if (cached) {
+          console.log(`⚡ Using cached leaderboards (${holeCount}-hole)`);
+          setBoards(cached.boards || []);
+          setPinnedBoard(cached.pinnedBoard || null);
+          setDisplayedCourseIds(cached.displayedCourseIds || []);
+          setShowingCached(true);
+          setLoading(false);
+        }
+      }
+
+      // Step 2: Fetch fresh data (always)
+      await fetchLeaderboards(true);
+
+    } catch (error) {
+      console.error("❌ Leaderboard cache error:", error);
+      await fetchLeaderboards();
+    }
+  };
+
+  const fetchLeaderboards = async (isBackgroundRefresh: boolean = false) => {
+    try {
+      if (!isBackgroundRefresh) {
+        setLoading(true);
+      }
+      
       const uid = auth.currentUser?.uid;
 
       if (!uid) {
@@ -280,11 +334,11 @@ export default function LeaderboardScreen() {
       }
 
       const userData = userDoc.data();
-      const userRegionKey = userData.regionKey;
+      const currentUserRegionKey = userData.regionKey;
       const userLat = userData.currentLatitude || userData.latitude;
       const userLon = userData.currentLongitude || userData.longitude;
 
-      if (!userRegionKey) {
+      if (!currentUserRegionKey) {
         console.log("⚠️ User has no regionKey - needs migration");
         setLoading(false);
         return;
@@ -308,6 +362,7 @@ export default function LeaderboardScreen() {
           console.log("⚠️ Course not found:", filterCourseId);
           setBoards([]);
           setDisplayedCourseIds([]);
+          setShowingCached(false);
           setLoading(false);
           return;
         }
@@ -323,6 +378,8 @@ export default function LeaderboardScreen() {
             {
               courseId: filterCourseId,
               courseName: filterCourseName || course.course_name,
+              topScores18: [],
+              topScores9: [],
               topScores: [],
               location: course.location
                 ? { city: course.location.city, state: course.location.state }
@@ -342,6 +399,7 @@ export default function LeaderboardScreen() {
           console.log("⚠️ User has no partners");
           setBoards([]);
           setDisplayedCourseIds([]);
+          setShowingCached(false);
           setLoading(false);
           return;
         }
@@ -369,19 +427,19 @@ export default function LeaderboardScreen() {
         console.log("🔍 Filter: Near Me");
 
         // Query leaderboards in user's region
-        leaderboards = await getLeaderboardsByRegion(userRegionKey);
+        leaderboards = await getLeaderboardsByRegion(currentUserRegionKey);
 
-        console.log(`📦 Found ${leaderboards.length} leaderboards in ${userRegionKey}`);
+        console.log(`📦 Found ${leaderboards.length} leaderboards in ${currentUserRegionKey}`);
 
         // If no leaderboards, try to hydrate
         if (leaderboards.length === 0) {
           console.log("⚠️ No leaderboards in region, attempting hydration...");
 
-          const hydrated = await hydrateLeaderboardsForRegion(userRegionKey);
+          const hydrated = await hydrateLeaderboardsForRegion(currentUserRegionKey);
 
           if (hydrated > 0) {
             // Re-fetch after hydration
-            leaderboards = await getLeaderboardsByRegion(userRegionKey);
+            leaderboards = await getLeaderboardsByRegion(currentUserRegionKey);
             console.log(`✅ After hydration: ${leaderboards.length} leaderboards`);
           } else {
             console.log("⚠️ No courses to hydrate in region");
@@ -413,6 +471,7 @@ export default function LeaderboardScreen() {
         console.log("⚠️ No leaderboards to display");
         setBoards([]);
         setDisplayedCourseIds([]);
+        setShowingCached(false);
         setLoading(false);
         return;
       }
@@ -453,10 +512,15 @@ export default function LeaderboardScreen() {
           }
         }
 
+        // ✅ Use correct hole count data
+        const scores = holeCount === "18" 
+          ? ((leaderboard.topScores18 && leaderboard.topScores18.length > 0) ? leaderboard.topScores18 : (leaderboard.topScores || []))
+          : (leaderboard.topScores9 || []);
+
         boardsWithDistance.push({
           courseId: leaderboard.courseId,
           courseName: leaderboard.courseName,
-          scores: leaderboard.topScores || [],
+          scores,
           distance,
           location,
         });
@@ -470,6 +534,9 @@ export default function LeaderboardScreen() {
       // ============================================================
       // HANDLE PINNED LEADERBOARD (ONLY FOR NEAR ME)
       // ============================================================
+
+      let finalBoards = boardsWithDistance;
+      let finalPinnedBoard: CourseBoard | null = null;
 
       if (filterType === "nearMe") {
         const pinnedLeaderboard = userData.pinnedLeaderboard;
@@ -504,10 +571,15 @@ export default function LeaderboardScreen() {
                 );
               }
 
+              // ✅ Use correct hole count data
+              const pinnedScores = holeCount === "18"
+                ? ((pinnedLB.topScores18 && pinnedLB.topScores18.length > 0) ? pinnedLB.topScores18 : (pinnedLB.topScores || []))
+                : (pinnedLB.topScores9 || []);
+
               const pinnedBoardData: CourseBoard = {
                 courseId: pinnedLB.courseId,
                 courseName: pinnedLB.courseName,
-                scores: pinnedLB.topScores || [],
+                scores: pinnedScores,
                 distance: pinnedDistance,
                 location: pinnedCourse.location
                   ? {
@@ -517,16 +589,13 @@ export default function LeaderboardScreen() {
                   : undefined,
               };
 
-              setPinnedBoard(pinnedBoardData);
+              finalPinnedBoard = pinnedBoardData;
 
               // Remove pinned from main boards and keep top 2
               const boardsWithoutPinned = boardsWithDistance.filter(
                 (b) => b.courseId !== pinnedLeaderboard.courseId
               );
-              const top2Boards = boardsWithoutPinned.slice(0, 2);
-
-              setBoards(top2Boards);
-              setDisplayedCourseIds(top2Boards.map((b) => b.courseId));
+              finalBoards = boardsWithoutPinned.slice(0, 2);
 
               console.log("✅ Set pinned board at top, showing top 2 others below");
             } else {
@@ -543,43 +612,65 @@ export default function LeaderboardScreen() {
                   : undefined,
               };
 
-              setPinnedBoard(pinnedBoardData);
+              finalPinnedBoard = pinnedBoardData;
 
               const boardsWithoutPinned = boardsWithDistance.filter(
                 (b) => b.courseId !== pinnedLeaderboard.courseId
               );
-              const top2Boards = boardsWithoutPinned.slice(0, 2);
-
-              setBoards(top2Boards);
-              setDisplayedCourseIds(top2Boards.map((b) => b.courseId));
+              finalBoards = boardsWithoutPinned.slice(0, 2);
             }
           } else {
             // Pinned course not found
-            setPinnedBoard(null);
-            const top3Boards = boardsWithDistance.slice(0, 3);
-            setBoards(top3Boards);
-            setDisplayedCourseIds(top3Boards.map((b) => b.courseId));
+            finalPinnedBoard = null;
+            finalBoards = boardsWithDistance.slice(0, 3);
           }
         } else {
           // No pinned board
-          setPinnedBoard(null);
-          const top3Boards = boardsWithDistance.slice(0, 3);
-          setBoards(top3Boards);
-          setDisplayedCourseIds(top3Boards.map((b) => b.courseId));
+          finalPinnedBoard = null;
+          finalBoards = boardsWithDistance.slice(0, 3);
         }
-      } else {
-        // Other filters don't show pinned
-        setPinnedBoard(null);
-        setBoards(boardsWithDistance);
-        setDisplayedCourseIds(displayedIds);
       }
 
+      // Update state
+      setPinnedBoard(finalPinnedBoard);
+      setBoards(finalBoards);
+      setDisplayedCourseIds(finalBoards.map((b) => b.courseId));
+
+      // ✅ CACHE RESULT (only for "nearMe")
+      if (filterType === "nearMe" && currentUserRegionKey) {
+        await setCache(
+          CACHE_KEYS.LEADERBOARD(uid, currentUserRegionKey, holeCount),
+          {
+            boards: finalBoards,
+            pinnedBoard: finalPinnedBoard,
+            displayedCourseIds: finalBoards.map((b) => b.courseId),
+          },
+          currentUserRegionKey
+        );
+        console.log(`✅ Leaderboards cached (${holeCount}-hole)`);
+      }
+
+      setShowingCached(false);
       setLoading(false);
     } catch (e) {
       console.error("Leaderboard error:", e);
       soundPlayer.play("error");
+      setShowingCached(false);
       setLoading(false);
     }
+  };
+
+  /* ---------------------- PULL TO REFRESH ---------------------- */
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    // Clear cache on manual refresh
+    setShowingCached(false);
+    await fetchLeaderboards();
+    
+    setRefreshing(false);
   };
 
   /* ---------------------- REORDER BOARDS WHEN TARGET CHANGES ---------------------- */
@@ -740,7 +831,22 @@ export default function LeaderboardScreen() {
         <Text style={styles.locationText}>{locationLabel}</Text>
       </View>
 
-      {loading ? (
+      {/* ✅ 9-HOLE INDICATOR BADGE */}
+      {holeCount === "9" && (
+        <View style={styles.holeCountBadge}>
+          <Text style={styles.holeCountBadgeText}>9-HOLE SCORES 🏌️</Text>
+        </View>
+      )}
+
+      {/* Cache indicator - only show when cache is displayed */}
+      {showingCached && !loading && (
+        <View style={styles.cacheIndicator}>
+          <ActivityIndicator size="small" color="#0D5C3A" />
+          <Text style={styles.cacheText}>Updating leaderboards...</Text>
+        </View>
+      )}
+
+      {loading && !showingCached ? (
         <View style={styles.loading}>
           <ActivityIndicator size="large" color="#0D5C3A" />
         </View>
@@ -749,11 +855,11 @@ export default function LeaderboardScreen() {
           <Text style={styles.emptyStateTitle}>No Leaderboards Found</Text>
           <Text style={styles.emptyStateText}>
             {filterType === "player"
-              ? `${filterPlayerName} hasn't made it to any top 3 leaderboards yet`
+              ? `${filterPlayerName} hasn't made it to any top 3 ${holeCount}-hole leaderboards yet`
               : filterType === "partnersOnly"
-              ? "Your partners haven't made it to any top 3 leaderboards yet"
+              ? `Your partners haven't made it to any top 3 ${holeCount}-hole leaderboards yet`
               : filterType === "course"
-              ? "No scores posted at this course yet"
+              ? `No ${holeCount}-hole scores posted at this course yet`
               : "No courses found in your area. Try searching for a course!"}
           </Text>
         </View>
@@ -813,7 +919,7 @@ export default function LeaderboardScreen() {
                 <Text style={styles.colScore}>G</Text>
                 <Text style={styles.colScore}>N</Text>
                 <Text style={styles.colScore}>PAR</Text>
-                <Text style={styles.colLow}>LOW</Text>
+                {holeCount === "18" && <Text style={styles.colLow}>LOW</Text>}
               </View>
 
               {/* ROWS */}
@@ -822,9 +928,9 @@ export default function LeaderboardScreen() {
                   style={styles.emptyRow}
                   onPress={() => goToPostScore(pinnedBoard.courseId)}
                 >
-                  <Text style={styles.emptyTitle}>No Scores Yet</Text>
+                  <Text style={styles.emptyTitle}>No {holeCount}-Hole Scores Yet</Text>
                   <Text style={styles.emptyText}>
-                    Be the first to post a score and obtain your achievement! ⛳
+                    Be the first to post a {holeCount}-hole score{holeCount === "18" && " and obtain your achievement"}! ⛳
                   </Text>
                 </TouchableOpacity>
               ) : (
@@ -833,7 +939,7 @@ export default function LeaderboardScreen() {
                   const isLowman = s.netScore === lowNet;
 
                   return (
-                    <View key={s.scoreId} style={styles.row}>
+                    <View key={`pinned-${pinnedBoard.courseId}-${s.scoreId}-${i}`} style={styles.row}>
                       <Text style={styles.colPos}>{i + 1}</Text>
 
                       <TouchableOpacity
@@ -853,15 +959,17 @@ export default function LeaderboardScreen() {
                       </TouchableOpacity>
 
                       <Text style={styles.colScore}>{s.grossScore}</Text>
-                      <Text style={[styles.colScore, isLowman && styles.lowNet]}>
+                      <Text style={[styles.colScore, isLowman && holeCount === "18" && styles.lowNet]}>
                         {s.netScore}
                       </Text>
                       <Text style={styles.colScore}>{s.par || 72}</Text>
-                      <View style={styles.colLow}>
-                        {isLowman && (
-                          <Image source={LowLeaderTrophy} style={styles.trophyIcon} />
-                        )}
-                      </View>
+                      {holeCount === "18" && (
+                        <View style={styles.colLow}>
+                          {isLowman && (
+                            <Image source={LowLeaderTrophy} style={styles.trophyIcon} />
+                          )}
+                        </View>
+                      )}
                     </View>
                   );
                 })
@@ -875,6 +983,14 @@ export default function LeaderboardScreen() {
             data={boards}
             keyExtractor={(b, index) => `${b.courseId}-${index}`}
             contentContainerStyle={{ paddingBottom: 140 }}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor="#0D5C3A"
+                colors={["#0D5C3A"]}
+              />
+            }
             ListFooterComponent={
               filterType === "nearMe" && boards.length > 0 ? (
                 <View style={styles.loadMoreContainer}>
@@ -940,7 +1056,7 @@ export default function LeaderboardScreen() {
                     <Text style={styles.colScore}>G</Text>
                     <Text style={styles.colScore}>N</Text>
                     <Text style={styles.colScore}>PAR</Text>
-                    <Text style={styles.colLow}>LOW</Text>
+                    {holeCount === "18" && <Text style={styles.colLow}>LOW</Text>}
                   </View>
 
                   {/* ROWS */}
@@ -949,9 +1065,9 @@ export default function LeaderboardScreen() {
                       style={styles.emptyRow}
                       onPress={() => goToPostScore(item.courseId)}
                     >
-                      <Text style={styles.emptyTitle}>No Scores Yet</Text>
+                      <Text style={styles.emptyTitle}>No {holeCount}-Hole Scores Yet</Text>
                       <Text style={styles.emptyText}>
-                        Be the first to post a score and obtain your achievement! ⛳
+                        Be the first to post a {holeCount}-hole score{holeCount === "18" && " and obtain your achievement"}! ⛳
                       </Text>
                     </TouchableOpacity>
                   ) : (
@@ -972,7 +1088,7 @@ export default function LeaderboardScreen() {
 
                       return (
                         <View
-                          key={s.scoreId}
+                          key={`board-${item.courseId}-${s.scoreId}-${i}`}
                           style={[styles.row, isTargetRow && styles.rowHighlighted]}
                         >
                           <Text style={styles.colPos}>{i + 1}</Text>
@@ -1000,15 +1116,17 @@ export default function LeaderboardScreen() {
                           </TouchableOpacity>
 
                           <Text style={styles.colScore}>{s.grossScore}</Text>
-                          <Text style={[styles.colScore, isLowman && styles.lowNet]}>
+                          <Text style={[styles.colScore, isLowman && holeCount === "18" && styles.lowNet]}>
                             {s.netScore}
                           </Text>
                           <Text style={styles.colScore}>{s.par || 72}</Text>
-                          <View style={styles.colLow}>
-                            {isLowman && (
-                              <Image source={LowLeaderTrophy} style={styles.trophyIcon} />
-                            )}
-                          </View>
+                          {holeCount === "18" && (
+                            <View style={styles.colLow}>
+                              {isLowman && (
+                                <Image source={LowLeaderTrophy} style={styles.trophyIcon} />
+                              )}
+                            </View>
+                          )}
                         </View>
                       );
                     })
@@ -1044,6 +1162,23 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F4EED8" },
   safeTop: { backgroundColor: "#0D5C3A" },
   carouselWrapper: { height: 50 },
+
+  cacheIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: "#FFF3CD",
+    borderBottomWidth: 1,
+    borderBottomColor: "#FFECB5",
+  },
+  
+  cacheText: {
+    fontSize: 12,
+    color: "#664D03",
+    fontWeight: "600",
+  },
 
   loading: { flex: 1, justifyContent: "center", alignItems: "center" },
 
@@ -1081,6 +1216,24 @@ const styles = StyleSheet.create({
   locationText: {
     fontWeight: "800",
     fontSize: 15,
+  },
+
+  holeCountBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    backgroundColor: "#FFD700",
+    borderBottomWidth: 2,
+    borderBottomColor: "#C9A400",
+  },
+
+  holeCountBadgeText: {
+    fontSize: 13,
+    fontWeight: "900",
+    color: "#0D5C3A",
+    letterSpacing: 1,
   },
 
   pinnedHeader: {

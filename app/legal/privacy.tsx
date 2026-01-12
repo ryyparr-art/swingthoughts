@@ -21,9 +21,9 @@ export default function PrivacyPolicyScreen() {
 
       {/* HEADER */}
       <View style={styles.header}>
-        <TouchableOpacity 
+        <TouchableOpacity
           onPress={() => {
-            soundPlayer.play('click');
+            soundPlayer.play("click");
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             router.back();
           }}
@@ -38,81 +38,102 @@ export default function PrivacyPolicyScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.lastUpdated}>Last Updated: January 1, 2025</Text>
+        <Text style={styles.lastUpdated}>Effective Date: January 2026</Text>
+
+        <Text style={styles.paragraph}>
+          Swing Thoughts (“we”, “our”, or “us”) respects your privacy. This Privacy
+          Policy explains how we collect, use, store, and protect your information
+          when you use the Swing Thoughts mobile application and related services.
+        </Text>
 
         <Text style={styles.sectionTitle}>1. Information We Collect</Text>
         <Text style={styles.paragraph}>
-          We collect information you provide directly to us, including:
+          The information we collect depends on how you use Swing Thoughts. We may
+          collect the following:
         </Text>
-        <Text style={styles.bulletPoint}>• Display name and profile information</Text>
-        <Text style={styles.bulletPoint}>• Email address</Text>
-        <Text style={styles.bulletPoint}>• Golf scores and related data</Text>
-        <Text style={styles.bulletPoint}>• Photos you upload (profile pictures, scorecards)</Text>
-        <Text style={styles.bulletPoint}>• Messages and posts you create</Text>
+        <Text style={styles.bulletPoint}>
+          • Account information (email address, display name, profile photo)
+        </Text>
+        <Text style={styles.bulletPoint}>
+          • User-generated content (posts, swing thoughts, scores, comments)
+        </Text>
+        <Text style={styles.bulletPoint}>
+          • Approximate location information (used for regional features, if enabled)
+        </Text>
+        <Text style={styles.bulletPoint}>
+          • Device and app usage information (interactions, crash logs)
+        </Text>
 
         <Text style={styles.sectionTitle}>2. How We Use Your Information</Text>
         <Text style={styles.paragraph}>
           We use the information we collect to:
         </Text>
-        <Text style={styles.bulletPoint}>• Provide, maintain, and improve our services</Text>
-        <Text style={styles.bulletPoint}>• Process and complete transactions</Text>
-        <Text style={styles.bulletPoint}>• Send you technical notices and support messages</Text>
-        <Text style={styles.bulletPoint}>• Respond to your comments and questions</Text>
-        <Text style={styles.bulletPoint}>• Monitor and analyze trends and usage</Text>
-
-        <Text style={styles.sectionTitle}>3. Information Sharing</Text>
-        <Text style={styles.paragraph}>
-          We do not sell your personal information. We may share your information:
+        <Text style={styles.bulletPoint}>
+          • Provide, operate, and improve app features
         </Text>
         <Text style={styles.bulletPoint}>
-          • With other users as part of the app's social features (based on your privacy settings)
+          • Personalize content such as feeds and leaderboards
         </Text>
-        <Text style={styles.bulletPoint}>• With service providers who assist in operating our app</Text>
         <Text style={styles.bulletPoint}>
-          • To comply with legal obligations or protect our rights
+          • Maintain security and prevent fraud or abuse
+        </Text>
+        <Text style={styles.bulletPoint}>
+          • Monitor performance and fix technical issues
+        </Text>
+        <Text style={styles.bulletPoint}>
+          • Communicate important updates or support responses
         </Text>
 
-        <Text style={styles.sectionTitle}>4. Data Security</Text>
+        <Text style={styles.sectionTitle}>3. Data Sharing</Text>
         <Text style={styles.paragraph}>
-          We take reasonable measures to help protect your personal information from loss, theft,
-          misuse, unauthorized access, disclosure, alteration, and destruction. However, no
-          internet or email transmission is ever fully secure.
+          We do not sell your personal data. We may share information with trusted
+          service providers who help operate the app, including Firebase (Google)
+          for authentication, database storage, analytics, and crash reporting.
+          These providers process data only on our behalf.
         </Text>
 
-        <Text style={styles.sectionTitle}>5. Your Privacy Rights</Text>
+        <Text style={styles.sectionTitle}>4. Location Information</Text>
         <Text style={styles.paragraph}>
-          You have the right to:
-        </Text>
-        <Text style={styles.bulletPoint}>• Access your personal information</Text>
-        <Text style={styles.bulletPoint}>• Correct inaccurate information</Text>
-        <Text style={styles.bulletPoint}>• Delete your account and data</Text>
-        <Text style={styles.bulletPoint}>• Control your privacy settings</Text>
-        <Text style={styles.bulletPoint}>• Opt out of communications</Text>
-
-        <Text style={styles.sectionTitle}>6. Children's Privacy</Text>
-        <Text style={styles.paragraph}>
-          Our app is not intended for children under 13. We do not knowingly collect personal
-          information from children under 13. If you believe we have collected information from a
-          child under 13, please contact us.
-        </Text>
-
-        <Text style={styles.sectionTitle}>7. Data Retention</Text>
-        <Text style={styles.paragraph}>
-          We retain your information for as long as your account is active or as needed to provide
-          you services. You may request deletion of your account at any time through the app
+          Location access is optional. If enabled, approximate location data may be
+          used to support regional features such as nearby content or leaderboards.
+          You can disable location permissions at any time through your device
           settings.
+        </Text>
+
+        <Text style={styles.sectionTitle}>5. Data Retention</Text>
+        <Text style={styles.paragraph}>
+          We retain personal information only for as long as necessary to provide
+          the Service, comply with legal obligations, resolve disputes, and enforce
+          our policies. You may request deletion of your account and associated
+          data at any time through the app.
+        </Text>
+
+        <Text style={styles.sectionTitle}>6. Your Rights and Choices</Text>
+        <Text style={styles.paragraph}>
+          You may update or correct your profile information within the app,
+          control permissions such as location through your device settings, and
+          request account deletion. Depending on your location, you may have
+          additional privacy rights under applicable laws.
+        </Text>
+
+        <Text style={styles.sectionTitle}>7. Children’s Privacy</Text>
+        <Text style={styles.paragraph}>
+          Swing Thoughts is not intended for children under the age of 13. We do
+          not knowingly collect personal information from children.
         </Text>
 
         <Text style={styles.sectionTitle}>8. Changes to This Policy</Text>
         <Text style={styles.paragraph}>
-          We may update this privacy policy from time to time. We will notify you of any changes
-          by posting the new policy on this page and updating the "Last Updated" date.
+          We may update this Privacy Policy from time to time. If material changes
+          are made, we will notify users through the app or other appropriate
+          means.
         </Text>
 
         <Text style={styles.sectionTitle}>9. Contact Us</Text>
         <Text style={styles.paragraph}>
-          If you have any questions about this Privacy Policy, please contact us at:
-          privacy@swingthoughts.com
+          If you have questions about this Privacy Policy, please contact us at:
+          {"\n"}
+          support@swingthoughts.app
         </Text>
       </ScrollView>
     </View>

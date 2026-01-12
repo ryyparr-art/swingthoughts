@@ -1,10 +1,11 @@
 import { auth, db } from "@/constants/firebaseConfig";
+import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { markAllNotificationsAsRead, markNotificationAsRead } from "@/utils/notificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { collection, onSnapshot, orderBy, query, where } from "firebase/firestore";
+import { collection, getDocs, onSnapshot, orderBy, query, where } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -49,51 +50,118 @@ interface GroupedNotifications {
 
 export default function NotificationsScreen() {
   const router = useRouter();
+  const { getCache, setCache } = useCache(); // ✅ Add cache hook
+  
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showingCached, setShowingCached] = useState(false); // ✅ Cache indicator
   const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
 
-    // Real-time listener for notifications
-    const notificationsQuery = query(
-      collection(db, "notifications"),
-      where("userId", "==", uid),
-      orderBy("createdAt", "desc")
-    );
+    let unsubscribe: (() => void) | undefined;
 
-    const unsubscribe = onSnapshot(
-      notificationsQuery,
-      (snapshot) => {
-        const notificationsList: Notification[] = [];
+    const loadNotificationsWithCache = async () => {
+      try {
+        // Step 1: Try to load from cache (instant)
+        const cached = await getCache(CACHE_KEYS.NOTIFICATIONS(uid));
         
-        snapshot.forEach((doc) => {
-          notificationsList.push({
-            id: doc.id,
-            ...doc.data(),
-          } as Notification);
-        });
+        if (cached) {
+          console.log("⚡ Using cached notifications");
+          setNotifications(cached);
+          setShowingCached(true);
+          setLoading(false);
+        }
 
-        setNotifications(notificationsList);
+        // Step 2: Set up real-time listener (always)
+        const notificationsQuery = query(
+          collection(db, "notifications"),
+          where("userId", "==", uid),
+          orderBy("createdAt", "desc")
+        );
+
+        unsubscribe = onSnapshot(
+          notificationsQuery,
+          async (snapshot) => {
+            const notificationsList: Notification[] = [];
+            
+            snapshot.forEach((doc) => {
+              notificationsList.push({
+                id: doc.id,
+                ...doc.data(),
+              } as Notification);
+            });
+
+            setNotifications(notificationsList);
+
+            // Step 3: Update cache
+            await setCache(CACHE_KEYS.NOTIFICATIONS(uid), notificationsList);
+            console.log("✅ Notifications cached");
+
+            setShowingCached(false);
+            setLoading(false);
+            setRefreshing(false);
+          },
+          (error) => {
+            console.error("Error fetching notifications:", error);
+            soundPlayer.play('error');
+            setShowingCached(false);
+            setLoading(false);
+            setRefreshing(false);
+          }
+        );
+      } catch (error) {
+        console.error("❌ Notifications cache error:", error);
         setLoading(false);
-        setRefreshing(false);
-      },
-      (error) => {
-        console.error("Error fetching notifications:", error);
-        soundPlayer.play('error');
-        setLoading(false);
-        setRefreshing(false);
       }
-    );
+    };
 
-    return () => unsubscribe();
+    loadNotificationsWithCache();
+
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
   }, []);
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+
     setRefreshing(true);
-    // The snapshot listener will automatically refresh
+    setShowingCached(false);
+
+    try {
+      // Fetch fresh data
+      const notificationsQuery = query(
+        collection(db, "notifications"),
+        where("userId", "==", uid),
+        orderBy("createdAt", "desc")
+      );
+
+      const snapshot = await getDocs(notificationsQuery);
+      const notificationsList: Notification[] = [];
+      
+      snapshot.forEach((doc) => {
+        notificationsList.push({
+          id: doc.id,
+          ...doc.data(),
+        } as Notification);
+      });
+
+      setNotifications(notificationsList);
+
+      // Update cache
+      await setCache(CACHE_KEYS.NOTIFICATIONS(uid), notificationsList);
+    } catch (error) {
+      console.error("Error refreshing notifications:", error);
+      soundPlayer.play('error');
+    }
+
+    setRefreshing(false);
   };
 
   const handleMarkAllAsRead = async () => {
@@ -106,6 +174,11 @@ export default function NotificationsScreen() {
     try {
       await markAllNotificationsAsRead(uid);
       soundPlayer.play('postThought');
+      
+      // Update cache with all notifications marked as read
+      const updatedNotifications = notifications.map(n => ({ ...n, read: true }));
+      setNotifications(updatedNotifications);
+      await setCache(CACHE_KEYS.NOTIFICATIONS(uid), updatedNotifications);
     } catch (error) {
       console.error("Error marking all as read:", error);
       soundPlayer.play('error');
@@ -119,6 +192,16 @@ export default function NotificationsScreen() {
     // Mark as read
     if (!notification.read) {
       await markNotificationAsRead(notification.id);
+      
+      // Update cache
+      const uid = auth.currentUser?.uid;
+      if (uid) {
+        const updatedNotifications = notifications.map(n => 
+          n.id === notification.id ? { ...n, read: true } : n
+        );
+        setNotifications(updatedNotifications);
+        await setCache(CACHE_KEYS.NOTIFICATIONS(uid), updatedNotifications);
+      }
     }
 
     // Navigate based on type
@@ -310,7 +393,7 @@ export default function NotificationsScreen() {
 
   const groupedData = groupNotificationsByDate();
 
-  if (loading) {
+  if (loading && !showingCached) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#0D5C3A" />
@@ -353,6 +436,14 @@ export default function NotificationsScreen() {
         {!hasUnread && <View style={styles.backButton} />}
       </View>
 
+      {/* Cache indicator - only show when cache is displayed */}
+      {showingCached && !loading && (
+        <View style={styles.cacheIndicator}>
+          <ActivityIndicator size="small" color="#0D5C3A" />
+          <Text style={styles.cacheText}>Updating notifications...</Text>
+        </View>
+      )}
+
       {/* Notifications List */}
       {notifications.length === 0 ? (
         <View style={styles.emptyContainer}>
@@ -382,6 +473,7 @@ export default function NotificationsScreen() {
               refreshing={refreshing}
               onRefresh={handleRefresh}
               tintColor="#0D5C3A"
+              colors={["#0D5C3A"]}
             />
           }
         />
@@ -432,6 +524,22 @@ const styles = StyleSheet.create({
   markAllText: {
     color: "#FFD700",
     fontSize: 14,
+    fontWeight: "600",
+  },
+  cacheIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: "#FFF3CD",
+    borderBottomWidth: 1,
+    borderBottomColor: "#FFECB5",
+  },
+  
+  cacheText: {
+    fontSize: 12,
+    color: "#664D03",
     fontWeight: "600",
   },
   listContent: {

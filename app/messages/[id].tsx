@@ -1,4 +1,5 @@
 import { auth, db } from "@/constants/firebaseConfig";
+import { useCache } from "@/contexts/CacheContext";
 import { createNotification } from "@/utils/notificationHelpers";
 import {
   checkRateLimit,
@@ -30,6 +31,7 @@ import {
   Image,
   KeyboardAvoidingView,
   Platform,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
@@ -52,9 +54,12 @@ export default function MessageThreadScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams(); // This is the other user's ID
   const userId = auth.currentUser?.uid;
+  const { getCache, setCache } = useCache(); // ✅ Add cache hook
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showingCached, setShowingCached] = useState(false); // ✅ Cache indicator
+  const [refreshing, setRefreshing] = useState(false); // ✅ Pull to refresh
   const [newMessage, setNewMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [otherUserName, setOtherUserName] = useState("User");
@@ -64,12 +69,44 @@ export default function MessageThreadScreen() {
 
   useEffect(() => {
     if (userId && id) {
-      fetchThread();
+      fetchThreadWithCache();
     }
   }, [userId, id]);
 
-  const fetchThread = async () => {
-    if (!userId || !id) {
+  /* ========================= FETCH WITH CACHE ========================= */
+
+  const fetchThreadWithCache = async () => {
+    if (!userId || !id || typeof id !== "string") {
+      console.log("❌ Missing userId or id:", { userId, id });
+      return;
+    }
+
+    try {
+      // Create a stable cache key for this conversation
+      const conversationKey = [userId, id].sort().join("_");
+      
+      // Step 1: Try to load from cache (instant)
+      const cached = await getCache(`message_thread_${conversationKey}`);
+      
+      if (cached) {
+        console.log("⚡ Message thread cache hit");
+        setMessages(cached.messages);
+        setOtherUserName(cached.otherUserName);
+        setOtherUserAvatar(cached.otherUserAvatar);
+        setShowingCached(true);
+        setLoading(false);
+      }
+
+      // Step 2: Fetch fresh data (always)
+      await fetchThread(conversationKey);
+    } catch (error) {
+      console.error("❌ Message thread cache error:", error);
+      await fetchThread();
+    }
+  };
+
+  const fetchThread = async (conversationKey?: string) => {
+    if (!userId || !id || typeof id !== "string") {
       console.log("❌ Missing userId or id:", { userId, id });
       return;
     }
@@ -86,7 +123,7 @@ export default function MessageThreadScreen() {
 
       const q2 = query(
         collection(db, "messages"),
-        where("senderId", "==", id as string),
+        where("senderId", "==", id),
         where("receiverId", "==", userId)
       );
 
@@ -121,28 +158,61 @@ export default function MessageThreadScreen() {
       });
 
       // Get other user's name and avatar
-      const otherUserDoc = await getDoc(doc(db, "users", id as string));
+      const otherUserDoc = await getDoc(doc(db, "users", id));
+      let userName = "User";
+      let userAvatar: string | null = null;
+
       if (otherUserDoc.exists()) {
         const userData = otherUserDoc.data();
-        setOtherUserName(userData.displayName || "User");
-        setOtherUserAvatar(userData.avatar || null);
+        userName = userData.displayName || "User";
+        userAvatar = userData.avatar || null;
         console.log("👤 Other user:", userData.displayName);
       } else {
         console.log("⚠️ Other user document not found");
       }
 
+      setOtherUserName(userName);
+      setOtherUserAvatar(userAvatar);
       setMessages(allMessages);
+
+      // ✅ Step 3: Update cache
+      const cacheKey = conversationKey || [userId, id].sort().join("_");
+      await setCache(`message_thread_${cacheKey}`, {
+        messages: allMessages,
+        otherUserName: userName,
+        otherUserAvatar: userAvatar,
+      });
+      console.log("✅ Message thread cached");
+
+      setShowingCached(false);
       setLoading(false);
       console.log("✅ Thread loaded successfully");
     } catch (error) {
       console.error("❌ Error fetching thread:", error);
       soundPlayer.play('error');
+      setShowingCached(false);
       setLoading(false);
     }
   };
 
+  /* ========================= PULL TO REFRESH ========================= */
+
+  const onRefresh = async () => {
+    if (!userId || !id || typeof id !== "string") return;
+    
+    setRefreshing(true);
+    setShowingCached(false);
+    
+    const conversationKey = [userId, id].sort().join("_");
+    await fetchThread(conversationKey);
+    
+    setRefreshing(false);
+  };
+
+  /* ========================= SEND MESSAGE ========================= */
+
   const handleSend = async () => {
-    if (!newMessage.trim() || !userId || !id) return;
+    if (!newMessage.trim() || !userId || !id || typeof id !== "string") return;
 
     // ✅ ANTI-BOT CHECK 1: Email Verification
     if (!isEmailVerified()) {
@@ -177,7 +247,7 @@ export default function MessageThreadScreen() {
 
       // Create notification for receiver
       await createNotification({
-        userId: id as string,
+        userId: id,
         type: "message",
         actorId: userId,
       });
@@ -189,7 +259,18 @@ export default function MessageThreadScreen() {
       console.log("✅ Message sent and notification created");
 
       // Add to local state immediately (with current date for display)
-      setMessages((prev) => [{ ...messageData, createdAt: new Date() } as Message, ...prev]);
+      const newMsg = { ...messageData, createdAt: new Date() } as Message;
+      const updatedMessages = [newMsg, ...messages];
+      setMessages(updatedMessages);
+      
+      // ✅ Update cache with new message
+      const conversationKey = [userId, id].sort().join("_");
+      await setCache(`message_thread_${conversationKey}`, {
+        messages: updatedMessages,
+        otherUserName,
+        otherUserAvatar,
+      });
+
       setNewMessage("");
       setSending(false);
     } catch (error) {
@@ -275,8 +356,16 @@ export default function MessageThreadScreen() {
           <View style={{ width: 40 }} />
         </View>
 
+        {/* Cache indicator - only show when cache is displayed */}
+        {showingCached && !loading && (
+          <View style={styles.cacheIndicator}>
+            <ActivityIndicator size="small" color="#0D5C3A" />
+            <Text style={styles.cacheText}>Checking for new messages...</Text>
+          </View>
+        )}
+
         {/* Messages */}
-        {loading ? (
+        {loading && !showingCached ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#0D5C3A" />
           </View>
@@ -289,6 +378,14 @@ export default function MessageThreadScreen() {
             contentContainerStyle={styles.messagesList}
             showsVerticalScrollIndicator={false}
             inverted
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor="#0D5C3A"
+                colors={["#0D5C3A"]}
+              />
+            }
           />
         )}
 
@@ -394,6 +491,23 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
     color: "#FFFFFF",
+  },
+
+  cacheIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 6,
+    backgroundColor: "#FFF3CD",
+    borderBottomWidth: 1,
+    borderBottomColor: "#FFECB5",
+  },
+  
+  cacheText: {
+    fontSize: 11,
+    color: "#664D03",
+    fontWeight: "600",
   },
 
   loadingContainer: {

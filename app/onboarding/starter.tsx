@@ -1,4 +1,5 @@
 import { auth, db } from "@/constants/firebaseConfig";
+import { registerForPushNotificationsAsync } from "@/utils/pushNotificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
@@ -54,6 +55,20 @@ export default function Starter() {
       );
 
       soundPlayer.play('postThought');
+
+      // 🔔 Request push notification permissions after terms acceptance
+      try {
+        console.log("📱 Requesting push notification permissions...");
+        const token = await registerForPushNotificationsAsync(user.uid);
+        if (token) {
+          console.log("✅ Push notifications enabled");
+        } else {
+          console.log("⏭️ Push notifications skipped (user may have denied or on simulator)");
+        }
+      } catch (pushError) {
+        // Don't block user from continuing if push notifications fail
+        console.warn("⚠️ Push notification setup failed (non-critical):", pushError);
+      }
 
       // ✅ Everyone goes to clubhouse after accepting terms
       router.replace("/clubhouse");

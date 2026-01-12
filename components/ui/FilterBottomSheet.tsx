@@ -329,7 +329,7 @@ export default function FilterBottomSheet({
               />
             </TouchableOpacity>
 
-            <Text style={styles.headerTitle}>Explore Clubhouse</Text>
+            <Text style={styles.headerTitle}>Wander Clubhouse</Text>
 
             <View style={styles.closeButton} />
           </View>

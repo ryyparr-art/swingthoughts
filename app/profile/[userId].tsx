@@ -3,6 +3,7 @@ import UserPostsGalleryModal from "@/components/modals/UserPostsGalleryModal";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import { auth, db } from "@/constants/firebaseConfig";
+import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -11,14 +12,19 @@ import { collection, doc, getDoc, getDocs, query, where } from "firebase/firesto
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Dimensions,
   FlatList,
   Image,
+  RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
   View
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+const SCREEN_WIDTH = Dimensions.get('window').width;
+const CARD_WIDTH = (SCREEN_WIDTH - 34) / 3; // 3 columns with padding
 
 interface UserProfile {
   displayName: string;
@@ -30,11 +36,20 @@ interface UserProfile {
 
 interface Post {
   postId: string;
-  imageUrl?: string;
+  
+  // NEW: Multi-image support
+  imageUrl?: string; // Deprecated
+  imageUrls?: string[]; // NEW
+  imageCount?: number;
+  
   videoUrl?: string;
   videoThumbnailUrl?: string;
   caption: string;
   createdAt: any;
+  
+  // NEW: Media metadata
+  hasMedia?: boolean;
+  mediaType?: "images" | "video" | null;
 }
 
 interface Stats {
@@ -47,6 +62,7 @@ export default function ProfileScreen() {
   const { userId } = useLocalSearchParams();
   const currentUserId = auth.currentUser?.uid;
   const isOwnProfile = userId === currentUserId;
+  const { getCache, setCache, cleanupOldProfiles } = useCache(); // ✅ Add cache hook
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
@@ -56,51 +72,101 @@ export default function ProfileScreen() {
   const [galleryModalVisible, setGalleryModalVisible] = useState(false);
   const [selectedPostId, setSelectedPostId] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(true);
+  const [showingCached, setShowingCached] = useState(false); // ✅ Cache indicator
+  const [refreshing, setRefreshing] = useState(false); // ✅ Pull to refresh
 
   useEffect(() => {
-    if (userId) {
-      fetchProfileData();
+    if (userId && typeof userId === "string") {
+      fetchProfileDataWithCache(userId);
       fetchPartnerCount();
     }
   }, [userId]);
 
-  const fetchProfileData = async () => {
+  /* ========================= FETCH WITH CACHE ========================= */
+
+  const fetchProfileDataWithCache = async (targetUserId: string) => {
     try {
-      // Fetch user profile
-      const userDoc = await getDoc(doc(db, "users", userId as string));
+      // Step 1: Try to load from cache (instant)
+      const cached = await getCache(CACHE_KEYS.USER_PROFILE(targetUserId));
+      
+      if (cached) {
+        console.log("⚡ User profile cache hit:", targetUserId);
+        setProfile(cached.profile);
+        setPosts(cached.posts);
+        setStats(cached.stats);
+        setShowingCached(true);
+        setLoading(false);
+      }
+
+      // Step 2: Fetch fresh data (always)
+      await fetchProfileData(targetUserId, true);
+
+      // Step 3: Cleanup old profiles periodically (10% of the time)
+      if (Math.random() < 0.1) {
+        cleanupOldProfiles();
+      }
+    } catch (error) {
+      console.error("❌ User profile cache error:", error);
+      await fetchProfileData(targetUserId as string);
+    }
+  };
+
+  const fetchProfileData = async (targetUserId: string, isBackgroundRefresh: boolean = false) => {
+    try {
+      if (!isBackgroundRefresh) {
+        setLoading(true);
+      }
+
+      const userDoc = await getDoc(doc(db, "users", targetUserId));
       
       if (userDoc.exists()) {
         const data = userDoc.data() as UserProfile;
         setProfile(data);
       } else {
-        // User deleted or doesn't exist
         soundPlayer.play('error');
         setProfile(null);
+        setShowingCached(false);
         setLoading(false);
         return;
       }
 
-      // Fetch posts
       const postsQuery = query(
         collection(db, "thoughts"),
-        where("userId", "==", userId)
+        where("userId", "==", targetUserId)
       );
       const postsSnap = await getDocs(postsQuery);
       const postsData: Post[] = [];
       
       postsSnap.forEach((doc) => {
         const data = doc.data();
+        
+        // NEW: Get images array (handle both old and new formats)
+        let images: string[] = [];
+        if (data.imageUrls && Array.isArray(data.imageUrls) && data.imageUrls.length > 0) {
+          images = data.imageUrls;
+        } else if (data.imageUrl) {
+          images = [data.imageUrl];
+        }
+        
         postsData.push({
           postId: doc.id,
-          imageUrl: data.imageUrl,
+          
+          // NEW: Multi-image support
+          imageUrls: images,
+          imageCount: images.length,
+          imageUrl: data.imageUrl, // Keep for backwards compat
+          
           videoUrl: data.videoUrl,
           videoThumbnailUrl: data.videoThumbnailUrl,
           caption: data.caption || data.content || "",
           createdAt: data.createdAt,
+          
+          // NEW: Media metadata
+          hasMedia: data.hasMedia,
+          mediaType: data.mediaType,
         });
       });
 
-      // Sort by date (newest first)
       postsData.sort((a, b) => {
         const aTime = a.createdAt?.toMillis?.() || 0;
         const bTime = b.createdAt?.toMillis?.() || 0;
@@ -109,35 +175,62 @@ export default function ProfileScreen() {
 
       setPosts(postsData);
 
-      // Fetch stats
       const scoresQuery = query(
         collection(db, "scores"),
-        where("userId", "==", userId)
+        where("userId", "==", targetUserId)
       );
       const scoresSnap = await getDocs(scoresQuery);
 
-      setStats({
+      const statsData = {
         swingThoughts: postsData.length,
         leaderboardScores: scoresSnap.size,
-      });
+      };
 
+      setStats(statsData);
+
+      // ✅ Step 3: Update cache
+      if (userDoc.exists()) {
+        await setCache(CACHE_KEYS.USER_PROFILE(targetUserId), {
+          profile: userDoc.data() as UserProfile,
+          posts: postsData,
+          stats: statsData,
+        });
+        console.log("✅ User profile cached");
+      }
+
+      setShowingCached(false);
       setLoading(false);
     } catch (error) {
       console.error("Error fetching profile data:", error);
       soundPlayer.play('error');
+      setShowingCached(false);
       setLoading(false);
     }
   };
 
+  /* ========================= PULL TO REFRESH ========================= */
+
+  const onRefresh = async () => {
+    if (!userId || typeof userId !== "string") return;
+    
+    setRefreshing(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    setShowingCached(false);
+    await fetchProfileData(userId);
+    
+    setRefreshing(false);
+  };
+
+  /* ========================= FETCH PARTNER COUNT ========================= */
+
   const fetchPartnerCount = async () => {
     try {
-      // Query where user is user1Id
       const partnersQuery1 = query(
         collection(db, "partners"),
         where("user1Id", "==", userId)
       );
       
-      // Query where user is user2Id
       const partnersQuery2 = query(
         collection(db, "partners"),
         where("user2Id", "==", userId)
@@ -148,7 +241,6 @@ export default function ProfileScreen() {
         getDocs(partnersQuery2)
       ]);
       
-      // Combine results (dedupe by document ID)
       const partnerDocIds = new Set<string>();
       snap1.forEach(doc => partnerDocIds.add(doc.id));
       snap2.forEach(doc => partnerDocIds.add(doc.id));
@@ -166,74 +258,90 @@ export default function ProfileScreen() {
     router.push(`/create?editId=${postId}`);
   };
 
-  const renderPost = ({ item }: { item: Post }) => (
-    <TouchableOpacity 
-      style={styles.postCard}
-      onPress={() => {
-        soundPlayer.play('click');
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        setSelectedPostId(item.postId);
-        setGalleryModalVisible(true);
-      }}
-    >
-      {/* Video post with thumbnail */}
-      {item.videoThumbnailUrl ? (
-        <>
-          <Image source={{ uri: item.videoThumbnailUrl }} style={styles.postImage} />
-          <View style={styles.videoIndicator}>
-            <Ionicons name="play-circle" size={40} color="#FFF" />
+  const renderPost = ({ item }: { item: Post }) => {
+    // NEW: Get first image from array (for thumbnail)
+    const images = item.imageUrls || (item.imageUrl ? [item.imageUrl] : []);
+    const firstImage = images[0];
+    const hasMultipleImages = images.length > 1;
+    
+    return (
+      <TouchableOpacity 
+        style={styles.postCard}
+        onPress={() => {
+          soundPlayer.play('click');
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          setSelectedPostId(item.postId);
+          setGalleryModalVisible(true);
+        }}
+      >
+        {/* Video post with thumbnail */}
+        {item.videoThumbnailUrl ? (
+          <>
+            <Image source={{ uri: item.videoThumbnailUrl }} style={styles.postImage} />
+            <View style={styles.videoIndicator}>
+              <Ionicons name="play-circle" size={40} color="#FFF" />
+            </View>
+            {isOwnProfile && (
+              <TouchableOpacity 
+                style={styles.editIcon}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handleEditPost(item.postId);
+                }}
+              >
+                <Ionicons name="create-outline" size={20} color="#0D5C3A" />
+              </TouchableOpacity>
+            )}
+          </>
+        ) : firstImage ? (
+          /* Image post (single or multiple) */
+          <>
+            <Image source={{ uri: firstImage }} style={styles.postImage} />
+            
+            {/* NEW: Multi-image indicator */}
+            {hasMultipleImages && (
+              <View style={styles.multiImageIndicator}>
+                <Ionicons name="images" size={16} color="#FFF" />
+                <Text style={styles.multiImageText}>{images.length}</Text>
+              </View>
+            )}
+            
+            {isOwnProfile && (
+              <TouchableOpacity 
+                style={styles.editIcon}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handleEditPost(item.postId);
+                }}
+              >
+                <Ionicons name="create-outline" size={20} color="#0D5C3A" />
+              </TouchableOpacity>
+            )}
+          </>
+        ) : (
+          /* Text-only post */
+          <View style={styles.textOnlyCard}>
+            <Text style={styles.textOnlyContent} numberOfLines={4}>
+              {item.caption}
+            </Text>
+            {isOwnProfile && (
+              <TouchableOpacity 
+                style={styles.editIconText}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handleEditPost(item.postId);
+                }}
+              >
+                <Ionicons name="create-outline" size={20} color="#0D5C3A" />
+              </TouchableOpacity>
+            )}
           </View>
-          {isOwnProfile && (
-            <TouchableOpacity 
-              style={styles.editIcon}
-              onPress={(e) => {
-                e.stopPropagation();
-                handleEditPost(item.postId);
-              }}
-            >
-              <Ionicons name="create-outline" size={20} color="#0D5C3A" />
-            </TouchableOpacity>
-          )}
-        </>
-      ) : item.imageUrl ? (
-        /* Regular image post */
-        <>
-          <Image source={{ uri: item.imageUrl }} style={styles.postImage} />
-          {isOwnProfile && (
-            <TouchableOpacity 
-              style={styles.editIcon}
-              onPress={(e) => {
-                e.stopPropagation();
-                handleEditPost(item.postId);
-              }}
-            >
-              <Ionicons name="create-outline" size={20} color="#0D5C3A" />
-            </TouchableOpacity>
-          )}
-        </>
-      ) : (
-        /* Text-only post */
-        <View style={styles.textOnlyCard}>
-          <Text style={styles.textOnlyContent} numberOfLines={4}>
-            {item.caption}
-          </Text>
-          {isOwnProfile && (
-            <TouchableOpacity 
-              style={styles.editIconText}
-              onPress={(e) => {
-                e.stopPropagation();
-                handleEditPost(item.postId);
-              }}
-            >
-              <Ionicons name="create-outline" size={20} color="#0D5C3A" />
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
-    </TouchableOpacity>
-  );
+        )}
+      </TouchableOpacity>
+    );
+  };
 
-  if (loading) {
+  if (loading && !showingCached) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#0D5C3A" />
@@ -255,7 +363,6 @@ export default function ProfileScreen() {
     <View style={styles.container}>
       <SafeAreaView edges={["top"]} style={styles.safeTop} />
 
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity 
           onPress={() => {
@@ -295,15 +402,30 @@ export default function ProfileScreen() {
         )}
       </View>
 
+      {/* Cache indicator - only show when cache is displayed */}
+      {showingCached && !loading && (
+        <View style={styles.cacheIndicator}>
+          <ActivityIndicator size="small" color="#0D5C3A" />
+          <Text style={styles.cacheText}>Updating profile...</Text>
+        </View>
+      )}
+
       <FlatList
         data={posts}
         renderItem={renderPost}
         keyExtractor={(item) => item.postId}
         numColumns={3}
         contentContainerStyle={styles.postsGrid}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#0D5C3A"
+            colors={["#0D5C3A"]}
+          />
+        }
         ListHeaderComponent={
           <>
-            {/* Avatar & Display Name */}
             <View style={styles.profileHeader}>
               {profile.avatar ? (
                 <Image source={{ uri: profile.avatar }} style={styles.avatar} />
@@ -317,7 +439,6 @@ export default function ProfileScreen() {
 
               <Text style={styles.displayName}>{profile.displayName}</Text>
 
-              {/* Badge Selector */}
               <View style={styles.badgesRow}>
                 {displayBadges.slice(0, 3).map((badge, index) => (
                   <View key={index} style={styles.badgeIcon}>
@@ -327,15 +448,12 @@ export default function ProfileScreen() {
               </View>
             </View>
 
-            {/* Stats Tiles - NOW 4 TILES */}
             <View style={styles.statsContainer}>
-              {/* Tile 1: Swing Thoughts */}
               <View style={styles.statTile}>
                 <Text style={styles.statLabel}>Swing Thoughts</Text>
                 <Text style={styles.statValue}>{stats.swingThoughts}</Text>
               </View>
 
-              {/* Tile 2: Handicap */}
               <View style={styles.statTile}>
                 <Text style={styles.statLabel}>Handicap</Text>
                 <Text style={styles.statValue}>
@@ -343,7 +461,6 @@ export default function ProfileScreen() {
                 </Text>
               </View>
 
-              {/* Tile 3: Partners - TAPPABLE with Icons */}
               <TouchableOpacity 
                 style={styles.statTile}
                 onPress={() => {
@@ -362,16 +479,14 @@ export default function ProfileScreen() {
                 <Text style={styles.statValue}>{partnerCount}</Text>
               </TouchableOpacity>
 
-              {/* Tile 4: Scores Posted */}
               <View style={styles.statTile}>
                 <Text style={styles.statLabel}>Scores Posted</Text>
                 <Text style={styles.statValue}>{stats.leaderboardScores}</Text>
               </View>
             </View>
 
-            {/* Posts Header */}
             <View style={styles.postsHeader}>
-              <Text style={styles.postsTitle}>Posts</Text>
+              <Text style={styles.postsTitle}>Thoughts</Text>
             </View>
           </>
         }
@@ -383,7 +498,6 @@ export default function ProfileScreen() {
         }
       />
 
-      {/* Partners Modal */}
       {userId && (
         <PartnersModal
           visible={partnersModalVisible}
@@ -396,7 +510,6 @@ export default function ProfileScreen() {
         />
       )}
 
-      {/* User Posts Gallery Modal */}
       {userId && profile && (
         <UserPostsGalleryModal
           visible={galleryModalVisible}
@@ -455,6 +568,23 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#FFFFFF",
     letterSpacing: 1,
+  },
+
+  cacheIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: "#FFF3CD",
+    borderBottomWidth: 1,
+    borderBottomColor: "#FFECB5",
+  },
+  
+  cacheText: {
+    fontSize: 12,
+    color: "#664D03",
+    fontWeight: "600",
   },
 
   profileHeader: {
@@ -588,7 +718,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#E0E0E0",
   },
 
-  // ✅ NEW: Video indicator overlay
   videoIndicator: {
     position: "absolute",
     top: 0,
@@ -598,6 +727,26 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "rgba(0, 0, 0, 0.3)",
+  },
+  
+  // NEW: Multi-image indicator
+  multiImageIndicator: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "rgba(0, 0, 0, 0.75)",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  
+  multiImageText: {
+    color: "#FFF",
+    fontSize: 11,
+    fontWeight: "700",
   },
 
   textOnlyCard: {

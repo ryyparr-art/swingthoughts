@@ -10,32 +10,35 @@ import { AVPlaybackStatus, ResizeMode, Video } from "expo-av";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import {
-    arrayRemove,
-    arrayUnion,
-    collection,
-    doc,
-    getDocs,
-    increment,
-    orderBy,
-    query,
-    updateDoc,
-    where
+  arrayRemove,
+  arrayUnion,
+  collection,
+  doc,
+  getDocs,
+  increment,
+  orderBy,
+  query,
+  updateDoc,
+  where
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    FlatList,
-    Image,
-    Modal,
-    Platform,
-    RefreshControl,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  FlatList,
+  Image,
+  Modal,
+  Platform,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+
+const SCREEN_WIDTH = Dimensions.get('window').width;
 
 /* ================================================================ */
 /* TYPES                                                            */
@@ -48,7 +51,12 @@ interface Thought {
   userType: string;
   content: string;
   postType?: string;
-  imageUrl?: string;
+  
+  // NEW: Multi-image support
+  imageUrl?: string; // Deprecated
+  imageUrls?: string[]; // NEW
+  imageCount?: number;
+  
   videoUrl?: string;
   videoThumbnailUrl?: string;
   videoDuration?: number;
@@ -58,13 +66,22 @@ interface Thought {
   likes: number;
   likedBy?: string[];
   comments?: number;
+  
+  // Denormalized user data
+  userName?: string;
+  userAvatar?: string;
   displayName?: string;
-  courseName?: string;
   avatarUrl?: string;
+  
+  courseName?: string;
   taggedPartners?: Array<{ userId: string; displayName: string }>;
   taggedCourses?: Array<{ courseId: number; courseName: string }>;
   ownedCourseId?: number;
   linkedCourseId?: number;
+  
+  // Media metadata
+  hasMedia?: boolean;
+  mediaType?: "images" | "video" | null;
 }
 
 interface UserPostsGalleryModalProps {
@@ -140,8 +157,10 @@ export default function UserPostsGalleryModal({
   // Video playback states
   const [playingVideos, setPlayingVideos] = useState<Set<string>>(new Set());
   const videoRefs = useRef<{ [key: string]: any }>({});
+  
+  // NEW: Image carousel states
+  const [currentImageIndexes, setCurrentImageIndexes] = useState<{ [key: string]: number }>({});
 
-  // Highlighted post (auto-scroll target)
   const [highlightedPostId, setHighlightedPostId] = useState<string | undefined>(initialPostId);
 
   /* ------------------ AUTH ------------------ */
@@ -172,18 +191,57 @@ export default function UserPostsGalleryModal({
       const snapshot = await getDocs(postsQuery);
       const list: Thought[] = [];
 
-      // Get user profile once
       const userProfile = await getUserProfile(userId);
 
       for (const docSnap of snapshot.docs) {
-        const data = docSnap.data() as Thought;
+        const data = docSnap.data();
+        
+        // NEW: Get images array (handle both old and new formats)
+        let images: string[] = [];
+        if (data.imageUrls && Array.isArray(data.imageUrls) && data.imageUrls.length > 0) {
+          images = data.imageUrls;
+        } else if (data.imageUrl) {
+          images = [data.imageUrl];
+        }
 
         const thought: Thought = {
-          ...data,
           id: docSnap.id,
           thoughtId: data.thoughtId || docSnap.id,
-          displayName: userProfile.displayName,
-          avatarUrl: userProfile.avatar || undefined,
+          userId: data.userId,
+          userType: data.userType || "Golfer",
+          content: data.content || data.caption || "",
+          postType: data.postType,
+          
+          // NEW: Multi-image support
+          imageUrls: images,
+          imageCount: images.length,
+          imageUrl: data.imageUrl,
+          
+          videoUrl: data.videoUrl,
+          videoThumbnailUrl: data.videoThumbnailUrl,
+          videoDuration: data.videoDuration,
+          videoTrimStart: data.videoTrimStart,
+          videoTrimEnd: data.videoTrimEnd,
+          createdAt: data.createdAt,
+          likes: data.likes || 0,
+          likedBy: data.likedBy || [],
+          comments: data.comments || 0,
+          
+          // Use denormalized data if available
+          userName: data.userName,
+          userAvatar: data.userAvatar,
+          displayName: data.userName || userProfile.displayName,
+          avatarUrl: data.userAvatar || userProfile.avatar || undefined,
+          
+          courseName: data.courseName,
+          taggedPartners: data.taggedPartners || [],
+          taggedCourses: data.taggedCourses || [],
+          ownedCourseId: data.ownedCourseId,
+          linkedCourseId: data.linkedCourseId,
+          
+          // Media metadata
+          hasMedia: data.hasMedia,
+          mediaType: data.mediaType,
         };
 
         list.push(thought);
@@ -218,7 +276,6 @@ export default function UserPostsGalleryModal({
           });
           console.log("✅ Scrolled to post");
 
-          // Remove highlight after 2 seconds
           setTimeout(() => {
             setHighlightedPostId(undefined);
           }, 2000);
@@ -389,7 +446,7 @@ export default function UserPostsGalleryModal({
   const handleEditPost = (thought: Thought) => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    onClose(); // Close modal before navigating
+    onClose();
     router.push(`/create?editId=${thought.id}`);
   };
 
@@ -451,7 +508,7 @@ export default function UserPostsGalleryModal({
                 onPress={() => {
                   soundPlayer.play("click");
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  onClose(); // Close modal before navigating
+                  onClose();
                   if (mention.type === "partner") {
                     router.push(`/locker/${mention.id}`);
                   } else if (mention.type === "course") {
@@ -467,6 +524,67 @@ export default function UserPostsGalleryModal({
           return <Text key={index}>{part}</Text>;
         })}
       </Text>
+    );
+  };
+
+  /* ------------------ RENDER IMAGES CAROUSEL ------------------ */
+  const renderImagesCarousel = (thought: Thought) => {
+    const images = thought.imageUrls || (thought.imageUrl ? [thought.imageUrl] : []);
+    if (images.length === 0) return null;
+    
+    const currentIndex = currentImageIndexes[thought.id] || 0;
+    
+    return (
+      <View>
+        <FlatList
+          data={images}
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          onMomentumScrollEnd={(event) => {
+            const index = Math.round(
+              event.nativeEvent.contentOffset.x / SCREEN_WIDTH
+            );
+            setCurrentImageIndexes(prev => ({
+              ...prev,
+              [thought.id]: index
+            }));
+          }}
+          renderItem={({ item }) => (
+            <View style={{ width: SCREEN_WIDTH }}>
+              <Image 
+                source={{ uri: item }} 
+                style={styles.thoughtImage}
+                resizeMode="cover"
+              />
+            </View>
+          )}
+          keyExtractor={(item, index) => `${thought.id}-image-${index}`}
+        />
+        
+        {images.length > 1 && (
+          <View style={styles.imagePaginationDots}>
+            {images.map((_, index) => (
+              <View
+                key={index}
+                style={[
+                  styles.imageDot,
+                  currentIndex === index && styles.imageDotActive,
+                ]}
+              />
+            ))}
+          </View>
+        )}
+        
+        {images.length > 1 && (
+          <View style={styles.imageCountBadge}>
+            <Ionicons name="images" size={14} color="#FFF" />
+            <Text style={styles.imageCountText}>
+              {currentIndex + 1}/{images.length}
+            </Text>
+          </View>
+        )}
+      </View>
     );
   };
 
@@ -516,6 +634,9 @@ export default function UserPostsGalleryModal({
         year: postDate.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
       });
     };
+    
+    const displayName = item.userName || item.displayName || "Unknown";
+    const avatarUrl = item.userAvatar || item.avatarUrl;
 
     return (
       <View style={[styles.thoughtCard, isHighlighted && styles.thoughtCardHighlighted]}>
@@ -525,7 +646,7 @@ export default function UserPostsGalleryModal({
             onPress={() => {
               soundPlayer.play("click");
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              onClose(); // Close modal before navigating
+              onClose();
               if (item.userType === "Course") {
                 router.push(`/locker/course/${item.ownedCourseId || item.linkedCourseId}`);
               } else {
@@ -533,18 +654,18 @@ export default function UserPostsGalleryModal({
               }
             }}
           >
-            {item.avatarUrl ? (
-              <Image source={{ uri: item.avatarUrl }} style={styles.avatar} />
+            {avatarUrl ? (
+              <Image source={{ uri: avatarUrl }} style={styles.avatar} />
             ) : (
               <View style={styles.avatarPlaceholder}>
                 <Text style={styles.avatarPlaceholderText}>
-                  {item.displayName?.charAt(0).toUpperCase() || "?"}
+                  {displayName?.charAt(0).toUpperCase() || "?"}
                 </Text>
               </View>
             )}
             <View style={styles.headerInfo}>
               <View style={styles.headerTextContainer}>
-                <Text style={styles.displayName}>{item.displayName}</Text>
+                <Text style={styles.displayName}>{displayName}</Text>
                 {headerText && <Text style={styles.headerActionText}> {headerText}</Text>}
               </View>
               <View style={styles.badgeRow}>
@@ -572,9 +693,8 @@ export default function UserPostsGalleryModal({
           </View>
         </View>
 
-        {item.imageUrl && (
-          <Image source={{ uri: item.imageUrl }} style={styles.thoughtImage} />
-        )}
+        {/* NEW: Image Carousel */}
+        {renderImagesCarousel(item)}
 
         {item.videoUrl && (
           <View style={styles.videoContainer}>
@@ -689,7 +809,6 @@ export default function UserPostsGalleryModal({
     >
       <SafeAreaProvider>
         <View style={styles.container}>
-          {/* SafeAreaView WRAPS the header to push it below notch */}
           <SafeAreaView edges={["top"]} style={styles.safeTop}>
             <View style={styles.header}>
               <TouchableOpacity
@@ -715,7 +834,6 @@ export default function UserPostsGalleryModal({
             </View>
           </SafeAreaView>
 
-        {/* Posts List */}
         {loading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#0D5C3A" />
@@ -752,7 +870,6 @@ export default function UserPostsGalleryModal({
           />
         )}
 
-        {/* Comments Modal */}
         {selectedThought && (
           <CommentsModal
             visible={commentsModalVisible}
@@ -769,7 +886,6 @@ export default function UserPostsGalleryModal({
           />
         )}
 
-        {/* Report Modal */}
         <ReportModal
           visible={reportModalVisible}
           onClose={() => {
@@ -983,6 +1099,48 @@ const styles = StyleSheet.create({
   thoughtImage: {
     width: "100%",
     height: 300,
+  },
+  
+  // NEW: Image Carousel Styles
+  imagePaginationDots: {
+    position: "absolute",
+    bottom: 12,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 6,
+  },
+  imageDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "rgba(255, 255, 255, 0.6)",
+    borderWidth: 1,
+    borderColor: "rgba(0, 0, 0, 0.2)",
+  },
+  imageDotActive: {
+    backgroundColor: "#FFD700",
+    width: 24,
+    borderColor: "rgba(0, 0, 0, 0.3)",
+  },
+  imageCountBadge: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(0, 0, 0, 0.75)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  imageCountText: {
+    color: "#FFF",
+    fontSize: 12,
+    fontWeight: "700",
   },
 
   videoContainer: {

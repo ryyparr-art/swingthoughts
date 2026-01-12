@@ -5,6 +5,7 @@ import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
 import { getPostTypeLabel } from "@/constants/postTypes";
+import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { FeedItem, FeedPost, FeedScore, generateAlgorithmicFeed } from "@/utils/feedAlgorithm";
 import { createNotification } from "@/utils/notificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -148,13 +149,17 @@ export default function ClubhouseScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const flatListRef = useRef<FlatList>(null);
+  const { getCache, setCache } = useCache();
   
   const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
   const [thoughts, setThoughts] = useState<Thought[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false); // ✅ NEW: Track if we've loaded before
+  const [isCheckingCache, setIsCheckingCache] = useState(true); // ✅ NEW: Track cache check
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserData, setCurrentUserData] = useState<any>(null);
   const [useAlgorithmicFeed, setUseAlgorithmicFeed] = useState(true);
+  const [showingCached, setShowingCached] = useState(false);
 
   const [filterSheetVisible, setFilterSheetVisible] = useState(false);
   const [activeFilters, setActiveFilters] = useState<any>({});
@@ -218,16 +223,107 @@ export default function ClubhouseScreen() {
     return false;
   })();
 
-  /* ------------------ FETCH ------------------ */
+  /* ------------------ FETCH WITH CACHE - FINAL FIX ------------------ */
   useEffect(() => {
-    if (currentUserId) {
-      loadFeed();
-    }
-  }, [currentUserId, highlightPostId]);
+    if (currentUserId && currentUserData?.regionKey) {
+      const quickCacheCheck = async () => {
+        const userRegionKey = currentUserData?.regionKey;
+        
+        if (!userRegionKey) {
+          setIsCheckingCache(false);
+          setLoading(true);
+          await loadFeed();
+          return;
+        }
 
-  const loadFeed = async () => {
+        // Quick memory cache check (should be instant)
+        const cached = await getCache(CACHE_KEYS.FEED(currentUserId), userRegionKey);
+        
+        if (cached && cached.length > 0) {
+          console.log("⚡ Cache found - loading cached thoughts immediately");
+          
+          try {
+            // ✅ Use FAST conversion (no Firestore calls!)
+            const thoughtsFromCache = convertCachedFeedToThoughts(cached);
+            setThoughts(thoughtsFromCache);
+            setFeedItems(cached);
+            
+            // Now hide loading and checking
+            setLoading(false);
+            setIsCheckingCache(false);
+            setHasLoadedOnce(true);
+            setShowingCached(true); // Show "Updating feed..." banner
+            
+            // ✅ Refresh in background
+            await loadFeed(true);
+          } catch (error) {
+            console.error("❌ Error loading cached thoughts:", error);
+            // If cache load fails, fall back to normal load
+            setIsCheckingCache(false);
+            setLoading(true);
+            await loadFeed();
+          }
+        } else {
+          console.log("📭 No cache - loading fresh");
+          // No cache - show loading screen and load normally
+          setIsCheckingCache(false);
+          setLoading(true);
+          await loadFeed();
+        }
+      };
+      
+      quickCacheCheck();
+    }
+  }, [currentUserId, currentUserData?.regionKey, highlightPostId]);
+
+  const loadFeedWithCache = async () => {
     try {
-      setLoading(true);
+      const userRegionKey = currentUserData?.regionKey;
+      
+      if (!userRegionKey) {
+        console.warn("⚠️ No regionKey found, loading without cache");
+        await loadFeed();
+        return;
+      }
+
+      // Step 1: Check cache FIRST
+      const cached = await getCache(CACHE_KEYS.FEED(currentUserId), userRegionKey);
+      
+      if (cached && cached.length > 0) {
+        console.log("⚡ Cache hit - showing cached feed instantly");
+        
+        // Show cached data immediately
+        const thoughtsFromCache = await convertFeedToThoughts(cached);
+        setThoughts(thoughtsFromCache);
+        setFeedItems(cached);
+        setLoading(false); // ✅ Hide full loading immediately
+        setHasLoadedOnce(true); // ✅ Mark that we've loaded once
+        setShowingCached(true); // ✅ Show "Updating feed..." banner
+        
+        // Step 2: Fetch fresh in background
+        await loadFeed(true);
+      } else {
+        console.log("📭 Cache miss - loading fresh with full screen");
+        
+        // No cache - show full loading screen only if we haven't loaded before
+        if (!hasLoadedOnce) {
+          setLoading(true);
+        }
+        await loadFeed();
+      }
+
+    } catch (error) {
+      console.error("❌ Feed cache error:", error);
+      await loadFeed();
+    }
+  };
+
+  const loadFeed = async (isBackgroundRefresh: boolean = false) => {
+    try {
+      // ✅ Only show full loading if this is NOT a background refresh AND we haven't loaded before
+      if (!isBackgroundRefresh && !hasLoadedOnce) {
+        setLoading(true);
+      }
       
       let highlightedThought: Thought | null = null;
       if (highlightPostId) {
@@ -247,8 +343,15 @@ export default function ClubhouseScreen() {
       }
       
       if (useAlgorithmicFeed && Object.keys(activeFilters).length === 0) {
-        console.log("🎯 Using algorithmic feed");
-        const feed = await generateAlgorithmicFeed(currentUserId, 50);
+        console.log("🚀 Using algorithmic feed");
+        
+        const userRegionKey = currentUserData?.regionKey || "";
+        
+        if (!userRegionKey) {
+          console.warn("⚠️ No regionKey available, feed may be slow");
+        }
+        
+        const feed = await generateAlgorithmicFeed(currentUserId, userRegionKey, 20);
         setFeedItems(feed);
         
         const thoughtsFromFeed = await convertFeedToThoughts(feed);
@@ -259,6 +362,16 @@ export default function ClubhouseScreen() {
           console.log("✅ Added highlighted post to top of algorithmic feed");
         } else {
           setThoughts(thoughtsFromFeed);
+        }
+
+        // Step 3: Update cache using CacheContext
+        if (userRegionKey) {
+          await setCache(
+            CACHE_KEYS.FEED(currentUserId),
+            feed,
+            userRegionKey
+          );
+          console.log("✅ Feed cached via CacheContext");
         }
       } else {
         console.log("🔍 Using filtered feed");
@@ -273,10 +386,13 @@ export default function ClubhouseScreen() {
         }
       }
       
+      setShowingCached(false);
       setLoading(false);
+      setHasLoadedOnce(true); // ✅ Mark that we've successfully loaded
     } catch (error) {
-      console.error("Feed load error:", error);
+      console.error("❌ Feed load error:", error);
       soundPlayer.play('error');
+      setShowingCached(false);
       setLoading(false);
     }
   };
@@ -364,8 +480,8 @@ export default function ClubhouseScreen() {
           const thought = convertPostDataToThought(postDoc.id, data);
           
           // Use feed item's denormalized data if post data doesn't have it
-          if (!thought.displayName) thought.displayName = postItem.userName;
-          if (!thought.avatarUrl) thought.avatarUrl = postItem.userAvatar;
+          if (!thought.displayName) thought.displayName = postItem.displayName;
+          if (!thought.avatarUrl) thought.avatarUrl = postItem.avatar;
           
           thoughts.push(thought);
         }
@@ -383,10 +499,107 @@ export default function ClubhouseScreen() {
           likes: 0,
           likedBy: [],
           comments: 0,
-          displayName: scoreItem.userName,
-          avatarUrl: scoreItem.userAvatar,
+          displayName: scoreItem.displayName,
+          avatarUrl: scoreItem.avatar,
           courseName: scoreItem.courseName,
           taggedCourses: [{ courseId: scoreItem.courseId, courseName: scoreItem.courseName }],
+        });
+      }
+    }
+    
+    return thoughts;
+  };
+
+  /**
+   * ✅ NEW: Fast conversion from cache - uses denormalized data, no Firestore calls
+   * This is INSTANT for showing cached feed
+   */
+  const convertCachedFeedToThoughts = (feedItems: FeedItem[]): Thought[] => {
+    const thoughts: Thought[] = [];
+    
+    for (const item of feedItems) {
+      if (item.type === "post") {
+        const postItem = item as FeedPost;
+        
+        // ✅ Map FeedPost fields to Thought fields with proper type handling
+        thoughts.push({
+          id: postItem.id,
+          thoughtId: postItem.thoughtId || postItem.id,
+          userId: postItem.userId,
+          userType: postItem.userType || "Golfer",
+          content: postItem.content || postItem.caption || "",
+          postType: postItem.postType,
+          
+          // Media
+          imageUrl: postItem.imageUrl || undefined,
+          imageUrls: postItem.imageUrls || [],
+          imageCount: postItem.imageCount || 0,
+          videoUrl: postItem.videoUrl || undefined,
+          videoThumbnailUrl: postItem.videoThumbnailUrl || undefined,
+          videoDuration: postItem.videoDuration || undefined,
+          videoTrimStart: postItem.videoTrimStart || undefined,
+          videoTrimEnd: postItem.videoTrimEnd || undefined,
+          
+          // Engagement
+          createdAt: postItem.createdAt,
+          likes: postItem.likes || 0,
+          likedBy: postItem.likedBy || [],
+          comments: postItem.comments || 0,
+          
+          // ✅ User data - map to both field name formats
+          displayName: postItem.displayName,
+          avatarUrl: postItem.avatar,
+          userName: postItem.displayName,
+          userAvatar: postItem.avatar,
+          userHandicap: postItem.handicap ? parseInt(postItem.handicap) : undefined,
+          userVerified: postItem.verified,
+          
+          // Tags - ensure courseId is number
+          taggedCourses: (postItem.taggedCourses || []).map(c => ({
+            courseId: typeof c.courseId === 'string' ? parseInt(c.courseId) : c.courseId,
+            courseName: c.courseName
+          })),
+          taggedPartners: postItem.taggedPartners || [],
+          
+          // Location - ensure proper typing
+          regionKey: postItem.regionKey,
+          geohash: postItem.geohash,
+          location: postItem.location ? {
+            city: postItem.location.city,
+            state: postItem.location.state,
+            latitude: postItem.location.latitude || undefined,
+            longitude: postItem.location.longitude || undefined,
+          } : undefined,
+          
+          // Metadata
+          hasMedia: postItem.hasMedia,
+          mediaType: (postItem.mediaType === "images" || postItem.mediaType === "video") ? postItem.mediaType : null,
+          engagementScore: postItem.relevanceScore,
+          viewCount: postItem.viewCount,
+        });
+      } else {
+        const scoreItem = item as FeedScore;
+        
+        thoughts.push({
+          id: scoreItem.id,
+          thoughtId: scoreItem.id,
+          userId: scoreItem.userId,
+          userType: scoreItem.userType || "Golfer",
+          content: `Posted ${scoreItem.netScore} (${scoreItem.netScore - scoreItem.par > 0 ? '+' : ''}${scoreItem.netScore - scoreItem.par}) at ${scoreItem.courseName}${scoreItem.isLowman ? ' 🏆 NEW LOWMAN!' : ''}`,
+          postType: scoreItem.isLowman ? "low-leader" : "score",
+          createdAt: scoreItem.createdAt,
+          likes: 0,
+          likedBy: [],
+          comments: 0,
+          displayName: scoreItem.displayName,
+          avatarUrl: scoreItem.avatar,
+          userName: scoreItem.displayName,
+          userAvatar: scoreItem.avatar,
+          courseName: scoreItem.courseName,
+          taggedCourses: [{
+            courseId: scoreItem.courseId,
+            courseName: scoreItem.courseName
+          }],
         });
       }
     }
@@ -681,6 +894,8 @@ export default function ClubhouseScreen() {
     setRefreshing(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     
+    // Clear cache on manual refresh
+    setShowingCached(false);
     await loadFeed();
     
     setRefreshing(false);
@@ -725,16 +940,17 @@ export default function ClubhouseScreen() {
   const renderContentWithMentions = (content: string, taggedPartners: any[] = [], taggedCourses: any[] = []) => {
     const mentionMap: { [key: string]: { type: string; id: string | number } } = {};
     
+    // Map partner mentions
     taggedPartners.forEach((partner) => {
       mentionMap[`@${partner.displayName}`] = { type: 'partner', id: partner.userId };
     });
     
+    // Map course mentions
     taggedCourses.forEach((course) => {
-      const courseTagNoSpaces = `@${course.courseName.replace(/\s+/g, "")}`;
-      mentionMap[courseTagNoSpaces] = { type: 'course', id: course.courseId };
       mentionMap[`@${course.courseName}`] = { type: 'course', id: course.courseId };
     });
     
+    // Sort by length (longest first) to match longer names before shorter substrings
     const mentionPatterns = Object.keys(mentionMap)
       .map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
       .sort((a, b) => b.length - a.length);
@@ -1090,7 +1306,15 @@ export default function ClubhouseScreen() {
 
       <TopNavBar />
 
-      {loading ? (
+      {/* Cache indicator - only show when cache is displayed */}
+      {showingCached && !loading && (
+        <View style={styles.cacheIndicator}>
+          <ActivityIndicator size="small" color="#0D5C3A" />
+          <Text style={styles.cacheText}>Updating feed...</Text>
+        </View>
+      )}
+
+      {(loading && !showingCached && !isCheckingCache) ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#0D5C3A" />
           <Text style={styles.loadingText}>
@@ -1226,7 +1450,25 @@ export default function ClubhouseScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F4EED8" },
   safeTop: { backgroundColor: "#0D5C3A" },
-  carouselWrapper: { height: 50, justifyContent: "center" },
+  carouselWrapper: { height: 70 }, // ✅ Increased from 50 to 70
+  
+  cacheIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 8,
+    backgroundColor: "#FFF3CD",
+    borderBottomWidth: 1,
+    borderBottomColor: "#FFECB5",
+  },
+  
+  cacheText: {
+    fontSize: 12,
+    color: "#664D03",
+    fontWeight: "600",
+  },
+  
   loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
   loadingText: { marginTop: 10, color: "#0D5C3A", fontWeight: "600" },
   listContent: { padding: 16, paddingBottom: 32 },
@@ -1476,4 +1718,3 @@ const styles = StyleSheet.create({
   actionIconCommented: { tintColor: "#FFD700" },
   actionText: { fontSize: 14, color: "#666", fontWeight: "600" },
 });
-

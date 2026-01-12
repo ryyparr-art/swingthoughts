@@ -1,3 +1,5 @@
+import { CacheProvider } from "@/contexts/CacheContext";
+import { registerForPushNotificationsAsync, setupNotificationResponseListener } from "@/utils/pushNotificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Caveat_400Regular, Caveat_700Bold, useFonts } from '@expo-google-fonts/caveat';
 import { Slot, router, usePathname } from "expo-router";
@@ -268,6 +270,63 @@ export default function RootLayout() {
     initAuth();
   }, [pathname]);
 
+  // 🔔 PUSH NOTIFICATIONS SETUP
+  useEffect(() => {
+    const setupPushNotifications = async () => {
+      try {
+        const { auth } = await import("../constants/firebaseConfig");
+        const uid = auth.currentUser?.uid;
+        
+        if (!uid) {
+          console.log("⏭️ Skipping push notification setup - no user logged in");
+          return;
+        }
+
+        // Register for push notifications
+        const token = await registerForPushNotificationsAsync(uid);
+        if (token) {
+          console.log("✅ Push notifications registered successfully");
+        }
+      } catch (error) {
+        console.error("❌ Error setting up push notifications:", error);
+      }
+    };
+
+    // Set up listener for when user taps on a notification
+    const notificationResponseSubscription = setupNotificationResponseListener((response) => {
+      const data = response.notification.request.content.data;
+      
+      console.log("📬 Notification tapped:", data);
+
+      // Navigate based on notification type
+      if (data.postId) {
+        router.push({
+          pathname: "/clubhouse",
+          params: { highlightPostId: data.postId as string },
+        });
+      } else if (data.actorId) {
+        router.push(`/locker/${data.actorId as string}`);
+      } else if (data.scoreId) {
+        router.push({
+          pathname: "/clubhouse",
+          params: { highlightScoreId: data.scoreId as string },
+        });
+      } else if (data.courseId) {
+        router.push({
+          pathname: "/leaderboard",
+          params: { highlightCourseId: String(data.courseId) },
+        });
+      }
+    });
+
+    // Initialize push notifications
+    setupPushNotifications();
+
+    return () => {
+      notificationResponseSubscription.remove();
+    };
+  }, []);
+
   if (!fontsLoaded || initializing) {
     return (
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
@@ -277,5 +336,9 @@ export default function RootLayout() {
     );
   }
 
-  return <Slot />;
+  return (
+    <CacheProvider>
+      <Slot />
+    </CacheProvider>
+  );
 }

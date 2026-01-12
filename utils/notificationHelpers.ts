@@ -77,6 +77,7 @@ interface CreateNotificationParams {
   courseId?: number;                 // Optional: related course
   courseName?: string;               // Optional: course name
   scoreId?: string;                  // Optional: related score
+  regionKey?: string;                // Optional: region key for regional features
   rejectionReason?: string;          // Optional: rejection reason for memberships
   customMessage?: string;            // Optional: override default message
   customTitle?: string;              // Optional: custom title
@@ -86,7 +87,13 @@ interface CreateNotificationParams {
 // GROUPABLE NOTIFICATION TYPES
 // ============================================================================
 
-const GROUPABLE_TYPES: NotificationType[] = ["like", "comment"];
+const GROUPABLE_TYPES: NotificationType[] = [
+  "like",
+  "comment",
+  "message",
+  "partner_scored",
+  "partner_posted",
+];
 
 // ============================================================================
 // MESSAGE TEMPLATES
@@ -215,6 +222,21 @@ const getGroupedMessage = (
       if (remaining === 1) return `${firstName} & 1 other weighed in on your Swing Thought`;
       return `${firstName} & ${remaining} others weighed in on your Swing Thought`;
 
+    case "message":
+      if (remaining === 0) return `${firstName} left a note in your locker`;
+      if (remaining === 1) return `${firstName} left 2 notes in your locker`;
+      return `${firstName} left ${totalCount} notes in your locker`;
+
+    case "partner_scored":
+      if (remaining === 0) return `${firstName} logged a round`;
+      if (remaining === 1) return `${firstName} & 1 other logged a round`;
+      return `${firstName} & ${remaining} others logged a round`;
+
+    case "partner_posted":
+      if (remaining === 0) return `${firstName} has a new Swing Thought`;
+      if (remaining === 1) return `${firstName} & 1 other have new Swing Thoughts`;
+      return `${firstName} & ${remaining} others have new Swing Thoughts`;
+
     default:
       return firstName; // Placeholder, will be replaced by getMessageTemplate
   }
@@ -287,6 +309,7 @@ export async function createNotification(params: CreateNotificationParams): Prom
     courseId, 
     courseName, 
     scoreId, 
+    regionKey,
     rejectionReason, 
     customMessage,
     customTitle 
@@ -311,8 +334,24 @@ export async function createNotification(params: CreateNotificationParams): Prom
 
     const shouldGroup = GROUPABLE_TYPES.includes(type);
 
-    if (shouldGroup && postId && actor) {
-      const groupKey = `${type}_${postId}`;
+    if (shouldGroup && actor) {
+      // Determine groupKey based on notification type
+      let groupKey: string;
+      
+      if (type === "message" && actorId) {
+        // Group messages by sender (actorId)
+        groupKey = `${type}_${actorId}`;
+      } else if ((type === "partner_scored" || type === "partner_posted") && actorId) {
+        // Group partner activity by actor
+        groupKey = `${type}_${actorId}`;
+      } else if (postId) {
+        // Group post interactions (likes, comments) by postId
+        groupKey = `${type}_${postId}`;
+      } else {
+        // Fallback to type only
+        groupKey = type;
+      }
+
       const existing = await findExistingGroupNotification(userId, groupKey);
 
       if (existing) {
@@ -327,14 +366,29 @@ export async function createNotification(params: CreateNotificationParams): Prom
           const updatedActors = [actor, ...existingActors].slice(0, 6);
           const newCount = existingCount + 1;
 
-          await updateDoc(doc(db, "notifications", existing.id), {
+          const updateData: any = {
             actors: updatedActors,
             actorCount: newCount,
             message: getGroupedMessage(type, updatedActors, newCount),
             createdAt: serverTimestamp(),
             read: false,
-          });
+          };
+
+          // For messages, keep the actorId to allow navigation
+          if (type === "message" && actorId) {
+            updateData.actorId = actorId;
+            updateData.actorName = actor.displayName;
+            updateData.actorAvatar = actor.avatar;
+          }
+
+          // Add regionKey if provided
+          if (regionKey) {
+            updateData.regionKey = regionKey;
+          }
+
+          await updateDoc(doc(db, "notifications", existing.id), updateData);
         } else {
+          // Actor already in group, just bump timestamp
           await updateDoc(doc(db, "notifications", existing.id), {
             createdAt: serverTimestamp(),
             read: false,
@@ -344,11 +398,12 @@ export async function createNotification(params: CreateNotificationParams): Prom
         return;
       }
 
+      // Create new grouped notification
       const expiresAt = Timestamp.fromDate(
         new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
       );
 
-      await addDoc(collection(db, "notifications"), {
+      const newNotification: any = {
         userId,
         type,
         read: false,
@@ -357,10 +412,21 @@ export async function createNotification(params: CreateNotificationParams): Prom
         groupKey,
         actors: [actor],
         actorCount: 1,
-        postId,
         message: getGroupedMessage(type, [actor], 1),
-      });
+      };
+
+      // Add type-specific fields
+      if (postId) newNotification.postId = postId;
+      if (type === "message" && actorId) {
+        newNotification.actorId = actorId;
+        newNotification.actorName = actor.displayName;
+        newNotification.actorAvatar = actor.avatar;
+      }
+      if (regionKey) newNotification.regionKey = regionKey;
+
+      await addDoc(collection(db, "notifications"), newNotification);
     } else {
+      // Non-grouped notification
       const expiresAt = Timestamp.fromDate(
         new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
       );
@@ -387,6 +453,7 @@ export async function createNotification(params: CreateNotificationParams): Prom
       if (courseId) notificationData.courseId = courseId;
       if (courseName) notificationData.courseName = courseName;
       if (scoreId) notificationData.scoreId = scoreId;
+      if (regionKey) notificationData.regionKey = regionKey;
       if (rejectionReason) notificationData.rejectionReason = rejectionReason;
 
       await addDoc(collection(db, "notifications"), notificationData);

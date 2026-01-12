@@ -18,27 +18,42 @@ interface Score {
   grossScore: number;
   netScore: number;
   par: number;
-  tees: string;           // ✅ NEW: Tee color/name
-  teePar: number;         // ✅ NEW: Par for these tees
-  teeYardage: number;     // ✅ NEW: Total yardage
+  tees: string;
+  teePar: number;
+  teeYardage: number;
   createdAt: any;
   userName?: string;
   userAvatar?: string | null;
   hadHoleInOne?: boolean;
 }
 
+// ✅ UPDATED: Added 9-hole and 18-hole specific fields
 interface LeaderboardData {
   regionKey: string;
   courseId: number;
   courseName: string;
-  topScores: Score[];
-  lowNetScore: number | null;
-  totalScores: number;
+  topScores: Score[];  // Legacy field for backward compatibility
+  topScores18?: Score[]; // ✅ 18-hole scores
+  topScores9?: Score[];  // ✅ 9-hole scores
+  lowNetScore: number | null;  // Legacy field
+  lowNetScore18?: number | null; // ✅ 18-hole low net
+  lowNetScore9?: number | null;  // ✅ 9-hole low net
+  totalScores: number;  // Legacy field
+  totalScores18?: number; // ✅ 18-hole count
+  totalScores9?: number;  // ✅ 9-hole count
   lastUpdated: string;
   location?: {
     city?: string;
     state?: string;
   };
+  holesInOne?: Array<{
+    userId: string;
+    displayName: string;
+    hole: number;
+    holeCount: number; // 9 or 18
+    achievedAt: any;
+    postId: string | null;
+  }>;
 }
 
 /**
@@ -128,8 +143,14 @@ export async function createEmptyLeaderboard(
     courseId,
     courseName,
     topScores: [],
+    topScores18: [],
+    topScores9: [],
     lowNetScore: null,
+    lowNetScore18: null,
+    lowNetScore9: null,
     totalScores: 0,
+    totalScores18: 0,
+    totalScores9: 0,
     lastUpdated: new Date().toISOString(),
     location,
   };
@@ -175,12 +196,12 @@ export async function getLeaderboardsFromRegions(
 
 /**
  * Update a leaderboard with new scores
- * Recalculates top 3 scores and updates document
- * ✅ NOW STORES: userName, userAvatar, tees, teePar, teeYardage (denormalized)
+ * Separates 9-hole and 18-hole scores, maintains top 3 for each
+ * ✅ Stores denormalized user data: userName, userAvatar, displayName
  * 
  * @param regionKey Region key
  * @param courseId Course ID
- * @param allScores All scores for this course (already filtered and enriched with user data)
+ * @param allScores All scores for this course (already enriched with user data)
  */
 export async function updateLeaderboard(
   regionKey: string,
@@ -190,34 +211,53 @@ export async function updateLeaderboard(
   try {
     const leaderboardId = getLeaderboardId(regionKey, courseId);
 
+    // Separate 18-hole and 9-hole scores
+    const scores18 = allScores.filter(s => !s.hadHoleInOne && (!s.par || s.par >= 54)); // 18-hole scores (par 54+)
+    const scores9 = allScores.filter(s => !s.hadHoleInOne && s.par && s.par < 54); // 9-hole scores (par < 54)
+
     // Sort by net score (lowest first)
-    const sortedScores = [...allScores].sort(
-      (a, b) => a.netScore - b.netScore
-    );
+    const sorted18 = [...scores18].sort((a, b) => a.netScore - b.netScore);
+    const sorted9 = [...scores9].sort((a, b) => a.netScore - b.netScore);
 
-    // Take top 3
-    const topScores = sortedScores.slice(0, 3);
+    // Take top 3 for each
+    const topScores18 = sorted18.slice(0, 3);
+    const topScores9 = sorted9.slice(0, 3);
 
-    // Calculate low net
-    const lowNetScore = topScores.length > 0 ? topScores[0].netScore : null;
+    // Calculate low net scores
+    const lowNetScore18 = topScores18.length > 0 ? topScores18[0].netScore : null;
+    const lowNetScore9 = topScores9.length > 0 ? topScores9[0].netScore : null;
 
-    // Get course name from first score
+    // Get course name
     const courseName = allScores[0]?.courseName || "Unknown Course";
 
+    // Build leaderboard data with all fields
     const leaderboardData: LeaderboardData = {
       regionKey,
       courseId,
       courseName,
-      topScores, // ✅ Already includes userName, userAvatar, tees, teePar, teeYardage
-      lowNetScore,
-      totalScores: allScores.length,
+      
+      // 18-hole data
+      topScores18,
+      lowNetScore18,
+      totalScores18: scores18.length,
+      
+      // 9-hole data
+      topScores9,
+      lowNetScore9,
+      totalScores9: scores9.length,
+      
+      // Legacy fields (use 18-hole for backward compatibility)
+      topScores: topScores18,
+      lowNetScore: lowNetScore18,
+      totalScores: scores18.length,
+      
       lastUpdated: new Date().toISOString(),
     };
 
     await setDoc(doc(db, "leaderboards", leaderboardId), leaderboardData);
 
     console.log(
-      `✅ Updated leaderboard: ${courseName} (${topScores.length} scores)`
+      `✅ Updated leaderboard: ${courseName} (18h: ${topScores18.length}, 9h: ${topScores9.length})`
     );
   } catch (error) {
     console.error("❌ Error updating leaderboard:", error);
@@ -413,12 +453,12 @@ export async function rebuildLeaderboards(
         grossScore: data.grossScore,
         netScore: data.netScore,
         par: data.par,
-        tees: data.tees || "Unknown",           // ✅ Tee data
-        teePar: data.teePar || data.par,        // ✅ Tee par
-        teeYardage: data.teeYardage || 0,       // ✅ Tee yardage
+        tees: data.tees || "Unknown",
+        teePar: data.teePar || data.par,
+        teeYardage: data.teeYardage || 0,
         createdAt: data.createdAt,
-        userName: userProfile?.displayName || "[Deleted User]",  // ✅ Denormalized
-        userAvatar: userProfile?.avatar || null,                  // ✅ Denormalized
+        userName: userProfile?.displayName || "[Deleted User]",
+        userAvatar: userProfile?.avatar || null,
       };
 
       const key = `${data.regionKey}_${data.courseId}`;
@@ -475,8 +515,9 @@ export async function getLeaderboardsByPlayer(
     leaderboardsSnap.forEach((doc) => {
       const data = doc.data() as LeaderboardData;
       
-      // Check if player is in top 3
-      const hasPlayer = data.topScores.some((score: Score) => score.userId === userId);
+      // Check if player is in top 3 (check both topScores and topScores18)
+      const topScoresToCheck = data.topScores18 || data.topScores || [];
+      const hasPlayer = topScoresToCheck.some((score: Score) => score.userId === userId);
       
       if (hasPlayer) {
         playerLeaderboards.push(data);
@@ -516,8 +557,9 @@ export async function getLeaderboardsByPartners(
     leaderboardsSnap.forEach((doc) => {
       const data = doc.data() as LeaderboardData;
       
-      // Check if any partner is in top 3
-      const hasPartner = data.topScores.some((score: Score) => 
+      // Check if any partner is in top 3 (check both topScores and topScores18)
+      const topScoresToCheck = data.topScores18 || data.topScores || [];
+      const hasPartner = topScoresToCheck.some((score: Score) => 
         partnerIds.includes(score.userId)
       );
       

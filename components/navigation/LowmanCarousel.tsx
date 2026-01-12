@@ -1,5 +1,5 @@
 import { auth, db } from "@/constants/firebaseConfig";
-import { collection, onSnapshot, query } from "firebase/firestore";
+import { collection, doc, getDoc, onSnapshot, query, where } from "firebase/firestore";
 
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
@@ -26,9 +26,10 @@ interface CourseLeader {
   holeinones?: Array<{
     userId: string;
     displayName: string;
+    userName?: string;
     hole: number;
     achievedAt: any;
-    postId?: string; // Clubhouse post ID
+    postId?: string;
   }>;
   location?: {
     city?: string;
@@ -36,6 +37,7 @@ interface CourseLeader {
     latitude?: number;
     longitude?: number;
   };
+  regionKey?: string;
 }
 
 interface CarouselItem {
@@ -45,9 +47,10 @@ interface CarouselItem {
   courseName: string;
   courseId: string;
   tier: "lowman" | "scratch" | "ace" | "holeinone";
-  icon: any; // ✅ Changed from string to any for Image source
-  hole?: number; // For hole-in-ones
-  postId?: string; // For navigating to clubhouse post
+  icon: any;
+  hole?: number;
+  postId?: string;
+  regionKey?: string;
 }
 
 export default function LowmanCarousel({
@@ -66,6 +69,7 @@ export default function LowmanCarousel({
 }) {
   const [allLeaders, setAllLeaders] = useState<CourseLeader[]>([]);
   const [authReady, setAuthReady] = useState(false);
+  const [userRegionKey, setUserRegionKey] = useState<string | null>(null);
 
   const scrollRef = useRef<ScrollView>(null);
   const scrollX = useRef(0);
@@ -74,51 +78,119 @@ export default function LowmanCarousel({
 
   const shuffledOnce = useRef<CarouselItem[] | null>(null);
 
-  // ✅ Badge icon imports
   const LowLeaderTrophy = require("@/assets/icons/LowLeaderTrophy.png");
   const LowLeaderScratch = require("@/assets/icons/LowLeaderScratch.png");
   const LowLeaderAce = require("@/assets/icons/LowLeaderAce.png");
   const HoleInOne = require("@/assets/icons/HoleinOne.png");
 
-  /* =========================
-     AUTH READY
-     ========================= */
   useEffect(() => {
-    const unsub = auth.onAuthStateChanged((user) => {
-      setAuthReady(!!user);
+    const unsub = auth.onAuthStateChanged(async (user) => {
+      if (user) {
+        setAuthReady(true);
+        
+        try {
+          const userDoc = await getDoc(doc(db, "users", user.uid));
+          if (userDoc.exists()) {
+            const userData = userDoc.data();
+            const region = userData.regionKey;
+            
+            if (region) {
+              console.log("🌍 Carousel: User regionKey:", region);
+              setUserRegionKey(region);
+            } else {
+              console.log("⚠️ Carousel: User has no regionKey");
+              setUserRegionKey(null);
+            }
+          }
+        } catch (error) {
+          console.error("❌ Carousel: Error fetching user region:", error);
+          setUserRegionKey(null);
+        }
+      } else {
+        setAuthReady(false);
+        setUserRegionKey(null);
+      }
     });
     return unsub;
   }, []);
 
-  /* =========================
-     SUBSCRIBE TO ALL LEADERS
-     ========================= */
   useEffect(() => {
     if (!authReady) return;
 
-    console.log("🏆 Fetching ALL leaders for tier calculation");
-    const q = query(collection(db, "course_leaders"));
+    console.log("🏆 Carousel: Fetching leaders for regionKey:", userRegionKey || "ALL");
+    
+    let q;
+    if (userRegionKey) {
+      q = query(
+        collection(db, "leaderboards"),
+        where("regionKey", "==", userRegionKey)
+      );
+    } else {
+      q = query(collection(db, "leaderboards"));
+    }
 
     const unsub = onSnapshot(q, (snap) => {
       const docs: CourseLeader[] = [];
       
+      console.log("📊 Carousel: Received", snap.size, "leaderboard documents");
+      
       snap.forEach((d) => {
-        const data = d.data() as CourseLeader;
-        docs.push(data);
+        const data = d.data();
+        const docId = d.id;
+        
+        const lastUnderscoreIndex = docId.lastIndexOf('_');
+        
+        if (lastUnderscoreIndex === -1) {
+          console.warn("⚠️ Carousel: Invalid doc ID format:", docId);
+          return;
+        }
+        
+        const regionKey = docId.substring(0, lastUnderscoreIndex);
+        const courseIdStr = docId.substring(lastUnderscoreIndex + 1);
+        
+        // Extract lowman from topScores array (sorted ascending)
+        if (data.topScores18 && Array.isArray(data.topScores18) && data.topScores18.length > 0) {
+          const lowmanScore = data.topScores18[0];
+          
+          // Handle both displayName and userName fields
+          const displayName = lowmanScore.displayName || lowmanScore.userName || "Unknown";
+          
+          // Extract holes-in-one (try both field names)
+          const holesInOne = data.holesInOne || data.holeInOnes || [];
+          
+          console.log("  ✅", displayName, "at", data.courseName, "-", lowmanScore.netScore, "| HIOs:", holesInOne.length);
+          
+          docs.push({
+            courseId: courseIdStr,
+            courseName: data.courseName || "Unknown Course",
+            lowman: {
+              userId: lowmanScore.userId,
+              displayName: displayName,
+              netScore: lowmanScore.netScore,
+            },
+            holeinones: holesInOne.map((hio: any) => ({
+              userId: hio.userId,
+              displayName: hio.displayName || hio.userName || "Unknown",
+              userName: hio.userName,
+              hole: hio.hole,
+              achievedAt: hio.achievedAt,
+              postId: hio.postId,
+            })),
+            location: data.location,
+            regionKey: regionKey,
+          });
+        }
       });
       
-      console.log("✅ Found", docs.length, "total leaders");
+      console.log("✅ Carousel: Parsed", docs.length, "lowman achievements");
       setAllLeaders(docs);
       shuffledOnce.current = null;
       scrollX.current = 0;
     });
 
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, userRegionKey]);
 
-  /* =========================
-     FILTER BY courseIds
-     ========================= */
   const filteredLeaders = useMemo(() => {
     if (!courseIds || courseIds.length === 0) {
       return allLeaders;
@@ -127,96 +199,45 @@ export default function LowmanCarousel({
     const courseIdStrings = courseIds.map(id => String(id));
     const filtered = allLeaders.filter(l => courseIdStrings.includes(l.courseId));
     
-    console.log("🔍 Filtered to", filtered.length, "leaders from", courseIds.length, "courses");
+    console.log("🔍 Carousel: Filtered to", filtered.length, "leaders");
     return filtered;
   }, [allLeaders, courseIds]);
 
-  /* =========================
-     GEO FILTERING
-     ========================= */
-  const geoFiltered = useMemo(() => {
-    if (!userLocation?.city) return filteredLeaders;
-
-    return filteredLeaders.filter((l) => {
-      const c = l.location?.city?.toLowerCase();
-      const s = l.location?.state?.toLowerCase();
-      return (
-        c === userLocation.city?.toLowerCase() &&
-        (!userLocation.state || s === userLocation.state?.toLowerCase())
-      );
-    });
-  }, [filteredLeaders, userLocation]);
-
-  /* =========================
-     BUILD CAROUSEL WITH LOWMAN + HOLE-IN-ONES
-     ========================= */
   const carouselData = useMemo(() => {
     if (shuffledOnce.current) return shuffledOnce.current;
 
     const TARGET_COUNT = 6;
+    let candidates = filteredLeaders;
 
-    // ✅ EXPANSION LOGIC: Find at least 6 achievements
-    let candidates = geoFiltered;
-    
-    console.log("🔍 Step 1 - Geo-filtered:", candidates.length, "leaders");
-
-    // If not enough, expand to same state
-    if (candidates.length < TARGET_COUNT && userLocation?.state) {
-      const stateFiltered = filteredLeaders.filter((l) => {
-        const s = l.location?.state?.toLowerCase();
-        return s === userLocation.state?.toLowerCase();
-      });
-      
-      candidates = stateFiltered;
-      console.log("🔍 Step 2 - Expanded to state:", candidates.length, "leaders");
-    }
-
-    // If still not enough, expand nationwide (all filtered leaders)
-    if (candidates.length < TARGET_COUNT) {
-      candidates = filteredLeaders;
-      console.log("🔍 Step 3 - Expanded to filtered leaders:", candidates.length, "leaders");
-    }
-
-    // If STILL not enough, expand to all leaders nationwide
-    if (candidates.length < TARGET_COUNT) {
-      candidates = allLeaders;
-      console.log("🔍 Step 4 - Expanded nationwide:", candidates.length, "leaders");
-    }
+    console.log("🔍 Carousel: Building from", candidates.length, "leaders");
 
     if (candidates.length === 0) {
-      console.log("⚠️ No achievements found anywhere");
+      console.log("⚠️ Carousel: No achievements found");
       return [];
     }
 
-    // ✅ Count wins across ALL leaders (not just candidates)
+    // Count wins across ALL leaders in the region
     const wins: Record<string, number> = {};
     allLeaders.forEach((l) => {
       wins[l.lowman.userId] = (wins[l.lowman.userId] || 0) + 1;
     });
 
-    console.log("🏆 Win counts:", wins);
+    console.log("🏆 Carousel: Win counts:", wins);
 
-    // ✅ Build carousel from candidates (lowman + hole-in-ones)
     const built: CarouselItem[] = [];
 
     candidates.forEach((l) => {
-      // ✅ DEBUG: Log every lowman being processed
-      console.log("🔍 Processing lowman:", l.lowman.displayName, "userId:", l.lowman.userId, "course:", l.courseName, "location:", l.location);
-      
-      // Add lowman achievement
       const userWins = wins[l.lowman.userId] || 1;
       let tier: "lowman" | "scratch" | "ace" = "lowman";
-      let icon = LowLeaderTrophy; // ✅ Default to Trophy
+      let icon = LowLeaderTrophy;
 
       if (userWins === 2) {
         tier = "scratch";
-        icon = LowLeaderScratch; // ✅ Scratch badge
+        icon = LowLeaderScratch;
       } else if (userWins >= 3) {
         tier = "ace";
-        icon = LowLeaderAce; // ✅ Ace badge
+        icon = LowLeaderAce;
       }
-
-      console.log(`  ${l.lowman.displayName} at ${l.courseName}: ${userWins} total wins → ${tier}`);
 
       built.push({
         userId: l.lowman.userId,
@@ -226,50 +247,42 @@ export default function LowmanCarousel({
         courseId: l.courseId,
         tier,
         icon,
+        regionKey: l.regionKey,
       });
 
-      // Add hole-in-ones for this course
-      console.log(`  🔍 Checking hole-in-ones for ${l.courseName}:`, l.holeinones);
-      
+      // Add hole-in-ones (will show when populated by post scores)
       if (l.holeinones && l.holeinones.length > 0) {
-        console.log(`  ✅ Found ${l.holeinones.length} hole-in-one(s) at ${l.courseName}`);
+        console.log(`  ⛳ Adding ${l.holeinones.length} hole-in-one(s) from ${l.courseName}`);
         
         l.holeinones.forEach((hio) => {
-          console.log(`    ⛳ ${hio.displayName} hole-in-one at ${l.courseName} on hole ${hio.hole}, postId: ${hio.postId}`);
-          
           built.push({
             userId: hio.userId,
             displayName: hio.displayName,
             courseName: l.courseName,
             courseId: l.courseId,
             tier: "holeinone",
-            icon: HoleInOne, // ✅ Hole-in-one badge
+            icon: HoleInOne,
             hole: hio.hole,
-            postId: hio.postId, // Store the post ID
+            postId: hio.postId,
+            regionKey: l.regionKey,
           });
         });
-      } else {
-        console.log(`  ⚠️ No hole-in-ones at ${l.courseName}`);
       }
     });
 
-    // ✅ Shuffle
+    // Shuffle
     for (let i = built.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [built[i], built[j]] = [built[j], built[i]];
     }
 
-    // ✅ Take up to 6 (or all if less than 6)
     const final = built.slice(0, TARGET_COUNT);
-    console.log("✅ Final carousel:", final.length, "cards");
+    console.log("✅ Carousel: Final", final.length, "cards");
     
     shuffledOnce.current = final;
     return shuffledOnce.current;
-  }, [allLeaders, filteredLeaders, geoFiltered, userLocation]);
+  }, [allLeaders, filteredLeaders]);
 
-  /* =========================
-     AUTO SCROLL
-     ========================= */
   useEffect(() => {
     const interval = setInterval(() => {
       if (!scrollRef.current || isTouching.current) return;
@@ -294,35 +307,25 @@ export default function LowmanCarousel({
     return () => clearInterval(interval);
   }, []);
 
-  /* =========================
-     HANDLE TAP
-     ========================= */
   const handleItemPress = (item: CarouselItem) => {
     soundPlayer.play("click");
     Haptics.selectionAsync();
     
     onSelectUser?.(item.userId);
     
-    // ✅ Hole-in-ones: Navigate to clubhouse with highlighted post
     if (item.tier === "holeinone") {
       if (item.postId) {
-        console.log("🚀 Navigating to clubhouse with highlighted hole-in-one post:", item.postId);
-        
+        console.log("🚀 Tapped hole-in-one, navigating to post:", item.postId);
         router.push({
           pathname: "/clubhouse",
           params: { highlightPostId: item.postId },
         });
       } else {
-        console.log("⚠️ No postId for hole-in-one, navigating to generic clubhouse");
+        console.log("⚠️ No postId for hole-in-one, navigating to clubhouse");
         router.push("/clubhouse");
       }
     } else {
-      // ✅ Regular lowman achievements: Navigate to leaderboard
-      console.log("🚀 Navigating to leaderboard with:", {
-        courseId: item.courseId,
-        playerId: item.userId,
-      });
-      
+      console.log("🚀 Tapped lowman, navigating to leaderboard");
       router.push({
         pathname: "/leaderboard",
         params: {
@@ -333,7 +336,6 @@ export default function LowmanCarousel({
     }
   };
 
-  // ✅ If no data, show motivational card
   if (carouselData.length === 0) {
     return (
       <ScrollView
@@ -341,13 +343,22 @@ export default function LowmanCarousel({
         showsHorizontalScrollIndicator={false}
         style={styles.scrollStrip}
         contentContainerStyle={styles.container}
-        scrollEnabled={false}
       >
         <View style={styles.emptyCard}>
-          <Text style={styles.emptyCardIcon}>🏆</Text>
-          <Text style={styles.emptyCardText}>
-            Be the first to post a score and achieve Low Leader status
-          </Text>
+          <View style={styles.cardContent}>
+            <View style={styles.emptyIconContainer}>
+              <Text style={styles.emptyCardIcon}>🏆</Text>
+            </View>
+            
+            <View style={styles.textContent}>
+              <Text style={styles.emptyCardTitle} numberOfLines={1}>
+                No Leaders Yet
+              </Text>
+              <Text style={styles.emptyCardSubtitle} numberOfLines={1}>
+                Be the first to post a score
+              </Text>
+            </View>
+          </View>
         </View>
       </ScrollView>
     );
@@ -364,7 +375,6 @@ export default function LowmanCarousel({
       onTouchStart={() => (isTouching.current = true)}
       onTouchEnd={() => (isTouching.current = false)}
     >
-      {/* Duplicate cards enough times to ensure continuous scroll */}
       {Array.from({ length: 4 }).flatMap((_, repeatIndex) =>
         carouselData.map((item, idx) => (
           <TouchableOpacity
@@ -374,11 +384,9 @@ export default function LowmanCarousel({
             onPress={() => handleItemPress(item)}
           >
             <View style={styles.cardContent}>
-              {/* ✅ Icon on left, spanning both rows */}
               <Image source={item.icon} style={styles.iconImage} />
               
               <View style={styles.textContent}>
-                {/* ✅ First row: DisplayName and Score */}
                 <View style={styles.topRow}>
                   <Text
                     style={styles.name}
@@ -392,7 +400,6 @@ export default function LowmanCarousel({
                   </Text>
                 </View>
 
-                {/* ✅ Second row: CourseName */}
                 <Text style={styles.course} numberOfLines={1}>
                   {item.courseName}
                 </Text>
@@ -405,9 +412,6 @@ export default function LowmanCarousel({
   );
 }
 
-/* =========================
-   STYLES
-   ========================= */
 const styles = StyleSheet.create({
   scrollStrip: {
     backgroundColor: "#FFFFFF",
@@ -419,44 +423,39 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
-  emptyContainer: {
-    backgroundColor: "#FFFFFF",
-    height: 50,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  emptyText: {
-    fontSize: 12,
-    color: "#999",
-    fontStyle: "italic",
-  },
-
   emptyCard: {
     marginRight: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
+    paddingVertical: 2,
+    paddingHorizontal: 12,
     borderRadius: 22,
-    justifyContent: "center",
-    alignItems: "center",
     backgroundColor: "#F7F8FA",
     borderWidth: 2,
     borderColor: "#0D5C3A",
     borderStyle: "dashed",
-    minWidth: 280,
+    minWidth: 180,
+  },
+
+  emptyIconContainer: {
+    width: 42,
+    height: 42,
+    justifyContent: "center",
+    alignItems: "center",
   },
 
   emptyCardIcon: {
     fontSize: 32,
-    marginBottom: 8,
   },
 
-  emptyCardText: {
+  emptyCardTitle: {
     fontSize: 13,
-    fontWeight: "600",
+    fontWeight: "700",
     color: "#0D5C3A",
-    textAlign: "center",
-    lineHeight: 18,
+  },
+
+  emptyCardSubtitle: {
+    fontSize: 11,
+    color: "#0D5C3A",
+    opacity: 0.8,
   },
 
   card: {
@@ -464,11 +463,9 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     paddingHorizontal: 12,
     borderRadius: 22,
-
     backgroundColor: "#F7F8FA",
     borderWidth: 1,
     borderColor: "#D6D9DE",
-
     shadowColor: "#000",
     shadowOpacity: 0.18,
     shadowRadius: 8,
@@ -478,33 +475,22 @@ const styles = StyleSheet.create({
   },
 
   lowman: {},
-  scratch: {
-    borderColor: "#8FAF9D",
-  },
-  ace: {
-    borderColor: "#9FA3A8",
-    backgroundColor: "#F2F4F7",
-  },
-  holeinone: {
-    borderColor: "#FFD700",
-    backgroundColor: "#FFFEF5",
-  },
+  scratch: { borderColor: "#8FAF9D" },
+  ace: { borderColor: "#9FA3A8", backgroundColor: "#F2F4F7" },
+  holeinone: { borderColor: "#FFD700", backgroundColor: "#FFFEF5" },
 
-  // ✅ Card content: horizontal layout
   cardContent: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
   },
 
-  // ✅ Icon on left, spanning both rows
   iconImage: {
     width: 42,
     height: 42,
     resizeMode: "contain",
   },
 
-  // ✅ Text content container
   textContent: {
     flex: 1,
     minWidth: 0,
