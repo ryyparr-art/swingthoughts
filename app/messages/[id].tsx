@@ -1,12 +1,11 @@
 import { auth, db } from "@/constants/firebaseConfig";
-import { useCache } from "@/contexts/CacheContext";
-import { createNotification } from "@/utils/notificationHelpers";
+import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import {
   checkRateLimit,
   EMAIL_VERIFICATION_MESSAGE,
   getRateLimitMessage,
   isEmailVerified,
-  updateRateLimitTimestamp
+  updateRateLimitTimestamp,
 } from "@/utils/rateLimitHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
@@ -15,329 +14,517 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   addDoc,
   collection,
+  deleteDoc,
   doc,
   getDoc,
-  getDocs,
+  onSnapshot,
   query,
   serverTimestamp,
   updateDoc,
-  where
 } from "firebase/firestore";
 import { useEffect, useRef, useState } from "react";
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   FlatList,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   RefreshControl,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+/* ========================= TYPES ========================= */
 
 interface Message {
   messageId: string;
   senderId: string;
-  senderName?: string;
   receiverId: string;
   content: string;
   createdAt: any;
-  read: boolean;
+  read?: boolean;
+  edited?: boolean;
+  editedAt?: any;
 }
+
+/* ========================= SCREEN ========================= */
 
 export default function MessageThreadScreen() {
   const router = useRouter();
-  const { id } = useLocalSearchParams(); // This is the other user's ID
+  const { id: threadId } = useLocalSearchParams();
   const userId = auth.currentUser?.uid;
-  const { getCache, setCache } = useCache(); // ✅ Add cache hook
+  const { getCache, setCache } = useCache();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showingCached, setShowingCached] = useState(false); // ✅ Cache indicator
-  const [refreshing, setRefreshing] = useState(false); // ✅ Pull to refresh
+  const [showingCached, setShowingCached] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [newMessage, setNewMessage] = useState("");
   const [sending, setSending] = useState(false);
+
+  const [otherUserId, setOtherUserId] = useState<string | null>(null);
   const [otherUserName, setOtherUserName] = useState("User");
   const [otherUserAvatar, setOtherUserAvatar] = useState<string | null>(null);
-  
+  const [threadExists, setThreadExists] = useState(false);
+
+  // Edit modal state
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [editedContent, setEditedContent] = useState("");
+  const [isUpdating, setIsUpdating] = useState(false);
+
   const flatListRef = useRef<FlatList>(null);
+  const unsubscribeRef = useRef<(() => void) | null>(null);
+
+  if (!userId || !threadId || typeof threadId !== "string") return null;
+
+  const threadRef = doc(db, "threads", threadId);
+  const messagesRef = collection(db, "threads", threadId, "messages");
+  const cacheKey = `${CACHE_KEYS.MESSAGE_THREAD}:${threadId}`;
+
+  /* ========================= INIT ========================= */
 
   useEffect(() => {
-    if (userId && id) {
-      fetchThreadWithCache();
-    }
-  }, [userId, id]);
+    initializeThread();
 
-  /* ========================= FETCH WITH CACHE ========================= */
+    return () => {
+      if (unsubscribeRef.current) {
+        unsubscribeRef.current();
+      }
+    };
+  }, [threadId]);
 
-  const fetchThreadWithCache = async () => {
-    if (!userId || !id || typeof id !== "string") {
-      console.log("❌ Missing userId or id:", { userId, id });
-      return;
-    }
-
+  const initializeThread = async () => {
     try {
-      // Create a stable cache key for this conversation
-      const conversationKey = [userId, id].sort().join("_");
-      
-      // Step 1: Try to load from cache (instant)
-      const cached = await getCache(`message_thread_${conversationKey}`);
-      
+      // ✅ Load from cache first for instant UI
+      await loadFromCache();
+
+      // ✅ Parse partner ID from deterministic thread ID (format: "userA_userB")
+      const participantIds = threadId.split("_");
+      const partnerId = participantIds.find((id) => id !== userId);
+
+      if (!partnerId) {
+        console.error("❌ Could not parse partner ID from thread ID");
+        setLoading(false);
+        return;
+      }
+
+      setOtherUserId(partnerId);
+
+      // ✅ Fetch partner's user data
+      const partnerDoc = await getDoc(doc(db, "users", partnerId));
+      if (partnerDoc.exists()) {
+        const partnerData = partnerDoc.data();
+        setOtherUserName(partnerData.displayName || "User");
+        setOtherUserAvatar(partnerData.avatar || null);
+        console.log("✅ Partner data loaded:", partnerData.displayName);
+      }
+
+      // ✅ Check if thread already exists
+      const threadSnap = await getDoc(threadRef);
+      setThreadExists(threadSnap.exists());
+
+      if (threadSnap.exists()) {
+        console.log("✅ Thread exists, subscribing to messages");
+      } else {
+        console.log("📝 Thread doesn't exist yet - will be created on first message");
+      }
+
+      // ✅ Subscribe to messages (works even if thread doesn't exist yet)
+      subscribeToMessages();
+
+      setLoading(false);
+    } catch (error) {
+      console.error("❌ Error initializing thread:", error);
+      setLoading(false);
+    }
+  };
+
+  const loadFromCache = async () => {
+    try {
+      const cached = await getCache(cacheKey);
       if (cached) {
-        console.log("⚡ Message thread cache hit");
-        setMessages(cached.messages);
-        setOtherUserName(cached.otherUserName);
-        setOtherUserAvatar(cached.otherUserAvatar);
+        setMessages(cached.messages || []);
+        setOtherUserName(cached.otherUserName || "User");
+        setOtherUserAvatar(cached.otherUserAvatar || null);
         setShowingCached(true);
         setLoading(false);
       }
-
-      // Step 2: Fetch fresh data (always)
-      await fetchThread(conversationKey);
-    } catch (error) {
-      console.error("❌ Message thread cache error:", error);
-      await fetchThread();
+    } catch {
+      // Cache miss is fine
     }
   };
 
-  const fetchThread = async (conversationKey?: string) => {
-    if (!userId || !id || typeof id !== "string") {
-      console.log("❌ Missing userId or id:", { userId, id });
-      return;
-    }
+  /* ========================= REALTIME ========================= */
 
-    console.log("📨 Fetching thread between:", userId, "and", id);
+  const subscribeToMessages = () => {
+    const q = query(messagesRef);
 
-    try {
-      // Fetch messages between current user and other user
-      const q1 = query(
-        collection(db, "messages"),
-        where("senderId", "==", userId),
-        where("receiverId", "==", id)
-      );
+    unsubscribeRef.current = onSnapshot(
+      q,
+      async (snapshot) => {
+        const msgs: Message[] = [];
 
-      const q2 = query(
-        collection(db, "messages"),
-        where("senderId", "==", id),
-        where("receiverId", "==", userId)
-      );
+        snapshot.forEach((d) => {
+          msgs.push({ ...d.data(), messageId: d.id } as Message);
+        });
 
-      const [sent, received] = await Promise.all([
-        getDocs(q1),
-        getDocs(q2),
-      ]);
+        msgs.sort((a, b) => {
+          const aTime = a.createdAt?.toMillis?.() || 0;
+          const bTime = b.createdAt?.toMillis?.() || 0;
+          return bTime - aTime;
+        });
 
-      console.log("✉️ Messages found - sent:", sent.size, "received:", received.size);
+        setMessages(msgs);
+        setLoading(false);
+        setShowingCached(false);
 
-      const allMessages: Message[] = [];
+        // ✅ Update cache
+        await setCache(cacheKey, {
+          messages: msgs,
+          otherUserName,
+          otherUserAvatar,
+        });
 
-      sent.forEach((doc) => {
-        allMessages.push({ ...doc.data(), messageId: doc.id } as Message);
-      });
+        // ✅ Mark unread messages as read
+        const unread = msgs.filter(
+          (m) => m.receiverId === userId && !m.read
+        );
 
-      received.forEach((doc) => {
-        const msg = { ...doc.data(), messageId: doc.id } as Message;
-        allMessages.push(msg);
+        if (unread.length > 0 && threadExists) {
+          try {
+            await Promise.all(
+              unread.map((m) =>
+                updateDoc(
+                  doc(db, "threads", threadId, "messages", m.messageId),
+                  { read: true, readAt: serverTimestamp() }
+                )
+              )
+            );
 
-        // Mark as read
-        if (!msg.read) {
-          updateDoc(doc.ref, { read: true });
+            await updateDoc(threadRef, {
+              [`unreadCount.${userId}`]: 0,
+              updatedAt: serverTimestamp(),
+            });
+          } catch (error) {
+            console.error("❌ Error marking messages as read:", error);
+          }
         }
-      });
-
-      // Sort by timestamp (oldest first for inverted list)
-      allMessages.sort((a, b) => {
-        const aTime = a.createdAt?.toMillis?.() || 0;
-        const bTime = b.createdAt?.toMillis?.() || 0;
-        return bTime - aTime; // Descending = newest first, but inverted list will show oldest at top
-      });
-
-      // Get other user's name and avatar
-      const otherUserDoc = await getDoc(doc(db, "users", id));
-      let userName = "User";
-      let userAvatar: string | null = null;
-
-      if (otherUserDoc.exists()) {
-        const userData = otherUserDoc.data();
-        userName = userData.displayName || "User";
-        userAvatar = userData.avatar || null;
-        console.log("👤 Other user:", userData.displayName);
-      } else {
-        console.log("⚠️ Other user document not found");
+      },
+      (error) => {
+        // ✅ Handle permission errors gracefully (thread may not exist yet)
+        if (error.code !== "permission-denied") {
+          console.error("❌ Message subscription error:", error);
+        }
       }
-
-      setOtherUserName(userName);
-      setOtherUserAvatar(userAvatar);
-      setMessages(allMessages);
-
-      // ✅ Step 3: Update cache
-      const cacheKey = conversationKey || [userId, id].sort().join("_");
-      await setCache(`message_thread_${cacheKey}`, {
-        messages: allMessages,
-        otherUserName: userName,
-        otherUserAvatar: userAvatar,
-      });
-      console.log("✅ Message thread cached");
-
-      setShowingCached(false);
-      setLoading(false);
-      console.log("✅ Thread loaded successfully");
-    } catch (error) {
-      console.error("❌ Error fetching thread:", error);
-      soundPlayer.play('error');
-      setShowingCached(false);
-      setLoading(false);
-    }
+    );
   };
 
-  /* ========================= PULL TO REFRESH ========================= */
-
-  const onRefresh = async () => {
-    if (!userId || !id || typeof id !== "string") return;
-    
-    setRefreshing(true);
-    setShowingCached(false);
-    
-    const conversationKey = [userId, id].sort().join("_");
-    await fetchThread(conversationKey);
-    
-    setRefreshing(false);
-  };
-
-  /* ========================= SEND MESSAGE ========================= */
+  /* ========================= SEND ========================= */
 
   const handleSend = async () => {
-    if (!newMessage.trim() || !userId || !id || typeof id !== "string") return;
+    if (!newMessage.trim() || !otherUserId) return;
 
-    // ✅ ANTI-BOT CHECK 1: Email Verification
-    if (!isEmailVerified()) {
-      soundPlayer.play('error');
+    const emailVerified = await isEmailVerified();
+    if (!emailVerified) {
+      soundPlayer.play("error");
       Alert.alert("Email Not Verified", EMAIL_VERIFICATION_MESSAGE);
       return;
     }
 
-    // ✅ ANTI-BOT CHECK 2: Rate Limiting
     const { allowed, remainingSeconds } = await checkRateLimit("message");
     if (!allowed) {
-      soundPlayer.play('error');
-      Alert.alert("Please Wait", getRateLimitMessage("message", remainingSeconds));
+      soundPlayer.play("error");
+      Alert.alert(
+        "Please Wait",
+        getRateLimitMessage("message", remainingSeconds)
+      );
       return;
     }
 
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSending(true);
 
     try {
-      const messageData = {
-        messageId: `msg_${Date.now()}`,
+      // ✅ Add message to subcollection
+      // Cloud Function will create/update the thread document automatically!
+      await addDoc(messagesRef, {
         senderId: userId,
-        receiverId: id,
+        receiverId: otherUserId,
         content: newMessage.trim(),
         createdAt: serverTimestamp(),
         read: false,
-      };
-
-      await addDoc(collection(db, "messages"), messageData);
-
-      // Create notification for receiver
-      await createNotification({
-        userId: id,
-        type: "message",
-        actorId: userId,
       });
 
-      // ✅ ANTI-BOT: Update rate limit timestamp
+      // ✅ Update rate limit
       await updateRateLimitTimestamp("message");
 
-      soundPlayer.play('postThought');
-      console.log("✅ Message sent and notification created");
+      // ✅ Mark thread as existing now
+      setThreadExists(true);
 
-      // Add to local state immediately (with current date for display)
-      const newMsg = { ...messageData, createdAt: new Date() } as Message;
-      const updatedMessages = [newMsg, ...messages];
-      setMessages(updatedMessages);
-      
-      // ✅ Update cache with new message
-      const conversationKey = [userId, id].sort().join("_");
-      await setCache(`message_thread_${conversationKey}`, {
-        messages: updatedMessages,
-        otherUserName,
-        otherUserAvatar,
-      });
-
+      soundPlayer.play("postThought");
       setNewMessage("");
-      setSending(false);
-    } catch (error) {
-      console.error("Error sending message:", error);
-      soundPlayer.play('error');
+      console.log("✅ Message sent successfully");
+    } catch (err) {
+      console.error("❌ Send failed:", err);
+      soundPlayer.play("error");
+      Alert.alert("Error", "Failed to send message. Please try again.");
+    } finally {
       setSending(false);
     }
   };
 
+  /* ========================= LONG PRESS ACTIONS ========================= */
+
+  const handleLongPress = (message: Message) => {
+    // Only allow actions on user's own messages
+    if (message.senderId !== userId) return;
+
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ["Cancel", "Edit Message", "Delete Message"],
+          destructiveButtonIndex: 2,
+          cancelButtonIndex: 0,
+          title: "Message Options",
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 1) {
+            openEditModal(message);
+          } else if (buttonIndex === 2) {
+            confirmDeleteMessage(message);
+          }
+        }
+      );
+    } else {
+      // Android fallback using Alert
+      Alert.alert(
+        "Message Options",
+        "What would you like to do?",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Edit Message",
+            onPress: () => openEditModal(message),
+          },
+          {
+            text: "Delete Message",
+            style: "destructive",
+            onPress: () => confirmDeleteMessage(message),
+          },
+        ]
+      );
+    }
+  };
+
+  /* ========================= EDIT MESSAGE ========================= */
+
+  const openEditModal = (message: Message) => {
+    setEditingMessage(message);
+    setEditedContent(message.content);
+    setEditModalVisible(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingMessage || !editedContent.trim()) return;
+
+    // Check if content actually changed
+    if (editedContent.trim() === editingMessage.content) {
+      setEditModalVisible(false);
+      setEditingMessage(null);
+      return;
+    }
+
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setIsUpdating(true);
+
+    try {
+      const messageRef = doc(
+        db,
+        "threads",
+        threadId,
+        "messages",
+        editingMessage.messageId
+      );
+
+      await updateDoc(messageRef, {
+        content: editedContent.trim(),
+        edited: true,
+        editedAt: serverTimestamp(),
+      });
+
+      soundPlayer.play("postThought");
+      console.log("✅ Message edited successfully");
+
+      setEditModalVisible(false);
+      setEditingMessage(null);
+      setEditedContent("");
+    } catch (error) {
+      console.error("❌ Edit failed:", error);
+      soundPlayer.play("error");
+      Alert.alert("Error", "Failed to edit message. Please try again.");
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  /* ========================= DELETE MESSAGE ========================= */
+
+  const confirmDeleteMessage = (message: Message) => {
+    Alert.alert(
+      "Delete Message",
+      "Are you sure you want to delete this message? This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => handleDeleteMessage(message),
+        },
+      ]
+    );
+  };
+
+  const handleDeleteMessage = async (message: Message) => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    try {
+      const messageRef = doc(
+        db,
+        "threads",
+        threadId,
+        "messages",
+        message.messageId
+      );
+
+      await deleteDoc(messageRef);
+
+      soundPlayer.play("postThought");
+      console.log("✅ Message deleted successfully");
+
+      // Update lastMessage in thread if this was the most recent
+      if (messages.length > 1 && messages[0].messageId === message.messageId) {
+        // Find the next most recent message
+        const nextMessage = messages[1];
+        if (nextMessage) {
+          await updateDoc(threadRef, {
+            lastMessage: {
+              senderId: nextMessage.senderId,
+              content: nextMessage.content,
+              createdAt: nextMessage.createdAt,
+            },
+            lastSenderId: nextMessage.senderId,
+            lastMessageAt: nextMessage.createdAt,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+    } catch (error) {
+      console.error("❌ Delete failed:", error);
+      soundPlayer.play("error");
+      Alert.alert("Error", "Failed to delete message. Please try again.");
+    }
+  };
+
+  /* ========================= RENDER ========================= */
+
   const renderMessage = ({ item }: { item: Message }) => {
     const isMyMessage = item.senderId === userId;
-
     return (
-      <View
-        style={[
-          styles.messageBubble,
-          isMyMessage ? styles.myMessage : styles.theirMessage,
-        ]}
+      <TouchableOpacity
+        activeOpacity={isMyMessage ? 0.7 : 1}
+        onLongPress={() => handleLongPress(item)}
+        delayLongPress={500}
       >
-        <Text
+        <View
           style={[
-            styles.messageText,
-            isMyMessage ? styles.myMessageText : styles.theirMessageText,
+            styles.messageBubble,
+            isMyMessage ? styles.myMessage : styles.theirMessage,
           ]}
         >
-          {item.content}
-        </Text>
-        <Text
-          style={[
-            styles.timestamp,
-            isMyMessage ? styles.myTimestamp : styles.theirTimestamp,
-          ]}
-        >
-          {item.createdAt?.toDate?.()?.toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          }) || "Now"}
-        </Text>
-      </View>
+          <Text
+            style={[
+              styles.messageText,
+              isMyMessage ? styles.myMessageText : styles.theirMessageText,
+            ]}
+          >
+            {item.content}
+          </Text>
+          <View style={styles.messageFooter}>
+            {item.edited && (
+              <Text
+                style={[
+                  styles.editedLabel,
+                  isMyMessage ? styles.myEditedLabel : styles.theirEditedLabel,
+                ]}
+              >
+                edited
+              </Text>
+            )}
+            <Text
+              style={[
+                styles.timestamp,
+                isMyMessage ? styles.myTimestamp : styles.theirTimestamp,
+              ]}
+            >
+              {item.createdAt?.toDate?.()?.toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              }) || "Now"}
+            </Text>
+          </View>
+        </View>
+      </TouchableOpacity>
     );
   };
 
   return (
     <View style={styles.wrapper}>
       <SafeAreaView edges={["top"]} style={styles.safeTop} />
+
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={styles.keyboardView}
       >
-        {/* Header */}
+        {/* HEADER */}
         <View style={styles.header}>
           <TouchableOpacity
             onPress={() => {
-              soundPlayer.play('click');
+              soundPlayer.play("click");
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.back();
+              router.replace("/messages");
             }}
             style={styles.backButton}
           >
             <Image
               source={require("@/assets/icons/Back.png")}
               style={styles.backIcon}
-              resizeMode="contain"
             />
           </TouchableOpacity>
 
-          <View style={styles.headerInfo}>
+          <TouchableOpacity
+            style={styles.headerInfo}
+            onPress={() => {
+              if (otherUserId) {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push(`/locker/${otherUserId}`);
+              }
+            }}
+          >
             {otherUserAvatar ? (
               <Image
                 source={{ uri: otherUserAvatar }}
@@ -351,45 +538,43 @@ export default function MessageThreadScreen() {
               </View>
             )}
             <Text style={styles.headerName}>{otherUserName}</Text>
-          </View>
+          </TouchableOpacity>
 
           <View style={{ width: 40 }} />
         </View>
 
-        {/* Cache indicator - only show when cache is displayed */}
-        {showingCached && !loading && (
-          <View style={styles.cacheIndicator}>
-            <ActivityIndicator size="small" color="#0D5C3A" />
-            <Text style={styles.cacheText}>Checking for new messages...</Text>
-          </View>
-        )}
-
-        {/* Messages */}
+        {/* MESSAGES */}
         {loading && !showingCached ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#0D5C3A" />
+          </View>
+        ) : messages.length === 0 ? (
+          <View style={styles.emptyContainer}>
+            <Ionicons name="chatbubble-outline" size={64} color="#CCC" />
+            <Text style={styles.emptyText}>No messages yet</Text>
+            <Text style={styles.emptySubtext}>
+              Send the first message to {otherUserName}!
+            </Text>
           </View>
         ) : (
           <FlatList
             ref={flatListRef}
             data={messages}
             renderItem={renderMessage}
-            keyExtractor={(item, index) => item.messageId || `msg-${index}`}
-            contentContainerStyle={styles.messagesList}
-            showsVerticalScrollIndicator={false}
+            keyExtractor={(i) => i.messageId}
             inverted
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
-                onRefresh={onRefresh}
+                onRefresh={() => {}}
                 tintColor="#0D5C3A"
-                colors={["#0D5C3A"]}
               />
             }
+            contentContainerStyle={styles.messagesList}
           />
         )}
 
-        {/* Input */}
+        {/* INPUT */}
         <View style={styles.inputWrapper}>
           <View style={styles.inputContainer}>
             <TextInput
@@ -399,28 +584,101 @@ export default function MessageThreadScreen() {
               value={newMessage}
               onChangeText={setNewMessage}
               multiline
-              maxLength={500}
+              maxLength={1000}
             />
             <TouchableOpacity
               onPress={handleSend}
+              disabled={!newMessage.trim() || sending}
               style={[
                 styles.sendButton,
                 (!newMessage.trim() || sending) && styles.sendButtonDisabled,
               ]}
-              disabled={!newMessage.trim() || sending}
             >
-              <Ionicons
-                name="golf"
-                size={24}
-                color="#FFFFFF"
-              />
+              {sending ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Ionicons name="golf" size={24} color="#FFFFFF" />
+              )}
             </TouchableOpacity>
           </View>
         </View>
       </KeyboardAvoidingView>
+
+      {/* EDIT MESSAGE MODAL */}
+      <Modal
+        visible={editModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setEditModalVisible(false);
+          setEditingMessage(null);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Edit Message</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  soundPlayer.play("click");
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setEditModalVisible(false);
+                  setEditingMessage(null);
+                }}
+                style={styles.modalCloseButton}
+              >
+                <Ionicons name="close" size={24} color="#666" />
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              style={styles.editInput}
+              value={editedContent}
+              onChangeText={setEditedContent}
+              multiline
+              maxLength={1000}
+              autoFocus
+              placeholder="Edit your message..."
+              placeholderTextColor="#999"
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                onPress={() => {
+                  soundPlayer.play("click");
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setEditModalVisible(false);
+                  setEditingMessage(null);
+                }}
+                style={styles.modalCancelButton}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={handleSaveEdit}
+                disabled={!editedContent.trim() || isUpdating}
+                style={[
+                  styles.modalSaveButton,
+                  (!editedContent.trim() || isUpdating) &&
+                    styles.modalSaveButtonDisabled,
+                ]}
+              >
+                {isUpdating ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.modalSaveText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
+
+/* ========================= STYLES ========================= */
 
 const styles = StyleSheet.create({
   wrapper: {
@@ -440,14 +698,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    padding: 16,
     backgroundColor: "#0D5C3A",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 4,
   },
 
   backButton: {
@@ -457,7 +709,7 @@ const styles = StyleSheet.create({
   backIcon: {
     width: 24,
     height: 24,
-    tintColor: "#FFFFFF",
+    tintColor: "#FFF",
   },
 
   headerInfo: {
@@ -483,31 +735,13 @@ const styles = StyleSheet.create({
 
   avatarText: {
     color: "#0D5C3A",
-    fontSize: 16,
     fontWeight: "700",
   },
 
   headerName: {
+    color: "#FFF",
     fontSize: 18,
     fontWeight: "700",
-    color: "#FFFFFF",
-  },
-
-  cacheIndicator: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 6,
-    backgroundColor: "#FFF3CD",
-    borderBottomWidth: 1,
-    borderBottomColor: "#FFECB5",
-  },
-  
-  cacheText: {
-    fontSize: 11,
-    color: "#664D03",
-    fontWeight: "600",
   },
 
   loadingContainer: {
@@ -516,9 +750,29 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
+  emptyContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 40,
+  },
+
+  emptyText: {
+    fontSize: 18,
+    fontWeight: "600",
+    color: "#666",
+    marginTop: 16,
+  },
+
+  emptySubtext: {
+    fontSize: 14,
+    color: "#999",
+    marginTop: 8,
+    textAlign: "center",
+  },
+
   messagesList: {
     padding: 16,
-    paddingTop: 8,
     flexGrow: 1,
   },
 
@@ -547,22 +801,42 @@ const styles = StyleSheet.create({
   },
 
   messageText: {
-    fontFamily: 'Caveat_400Regular',
+    fontFamily: "Caveat_400Regular",
     fontSize: 20,
     lineHeight: 26,
   },
 
   myMessageText: {
-    color: "#FFFFFF",
+    color: "#FFF",
   },
 
   theirMessageText: {
     color: "#333",
   },
 
+  messageFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 6,
+    marginTop: 4,
+  },
+
+  editedLabel: {
+    fontSize: 10,
+    fontStyle: "italic",
+  },
+
+  myEditedLabel: {
+    color: "rgba(255,255,255,0.5)",
+  },
+
+  theirEditedLabel: {
+    color: "#999",
+  },
+
   timestamp: {
     fontSize: 11,
-    marginTop: 4,
   },
 
   myTimestamp: {
@@ -575,7 +849,7 @@ const styles = StyleSheet.create({
   },
 
   inputWrapper: {
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "#FFF",
     borderTopWidth: 1,
     borderTopColor: "#E0E0E0",
     paddingBottom: Platform.OS === "ios" ? 0 : 8,
@@ -583,9 +857,9 @@ const styles = StyleSheet.create({
 
   inputContainer: {
     flexDirection: "row",
-    alignItems: "center",
     padding: 12,
     gap: 12,
+    alignItems: "flex-end",
   },
 
   input: {
@@ -596,10 +870,10 @@ const styles = StyleSheet.create({
     borderColor: "#E0E0E0",
     paddingHorizontal: 16,
     paddingVertical: 12,
-    fontFamily: 'Caveat_400Regular',
+    fontFamily: "Caveat_400Regular",
     fontSize: 20,
     lineHeight: 26,
-    maxHeight: 100,
+    maxHeight: 120,
     color: "#333",
   },
 
@@ -618,8 +892,107 @@ const styles = StyleSheet.create({
   },
 
   sendButtonDisabled: {
-    backgroundColor: "#CCCCCC",
+    backgroundColor: "#CCC",
     shadowOpacity: 0,
     elevation: 0,
   },
+
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+
+  modalContent: {
+    backgroundColor: "#FFF",
+    borderRadius: 16,
+    width: "100%",
+    maxWidth: 400,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E0E0E0",
+  },
+
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#0D5C3A",
+  },
+
+  modalCloseButton: {
+    padding: 4,
+  },
+
+  editInput: {
+    margin: 16,
+    backgroundColor: "#F4EED8",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontFamily: "Caveat_400Regular",
+    fontSize: 20,
+    lineHeight: 26,
+    minHeight: 100,
+    maxHeight: 200,
+    color: "#333",
+    textAlignVertical: "top",
+  },
+
+  modalActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 12,
+    padding: 16,
+    paddingTop: 0,
+  },
+
+  modalCancelButton: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+  },
+
+  modalCancelText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#666",
+  },
+
+  modalSaveButton: {
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+
+  modalSaveButtonDisabled: {
+    backgroundColor: "#CCC",
+  },
+
+  modalSaveText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFF",
+  },
 });
+
+
+

@@ -38,9 +38,9 @@ export default function SelectPartnerScreen() {
     if (searchQuery.trim() === "") {
       setFilteredPartners(partners);
     } else {
-      const query = searchQuery.toLowerCase();
+      const q = searchQuery.toLowerCase();
       setFilteredPartners(
-        partners.filter((p) => p.displayName.toLowerCase().includes(query))
+        partners.filter((p) => p.displayName.toLowerCase().includes(q))
       );
     }
   }, [searchQuery, partners]);
@@ -106,15 +106,24 @@ export default function SelectPartnerScreen() {
       setLoading(false);
     } catch (error) {
       console.error("Error fetching partners:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       setLoading(false);
     }
   };
 
   const handleSelectPartner = (partner: Partner) => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push(`/messages/${partner.userId}`);
+
+    const currentUserId = auth.currentUser?.uid;
+    if (!currentUserId) return;
+
+    // ✅ Create deterministic thread ID from sorted user IDs
+    const sortedIds = [currentUserId, partner.userId].sort();
+    const threadId = `${sortedIds[0]}_${sortedIds[1]}`;
+
+    console.log("🧵 Navigating to thread:", threadId);
+    router.push(`/messages/${threadId}`);
   };
 
   const renderPartner = ({ item }: { item: Partner }) => {
@@ -144,12 +153,12 @@ export default function SelectPartnerScreen() {
       <View style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity 
+          <TouchableOpacity
             onPress={() => {
-              soundPlayer.play('click');
+              soundPlayer.play("click");
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               router.back();
-            }} 
+            }}
             style={styles.headerButton}
           >
             <Image
@@ -166,7 +175,12 @@ export default function SelectPartnerScreen() {
 
         {/* Search Bar */}
         <View style={styles.searchContainer}>
-          <Ionicons name="search" size={20} color="#999" style={styles.searchIcon} />
+          <Ionicons
+            name="search"
+            size={20}
+            color="#999"
+            style={styles.searchIcon}
+          />
           <TextInput
             style={styles.searchInput}
             placeholder="Search partners..."

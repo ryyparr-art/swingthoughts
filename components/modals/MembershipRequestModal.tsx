@@ -1,31 +1,30 @@
 import { auth, db, storage } from "@/constants/firebaseConfig";
-import { createNotification } from "@/utils/notificationHelpers";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import {
-    addDoc,
-    arrayUnion,
-    collection,
-    doc,
-    serverTimestamp,
-    updateDoc,
+  addDoc,
+  arrayUnion,
+  collection,
+  doc,
+  serverTimestamp,
+  updateDoc,
 } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import React, { useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Image,
-    KeyboardAvoidingView,
-    Modal,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -97,7 +96,7 @@ export default function MembershipRequestModal({
       await uploadBytes(storageRef, blob);
       const proofImageUrl = await getDownloadURL(storageRef);
 
-      // 2. Create membership request document
+      // 2. Create membership request document (triggers onMembershipCreated Cloud Function)
       await addDoc(collection(db, "course_memberships"), {
         userId: currentUserId,
         courseId: courseId,
@@ -117,14 +116,9 @@ export default function MembershipRequestModal({
         pendingMembershipCourses: arrayUnion(courseId),
       });
 
-      // 4. Send notification to user
-      await createNotification({
-        userId: currentUserId,
-        type: "membership_submitted",
-        courseId: courseId,
-        courseName: courseName,
-        customTitle: "Membership Request Submitted",
-      });
+      // ✅ NO CLIENT-SIDE NOTIFICATION
+      // membership_submitted notification is sent by onMembershipCreated Cloud Function
+      console.log("📬 Membership request created (notification handled by Cloud Function)");
 
       setUploading(false);
 

@@ -2,7 +2,6 @@ import CommentsModal from "@/components/modals/CommentsModal";
 import ReportModal from "@/components/modals/ReportModal";
 import { auth, db } from "@/constants/firebaseConfig";
 import { getPostTypeLabel } from "@/constants/postTypes";
-import { createNotification } from "@/utils/notificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { getUserProfile } from "@/utils/userProfileHelpers";
 import { Ionicons } from "@expo/vector-icons";
@@ -10,14 +9,17 @@ import { AVPlaybackStatus, ResizeMode, Video } from "expo-av";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import {
+  addDoc,
   arrayRemove,
   arrayUnion,
   collection,
+  deleteDoc,
   doc,
   getDocs,
   increment,
   orderBy,
   query,
+  serverTimestamp,
   updateDoc,
   where
 } from "firebase/firestore";
@@ -384,19 +386,41 @@ export default function UserPostsGalleryModal({
       const ref = doc(db, "thoughts", thought.id);
       const hasLiked = thought.likedBy?.includes(currentUserId);
 
-      await updateDoc(ref, {
-        likes: increment(hasLiked ? -1 : 1),
-        likedBy: hasLiked ? arrayRemove(currentUserId) : arrayUnion(currentUserId),
-      });
+      if (hasLiked) {
+        // Unlike: Update thought + delete like document
+        await updateDoc(ref, {
+          likes: increment(-1),
+          likedBy: arrayRemove(currentUserId),
+        });
 
-      if (!hasLiked) {
-        await createNotification({
-          userId: thought.userId,
-          type: "like",
-          actorId: currentUserId,
+        // Delete the like document
+        const likesQuery = query(
+          collection(db, "likes"),
+          where("userId", "==", currentUserId),
+          where("postId", "==", thought.id)
+        );
+        const likesSnap = await getDocs(likesQuery);
+        likesSnap.forEach(async (likeDoc) => {
+          await deleteDoc(likeDoc.ref);
+        });
+      } else {
+        // Like: Update thought + create like document (triggers onLikeCreated Cloud Function)
+        await updateDoc(ref, {
+          likes: increment(1),
+          likedBy: arrayUnion(currentUserId),
+        });
+
+        // Create like document - triggers Cloud Function notification
+        await addDoc(collection(db, "likes"), {
+          userId: currentUserId,
           postId: thought.id,
+          postAuthorId: thought.userId,
+          createdAt: serverTimestamp(),
         });
       }
+
+      // ✅ NO CLIENT-SIDE NOTIFICATION
+      // like notification is sent by onLikeCreated Cloud Function
 
       setThoughts((prev) =>
         prev.map((t) =>

@@ -1,5 +1,4 @@
 import { auth, db } from "@/constants/firebaseConfig";
-import { createNotification } from "@/utils/notificationHelpers";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
@@ -224,6 +223,7 @@ export default function VerificationsQueueScreen() {
 
               if (request.requestType === "course_membership") {
                 // Course membership approval
+                // Update triggers onMembershipUpdated Cloud Function → membership_approved notification
                 await updateDoc(doc(db, "course_memberships", request.id), {
                   status: "approved",
                   reviewedAt: serverTimestamp(),
@@ -237,16 +237,11 @@ export default function VerificationsQueueScreen() {
                   pendingMembershipCourses: arrayRemove(request.courseId),
                 });
 
-                // Send notification using helper
-                await createNotification({
-                  userId: request.userId,
-                  type: "membership_approved",
-                  courseId: request.courseId,
-                  courseName: request.courseName,
-                  customTitle: "Membership Approved ✅",
-                });
+                // ✅ NO CLIENT-SIDE NOTIFICATION
+                // membership_approved notification is sent by onMembershipUpdated Cloud Function
+                console.log("📬 Membership approved (notification handled by Cloud Function)");
               } else {
-                // User verification approval (existing code)
+                // User verification approval (PGA Pro or Course account)
                 await updateDoc(doc(db, "users", request.userId), {
                   userType: request.requestType === "course" ? "Course" : "PGA Pro",
                   verified: true,
@@ -256,12 +251,15 @@ export default function VerificationsQueueScreen() {
                   "verification.reviewedBy": auth.currentUser?.uid,
                 });
 
+                // Update triggers onVerificationRequestUpdated Cloud Function (if exists)
                 await updateDoc(doc(db, "verification_requests", request.id), {
                   status: "approved",
                   reviewedAt: serverTimestamp(),
                   reviewedBy: auth.currentUser?.uid,
                 });
 
+                // For user verification, we still create notification directly
+                // since this is an admin action and we may not have a Cloud Function for it
                 await addDoc(collection(db, "notifications"), {
                   userId: request.userId,
                   type: "verification_approved",
@@ -309,6 +307,7 @@ export default function VerificationsQueueScreen() {
                   reviewedBy: auth.currentUser?.uid,
                 });
 
+                // For user verification denial, create notification directly
                 await addDoc(collection(db, "notifications"), {
                   userId: request.userId,
                   type: "verification_denied",
@@ -340,6 +339,7 @@ export default function VerificationsQueueScreen() {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
       // Update membership document
+      // Update triggers onMembershipUpdated Cloud Function → membership_rejected notification
       await updateDoc(doc(db, "course_memberships", selectedRequest.id), {
         status: "rejected",
         rejectionReason: rejectionReason.trim(),
@@ -353,15 +353,9 @@ export default function VerificationsQueueScreen() {
         pendingMembershipCourses: arrayRemove(selectedRequest.courseId),
       });
 
-      // Send notification using helper
-      await createNotification({
-        userId: selectedRequest.userId,
-        type: "membership_rejected",
-        courseId: selectedRequest.courseId,
-        courseName: selectedRequest.courseName,
-        rejectionReason: rejectionReason.trim(),
-        customTitle: "Membership Request Updates",
-      });
+      // ✅ NO CLIENT-SIDE NOTIFICATION
+      // membership_rejected notification is sent by onMembershipUpdated Cloud Function
+      console.log("📬 Membership rejected (notification handled by Cloud Function)");
 
       Alert.alert("Success", "Membership rejected and user notified");
       setRejectionModalVisible(false);

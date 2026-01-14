@@ -42,22 +42,15 @@ interface CourseProfile {
 interface Post {
   postId: string;
   userId: string;
-  
-  // NEW: Multi-image support
-  imageUrl?: string; // Deprecated
-  imageUrls?: string[]; // NEW
+  imageUrl?: string;
+  imageUrls?: string[];
   imageCount?: number;
-  
   videoUrl?: string;
   videoThumbnailUrl?: string;
   caption: string;
   createdAt: any;
-  
-  // Denormalized user data
   userName?: string;
   userAvatar?: string;
-  
-  // Media metadata
   hasMedia?: boolean;
   mediaType?: "images" | "video" | null;
 }
@@ -73,7 +66,7 @@ export default function CourseProfileScreen() {
   const router = useRouter();
   const { courseId } = useLocalSearchParams();
   const currentUserId = auth.currentUser?.uid;
-  const { getCache, setCache, cleanupOldProfiles } = useCache(); // ✅ Add cache hook
+  const { getCache, setCache, cleanupOldProfiles } = useCache();
 
   const [profile, setProfile] = useState<CourseProfile | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
@@ -87,8 +80,8 @@ export default function CourseProfileScreen() {
   const [galleryModalVisible, setGalleryModalVisible] = useState(false);
   const [selectedPostId, setSelectedPostId] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(true);
-  const [showingCached, setShowingCached] = useState(false); // ✅ Cache indicator
-  const [refreshing, setRefreshing] = useState(false); // ✅ Pull to refresh
+  const [showingCached, setShowingCached] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [isOwnCourse, setIsOwnCourse] = useState(false);
 
   useEffect(() => {
@@ -101,7 +94,6 @@ export default function CourseProfileScreen() {
 
   const fetchCourseDataWithCache = async (targetCourseId: string) => {
     try {
-      // Step 1: Try to load from cache (instant)
       const cached = await getCache(CACHE_KEYS.COURSE_PROFILE(targetCourseId));
       
       if (cached) {
@@ -114,10 +106,8 @@ export default function CourseProfileScreen() {
         setLoading(false);
       }
 
-      // Step 2: Fetch fresh data (always)
       await fetchCourseData(targetCourseId, true);
 
-      // Step 3: Cleanup old profiles periodically (10% of the time)
       if (Math.random() < 0.1) {
         cleanupOldProfiles();
       }
@@ -234,7 +224,6 @@ export default function CourseProfileScreen() {
         const isCreatedByCourseOwner = courseOwnerId && data.userId === courseOwnerId;
         
         if (isTagged || isCreatedByCourseOwner) {
-          // NEW: Get images array (handle both old and new formats)
           let images: string[] = [];
           if (data.imageUrls && Array.isArray(data.imageUrls) && data.imageUrls.length > 0) {
             images = data.imageUrls;
@@ -245,22 +234,15 @@ export default function CourseProfileScreen() {
           postsData.push({
             postId: doc.id,
             userId: data.userId,
-            
-            // NEW: Multi-image support
             imageUrls: images,
             imageCount: images.length,
-            imageUrl: data.imageUrl, // Keep for backwards compat
-            
+            imageUrl: data.imageUrl,
             videoUrl: data.videoUrl,
             videoThumbnailUrl: data.videoThumbnailUrl,
             caption: data.caption || data.content || "",
             createdAt: data.createdAt,
-            
-            // NEW: Use denormalized data if available
             userName: data.userName,
             userAvatar: data.userAvatar,
-            
-            // Media metadata
             hasMedia: data.hasMedia,
             mediaType: data.mediaType,
           });
@@ -268,13 +250,12 @@ export default function CourseProfileScreen() {
         }
       });
 
-      // Load user profiles for posts that don't have denormalized data
       if (userIds.size > 0) {
         const profilesMap = await batchGetUserProfiles(Array.from(userIds));
         const profiles: Record<string, any> = {};
 
-        profilesMap.forEach((profile, userId) => {
-          profiles[userId] = {
+        profilesMap.forEach((profile, oduserId) => {
+          profiles[oduserId] = {
             displayName: profile.displayName,
             avatar: profile.avatar,
           };
@@ -283,7 +264,6 @@ export default function CourseProfileScreen() {
         postsData.forEach((post: any) => {
           const postData = postsSnap.docs.find(d => d.id === post.postId)?.data();
           if (postData && postData.userId) {
-            // Only fill in if denormalized data not present
             if (!post.userName && profiles[postData.userId]) {
               post.userName = profiles[postData.userId].displayName;
               post.userAvatar = profiles[postData.userId].avatar;
@@ -300,7 +280,6 @@ export default function CourseProfileScreen() {
 
       setPosts(postsData);
 
-      // ✅ Step 4: Update cache
       await setCache(CACHE_KEYS.COURSE_PROFILE(targetCourseId), {
         profile: profileData,
         posts: postsData,
@@ -343,8 +322,6 @@ export default function CourseProfileScreen() {
 
   const renderPost = ({ item }: { item: Post }) => {
     const isOwnPost = currentUserId && item.userId === currentUserId;
-    
-    // NEW: Get first image from array (for thumbnail)
     const images = item.imageUrls || (item.imageUrl ? [item.imageUrl] : []);
     const firstImage = images[0];
     const hasMultipleImages = images.length > 1;
@@ -359,7 +336,6 @@ export default function CourseProfileScreen() {
           setGalleryModalVisible(true);
         }}
       >
-        {/* Video post with thumbnail */}
         {item.videoThumbnailUrl ? (
           <>
             <Image source={{ uri: item.videoThumbnailUrl }} style={styles.postImage} />
@@ -368,11 +344,9 @@ export default function CourseProfileScreen() {
             </View>
           </>
         ) : firstImage ? (
-          /* Image post (single or multiple) */
           <>
             <Image source={{ uri: firstImage }} style={styles.postImage} />
             
-            {/* NEW: Multi-image indicator */}
             {hasMultipleImages && (
               <View style={styles.multiImageIndicator}>
                 <Ionicons name="images" size={16} color="#FFF" />
@@ -381,7 +355,6 @@ export default function CourseProfileScreen() {
             )}
           </>
         ) : (
-          /* Text-only post */
           <View style={styles.textOnlyCard}>
             <Text style={styles.textOnlyContent} numberOfLines={4}>
               {item.caption}
@@ -473,7 +446,6 @@ export default function CourseProfileScreen() {
         )}
       </View>
 
-      {/* Cache indicator - only show when cache is displayed */}
       {showingCached && !loading && (
         <View style={styles.cacheIndicator}>
           <ActivityIndicator size="small" color="#0D5C3A" />
@@ -497,78 +469,94 @@ export default function CourseProfileScreen() {
         }
         ListHeaderComponent={
           <>
-            <View style={styles.profileHeader}>
-              <View style={styles.courseIconContainer}>
-                <Ionicons name="flag" size={50} color="#0D5C3A" />
-              </View>
-
-              <Text style={styles.courseName}>{profile.courseName}</Text>
-
-              {profile.location && (
-                <Text style={styles.courseLocation}>
-                  {profile.location.city}, {profile.location.state}
-                </Text>
-              )}
-
-              {(profile.par || profile.slope) && (
-                <Text style={styles.courseDetails}>
-                  {profile.par ? `Par ${profile.par}` : ""}
-                  {profile.par && profile.slope ? " • " : ""}
-                  {profile.slope ? `Slope ${profile.slope}` : ""}
-                </Text>
-              )}
-            </View>
-
-            <View style={styles.statsContainer}>
-              <View style={styles.statTile}>
-                <Text style={styles.statLabel}>Total{'\n'}Rounds</Text>
-                <Text style={styles.statValue}>{stats.totalRounds}</Text>
-              </View>
-
-              <View style={styles.statTile}>
-                <Text style={styles.statLabel}>Hole-in-{'\n'}Ones</Text>
-                <Text style={styles.statValue}>{stats.holeInOnes}</Text>
-              </View>
-
-              <TouchableOpacity 
-                style={styles.statTile}
-                onPress={() => {
-                  soundPlayer.play('click');
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  setPlayersModalVisible(true);
-                }}
-              >
-                <View style={styles.statLabelRow}>
-                  <Text style={styles.statLabel}>Players</Text>
-                  <Ionicons name="golf" size={12} color="#0D5C3A" />
+            {/* ✅ NEW: Golf Membership Card Style Header */}
+            <View style={styles.profileCard}>
+              <View style={styles.profileCardInner}>
+                {/* Course Icon with Gold Ring */}
+                <View style={styles.iconContainer}>
+                  <View style={styles.courseIconInner}>
+                    <Ionicons name="flag" size={50} color="#0D5C3A" />
+                  </View>
                 </View>
-                <Text style={styles.statValue}>{stats.totalPlayers}</Text>
-              </TouchableOpacity>
 
-              <TouchableOpacity 
-                style={styles.statTile}
-                onPress={() => {
-                  soundPlayer.play('click');
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  setPlayersModalVisible(true);
-                }}
-              >
-                <View style={styles.statLabelRow}>
-                  <Text style={styles.statLabel}>Declared{'\n'}Members</Text>
-                  <Ionicons name="shield-checkmark" size={12} color="#FFD700" />
+                {/* Course Name */}
+                <Text style={styles.courseName}>{profile.courseName}</Text>
+
+                {/* Location & Details */}
+                {profile.location && (
+                  <Text style={styles.courseLocation}>
+                    {profile.location.city}, {profile.location.state}
+                  </Text>
+                )}
+
+                {(profile.par || profile.slope) && (
+                  <Text style={styles.courseDetails}>
+                    {profile.par ? `Par ${profile.par}` : ""}
+                    {profile.par && profile.slope ? " • " : ""}
+                    {profile.slope ? `Slope ${profile.slope}` : ""}
+                  </Text>
+                )}
+
+                {/* Stats Row - Connected Bar */}
+                <View style={styles.statsBar}>
+                  <View style={styles.statItem}>
+                    <Text style={styles.statValue}>{stats.totalRounds}</Text>
+                    <Text style={styles.statLabel}>ROUNDS</Text>
+                  </View>
+
+                  <View style={styles.statDivider} />
+
+                  <View style={styles.statItem}>
+                    <Text style={styles.statValue}>{stats.holeInOnes}</Text>
+                    <Text style={styles.statLabel}>ACES</Text>
+                  </View>
+
+                  <View style={styles.statDivider} />
+
+                  <TouchableOpacity 
+                    style={styles.statItem}
+                    onPress={() => {
+                      soundPlayer.play('click');
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setPlayersModalVisible(true);
+                    }}
+                  >
+                    <Text style={styles.statValue}>{stats.totalPlayers}</Text>
+                    <View style={styles.statLabelRow}>
+                      <Text style={styles.statLabel}>PLAYERS</Text>
+                      <Ionicons name="chevron-forward" size={10} color="#999" />
+                    </View>
+                  </TouchableOpacity>
+
+                  <View style={styles.statDivider} />
+
+                  <TouchableOpacity 
+                    style={styles.statItem}
+                    onPress={() => {
+                      soundPlayer.play('click');
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setPlayersModalVisible(true);
+                    }}
+                  >
+                    <Text style={styles.statValue}>{stats.totalMembers}</Text>
+                    <View style={styles.statLabelRow}>
+                      <Text style={styles.statLabel}>MEMBERS</Text>
+                      <Ionicons name="chevron-forward" size={10} color="#999" />
+                    </View>
+                  </TouchableOpacity>
                 </View>
-                <Text style={styles.statValue}>{stats.totalMembers}</Text>
-              </TouchableOpacity>
-            </View>
 
-            {!profile.claimed && (
-              <View style={styles.unclaimedBanner}>
-                <Ionicons name="information-circle-outline" size={24} color="#666" />
-                <Text style={styles.unclaimedText}>
-                  This course hasn't claimed their profile yet
-                </Text>
+                {/* Unclaimed Banner */}
+                {!profile.claimed && (
+                  <View style={styles.unclaimedBanner}>
+                    <Ionicons name="information-circle-outline" size={18} color="#666" />
+                    <Text style={styles.unclaimedText}>
+                      This course hasn't claimed their profile yet
+                    </Text>
+                  </View>
+                )}
               </View>
-            )}
+            </View>
 
             <View style={styles.postsHeader}>
               <Text style={styles.postsTitle}>
@@ -672,82 +660,117 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  profileHeader: {
-    alignItems: "center",
-    paddingVertical: 24,
+  /* ✅ NEW: Golf Membership Card Styles */
+  profileCard: {
+    marginHorizontal: 16,
+    marginTop: 20,
+    marginBottom: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#D4D0C5",
+    backgroundColor: "#F4EED8",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 6,
+    overflow: "hidden",
   },
 
-  courseIconContainer: {
+  profileCardInner: {
+    paddingVertical: 24,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    backgroundColor: "#F4EED8",
+  },
+
+  iconContainer: {
+    marginBottom: 16,
+    borderRadius: 54,
+    padding: 4,
+    backgroundColor: "#FFD700",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+
+  courseIconInner: {
     width: 100,
     height: 100,
     borderRadius: 50,
     backgroundColor: "#E8F5E9",
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 12,
-    borderWidth: 3,
-    borderColor: "#0D5C3A",
   },
 
   courseName: {
     fontSize: 24,
-    fontWeight: "700",
+    fontWeight: "800",
     color: "#0D5C3A",
     marginBottom: 4,
     textAlign: "center",
-    paddingHorizontal: 16,
+    paddingHorizontal: 8,
+    letterSpacing: 0.5,
   },
 
   courseLocation: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "600",
     color: "#666",
-    marginBottom: 4,
+    marginBottom: 2,
   },
 
   courseDetails: {
-    fontSize: 14,
-    color: "#666",
+    fontSize: 13,
+    color: "#888",
+    marginBottom: 20,
   },
 
-  statsContainer: {
+  /* Stats Bar - Connected */
+  statsBar: {
     flexDirection: "row",
-    paddingHorizontal: 16,
-    paddingVertical: 20,
-    gap: 8,
-    marginBottom: 16,
-  },
-
-  statTile: {
-    flex: 1,
     alignItems: "center",
-    paddingVertical: 12,
-    paddingHorizontal: 4,
     backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#E0E0E0",
+    paddingVertical: 14,
+    paddingHorizontal: 4,
+    width: "100%",
+  },
+
+  statItem: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  statDivider: {
+    width: 1,
+    height: 36,
+    backgroundColor: "#E0E0E0",
+  },
+
+  statValue: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#0D5C3A",
+    marginBottom: 2,
+  },
+
+  statLabel: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#888",
+    letterSpacing: 0.5,
   },
 
   statLabelRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 4,
-    gap: 4,
-  },
-
-  statLabel: {
-    fontSize: 10,
-    fontWeight: "600",
-    color: "#666",
-    textAlign: "center",
-    lineHeight: 12,
-  },
-
-  statValue: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#0D5C3A",
+    gap: 2,
   },
 
   unclaimedBanner: {
@@ -756,19 +779,21 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
     backgroundColor: "#F5F5F5",
-    marginHorizontal: 16,
-    marginBottom: 16,
-    padding: 16,
-    borderRadius: 12,
+    marginTop: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#DDD",
+    borderColor: "#E0E0E0",
+    width: "100%",
   },
 
   unclaimedText: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: "600",
     color: "#666",
     fontStyle: "italic",
+    flex: 1,
   },
 
   postsHeader: {
@@ -822,7 +847,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0, 0, 0, 0.3)",
   },
   
-  // NEW: Multi-image indicator
   multiImageIndicator: {
     position: "absolute",
     top: 6,

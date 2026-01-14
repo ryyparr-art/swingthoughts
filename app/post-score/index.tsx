@@ -1,7 +1,6 @@
 import { auth, db, storage } from "@/constants/firebaseConfig";
 import { checkAndAwardBadges } from "@/utils/badgeUtils";
 import { canPostScores } from "@/utils/canPostScores";
-import { createNotification } from "@/utils/notificationHelpers";
 import {
   checkRateLimit,
   EMAIL_VERIFICATION_MESSAGE,
@@ -108,7 +107,6 @@ function haversine(lat1: number, lon1: number, lat2: number, lon2: number) {
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-// Geohash encoding (5-char precision = ~2.4 miles)
 function encodeGeohash(latitude: number, longitude: number, precision: number = 5): string {
   const base32 = "0123456789bcdefghjkmnpqrstuvwxyz";
   let idx = 0;
@@ -159,28 +157,23 @@ export default function PostScoreScreen() {
 
   const CloseIcon = require("@/assets/icons/Close.png");
 
-  // User data
   const [userData, setUserData] = useState<any>(null);
   const [userRegionKey, setUserRegionKey] = useState<string | null>(null);
   const [allPartners, setAllPartners] = useState<Partner[]>([]);
   const canPost = canPostScores(userData);
 
-  // Location
   const [location, setLocation] = useState<UserLocation | null>(null);
 
-  // Course selection
   const [cachedCourses, setCachedCourses] = useState<Course[]>([]);
   const [searchResults, setSearchResults] = useState<Course[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCourse, setSelectedCourse] = useState<Course | null>(null);
   const [showCourseSearch, setShowCourseSearch] = useState(false);
 
-  // Tee selection
   const [teeOptions, setTeeOptions] = useState<TeeOption[]>([]);
   const [selectedTee, setSelectedTee] = useState<TeeOption | null>(null);
   const [showTeeDropdown, setShowTeeDropdown] = useState(false);
 
-  // Score details
   const [holeCount, setHoleCount] = useState<HoleCount>(18);
   const [hadHoleInOne, setHadHoleInOne] = useState<HoleInOne>("no");
   const [grossScore, setGrossScore] = useState("");
@@ -188,27 +181,21 @@ export default function PostScoreScreen() {
   const [eagles, setEagles] = useState("");
   const [albatross, setAlbatross] = useState("");
   
-  // Hole-in-one details
   const [holeNumber, setHoleNumber] = useState("");
   const [selectedVerifier, setSelectedVerifier] = useState<Partner | null>(null);
   const [showVerifierModal, setShowVerifierModal] = useState(false);
   const [verifierSearchQuery, setVerifierSearchQuery] = useState("");
 
-  // Description & scorecard
   const [roundDescription, setRoundDescription] = useState("");
   const [scorecardImageUri, setScorecardImageUri] = useState<string | null>(null);
 
-  // Submission
   const [submitting, setSubmitting] = useState(false);
   const [submittingMessage, setSubmittingMessage] = useState("Submitting...");
 
-  // @ Mention functionality
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [autocompleteResults, setAutocompleteResults] = useState<any[]>([]);
   const [currentMention, setCurrentMention] = useState("");
   const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
-
-  /* ========================= LOAD USER & REGION ========================= */
 
   useEffect(() => {
     const loadUser = async () => {
@@ -222,9 +209,6 @@ export default function PostScoreScreen() {
         setLocation(data.location || null);
         setUserRegionKey(data.regionKey || null);
 
-        console.log("📍 User regionKey:", data.regionKey);
-
-        // Load partners
         const partners = data?.partners || [];
         if (Array.isArray(partners) && partners.length > 0) {
           const partnerDocs = await Promise.all(
@@ -239,15 +223,12 @@ export default function PostScoreScreen() {
               avatar: d.data()?.avatar || undefined,
             }));
 
-          console.log("✅ Loaded partners:", partnerList.length);
           setAllPartners(partnerList);
         }
       }
     };
     loadUser();
   }, []);
-
-  /* ========================= LOAD CACHED COURSES ========================= */
 
   useEffect(() => {
     if (!userData) return;
@@ -259,9 +240,6 @@ export default function PostScoreScreen() {
       const cached = userData?.cachedCourses || [];
       
       if (cached.length > 0) {
-        console.log("📦 Loaded", cached.length, "cached courses");
-        
-        // Deduplicate by courseId
         const uniqueCourses = cached.reduce((acc: Course[], current: Course) => {
           const exists = acc.find(c => c.courseId === current.courseId || c.id === current.courseId);
           if (!exists) {
@@ -270,12 +248,9 @@ export default function PostScoreScreen() {
           return acc;
         }, []);
         
-        // Sort by distance and take top 3
         const sorted = [...uniqueCourses].sort((a, b) => (a.distance || 999) - (b.distance || 999));
         setCachedCourses(sorted.slice(0, 3));
-        console.log("✅ Unique cached courses:", sorted.slice(0, 3).length);
       } else {
-        console.log("⚠️ No cached courses");
         setCachedCourses([]);
       }
     } catch (error) {
@@ -283,8 +258,6 @@ export default function PostScoreScreen() {
       setCachedCourses([]);
     }
   };
-
-  /* ========================= COURSE SEARCH ========================= */
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) {
@@ -305,12 +278,7 @@ export default function PostScoreScreen() {
         const coursesWithDistance = courses.map((c) => ({
           ...c,
           distance: c.location?.latitude && c.location?.longitude
-            ? haversine(
-                location.latitude!,
-                location.longitude!,
-                c.location.latitude,
-                c.location.longitude
-              )
+            ? haversine(location.latitude!, location.longitude!, c.location.latitude, c.location.longitude)
             : 999,
         }));
 
@@ -333,21 +301,16 @@ export default function PostScoreScreen() {
     setSearchResults([]);
     setSearchQuery("");
 
-    // If course is from cache (has courseId but missing data), load full data from Firestore
     const courseId = course.id || course.courseId;
     
     if (!course.location || !course.tees) {
-      console.log("📦 Cached course missing data, loading from Firestore...");
-      
       try {
         const courseDocRef = doc(db, "courses", String(courseId));
         const courseSnap = await getDoc(courseDocRef);
         
         if (courseSnap.exists()) {
           const fullCourseData = courseSnap.data();
-          console.log("✅ Loaded full course data from Firestore");
           
-          // Merge cached course with full Firestore data
           const completeCourse: Course = {
             id: courseId,
             courseId: courseId,
@@ -361,27 +324,19 @@ export default function PostScoreScreen() {
           setSelectedCourse(completeCourse);
           await loadTeesForCourse(completeCourse);
           return;
-        } else {
-          console.log("⚠️ Course not in Firestore, will search API...");
         }
       } catch (error) {
         console.error("Error loading course from Firestore:", error);
       }
     }
     
-    // Course has full data (from API search) or we'll load tees separately
     setSelectedCourse(course);
     await loadTeesForCourse(course);
   };
 
-  /* ========================= TEE LOADING (CACHE FIRST) ========================= */
-
   const loadTeesForCourse = async (course: Course) => {
     try {
       const courseId = course.id || course.courseId;
-      console.log("🏌️ Loading tees for course:", courseId);
-
-      // 1. Check Firestore cache first
       const courseDocRef = doc(db, "courses", String(courseId));
       const courseSnap = await getDoc(courseDocRef);
 
@@ -389,18 +344,11 @@ export default function PostScoreScreen() {
 
       if (courseSnap.exists()) {
         const cachedData = courseSnap.data();
-        console.log("✅ Found cached course data");
-        console.log("📋 Tees structure:", JSON.stringify(cachedData.tees, null, 2));
 
         if (cachedData.tees) {
-          // Use cached tees
           if (cachedData.tees.female && Array.isArray(cachedData.tees.female)) {
-            console.log("👗 Processing female tees:", cachedData.tees.female.length);
             cachedData.tees.female.forEach((teeArray: any, index: number) => {
-              // Handle nested array structure: female: [[{...}]]
               const teeData = Array.isArray(teeArray) ? teeArray[0] : teeArray;
-              
-              console.log(`  Female tee ${index}:`, teeData?.tee_name, teeData?.par_total, teeData?.total_yards);
               
               if (teeData && typeof teeData === 'object') {
                 tees.push({
@@ -414,12 +362,8 @@ export default function PostScoreScreen() {
           }
 
           if (cachedData.tees.male && Array.isArray(cachedData.tees.male)) {
-            console.log("👔 Processing male tees:", cachedData.tees.male.length);
             cachedData.tees.male.forEach((teeArray: any, index: number) => {
-              // Handle nested array structure: male: [[{...}]]
               const teeData = Array.isArray(teeArray) ? teeArray[0] : teeArray;
-              
-              console.log(`  Male tee ${index}:`, teeData?.tee_name, teeData?.par_total, teeData?.total_yards);
               
               if (teeData && typeof teeData === 'object') {
                 tees.push({
@@ -431,19 +375,10 @@ export default function PostScoreScreen() {
               }
             });
           }
-
-          console.log("✅ Loaded tees from cache:", tees.length);
-        } else {
-          console.log("⚠️ No tees field in cached data");
         }
-      } else {
-        console.log("⚠️ Course not found in cache");
       }
 
-      // 2. If no cached tees, fetch from API
       if (tees.length === 0) {
-        console.log("📡 No cached tees, fetching from API...");
-
         if (course.tees?.male) {
           course.tees.male.forEach((tee, index) => {
             tees.push({
@@ -464,7 +399,6 @@ export default function PostScoreScreen() {
           });
         }
 
-        // Save to cache for next time
         if (tees.length > 0) {
           await setDoc(courseDocRef, {
             id: courseId,
@@ -474,23 +408,17 @@ export default function PostScoreScreen() {
             userId: auth.currentUser!.uid,
             cachedAt: serverTimestamp(),
           }, { merge: true });
-
-          console.log("✅ Cached course data for next time");
         }
       }
 
-      // 3. Set default tee or fallback
       if (tees.length > 0) {
         setTeeOptions(tees);
         setSelectedTee(tees[0]);
       } else {
-        console.log("⚠️ No tees found, using default");
         const defaultTee = { name: "Standard", par: 72, gender: "male" as const };
         setTeeOptions([defaultTee]);
         setSelectedTee(defaultTee);
       }
-
-      console.log("✅ Tee selection ready:", tees.length || 1, "options");
     } catch (error) {
       console.error("Error loading tees:", error);
       const defaultTee = { name: "Standard", par: 72, gender: "male" as const };
@@ -499,23 +427,18 @@ export default function PostScoreScreen() {
     }
   };
 
-  /* ========================= HOLE-IN-ONE ALERT ========================= */
-
   const handleHoleInOneSelect = () => {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     
     setHadHoleInOne("yes");
     
-    // Show verification alert
     Alert.alert(
       "Partner Verification Required",
       "Hole-in-ones require partner verification",
       [{ text: "Got It", style: "default" }]
     );
   };
-
-  /* ========================= @ MENTION LOGIC ========================= */
 
   const renderDescriptionWithMentions = () => {
     const mentionRegex = /@([\w\s]+?)(?=\s{2,}|$|@|\n)/g;
@@ -631,8 +554,6 @@ export default function PostScoreScreen() {
     setShowAutocomplete(false);
   };
 
-  /* ========================= IMAGE PICKER ========================= */
-
   const pickScorecardImage = async () => {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -649,8 +570,6 @@ export default function PostScoreScreen() {
       setScorecardImageUri(result.assets[0].uri);
     }
   };
-
-  /* ========================= CLOSE HANDLER ========================= */
 
   const handleClose = () => {
     const hasData =
@@ -687,8 +606,6 @@ export default function PostScoreScreen() {
     }
   };
 
-  /* ========================= SUBMIT SCORE ========================= */
-
   const handleSubmit = async () => {
     setSubmitting(true);
     setSubmittingMessage("Submitting score...");
@@ -696,9 +613,6 @@ export default function PostScoreScreen() {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
 
-    console.log("📝 Starting score submission...");
-
-    // Validation
     if (!canPost) {
       soundPlayer.play('error');
       setSubmitting(false);
@@ -765,9 +679,7 @@ export default function PostScoreScreen() {
     }
 
     try {
-      // Compress and upload scorecard
       setSubmittingMessage("Compressing scorecard...");
-      console.log("📸 Compressing scorecard image...");
       
       const compressed = await manipulateAsync(
         scorecardImageUri,
@@ -783,9 +695,6 @@ export default function PostScoreScreen() {
       await uploadBytes(imageRef, blob);
       const imageUrl = await getDownloadURL(imageRef);
 
-      console.log("✅ Scorecard uploaded");
-
-      // Extract @mentions
       const mentionRegex = /@([\w\s]+?)(?=\s{2,}|$|@|\n)/g;
       const mentions = roundDescription.match(mentionRegex) || [];
 
@@ -802,9 +711,6 @@ export default function PostScoreScreen() {
         }
       }
 
-      console.log("👥 Tagged partners:", extractedPartners.length);
-
-      // Calculate region data
       let regionKey = userRegionKey;
       let geohash = null;
 
@@ -814,21 +720,19 @@ export default function PostScoreScreen() {
           selectedCourse.location.longitude,
           5
         );
-        console.log("📍 Geohash:", geohash);
       }
 
-      // Create score document
       setSubmittingMessage("Saving score...");
-      console.log("💾 Creating score document...");
 
       const netScore = parseInt(grossScore) - (userData?.handicap || 0);
       const courseId = selectedCourse.id || selectedCourse.courseId;
+      const courseName = selectedCourse.course_name || selectedCourse.courseName;
 
       const scoreData: any = {
         userId: auth.currentUser?.uid,
         userName: userData?.displayName || "Unknown",
         courseId: courseId,
-        courseName: selectedCourse.course_name || selectedCourse.courseName,
+        courseName: courseName,
         holeCount: holeCount,
         grossScore: parseInt(grossScore),
         netScore: netScore,
@@ -848,10 +752,6 @@ export default function PostScoreScreen() {
 
       if (hadHoleInOne === "yes") {
         scoreData.holeNumber = parseInt(holeNumber);
-        scoreData.holeCount = holeCount; // Track if it was 9 or 18 hole round
-        scoreData.status = "pending";
-        scoreData.verifierId = selectedVerifier!.userId;
-        scoreData.verifierName = selectedVerifier!.displayName;
       }
 
       if (extractedPartners.length > 0) {
@@ -862,14 +762,34 @@ export default function PostScoreScreen() {
       }
 
       const scoreRef = await addDoc(collection(db, "scores"), scoreData);
-      console.log("✅ Score created:", scoreRef.id);
 
-      // Update location
+      // ✅ Create hole_in_ones document if applicable (triggers onHoleInOneCreated Cloud Function)
+      if (hadHoleInOne === "yes" && selectedVerifier) {
+        console.log("🏌️ Creating hole-in-one verification document...");
+        
+        await addDoc(collection(db, "hole_in_ones"), {
+          userId: auth.currentUser?.uid,
+          userName: userData?.displayName || "Unknown",
+          userAvatar: userData?.avatar || null,
+          verifierId: selectedVerifier.userId,
+          verifierName: selectedVerifier.displayName,
+          scoreId: scoreRef.id,
+          courseId: courseId,
+          courseName: courseName,
+          holeNumber: parseInt(holeNumber),
+          holeCount: holeCount,
+          status: "pending",
+          scorecardImageUrl: imageUrl,
+          createdAt: serverTimestamp(),
+        });
+        
+        console.log("✅ Hole-in-one document created (triggers Cloud Function notifications)");
+      }
+
       try {
         setSubmittingMessage("Updating location...");
         const { checkAndUpdateLocation, incrementLocationScoreCount } = await import("@/utils/locationHelpers");
 
-        console.log("📍 Checking location...");
         await checkAndUpdateLocation(auth.currentUser!.uid, {
           courseCity: selectedCourse.location?.city || "",
           courseState: selectedCourse.location?.state || "",
@@ -879,14 +799,11 @@ export default function PostScoreScreen() {
         });
 
         await incrementLocationScoreCount(auth.currentUser!.uid);
-        console.log("✅ Location updated");
       } catch (locationErr) {
-        console.error("⚠️ Location update failed (non-critical):", locationErr);
+        console.error("Location update failed:", locationErr);
       }
 
-      // Update user stats (birdies, eagles, albatross, hole-in-ones)
       setSubmittingMessage("Updating stats...");
-      console.log("📊 Updating user stats...");
 
       const userUpdates: any = {};
 
@@ -905,10 +822,8 @@ export default function PostScoreScreen() {
 
       if (Object.keys(userUpdates).length > 0) {
         await updateDoc(doc(db, "users", auth.currentUser!.uid), userUpdates);
-        console.log("✅ User stats updated:", userUpdates);
       }
 
-      // Update course stats
       try {
         const courseDocRef = doc(db, "courses", String(courseId));
         const courseUpdates: any = {};
@@ -925,42 +840,33 @@ export default function PostScoreScreen() {
 
         if (Object.keys(courseUpdates).length > 0) {
           await updateDoc(courseDocRef, courseUpdates);
-          console.log("✅ Course stats updated");
         }
       } catch (courseErr) {
-        console.error("⚠️ Course stats update failed (non-critical):", courseErr);
+        console.error("Course stats update failed:", courseErr);
       }
 
-      // Check and award badges (only for 18-hole rounds for lowman)
-      console.log("🏆 Checking badges...");
       setSubmittingMessage("Checking achievements...");
 
       let newBadges: any[] = [];
       
-      // Only award lowman badge for 18-hole rounds
       if (holeCount === 18) {
         try {
           newBadges = await checkAndAwardBadges(
             auth.currentUser!.uid,
             courseId!,
-            selectedCourse.course_name || selectedCourse.courseName || "Unknown Course",
+            courseName || "Unknown Course",
             parseInt(grossScore),
             hadHoleInOne === "yes",
             hadHoleInOne === "yes" ? parseInt(holeNumber) : undefined
           );
-          console.log("✅ Badges checked:", newBadges.length);
         } catch (badgeError) {
-          console.error("❌ Badge check failed:", badgeError);
+          console.error("Badge check failed:", badgeError);
         }
-      } else {
-        console.log("⏭️ Skipping badge check (9-hole round)");
       }
 
-      // NEW: Update leaderboards (separate 9-hole and 18-hole)
       if (regionKey) {
         try {
           setSubmittingMessage("Updating leaderboards...");
-          console.log("🏆 Updating regional leaderboard...");
 
           const leaderboardId = `${regionKey}_${courseId}`;
           const leaderboardRef = doc(db, "leaderboards", leaderboardId);
@@ -973,7 +879,7 @@ export default function PostScoreScreen() {
             userName: userData?.displayName || "Unknown",
             userAvatar: userData?.avatar || null,
             courseId: courseId!,
-            courseName: selectedCourse.course_name || selectedCourse.courseName || "Unknown Course",
+            courseName: courseName || "Unknown Course",
             grossScore: parseInt(grossScore),
             netScore: netScore,
             par: selectedTee.par,
@@ -984,14 +890,12 @@ export default function PostScoreScreen() {
           };
 
           if (leaderboardSnap.exists()) {
-            // Update existing leaderboard
             const leaderboardData = leaderboardSnap.data();
             
             const updates: any = {
               lastUpdated: serverTimestamp(),
             };
 
-            // Update appropriate leaderboard based on hole count
             if (holeCount === 18) {
               const topScores18 = leaderboardData.topScores18 || [];
               topScores18.push(newScoreEntry);
@@ -1014,26 +918,23 @@ export default function PostScoreScreen() {
 
             updates.totalScores = increment(1);
 
-            // Add hole-in-one to leaderboard
             if (hadHoleInOne === "yes" && selectedVerifier) {
               updates.holesInOne = arrayUnion({
                 userId: auth.currentUser!.uid,
                 displayName: userData?.displayName || "Unknown",
                 hole: parseInt(holeNumber),
-                holeCount: holeCount, // Track if 9 or 18 hole round
+                holeCount: holeCount,
                 achievedAt: serverTimestamp(),
-                postId: null, // Will be updated when clubhouse post is created
+                postId: null,
               });
             }
 
             await updateDoc(leaderboardRef, updates);
-            console.log("✅ Leaderboard updated");
           } else {
-            // Create new leaderboard
             const newLeaderboard: any = {
               regionKey: regionKey,
               courseId: courseId,
-              courseName: selectedCourse.course_name || selectedCourse.courseName,
+              courseName: courseName,
               location: selectedCourse.location || undefined,
               totalScores: 1,
               createdAt: serverTimestamp(),
@@ -1064,14 +965,12 @@ export default function PostScoreScreen() {
             }] : [];
 
             await setDoc(leaderboardRef, newLeaderboard);
-            console.log("✅ New leaderboard created");
           }
         } catch (leaderboardErr) {
-          console.error("⚠️ Leaderboard update failed (non-critical):", leaderboardErr);
+          console.error("Leaderboard update failed:", leaderboardErr);
         }
       }
 
-      // Create clubhouse post
       let postType = "score";
       let achievementType = null;
 
@@ -1081,24 +980,22 @@ export default function PostScoreScreen() {
         achievementType = "lowman";
       }
 
-      console.log("📱 Creating clubhouse post...");
       setSubmittingMessage("Creating post...");
 
-      const courseName = selectedCourse.course_name || selectedCourse.courseName;
-      
-      // Build tee details string
       const teeDetails = selectedTee.yardage 
         ? `from "${selectedTee.name}", ${selectedTee.yardage} yards`
         : `from "${selectedTee.name}"`;
       
-      // Build content with tee details
       const postContent = `Shot a ${parseInt(grossScore)} @${courseName} ${teeDetails}! ${roundDescription}`;
 
+      // ✅ Thought document - triggers onThoughtCreated Cloud Function
       const thoughtRef = await addDoc(collection(db, "thoughts"), {
         thoughtId: `thought_${Date.now()}`,
         userId: auth.currentUser?.uid,
         userName: userData?.displayName,
+        displayName: userData?.displayName,
         userAvatar: userData?.avatar,
+        avatar: userData?.avatar,
         userHandicap: userData?.handicap,
         userType: userData?.userType,
         userVerified: userData?.verified || false,
@@ -1118,7 +1015,6 @@ export default function PostScoreScreen() {
           courseId: courseId,
           courseName: courseName,
         }],
-        // Store tee details for display
         teeDetails: {
           teeName: selectedTee.name,
           yardage: selectedTee.yardage || null,
@@ -1139,19 +1035,14 @@ export default function PostScoreScreen() {
         contentLowercase: postContent.toLowerCase(),
       });
 
-      console.log("✅ Clubhouse post created:", thoughtRef.id);
-
-      // ✅ CRITICAL FIX: Link score to thought post to prevent duplicates
       try {
         await updateDoc(doc(db, "scores", scoreRef.id), {
           thoughtId: thoughtRef.id
         });
-        console.log("✅ Score updated with thoughtId:", thoughtRef.id);
       } catch (thoughtIdError) {
-        console.error("⚠️ Failed to update score with thoughtId (non-critical):", thoughtIdError);
+        console.error("Failed to update score with thoughtId:", thoughtIdError);
       }
 
-      // Update hole-in-one postId in leaderboard
       if (hadHoleInOne === "yes" && regionKey) {
         try {
           const leaderboardId = `${regionKey}_${courseId}`;
@@ -1162,7 +1053,6 @@ export default function PostScoreScreen() {
             const leaderboardData = leaderboardSnap.data();
             const holesInOne = leaderboardData.holesInOne || [];
 
-            // Update the postId for this user's latest hole-in-one
             const updatedHolesInOne = holesInOne.map((hio: any) => {
               if (hio.userId === auth.currentUser!.uid && !hio.postId) {
                 return { ...hio, postId: thoughtRef.id };
@@ -1171,60 +1061,19 @@ export default function PostScoreScreen() {
             });
 
             await updateDoc(leaderboardRef, { holesInOne: updatedHolesInOne });
-            console.log("✅ Hole-in-one postId updated in leaderboard");
           }
         } catch (hioErr) {
-          console.error("⚠️ Hole-in-one postId update failed (non-critical):", hioErr);
+          console.error("Hole-in-one postId update failed:", hioErr);
         }
       }
 
       await updateRateLimitTimestamp("score");
 
-      // Send notifications
-      setSubmittingMessage("Sending notifications...");
-      console.log("📬 Sending notifications...");
-
-      if (hadHoleInOne === "yes" && selectedVerifier) {
-        // Hole-in-one verification notifications
-        await createNotification({
-          userId: auth.currentUser!.uid,
-          type: "holeinone_pending_poster",
-          actorId: selectedVerifier.userId,
-          scoreId: scoreRef.id,
-        });
-
-        await createNotification({
-          userId: selectedVerifier.userId,
-          type: "holeinone_verification_request",
-          actorId: auth.currentUser!.uid,
-          scoreId: scoreRef.id,
-        });
-      } else {
-        // Regular score notifications to partners
-        const partners = userData?.partners || [];
-        if (Array.isArray(partners) && partners.length > 0) {
-          for (const partnerId of partners) {
-            await createNotification({
-              userId: partnerId,
-              type: earnedLowman ? "partner_lowman" : "partner_scored",
-              actorId: auth.currentUser!.uid,
-              postId: thoughtRef.id,
-              courseId: courseId,
-              regionKey: regionKey || undefined,
-            });
-          }
-        }
-      }
-
-      // Mention notifications
-      for (const partner of extractedPartners) {
-        await createNotification({
-          userId: partner.userId,
-          type: "mention_post",
-          actorId: auth.currentUser!.uid,
-          postId: thoughtRef.id,
-        });
-      }
+      // ✅ NO CLIENT-SIDE NOTIFICATIONS - All handled by Cloud Functions:
+      // - onScoreCreated → partner_scored, partner_lowman, partner_holeinone
+      // - onHoleInOneCreated → holeinone_pending_poster, holeinone_verification_request
+      // - onThoughtCreated → partner_posted, mention_post
+      console.log("📬 Notifications handled by Cloud Functions");
 
       soundPlayer.play('achievement');
       setSubmitting(false);
@@ -1244,14 +1093,12 @@ export default function PostScoreScreen() {
         ]
       );
     } catch (error) {
-      console.error("❌ Submit error:", error);
+      console.error("Submit error:", error);
       soundPlayer.play('error');
       setSubmitting(false);
       Alert.alert("Error", "Failed to submit score. Please try again.");
     }
   };
-
-  /* ========================= RENDER ========================= */
 
   const filteredPartners = allPartners.filter((p) =>
     p.displayName.toLowerCase().includes(verifierSearchQuery.toLowerCase())
@@ -1269,7 +1116,6 @@ export default function PostScoreScreen() {
           style={{ flex: 1 }}
           keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
         >
-          {/* HEADER */}
           <View style={styles.header}>
             <TouchableOpacity onPress={handleClose}>
               <Image source={CloseIcon} style={styles.closeIcon} />
@@ -1291,7 +1137,6 @@ export default function PostScoreScreen() {
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.scrollViewContent}
           >
-            {/* COURSE SELECTION */}
             {!selectedCourse && !showCourseSearch && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Select Course</Text>
@@ -1341,7 +1186,6 @@ export default function PostScoreScreen() {
               </View>
             )}
 
-            {/* COURSE SEARCH */}
             {showCourseSearch && !selectedCourse && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Search Course</Text>
@@ -1399,7 +1243,6 @@ export default function PostScoreScreen() {
               </View>
             )}
 
-            {/* SELECTED COURSE */}
             {selectedCourse && (
               <View style={styles.selectedCourseContainer}>
                 <Text style={styles.sectionTitle}>Course</Text>
@@ -1428,7 +1271,6 @@ export default function PostScoreScreen() {
               </View>
             )}
 
-            {/* TEE SELECTION */}
             {selectedCourse && selectedTee && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Select Tee</Text>
@@ -1478,7 +1320,6 @@ export default function PostScoreScreen() {
               </View>
             )}
 
-            {/* HOLE COUNT SLIDER */}
             {selectedCourse && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Holes Played</Text>
@@ -1525,7 +1366,6 @@ export default function PostScoreScreen() {
               </View>
             )}
 
-            {/* HOLE-IN-ONE SLIDER */}
             {selectedCourse && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Hole-in-One?</Text>
@@ -1570,7 +1410,6 @@ export default function PostScoreScreen() {
               </View>
             )}
 
-            {/* HOLE-IN-ONE DETAILS */}
             {hadHoleInOne === "yes" && (
               <>
                 <View style={styles.section}>
@@ -1605,7 +1444,6 @@ export default function PostScoreScreen() {
               </>
             )}
 
-            {/* SCORE INPUTS */}
             {selectedCourse && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Score Details</Text>
@@ -1690,7 +1528,6 @@ export default function PostScoreScreen() {
               </View>
             )}
 
-            {/* DESCRIPTION */}
             {selectedCourse && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>How was your round?</Text>
@@ -1752,7 +1589,6 @@ export default function PostScoreScreen() {
               </View>
             )}
 
-            {/* SCORECARD IMAGE */}
             {selectedCourse && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Upload Scorecard *</Text>
@@ -1795,7 +1631,6 @@ export default function PostScoreScreen() {
           </ScrollView>
         </KeyboardAvoidingView>
 
-        {/* VERIFIER MODAL */}
         <Modal
           visible={showVerifierModal}
           animationType="slide"
@@ -1865,7 +1700,6 @@ export default function PostScoreScreen() {
           </View>
         </Modal>
 
-        {/* LOADING OVERLAY */}
         {submitting && (
           <View style={styles.loadingOverlay}>
             <View style={styles.loadingContainer}>
@@ -1879,576 +1713,90 @@ export default function PostScoreScreen() {
   );
 }
 
-/* ========================= STYLES ========================= */
-
 const styles = StyleSheet.create({
-  background: {
-    flex: 1,
-    width: "100%",
-    height: "100%",
-  },
-
-  container: {
-    flex: 1,
-  },
-
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: "rgba(13, 92, 58, 0.95)",
-  },
-
-  closeIcon: {
-    width: 28,
-    height: 28,
-    tintColor: "#FFF",
-  },
-
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: "900",
-    color: "#FFF",
-    flex: 1,
-    textAlign: "center",
-  },
-
-  submitButton: {
-    width: 44,
-    height: 44,
-    backgroundColor: "#FFD700",
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  submitIcon: {
-    fontSize: 24,
-  },
-
-  scrollView: {
-    flex: 1,
-  },
-
-  scrollViewContent: {
-    paddingBottom: 100,
-  },
-
-  section: {
-    paddingHorizontal: 16,
-    marginTop: 20,
-  },
-
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "900",
-    color: "#0D5C3A",
-    marginBottom: 12,
-  },
-
-  subtitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#666",
-    marginBottom: 8,
-  },
-
-  courseCard: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 14,
-    backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)",
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: "#0D5C3A",
-    marginBottom: 8,
-  },
-
-  courseCardLeft: {
-    flex: 1,
-  },
-
-  courseCardName: {
-    fontSize: 16,
-    fontWeight: "900",
-    color: "#0D5C3A",
-    marginBottom: 4,
-  },
-
-  courseCardLocation: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#666",
-  },
-
-  courseCardDistance: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#0D5C3A",
-    marginLeft: 12,
-  },
-
-  searchButton: {
-    marginTop: 12,
-    padding: 16,
-    backgroundColor: "#0D5C3A",
-    borderRadius: 12,
-    alignItems: "center",
-  },
-
-  searchButtonText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#FFF",
-  },
-
-  backButton: {
-    marginTop: 12,
-    padding: 12,
-    alignItems: "center",
-  },
-
-  backButtonText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0D5C3A",
-  },
-
-  searchContainer: {
-    marginBottom: 12,
-  },
-
-  searchInput: {
-    padding: 14,
-    backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)",
-    borderRadius: 12,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.5)",
-  },
-
-  searchResultsContainer: {
-    marginBottom: 12,
-  },
-
-  selectedCourseContainer: {
-    paddingHorizontal: 16,
-    marginTop: 20,
-  },
-
-  selectedCourseCard: {
-    padding: 16,
-    borderRadius: 14,
-    borderWidth: 3,
-    borderColor: "#0D5C3A",
-    backgroundColor: "rgba(200, 230, 201, 0.85)",
-    marginBottom: 12,
-  },
-
-  selectedCourseText: {
-    fontWeight: "900",
-    fontSize: 18,
-    marginBottom: 4,
-    color: "#0D5C3A",
-  },
-
-  selectedCourseLocation: {
-    fontSize: 14,
-    color: "#0D5C3A",
-    fontWeight: "700",
-  },
-
-  changeButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    backgroundColor: "#0D5C3A",
-    borderRadius: 10,
-    alignItems: "center",
-  },
-
-  changeButtonText: {
-    color: "#FFF",
-    fontWeight: "700",
-    fontSize: 15,
-  },
-
-  dropdownButton: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 14,
-    backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)",
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: "#0D5C3A",
-  },
-
-  dropdownButtonText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0D5C3A",
-  },
-
-  dropdownArrow: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0D5C3A",
-  },
-
-  dropdownList: {
-    marginTop: 8,
-    backgroundColor: "#FFF",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-    overflow: "hidden",
-  },
-
-  dropdownItem: {
-    padding: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F0F0F0",
-  },
-
-  dropdownItemSelected: {
-    backgroundColor: "#E8F5E9",
-  },
-
-  dropdownItemText: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#333",
-  },
-
-  dropdownItemTextSelected: {
-    fontWeight: "900",
-    color: "#0D5C3A",
-  },
-
-  sliderContainer: {
-    flexDirection: "row",
-    gap: 12,
-  },
-
-  sliderOption: {
-    flex: 1,
-    padding: 16,
-    backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)",
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: "#E0E0E0",
-    alignItems: "center",
-  },
-
-  sliderOptionActive: {
-    borderColor: "#0D5C3A",
-    backgroundColor: "#E8F5E9",
-  },
-
-  sliderOptionText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#666",
-  },
-
-  sliderOptionTextActive: {
-    fontWeight: "900",
-    color: "#0D5C3A",
-  },
-
-  scoreRow: {
-    flexDirection: "row",
-    gap: 12,
-    marginBottom: 12,
-  },
-
-  scoreInputContainer: {
-    flex: 1,
-  },
-
-  scoreLabel: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#0D5C3A",
-    marginBottom: 6,
-  },
-
-  scoreInput: {
-    padding: 12,
-    backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)",
-    borderRadius: 10,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.5)",
-    textAlign: "center",
-    fontWeight: "700",
-  },
-
-  netScoreText: {
-    fontSize: 18,
-    fontWeight: "900",
-    color: "#0D5C3A",
-    textAlign: "center",
-    marginTop: 8,
-  },
-
-  input: {
-    padding: 14,
-    backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)",
-    borderRadius: 12,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.5)",
-  },
-
-  descriptionInput: {
-    minHeight: 100,
-    textAlignVertical: "top",
-  },
-
-  textInputContainer: {
-    position: "relative",
-  },
-
-  textInputWithContent: {
-    color: "transparent",
-  },
-
-  textOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    padding: 14,
-    paddingTop: 15,
-  },
-
-  overlayText: {
-    fontSize: 16,
-    color: "#333",
-  },
-
-  mentionText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0D5C3A",
-  },
-
-  charCount: {
-    fontSize: 12,
-    color: "#999",
-    textAlign: "right",
-    marginTop: 4,
-  },
-
-  autocompleteContainer: {
-    backgroundColor: "#FFF",
-    borderRadius: 8,
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-    maxHeight: 200,
-  },
-
-  autocompleteScrollView: {
-    maxHeight: 200,
-  },
-
-  autocompleteItem: {
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F0F0F0",
-  },
-
-  autocompleteName: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#0D5C3A",
-  },
-
-  verifierButton: {
-    padding: 16,
-    backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)",
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: "#0D5C3A",
-    alignItems: "center",
-  },
-
-  verifierButtonText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0D5C3A",
-  },
-
-  imagePicker: {
-    height: 200,
-    borderRadius: 12,
-    overflow: "hidden",
-    backgroundColor: "#E8E8E8",
-    borderWidth: 2,
-    borderColor: "#0D5C3A",
-    borderStyle: "dashed",
-  },
-
-  scorecardPreview: {
-    width: "100%",
-    height: "100%",
-    resizeMode: "cover",
-  },
-
-  imagePlaceholder: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 20,
-  },
-
-  imagePlaceholderIcon: {
-    fontSize: 48,
-    marginBottom: 8,
-  },
-
-  imagePlaceholderText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0D5C3A",
-  },
-
-  removeImageButton: {
-    marginTop: 8,
-    alignSelf: "center",
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    backgroundColor: "#0D5C3A",
-    borderRadius: 8,
-  },
-
-  removeImageText: {
-    color: "#FFF",
-    fontWeight: "600",
-    fontSize: 14,
-  },
-
-  emptyText: {
-    textAlign: "center",
-    color: "#999",
-    fontSize: 14,
-    fontStyle: "italic",
-    marginVertical: 12,
-  },
-
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
-    justifyContent: "flex-end",
-  },
-
-  modalContainer: {
-    backgroundColor: "#FFF",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    maxHeight: "80%",
-    paddingBottom: 40,
-  },
-
-  modalHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: "#E0E0E0",
-  },
-
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: "900",
-    color: "#0D5C3A",
-  },
-
-  modalClose: {
-    fontSize: 24,
-    color: "#666",
-    fontWeight: "600",
-  },
-
-  modalSearch: {
-    margin: 16,
-    padding: 12,
-    backgroundColor: "#F5F5F5",
-    borderRadius: 10,
-    fontSize: 16,
-  },
-
-  partnerItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F0F0F0",
-  },
-
-  partnerAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    marginRight: 12,
-  },
-
-  partnerAvatarPlaceholder: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#0D5C3A",
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 12,
-  },
-
-  partnerAvatarText: {
-    color: "#FFF",
-    fontSize: 18,
-    fontWeight: "700",
-  },
-
-  partnerName: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#333",
-  },
-
-  partnerSelected: {
-    fontSize: 20,
-    color: "#0D5C3A",
-    fontWeight: "900",
-  },
-
-  loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0, 0, 0, 0.7)",
-    justifyContent: "center",
-    alignItems: "center",
-    zIndex: 1000,
-  },
-
-  loadingContainer: {
-    backgroundColor: "#FFF",
-    borderRadius: 16,
-    padding: 24,
-    alignItems: "center",
-    minWidth: 200,
-  },
-
-  loadingText: {
-    marginTop: 12,
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0D5C3A",
-  },
+  background: { flex: 1, width: "100%", height: "100%" },
+  container: { flex: 1 },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 12, backgroundColor: "rgba(13, 92, 58, 0.95)" },
+  closeIcon: { width: 28, height: 28, tintColor: "#FFF" },
+  headerTitle: { fontSize: 18, fontWeight: "900", color: "#FFF", flex: 1, textAlign: "center" },
+  submitButton: { width: 44, height: 44, backgroundColor: "#FFD700", borderRadius: 22, alignItems: "center", justifyContent: "center" },
+  submitIcon: { fontSize: 24 },
+  scrollView: { flex: 1 },
+  scrollViewContent: { paddingBottom: 100 },
+  section: { paddingHorizontal: 16, marginTop: 20 },
+  sectionTitle: { fontSize: 18, fontWeight: "900", color: "#0D5C3A", marginBottom: 12 },
+  subtitle: { fontSize: 14, fontWeight: "700", color: "#666", marginBottom: 8 },
+  courseCard: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 14, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 12, borderWidth: 2, borderColor: "#0D5C3A", marginBottom: 8 },
+  courseCardLeft: { flex: 1 },
+  courseCardName: { fontSize: 16, fontWeight: "900", color: "#0D5C3A", marginBottom: 4 },
+  courseCardLocation: { fontSize: 13, fontWeight: "600", color: "#666" },
+  courseCardDistance: { fontSize: 14, fontWeight: "700", color: "#0D5C3A", marginLeft: 12 },
+  searchButton: { marginTop: 12, padding: 16, backgroundColor: "#0D5C3A", borderRadius: 12, alignItems: "center" },
+  searchButtonText: { fontSize: 16, fontWeight: "700", color: "#FFF" },
+  backButton: { marginTop: 12, padding: 12, alignItems: "center" },
+  backButtonText: { fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
+  searchContainer: { marginBottom: 12 },
+  searchInput: { padding: 14, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 12, fontSize: 16, borderWidth: 1, borderColor: "rgba(255, 255, 255, 0.5)" },
+  searchResultsContainer: { marginBottom: 12 },
+  selectedCourseContainer: { paddingHorizontal: 16, marginTop: 20 },
+  selectedCourseCard: { padding: 16, borderRadius: 14, borderWidth: 3, borderColor: "#0D5C3A", backgroundColor: "rgba(200, 230, 201, 0.85)", marginBottom: 12 },
+  selectedCourseText: { fontWeight: "900", fontSize: 18, marginBottom: 4, color: "#0D5C3A" },
+  selectedCourseLocation: { fontSize: 14, color: "#0D5C3A", fontWeight: "700" },
+  changeButton: { paddingVertical: 12, paddingHorizontal: 20, backgroundColor: "#0D5C3A", borderRadius: 10, alignItems: "center" },
+  changeButtonText: { color: "#FFF", fontWeight: "700", fontSize: 15 },
+  dropdownButton: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 14, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 12, borderWidth: 2, borderColor: "#0D5C3A" },
+  dropdownButtonText: { fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
+  dropdownArrow: { fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
+  dropdownList: { marginTop: 8, backgroundColor: "#FFF", borderRadius: 12, borderWidth: 1, borderColor: "#E0E0E0", overflow: "hidden" },
+  dropdownItem: { padding: 14, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" },
+  dropdownItemSelected: { backgroundColor: "#E8F5E9" },
+  dropdownItemText: { fontSize: 16, fontWeight: "600", color: "#333" },
+  dropdownItemTextSelected: { fontWeight: "900", color: "#0D5C3A" },
+  sliderContainer: { flexDirection: "row", gap: 12 },
+  sliderOption: { flex: 1, padding: 16, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 12, borderWidth: 2, borderColor: "#E0E0E0", alignItems: "center" },
+  sliderOptionActive: { borderColor: "#0D5C3A", backgroundColor: "#E8F5E9" },
+  sliderOptionText: { fontSize: 16, fontWeight: "700", color: "#666" },
+  sliderOptionTextActive: { fontWeight: "900", color: "#0D5C3A" },
+  scoreRow: { flexDirection: "row", gap: 12, marginBottom: 12 },
+  scoreInputContainer: { flex: 1 },
+  scoreLabel: { fontSize: 14, fontWeight: "700", color: "#0D5C3A", marginBottom: 6 },
+  scoreInput: { padding: 12, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 10, fontSize: 16, borderWidth: 1, borderColor: "rgba(255, 255, 255, 0.5)", textAlign: "center", fontWeight: "700" },
+  netScoreText: { fontSize: 18, fontWeight: "900", color: "#0D5C3A", textAlign: "center", marginTop: 8 },
+  input: { padding: 14, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 12, fontSize: 16, borderWidth: 1, borderColor: "rgba(255, 255, 255, 0.5)" },
+  descriptionInput: { minHeight: 100, textAlignVertical: "top" },
+  textInputContainer: { position: "relative" },
+  textInputWithContent: { color: "transparent" },
+  textOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, padding: 14, paddingTop: 15 },
+  overlayText: { fontSize: 16, color: "#333" },
+  mentionText: { fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
+  charCount: { fontSize: 12, color: "#999", textAlign: "right", marginTop: 4 },
+  autocompleteContainer: { backgroundColor: "#FFF", borderRadius: 8, marginTop: 8, borderWidth: 1, borderColor: "#E0E0E0", maxHeight: 200 },
+  autocompleteScrollView: { maxHeight: 200 },
+  autocompleteItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" },
+  autocompleteName: { fontSize: 14, fontWeight: "600", color: "#0D5C3A" },
+  verifierButton: { padding: 16, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 12, borderWidth: 2, borderColor: "#0D5C3A", alignItems: "center" },
+  verifierButtonText: { fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
+  imagePicker: { height: 200, borderRadius: 12, overflow: "hidden", backgroundColor: "#E8E8E8", borderWidth: 2, borderColor: "#0D5C3A", borderStyle: "dashed" },
+  scorecardPreview: { width: "100%", height: "100%", resizeMode: "cover" },
+  imagePlaceholder: { flex: 1, alignItems: "center", justifyContent: "center", padding: 20 },
+  imagePlaceholderIcon: { fontSize: 48, marginBottom: 8 },
+  imagePlaceholderText: { fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
+  removeImageButton: { marginTop: 8, alignSelf: "center", paddingVertical: 8, paddingHorizontal: 16, backgroundColor: "#0D5C3A", borderRadius: 8 },
+  removeImageText: { color: "#FFF", fontWeight: "600", fontSize: 14 },
+  emptyText: { textAlign: "center", color: "#999", fontSize: 14, fontStyle: "italic", marginVertical: 12 },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0, 0, 0, 0.5)", justifyContent: "flex-end" },
+  modalContainer: { backgroundColor: "#FFF", borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: "80%", paddingBottom: 40 },
+  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1, borderBottomColor: "#E0E0E0" },
+  modalTitle: { fontSize: 18, fontWeight: "900", color: "#0D5C3A" },
+  modalClose: { fontSize: 24, color: "#666", fontWeight: "600" },
+  modalSearch: { margin: 16, padding: 12, backgroundColor: "#F5F5F5", borderRadius: 10, fontSize: 16 },
+  partnerItem: { flexDirection: "row", alignItems: "center", padding: 16, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" },
+  partnerAvatar: { width: 40, height: 40, borderRadius: 20, marginRight: 12 },
+  partnerAvatarPlaceholder: { width: 40, height: 40, borderRadius: 20, backgroundColor: "#0D5C3A", alignItems: "center", justifyContent: "center", marginRight: 12 },
+  partnerAvatarText: { color: "#FFF", fontSize: 18, fontWeight: "700" },
+  partnerName: { flex: 1, fontSize: 16, fontWeight: "600", color: "#333" },
+  partnerSelected: { fontSize: 20, color: "#0D5C3A", fontWeight: "900" },
+  loadingOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0, 0, 0, 0.7)", justifyContent: "center", alignItems: "center", zIndex: 1000 },
+  loadingContainer: { backgroundColor: "#FFF", borderRadius: 16, padding: 24, alignItems: "center", minWidth: 200 },
+  loadingText: { marginTop: 12, fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
 });

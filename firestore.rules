@@ -4,321 +4,552 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // ============================================================================
-    // HELPER FUNCTIONS
+    // HELPERS
     // ============================================================================
 
     function isSignedIn() {
       return request.auth != null;
     }
 
+    function userDoc(uid) {
+      return get(/databases/$(database)/documents/users/$(uid));
+    }
+
+    function userExists(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid));
+    }
+
     function isEmailVerified() {
-      return request.auth != null &&
-             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.emailVerified == true;
+      return isSignedIn() &&
+        userExists(request.auth.uid) &&
+        userDoc(request.auth.uid).data.emailVerified == true;
     }
 
     function isAdmin() {
       return isSignedIn() &&
-             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+        userExists(request.auth.uid) &&
+        userDoc(request.auth.uid).data.role == 'admin';
     }
 
     function getUserData() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return userDoc(request.auth.uid).data;
     }
 
-    // Rate limiting helpers with fallbacks
+    // ============================================================================
+    // RATE LIMIT HELPERS
+    // ============================================================================
+
     function canPost() {
-      let userData = getUserData();
-      return !('lastPostTime' in userData) ||
-             userData.lastPostTime == null ||
-             userData.lastPostTime < request.time - duration.value(30, 's');
+      let u = getUserData();
+      return !('lastPostTime' in u) ||
+        u.lastPostTime == null ||
+        u.lastPostTime < request.time - duration.value(30, 's');
     }
 
     function canComment() {
-      let userData = getUserData();
-      return !('lastCommentTime' in userData) ||
-             userData.lastCommentTime == null ||
-             userData.lastCommentTime < request.time - duration.value(5, 's');
+      let u = getUserData();
+      return !('lastCommentTime' in u) ||
+        u.lastCommentTime == null ||
+        u.lastCommentTime < request.time - duration.value(5, 's');
     }
 
     function canMessage() {
-      let userData = getUserData();
-      return !('lastMessageTime' in userData) ||
-             userData.lastMessageTime == null ||
-             userData.lastMessageTime < request.time - duration.value(10, 's');
+      let u = getUserData();
+      return !('lastMessageTime' in u) ||
+        u.lastMessageTime == null ||
+        u.lastMessageTime < request.time - duration.value(10, 's');
     }
 
     function canScore() {
-      let userData = getUserData();
-      return !('lastScoreTime' in userData) ||
-             userData.lastScoreTime == null ||
-             userData.lastScoreTime < request.time - duration.value(60, 's');
+      let u = getUserData();
+      return !('lastScoreTime' in u) ||
+        u.lastScoreTime == null ||
+        u.lastScoreTime < request.time - duration.value(60, 's');
     }
 
     // ============================================================================
-    // USERS COLLECTION
+    // USERS
     // ============================================================================
 
     match /users/{userId} {
-      allow read: if isSignedIn();
-
-      allow create: if isSignedIn() &&
-                       request.auth.uid == userId;
+      allow read, list: if isSignedIn();
+      allow create: if isSignedIn() && request.auth.uid == userId;
 
       allow update: if isSignedIn() &&
-                       (request.auth.uid == userId ||
-                        isAdmin() ||
-                        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['partners']) &&
-                         request.resource.data.partners.hasAll(resource.data.get('partners', [])) &&
-                         request.resource.data.partners.hasAny([request.auth.uid])));
+        (
+          request.auth.uid == userId ||
+          isAdmin() ||
+          request.resource.data.diff(resource.data)
+            .affectedKeys().hasOnly(['partners'])
+        );
 
       allow delete: if isAdmin();
     }
 
     // ============================================================================
-    // THOUGHTS (POSTS) COLLECTION
+    // THOUGHTS (CLUBHOUSE POSTS)
     // ============================================================================
 
     match /thoughts/{thoughtId} {
-      allow read: if true;
+      allow read, list: if true;
 
       allow create: if isSignedIn() &&
-                       isEmailVerified() &&
-                       canPost() &&
-                       request.resource.data.userId == request.auth.uid &&
-                       request.resource.data.content.size() <= 280;
+        isEmailVerified() &&
+        canPost() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.content.size() <= 280;
 
-      allow update: if isSignedIn() &&
-                       (request.auth.uid == resource.data.userId || isAdmin());
+      allow update, delete: if isSignedIn() &&
+        (request.auth.uid == resource.data.userId || isAdmin());
 
-      allow delete: if isSignedIn() &&
-                       (request.auth.uid == resource.data.userId || isAdmin());
-
+      // COMMENTS SUBCOLLECTION (for display)
       match /comments/{commentId} {
-        allow read: if true;
+        allow read, list: if true;
 
         allow create: if isSignedIn() &&
-                         isEmailVerified() &&
-                         canComment() &&
-                         request.resource.data.userId == request.auth.uid &&
-                         request.resource.data.content.size() <= 500;
+          isEmailVerified() &&
+          canComment() &&
+          request.resource.data.userId == request.auth.uid &&
+          request.resource.data.content.size() <= 500;
 
-        allow update: if isSignedIn() &&
-                         (
-                           (request.auth.uid == resource.data.userId) ||
-                           (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likes', 'likedBy'])) ||
-                           isAdmin()
-                         );
-
-        allow delete: if isSignedIn() &&
-                         (request.auth.uid == resource.data.userId || isAdmin());
+        allow update, delete: if isSignedIn() &&
+          (request.auth.uid == resource.data.userId || isAdmin());
       }
     }
 
     // ============================================================================
-    // MESSAGES COLLECTION
+    // COMMENTS (TOP-LEVEL - FOR CLOUD FUNCTION TRIGGERS)
     // ============================================================================
 
-    match /messages/{messageId} {
-      allow read: if isSignedIn() &&
-                     (request.auth.uid == resource.data.senderId ||
-                      request.auth.uid == resource.data.receiverId ||
-                      isAdmin());
-
-      allow list, get: if isSignedIn();
+    match /comments/{commentId} {
+      allow read, list: if isSignedIn();
 
       allow create: if isSignedIn() &&
-                       isEmailVerified() &&
-                       canMessage() &&
-                       request.resource.data.senderId == request.auth.uid &&
-                       request.resource.data.content.size() <= 1000;
+        isEmailVerified() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.content.size() <= 500 &&
+        request.resource.data.postId is string &&
+        request.resource.data.postOwnerId is string;
 
-      allow update: if isSignedIn() &&
-                       (request.auth.uid == resource.data.senderId ||
-                        request.auth.uid == resource.data.receiverId ||
-                        isAdmin());
-
-      allow delete: if isSignedIn() &&
-                       (request.auth.uid == resource.data.senderId ||
-                        request.auth.uid == resource.data.receiverId ||
-                        isAdmin());
+      allow update, delete: if isSignedIn() &&
+        (request.auth.uid == resource.data.userId || isAdmin());
     }
 
     // ============================================================================
-    // SCORES COLLECTION
+    // LIKES (POST LIKES)
+    // ============================================================================
+
+    match /likes/{likeId} {
+      allow read, list: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.postId is string &&
+        request.resource.data.postAuthorId is string;
+
+      allow delete: if isSignedIn() &&
+        request.auth.uid == resource.data.userId;
+
+      allow update: if false;
+    }
+
+    // ============================================================================
+    // COMMENT LIKES (FOR CLOUD FUNCTION TRIGGERS)
+    // ============================================================================
+
+    match /comment_likes/{likeId} {
+      allow read, list: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.commentId is string &&
+        request.resource.data.commentAuthorId is string;
+
+      allow delete: if isSignedIn() &&
+        request.auth.uid == resource.data.userId;
+
+      allow update: if false;
+    }
+
+    // ============================================================================
+    // SHARES (FOR CLOUD FUNCTION TRIGGERS - FUTURE)
+    // ============================================================================
+
+    match /shares/{shareId} {
+      allow read, list: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.userId == request.auth.uid;
+
+      allow delete: if isSignedIn() &&
+        request.auth.uid == resource.data.userId;
+
+      allow update: if false;
+    }
+
+    // ============================================================================
+    // SCORES
     // ============================================================================
 
     match /scores/{scoreId} {
-      allow read: if true;
+      allow read, list: if true;
 
       allow create: if isSignedIn() &&
-                       isEmailVerified() &&
-                       canScore() &&
-                       request.resource.data.userId == request.auth.uid;
-
-      allow update: if isSignedIn() &&
-                       (request.auth.uid == resource.data.userId || isAdmin());
-
-      allow delete: if isSignedIn() &&
-                       (request.auth.uid == resource.data.userId || isAdmin());
-    }
-
-    // ============================================================================
-    // NOTIFICATIONS COLLECTION
-    // ============================================================================
-
-    match /notifications/{notificationId} {
-      allow read: if isSignedIn() &&
-                     (request.auth.uid == resource.data.userId || isAdmin());
-
-      allow list, get: if isSignedIn();
-
-      allow create: if isSignedIn();
-
-      allow update: if isSignedIn() &&
-                       (request.auth.uid == resource.data.userId || isAdmin());
-
-      allow delete: if isSignedIn() &&
-                       (request.auth.uid == resource.data.userId || isAdmin());
-    }
-
-    // ============================================================================
-    // REPORTS COLLECTION
-    // ============================================================================
-
-    match /reports/{reportId} {
-      allow create: if isSignedIn() && isEmailVerified();
-
-      allow read: if isSignedIn() && (
-        request.auth.uid == resource.data.reporterId || isAdmin()
-      );
-
-      allow list, get: if isSignedIn();
-
-      allow update, delete: if isAdmin();
-    }
-
-    // ============================================================================
-    // VERIFICATION REQUESTS COLLECTION
-    // ============================================================================
-
-    match /verification_requests/{requestId} {
-      allow read: if isAdmin();
-      allow list, get: if isAdmin();
-
-      allow create: if isSignedIn() &&
-                       request.resource.data.userId == request.auth.uid;
-
-      allow update, delete: if isAdmin();
-    }
-
-    // ============================================================================
-    // PARTNER REQUESTS COLLECTION
-    // ============================================================================
-
-    match /partnerRequests/{requestId} {
-      allow read: if isSignedIn() &&
-                     (request.auth.uid == resource.data.fromUserId ||
-                      request.auth.uid == resource.data.toUserId ||
-                      isAdmin());
-
-      allow list, get: if isSignedIn();
-
-      allow create: if isSignedIn() &&
-                       isEmailVerified() &&
-                       request.resource.data.fromUserId == request.auth.uid;
+        isEmailVerified() &&
+        canScore() &&
+        request.resource.data.userId == request.auth.uid;
 
       allow update, delete: if isSignedIn() &&
-                               (request.auth.uid == resource.data.fromUserId ||
-                                request.auth.uid == resource.data.toUserId ||
-                                isAdmin());
+        (request.auth.uid == resource.data.userId || isAdmin());
     }
 
     // ============================================================================
-    // PARTNERS COLLECTION
-    // ============================================================================
-
-    match /partners/{partnerId} {
-      allow read: if isSignedIn() &&
-                     (request.auth.uid == resource.data.user1Id ||
-                      request.auth.uid == resource.data.user2Id ||
-                      isAdmin());
-
-      allow list, get: if isSignedIn();
-
-      allow create: if isSignedIn() &&
-                       isEmailVerified() &&
-                       (request.auth.uid == request.resource.data.user1Id ||
-                        request.auth.uid == request.resource.data.user2Id);
-
-      allow update, delete: if isSignedIn() &&
-                               (request.auth.uid == resource.data.user1Id ||
-                                request.auth.uid == resource.data.user2Id ||
-                                isAdmin());
-    }
-
-    // ============================================================================
-    // COURSE MEMBERSHIPS COLLECTION
-    // ============================================================================
-
-    match /course_memberships/{membershipId} {
-      allow read: if isSignedIn() &&
-                     (request.auth.uid == resource.data.userId || isAdmin());
-
-      allow list, get: if isSignedIn();
-
-      allow create: if isSignedIn() &&
-                       isEmailVerified() &&
-                       request.resource.data.userId == request.auth.uid;
-
-      allow update, delete: if isAdmin();
-    }
-
-    // ============================================================================
-    // COURSES COLLECTION (cached golf courses)
-    // ============================================================================
-
-    match /courses/{courseId} {
-      allow read: if true;
-      allow create, update: if isSignedIn();
-      allow delete: if isAdmin();
-    }
-
-    // ============================================================================
-    // COURSE LEADERS COLLECTION
-    // ============================================================================
-
-    match /course_leaders/{courseLeaderId} {
-      allow read: if true;
-      allow create, update: if isSignedIn();
-      allow delete: if isAdmin();
-    }
-
-    // ============================================================================
-    // ✅ LEADERBOARDS COLLECTION  (REQUIRED for your leaderboard + hydration)
+    // LEADERBOARDS
     // ============================================================================
 
     match /leaderboards/{leaderboardId} {
-      // You can change this to `isSignedIn()` if you want it private,
-      // but public read is fine for leaderboards.
-      allow read: if true;
-
-      // Hydration writes from client right now
+      allow read, list: if true;
       allow create, update: if isSignedIn();
+      allow delete: if isAdmin();
+    }
+
+    // ============================================================================
+    // COURSES / CLUBS
+    // ============================================================================
+
+    match /courses/{courseId} {
+      allow read, list: if true;
+      allow create, update: if isSignedIn();
+      allow delete: if isAdmin();
+    }
+
+    match /clubs/{clubId} {
+      allow read, list: if true;
+
+      allow create: if isSignedIn() && isEmailVerified();
+
+      allow update, delete: if isSignedIn() &&
+        (request.auth.uid == resource.data.ownerId || isAdmin());
+    }
+
+    // ============================================================================
+    // PARTNER REQUESTS (camelCase - matches your code)
+    // ============================================================================
+
+    match /partnerRequests/{requestId} {
+      allow read, list: if isSignedIn() &&
+        (
+          request.auth.uid == resource.data.fromUserId ||
+          request.auth.uid == resource.data.toUserId ||
+          isAdmin()
+        );
+
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.fromUserId == request.auth.uid;
+
+      allow update, delete: if isSignedIn() &&
+        (
+          request.auth.uid == resource.data.fromUserId ||
+          request.auth.uid == resource.data.toUserId ||
+          isAdmin()
+        );
+    }
+
+    // ============================================================================
+    // PARTNERS
+    // ============================================================================
+
+    match /partners/{partnerId} {
+      allow read, list: if isSignedIn() &&
+        (
+          request.auth.uid == resource.data.user1Id ||
+          request.auth.uid == resource.data.user2Id ||
+          isAdmin()
+        );
+
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        (
+          request.auth.uid == request.resource.data.user1Id ||
+          request.auth.uid == request.resource.data.user2Id
+        );
+
+      allow update, delete: if isSignedIn() &&
+        (
+          request.auth.uid == resource.data.user1Id ||
+          request.auth.uid == resource.data.user2Id ||
+          isAdmin()
+        );
+    }
+
+    // ============================================================================
+    // NOTIFICATIONS
+    // ============================================================================
+
+    match /notifications/{notificationId} {
+      allow read, list: if isSignedIn() &&
+        (request.auth.uid == resource.data.userId || isAdmin());
+
+      // Allow create for:
+      // 1. Cloud Functions (via admin SDK - bypasses rules anyway)
+      // 2. Admin users creating notifications directly (for admin verifications screen)
+      allow create: if isAdmin();
+
+      allow update, delete: if isSignedIn() &&
+        (request.auth.uid == resource.data.userId || isAdmin());
+    }
+
+    // ============================================================================
+    // THREADS (MESSAGING)
+    // ============================================================================
+
+    match /threads/{threadId} {
+
+      // ✅ Check if user ID is in the thread ID (format: "userA_userB")
+      function isUserInThreadId() {
+        return request.auth != null &&
+          threadId.matches('.*' + request.auth.uid + '.*');
+      }
+
+      function isParticipant() {
+        return request.auth != null &&
+          resource.data.participants.hasAny([request.auth.uid]);
+      }
+
+      // 🔑 REQUIRED so inbox queries work
+      allow list: if isSignedIn();
+
+      // 🔒 Allow read if:
+      // 1. Thread exists AND user is participant, OR
+      // 2. Thread doesn't exist yet but user ID is in thread ID (deterministic ID pattern)
+      allow read: if isSignedIn() && 
+        (isParticipant() || isUserInThreadId());
+
+      // ✅ Allow create if user ID is in thread ID
+      allow create: if isSignedIn() &&
+        isUserInThreadId() &&
+        request.resource.data.participants is list &&
+        request.resource.data.participants.hasAny([request.auth.uid]);
+
+      allow delete: if isAdmin() || isParticipant();
+
+      allow update: if isSignedIn() &&
+        isParticipant() &&
+        request.resource.data.participants == resource.data.participants &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'lastMessage',
+          'lastSenderId',
+          'lastMessageAt',
+          'unreadCount',
+          'participantNames',
+          'participantAvatars',
+          'updatedAt',
+          'archivedBy',
+          'deletedBy'
+        ]) &&
+        (
+          !('unreadCount' in request.resource.data) ||
+          isAdmin() ||
+          request.resource.data.unreadCount
+            .diff(resource.data.unreadCount)
+            .affectedKeys().hasOnly([request.auth.uid])
+        );
+
+      // ------------------------------------------------------------------------
+      // THREAD MESSAGES
+      // ------------------------------------------------------------------------
+
+      match /messages/{messageId} {
+
+        // ✅ Allow if user ID is in parent thread ID
+        function isUserInParentThreadId() {
+          return request.auth != null &&
+            threadId.matches('.*' + request.auth.uid + '.*');
+        }
+
+        // 🔑 Allow snapshot listeners if user is in thread ID
+        allow list: if isSignedIn() && isUserInParentThreadId();
+
+        // 🔒 Enforce message-level access
+        allow read: if request.auth != null &&
+          (resource.data.senderId == request.auth.uid ||
+           resource.data.receiverId == request.auth.uid ||
+           isUserInParentThreadId());
+
+        allow create: if isSignedIn() &&
+          isEmailVerified() &&
+          canMessage() &&
+          isUserInParentThreadId() &&
+          request.resource.data.senderId == request.auth.uid &&
+          request.resource.data.content.size() <= 1000;
+
+        // ✅ Allow marking as read OR editing own message
+        allow update: if isSignedIn() &&
+          (
+            // Receiver can mark as read
+            (request.auth.uid == resource.data.receiverId &&
+             request.resource.data.diff(resource.data)
+               .affectedKeys().hasOnly(['read', 'readAt']))
+            ||
+            // Sender can edit their own message
+            (request.auth.uid == resource.data.senderId &&
+             request.resource.data.diff(resource.data)
+               .affectedKeys().hasOnly(['content', 'edited', 'editedAt']))
+          );
+
+        // ✅ Allow sender to delete their own message (or admin)
+        allow delete: if isSignedIn() &&
+          (request.auth.uid == resource.data.senderId || isAdmin());
+      }
+    }
+
+    // ============================================================================
+    // MESSAGES (TOP-LEVEL - FOR CLOUD FUNCTION TRIGGERS)
+    // ============================================================================
+
+    match /messages/{messageId} {
+      allow read, list: if isSignedIn() &&
+        (
+          request.auth.uid == resource.data.senderId ||
+          request.auth.uid == resource.data.receiverId ||
+          isAdmin()
+        );
+
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.senderId == request.auth.uid;
+
+      allow update, delete: if isSignedIn() &&
+        (request.auth.uid == resource.data.senderId || isAdmin());
+    }
+
+    // ============================================================================
+    // HOLE-IN-ONE VERIFICATION
+    // ============================================================================
+
+    match /hole_in_ones/{holeInOneId} {
+      allow read, list: if isSignedIn() &&
+        (
+          request.auth.uid == resource.data.userId ||
+          request.auth.uid == resource.data.verifierId ||
+          isAdmin()
+        );
+
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.userId == request.auth.uid;
+
+      // Poster or verifier can update (for verification)
+      allow update: if isSignedIn() &&
+        (
+          request.auth.uid == resource.data.userId ||
+          request.auth.uid == resource.data.verifierId ||
+          isAdmin()
+        );
+
+      allow delete: if isSignedIn() &&
+        (request.auth.uid == resource.data.userId || isAdmin());
+    }
+
+    // ============================================================================
+    // COURSE MEMBERSHIPS
+    // ============================================================================
+
+    match /course_memberships/{membershipId} {
+      allow read, list: if isSignedIn() &&
+        (request.auth.uid == resource.data.userId || isAdmin());
+
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.userId == request.auth.uid;
+
+      // Admin can update (approve/reject)
+      allow update: if isAdmin();
+
+      allow delete: if isSignedIn() &&
+        (request.auth.uid == resource.data.userId || isAdmin());
+    }
+
+    // ============================================================================
+    // VERIFICATION REQUESTS (PGA/COURSE)
+    // ============================================================================
+
+    match /verification_requests/{requestId} {
+      allow read, list: if isSignedIn() &&
+        (request.auth.uid == resource.data.userId || isAdmin());
+
+      allow create: if isSignedIn() &&
+        request.resource.data.userId == request.auth.uid;
+
+      // Admin can update (approve/reject)
+      allow update: if isAdmin();
 
       allow delete: if isAdmin();
     }
 
     // ============================================================================
-    // CLUBS COLLECTION
+    // COURSE LEADERS (USED BY FEED / CAROUSEL / LOWMAN / HOLE-IN-ONES)
     // ============================================================================
 
-    match /clubs/{clubId} {
-      allow read: if true;
-      allow create: if isSignedIn() && isEmailVerified();
-      allow update, delete: if isSignedIn() &&
-                               (request.auth.uid == resource.data.ownerId || isAdmin());
+    match /course_leaders/{courseId} {
+      allow read, list: if true;
+      
+      // Allow signed-in users to create/update (for hole-in-one verification flow)
+      // Cloud Functions also update this via admin SDK
+      allow create, update: if isSignedIn() && isEmailVerified();
+      
+      allow delete: if isAdmin();
+    }
+
+    // ============================================================================
+    // REPORTS (USER REPORTS ON CONTENT)
+    // ============================================================================
+
+    match /reports/{reportId} {
+      allow read, list: if isAdmin();
+
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.reporterId == request.auth.uid;
+
+      allow update, delete: if isAdmin();
+    }
+
+    // ============================================================================
+    // PUSH TOKENS (FOR NOTIFICATIONS)
+    // ============================================================================
+
+    match /push_tokens/{tokenId} {
+      allow read, list: if isSignedIn() &&
+        (request.auth.uid == resource.data.userId || isAdmin());
+
+      allow create, update: if isSignedIn() &&
+        request.resource.data.userId == request.auth.uid;
+
+      allow delete: if isSignedIn() &&
+        (request.auth.uid == resource.data.userId || isAdmin());
+    }
+
+    // ============================================================================
+    // DEFAULT DENY
+    // ============================================================================
+
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
+
+
+
+
+
+
+
+
+
+

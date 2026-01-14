@@ -24,7 +24,6 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
-const CARD_WIDTH = (SCREEN_WIDTH - 34) / 3; // 3 columns with padding
 
 interface UserProfile {
   displayName: string;
@@ -36,18 +35,13 @@ interface UserProfile {
 
 interface Post {
   postId: string;
-  
-  // NEW: Multi-image support
-  imageUrl?: string; // Deprecated
-  imageUrls?: string[]; // NEW
+  imageUrl?: string;
+  imageUrls?: string[];
   imageCount?: number;
-  
   videoUrl?: string;
   videoThumbnailUrl?: string;
   caption: string;
   createdAt: any;
-  
-  // NEW: Media metadata
   hasMedia?: boolean;
   mediaType?: "images" | "video" | null;
 }
@@ -62,7 +56,7 @@ export default function ProfileScreen() {
   const { userId } = useLocalSearchParams();
   const currentUserId = auth.currentUser?.uid;
   const isOwnProfile = userId === currentUserId;
-  const { getCache, setCache, cleanupOldProfiles } = useCache(); // ✅ Add cache hook
+  const { getCache, setCache, cleanupOldProfiles } = useCache();
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
@@ -72,8 +66,8 @@ export default function ProfileScreen() {
   const [galleryModalVisible, setGalleryModalVisible] = useState(false);
   const [selectedPostId, setSelectedPostId] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(true);
-  const [showingCached, setShowingCached] = useState(false); // ✅ Cache indicator
-  const [refreshing, setRefreshing] = useState(false); // ✅ Pull to refresh
+  const [showingCached, setShowingCached] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     if (userId && typeof userId === "string") {
@@ -86,7 +80,6 @@ export default function ProfileScreen() {
 
   const fetchProfileDataWithCache = async (targetUserId: string) => {
     try {
-      // Step 1: Try to load from cache (instant)
       const cached = await getCache(CACHE_KEYS.USER_PROFILE(targetUserId));
       
       if (cached) {
@@ -98,10 +91,8 @@ export default function ProfileScreen() {
         setLoading(false);
       }
 
-      // Step 2: Fetch fresh data (always)
       await fetchProfileData(targetUserId, true);
 
-      // Step 3: Cleanup old profiles periodically (10% of the time)
       if (Math.random() < 0.1) {
         cleanupOldProfiles();
       }
@@ -140,7 +131,6 @@ export default function ProfileScreen() {
       postsSnap.forEach((doc) => {
         const data = doc.data();
         
-        // NEW: Get images array (handle both old and new formats)
         let images: string[] = [];
         if (data.imageUrls && Array.isArray(data.imageUrls) && data.imageUrls.length > 0) {
           images = data.imageUrls;
@@ -150,18 +140,13 @@ export default function ProfileScreen() {
         
         postsData.push({
           postId: doc.id,
-          
-          // NEW: Multi-image support
           imageUrls: images,
           imageCount: images.length,
-          imageUrl: data.imageUrl, // Keep for backwards compat
-          
+          imageUrl: data.imageUrl,
           videoUrl: data.videoUrl,
           videoThumbnailUrl: data.videoThumbnailUrl,
           caption: data.caption || data.content || "",
           createdAt: data.createdAt,
-          
-          // NEW: Media metadata
           hasMedia: data.hasMedia,
           mediaType: data.mediaType,
         });
@@ -188,7 +173,6 @@ export default function ProfileScreen() {
 
       setStats(statsData);
 
-      // ✅ Step 3: Update cache
       if (userDoc.exists()) {
         await setCache(CACHE_KEYS.USER_PROFILE(targetUserId), {
           profile: userDoc.data() as UserProfile,
@@ -259,7 +243,6 @@ export default function ProfileScreen() {
   };
 
   const renderPost = ({ item }: { item: Post }) => {
-    // NEW: Get first image from array (for thumbnail)
     const images = item.imageUrls || (item.imageUrl ? [item.imageUrl] : []);
     const firstImage = images[0];
     const hasMultipleImages = images.length > 1;
@@ -274,7 +257,6 @@ export default function ProfileScreen() {
           setGalleryModalVisible(true);
         }}
       >
-        {/* Video post with thumbnail */}
         {item.videoThumbnailUrl ? (
           <>
             <Image source={{ uri: item.videoThumbnailUrl }} style={styles.postImage} />
@@ -294,11 +276,9 @@ export default function ProfileScreen() {
             )}
           </>
         ) : firstImage ? (
-          /* Image post (single or multiple) */
           <>
             <Image source={{ uri: firstImage }} style={styles.postImage} />
             
-            {/* NEW: Multi-image indicator */}
             {hasMultipleImages && (
               <View style={styles.multiImageIndicator}>
                 <Ionicons name="images" size={16} color="#FFF" />
@@ -319,7 +299,6 @@ export default function ProfileScreen() {
             )}
           </>
         ) : (
-          /* Text-only post */
           <View style={styles.textOnlyCard}>
             <Text style={styles.textOnlyContent} numberOfLines={4}>
               {item.caption}
@@ -357,8 +336,6 @@ export default function ProfileScreen() {
     );
   }
 
-  const displayBadges = profile.selectedBadges || profile.badges?.slice(0, 3) || [];
-
   return (
     <View style={styles.container}>
       <SafeAreaView edges={["top"]} style={styles.safeTop} />
@@ -393,16 +370,10 @@ export default function ProfileScreen() {
             <Ionicons name="settings-outline" size={24} color="#FFFFFF" />
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity
-            disabled={true}
-            style={[styles.headerButton, styles.settingsButtonDisabled]}
-          >
-            <Ionicons name="settings-outline" size={24} color="#999" />
-          </TouchableOpacity>
+          <View style={styles.headerButton} />
         )}
       </View>
 
-      {/* Cache indicator - only show when cache is displayed */}
       {showingCached && !loading && (
         <View style={styles.cacheIndicator}>
           <ActivityIndicator size="small" color="#0D5C3A" />
@@ -426,62 +397,63 @@ export default function ProfileScreen() {
         }
         ListHeaderComponent={
           <>
-            <View style={styles.profileHeader}>
-              {profile.avatar ? (
-                <Image source={{ uri: profile.avatar }} style={styles.avatar} />
-              ) : (
-                <View style={styles.avatarPlaceholder}>
-                  <Text style={styles.avatarInitial}>
-                    {profile.displayName[0]?.toUpperCase() || "?"}
-                  </Text>
+            {/* ✅ NEW: Golf Membership Card Style Header */}
+            <View style={styles.profileCard}>
+              <View style={styles.profileCardInner}>
+                {/* Avatar with Gold Ring */}
+                <View style={styles.avatarContainer}>
+                  {profile.avatar ? (
+                    <Image source={{ uri: profile.avatar }} style={styles.avatar} />
+                  ) : (
+                    <View style={styles.avatarPlaceholder}>
+                      <Text style={styles.avatarInitial}>
+                        {profile.displayName[0]?.toUpperCase() || "?"}
+                      </Text>
+                    </View>
+                  )}
                 </View>
-              )}
 
-              <Text style={styles.displayName}>{profile.displayName}</Text>
+                {/* Display Name */}
+                <Text style={styles.displayName}>{profile.displayName}</Text>
 
-              <View style={styles.badgesRow}>
-                {displayBadges.slice(0, 3).map((badge, index) => (
-                  <View key={index} style={styles.badgeIcon}>
-                    <Text style={styles.badgeEmoji}>🏆</Text>
+                {/* Stats Row - Connected Bar */}
+                <View style={styles.statsBar}>
+                  <View style={styles.statItem}>
+                    <Text style={styles.statValue}>{stats.swingThoughts}</Text>
+                    <Text style={styles.statLabel}>THOUGHTS</Text>
                   </View>
-                ))}
-              </View>
-            </View>
 
-            <View style={styles.statsContainer}>
-              <View style={styles.statTile}>
-                <Text style={styles.statLabel}>Swing Thoughts</Text>
-                <Text style={styles.statValue}>{stats.swingThoughts}</Text>
-              </View>
+                  <View style={styles.statDivider} />
 
-              <View style={styles.statTile}>
-                <Text style={styles.statLabel}>Handicap</Text>
-                <Text style={styles.statValue}>
-                  {profile.handicap || "—"}
-                </Text>
-              </View>
+                  <View style={styles.statItem}>
+                    <Text style={styles.statValue}>{profile.handicap || "—"}</Text>
+                    <Text style={styles.statLabel}>HANDICAP</Text>
+                  </View>
 
-              <TouchableOpacity 
-                style={styles.statTile}
-                onPress={() => {
-                  soundPlayer.play('click');
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  setPartnersModalVisible(true);
-                }}
-              >
-                <View style={styles.statLabelRow}>
-                  <Text style={styles.statLabel}>Partners</Text>
-                  <View style={styles.iconPair}>
-                    <Ionicons name="person" size={12} color="#0D5C3A" />
-                    <Ionicons name="golf" size={12} color="#0D5C3A" />
+                  <View style={styles.statDivider} />
+
+                  <TouchableOpacity 
+                    style={styles.statItem}
+                    onPress={() => {
+                      soundPlayer.play('click');
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setPartnersModalVisible(true);
+                    }}
+                  >
+                    <Text style={styles.statValue}>{partnerCount}</Text>
+                    <View style={styles.statLabelRow}>
+                      <Text style={styles.statLabel}>PARTNERS</Text>
+                      <Ionicons name="chevron-forward" size={10} color="#999" />
+                    </View>
+                  </TouchableOpacity>
+
+                  <View style={styles.statDivider} />
+
+                  <View style={styles.statItem}>
+                    <Text style={styles.statValue}>{stats.leaderboardScores}</Text>
+                    <Text style={styles.statLabel}>SCORES</Text>
                   </View>
                 </View>
-                <Text style={styles.statValue}>{partnerCount}</Text>
-              </TouchableOpacity>
-
-              <View style={styles.statTile}>
-                <Text style={styles.statLabel}>Scores Posted</Text>
-                <Text style={styles.statValue}>{stats.leaderboardScores}</Text>
               </View>
             </View>
 
@@ -553,10 +525,6 @@ const styles = StyleSheet.create({
     width: 40,
   },
 
-  settingsButtonDisabled: {
-    opacity: 0.4,
-  },
-
   backIcon: {
     width: 24,
     height: 24,
@@ -587,18 +555,49 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  profileHeader: {
-    alignItems: "center",
+  /* ✅ NEW: Golf Membership Card Styles */
+  profileCard: {
+    marginHorizontal: 16,
+    marginTop: 20,
+    marginBottom: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#D4D0C5",
+    backgroundColor: "#F4EED8",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 6,
+    overflow: "hidden",
+  },
+
+  profileCardInner: {
     paddingVertical: 24,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    // Linen/canvas texture effect
+    backgroundColor: "#F4EED8",
+    backgroundImage: `linear-gradient(180deg, rgba(255,255,255,0.4) 0%, rgba(0,0,0,0.03) 100%)`,
+  },
+
+  avatarContainer: {
+    marginBottom: 16,
+    borderRadius: 54,
+    padding: 4,
+    backgroundColor: "#FFD700",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 8,
   },
 
   avatar: {
     width: 100,
     height: 100,
     borderRadius: 50,
-    marginBottom: 12,
-    borderWidth: 3,
-    borderColor: "#0D5C3A",
+    backgroundColor: "#E0E0E0",
   },
 
   avatarPlaceholder: {
@@ -608,9 +607,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#0D5C3A",
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 12,
-    borderWidth: 3,
-    borderColor: "#0D5C3A",
   },
 
   avatarInitial: {
@@ -620,73 +616,56 @@ const styles = StyleSheet.create({
   },
 
   displayName: {
-    fontSize: 24,
-    fontWeight: "700",
+    fontSize: 26,
+    fontWeight: "800",
     color: "#0D5C3A",
-    marginBottom: 12,
+    marginBottom: 20,
+    letterSpacing: 0.5,
   },
 
-  badgesRow: {
+  /* Stats Bar - Connected */
+  statsBar: {
     flexDirection: "row",
-    gap: 8,
-  },
-
-  badgeIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#FFD700",
-    justifyContent: "center",
     alignItems: "center",
-  },
-
-  badgeEmoji: {
-    fontSize: 20,
-  },
-
-  statsContainer: {
-    flexDirection: "row",
-    paddingHorizontal: 16,
-    paddingVertical: 20,
-    gap: 8,
-    marginBottom: 16,
-  },
-
-  statTile: {
-    flex: 1,
-    alignItems: "center",
-    paddingVertical: 12,
     backgroundColor: "#FFFFFF",
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: "#E0E0E0",
+    paddingVertical: 14,
+    paddingHorizontal: 8,
+    width: "100%",
+  },
+
+  statItem: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  statDivider: {
+    width: 1,
+    height: 36,
+    backgroundColor: "#E0E0E0",
+  },
+
+  statValue: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#0D5C3A",
+    marginBottom: 2,
+  },
+
+  statLabel: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#888",
+    letterSpacing: 0.5,
   },
 
   statLabelRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
-    marginBottom: 4,
-  },
-
-  iconPair: {
-    flexDirection: "row",
-    alignItems: "center",
     gap: 2,
-    marginLeft: 2,
-  },
-
-  statLabel: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "#666",
-    textAlign: "center",
-  },
-
-  statValue: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#0D5C3A",
   },
 
   postsHeader: {
@@ -729,7 +708,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0, 0, 0, 0.3)",
   },
   
-  // NEW: Multi-image indicator
   multiImageIndicator: {
     position: "absolute",
     top: 6,

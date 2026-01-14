@@ -1,7 +1,6 @@
 import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
 import { auth, db, storage } from "@/constants/firebaseConfig";
 import { POST_TYPES } from "@/constants/postTypes";
-import { createNotification } from "@/utils/notificationHelpers";
 import {
   checkRateLimit,
   EMAIL_VERIFICATION_MESSAGE,
@@ -18,7 +17,7 @@ import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as VideoThumbnails from "expo-video-thumbnails";
-import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, updateDoc, where } from "firebase/firestore";
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, serverTimestamp, updateDoc, where } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -1022,7 +1021,9 @@ export default function CreateScreen() {
         },
         
         // ✅ Denormalized user data - using consistent naming (displayName, not userName)
+        userName: currentUserData.displayName || "Unknown",
         displayName: currentUserData.displayName || "Unknown",
+        userAvatar: currentUserData.avatar || null,
         avatar: currentUserData.avatar || null,
         handicap: currentUserData.handicap || null,
         userType: currentUserData.userType || "Golfer",
@@ -1045,7 +1046,7 @@ export default function CreateScreen() {
         likedBy: [],
         comments: 0,
         engagementScore: 0,
-        lastActivityAt: new Date(),
+        lastActivityAt: serverTimestamp(),
         viewCount: 0,
         
         // Search
@@ -1087,17 +1088,6 @@ export default function CreateScreen() {
         });
 
         await updateRateLimitTimestamp("post");
-
-        if (extractedPartners.length > 0) {
-          extractedPartners.forEach(async (partner) => {
-            await createNotification({
-              userId: partner.userId,
-              type: "mention_post",
-              actorId: uid,
-              postId: newPostRef.id,
-            });
-          });
-        }
 
         soundPlayer.play('postThought');
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);

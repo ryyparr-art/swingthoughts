@@ -265,17 +265,21 @@ export const useCache = () => {
 export const CACHE_KEYS = {
   // Main screens (always cache)
   FEED: (userId: string) => `feed_cache_${userId}`,
-  LEADERBOARD: (userId: string, regionKey: string, holeCount: "9" | "18" = "18") => 
-  `leaderboard_${userId}_${regionKey}_${holeCount}h`,
+  LEADERBOARD: (userId: string, regionKey: string, holeCount: "9" | "18" = "18") =>
+    `leaderboard_${userId}_${regionKey}_${holeCount}h`,
   NOTIFICATIONS: (userId: string) => `notifications_cache_${userId}`,
-  LOCKER: (userId: string) => `locker_cache_${userId}`, // Own profile
+  LOCKER: (userId: string) => `locker_cache_${userId}`,
   LOCKER_NOTES: (userId: string) => `locker_notes_cache_${userId}`,
-  
-  // Dynamic profiles (cache per user/course visited)
+
+  // 🔐 Messages
+  MESSAGE_THREAD: (userId: string, otherUserId: string) =>
+    `message_thread_${userId}_${otherUserId}`,
+
+  // Dynamic profiles
   USER_PROFILE: (userId: string) => `user_profile_cache_${userId}`,
   COURSE_PROFILE: (courseId: number | string) => `course_profile_cache_${courseId}`,
-  
-  // Leaderboard details (cache per course)
-  COURSE_LEADERBOARD: (courseId: number | string, regionKey: string) => 
+
+  // Leaderboard details
+  COURSE_LEADERBOARD: (courseId: number | string, regionKey: string) =>
     `course_leaderboard_cache_${courseId}_${regionKey}`,
 };

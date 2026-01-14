@@ -6,12 +6,19 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
+  addDoc,
   arrayRemove,
   arrayUnion,
+  collection,
+  deleteDoc,
   doc,
   getDoc,
+  getDocs,
   increment,
+  query,
+  serverTimestamp,
   updateDoc,
+  where,
 } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
@@ -102,7 +109,7 @@ export default function PostDetailScreen() {
       const docSnap = await getDoc(doc(db, "thoughts", postId as string));
 
       if (!docSnap.exists()) {
-        soundPlayer.play('error');
+        soundPlayer.play("error");
         Alert.alert("Post not found");
         router.back();
         return;
@@ -133,7 +140,7 @@ export default function PostDetailScreen() {
       setLoading(false);
     } catch (err) {
       console.error("Fetch post error:", err);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       Alert.alert("Error loading post");
       router.back();
     }
@@ -144,7 +151,7 @@ export default function PostDetailScreen() {
     if (!thought) return;
 
     if (!canWrite) {
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       return Alert.alert(
         "Verification Required",
         "You'll be able to interact once your account is verified."
@@ -152,28 +159,53 @@ export default function PostDetailScreen() {
     }
 
     if (thought.userId === currentUserId) {
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       return Alert.alert("You can't like your own post");
     }
 
     try {
-      soundPlayer.play('click');
+      soundPlayer.play("click");
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
       const ref = doc(db, "thoughts", thought.id);
       const hasLiked = thought.likedBy?.includes(currentUserId);
 
-      await updateDoc(ref, {
-        likes: increment(hasLiked ? -1 : 1),
-        likedBy: hasLiked
-          ? arrayRemove(currentUserId)
-          : arrayUnion(currentUserId),
-      });
+      if (hasLiked) {
+        // ✅ UNLIKE: Update post + delete like document
+        await updateDoc(ref, {
+          likes: increment(-1),
+          likedBy: arrayRemove(currentUserId),
+        });
 
-      if (!hasLiked) {
-        soundPlayer.play('postThought');
+        // Find and delete the like document
+        const likesQuery = query(
+          collection(db, "likes"),
+          where("userId", "==", currentUserId),
+          where("postId", "==", thought.id)
+        );
+        const likesSnap = await getDocs(likesQuery);
+        likesSnap.forEach(async (likeDoc) => {
+          await deleteDoc(likeDoc.ref);
+        });
+      } else {
+        // ✅ LIKE: Update post + create like document (triggers Cloud Function)
+        await updateDoc(ref, {
+          likes: increment(1),
+          likedBy: arrayUnion(currentUserId),
+        });
+
+        // Create like document - this triggers onLikeCreated Cloud Function
+        await addDoc(collection(db, "likes"), {
+          userId: currentUserId,
+          postId: thought.id,
+          postAuthorId: thought.userId,
+          createdAt: serverTimestamp(),
+        });
+
+        soundPlayer.play("postThought");
       }
 
+      // Update local state
       setThought({
         ...thought,
         likes: hasLiked ? thought.likes - 1 : thought.likes + 1,
@@ -183,21 +215,21 @@ export default function PostDetailScreen() {
       });
     } catch (err) {
       console.error("Like error:", err);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
     }
   };
 
   /* ------------------ COMMENTS ------------------ */
   const handleComments = () => {
     if (!canWrite) {
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       return Alert.alert(
         "Verification Required",
         "Commenting unlocks after verification."
       );
     }
 
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setCommentsModalVisible(true);
   };
@@ -205,7 +237,7 @@ export default function PostDetailScreen() {
   const handleCommentAdded = () => {
     if (!thought) return;
 
-    soundPlayer.play('postThought');
+    soundPlayer.play("postThought");
 
     setThought({
       ...thought,
@@ -238,7 +270,7 @@ export default function PostDetailScreen() {
       <View style={styles.header}>
         <TouchableOpacity
           onPress={() => {
-            soundPlayer.play('click');
+            soundPlayer.play("click");
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             router.back();
           }}
@@ -328,7 +360,7 @@ export default function PostDetailScreen() {
         postOwnerId={thought.userId}
         postContent={thought.content}
         onClose={() => {
-          soundPlayer.play('click');
+          soundPlayer.play("click");
           setCommentsModalVisible(false);
         }}
         onCommentAdded={handleCommentAdded}

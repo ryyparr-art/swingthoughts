@@ -838,7 +838,7 @@ export default function LeaderboardScreen() {
         </View>
       )}
 
-      {/* Cache indicator - only show when cache is displayed */}
+      {/* Cache indicator - only show when cache is displayed and loading fresh data */}
       {showingCached && !loading && (
         <View style={styles.cacheIndicator}>
           <ActivityIndicator size="small" color="#0D5C3A" />
@@ -849,6 +849,7 @@ export default function LeaderboardScreen() {
       {loading && !showingCached ? (
         <View style={styles.loading}>
           <ActivityIndicator size="large" color="#0D5C3A" />
+          <Text style={styles.loadingText}>Compiling Leaderboards...</Text>
         </View>
       ) : boards.length === 0 && !pinnedBoard ? (
         <View style={styles.emptyState}>
@@ -1180,7 +1181,19 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  loading: { flex: 1, justifyContent: "center", alignItems: "center" },
+  loading: { 
+    flex: 1, 
+    justifyContent: "center", 
+    alignItems: "center",
+    gap: 16,
+  },
+  
+  loadingText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#0D5C3A",
+    letterSpacing: 0.5,
+  },
 
   emptyState: {
     flex: 1,

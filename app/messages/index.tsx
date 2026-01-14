@@ -3,509 +3,488 @@ import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
-import { EMAIL_VERIFICATION_MESSAGE, isEmailVerified } from "@/utils/rateLimitHelpers";
+import {
+  EMAIL_VERIFICATION_MESSAGE,
+  isEmailVerified,
+} from "@/utils/rateLimitHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import {
   collection,
-  deleteDoc,
   doc,
   getDoc,
   getDocs,
+  orderBy,
   query,
-  where
+  serverTimestamp,
+  updateDoc,
+  where,
 } from "firebase/firestore";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Dimensions,
   FlatList,
   Image,
-  Platform,
   RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import {
+  GestureHandlerRootView,
+  Swipeable,
+} from "react-native-gesture-handler";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-interface Message {
-  messageId: string;
-  senderId: string;
-  senderName: string;
-  senderAvatar?: string | null;
-  receiverId: string;
-  receiverName?: string;
-  receiverAvatar?: string | null;
-  content: string;
-  createdAt: any;
-  read: boolean;
+const SCREEN_WIDTH = Dimensions.get("window").width;
+
+/* -------------------------------------------------------------------------- */
+/* TYPES                                                                      */
+/* -------------------------------------------------------------------------- */
+
+interface Thread {
+  id: string;
+  participants: string[];
+  lastMessage?: any;
+  lastMessageAt?: any;
+  unreadCount?: Record<string, number>;
+  deletedBy?: string[];
 }
 
-interface Conversation {
-  otherUserId: string;
-  otherUserName: string;
-  otherUserAvatar?: string | null;
-  lastMessage: Message;
-  unreadCount: number;
-}
+/* -------------------------------------------------------------------------- */
+/* THREAD ROW WITH SWIPE                                                      */
+/* -------------------------------------------------------------------------- */
 
-export default function MessagesScreen() {
-  const router = useRouter();
-  const userId = auth.currentUser?.uid;
-  const { getCache, setCache } = useCache(); // ✅ Add cache hook
-  
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showingCached, setShowingCached] = useState(false); // ✅ Cache indicator
-  const [refreshing, setRefreshing] = useState(false); // ✅ Pull to refresh
+function ThreadRow({
+  item,
+  userId,
+  onOpen,
+  onDelete,
+}: {
+  item: Thread;
+  userId: string;
+  onOpen: () => void;
+  onDelete: () => void;
+}) {
+  const otherUserId = item.participants.find((p) => p !== userId)!;
+  const unread = item.unreadCount?.[userId] ?? 0;
+  const swipeableRef = useRef<Swipeable>(null);
+
+  const [name, setName] = useState("User");
+  const [avatar, setAvatar] = useState<string | null>(null);
 
   useEffect(() => {
-    if (userId) {
-      fetchMessagesWithCache();
-    }
-  }, [userId]);
+    let mounted = true;
 
-  /* ========================= FETCH WITH CACHE ========================= */
-
-  const fetchMessagesWithCache = async () => {
-    if (!userId) return;
-
-    try {
-      // Step 1: Try to load from cache (instant)
-      const cached = await getCache(CACHE_KEYS.LOCKER_NOTES(userId));
-      
-      if (cached) {
-        console.log("⚡ Using cached locker notes");
-        setConversations(cached);
-        setShowingCached(true);
-        setLoading(false);
+    (async () => {
+      const snap = await getDoc(doc(db, "users", otherUserId));
+      if (mounted && snap.exists()) {
+        const u = snap.data();
+        setName(u.displayName || "User");
+        setAvatar(u.avatar || null);
       }
+    })();
 
-      // Step 2: Fetch fresh data (always)
-      await fetchMessages(true);
-
-    } catch (error) {
-      console.error("❌ Locker notes cache error:", error);
-      await fetchMessages();
-    }
-  };
-
-  const fetchMessages = async (isBackgroundRefresh: boolean = false) => {
-    if (!userId) return;
-
-    try {
-      if (!isBackgroundRefresh) {
-        setLoading(true);
-      }
-
-      // Query 1: Messages I received
-      const receivedQuery = query(
-        collection(db, "messages"),
-        where("receiverId", "==", userId)
-      );
-
-      // Query 2: Messages I sent
-      const sentQuery = query(
-        collection(db, "messages"),
-        where("senderId", "==", userId)
-      );
-
-      const [receivedSnapshot, sentSnapshot] = await Promise.all([
-        getDocs(receivedQuery),
-        getDocs(sentQuery),
-      ]);
-
-      const allMessages: Message[] = [];
-
-      // Process received messages
-      for (const docSnap of receivedSnapshot.docs) {
-        const messageData = docSnap.data() as Message;
-        
-        // Get sender's display name and avatar
-        try {
-          const senderDoc = await getDoc(doc(db, "users", messageData.senderId));
-          if (senderDoc.exists()) {
-            const senderData = senderDoc.data();
-            messageData.senderName = senderData.displayName || "Anonymous";
-            messageData.senderAvatar = senderData.avatar || null;
-          } else {
-            messageData.senderName = "Anonymous";
-            messageData.senderAvatar = null;
-          }
-        } catch (err) {
-          messageData.senderName = "Anonymous";
-          messageData.senderAvatar = null;
-        }
-
-        allMessages.push(messageData);
-      }
-
-      // Process sent messages
-      for (const docSnap of sentSnapshot.docs) {
-        const messageData = docSnap.data() as Message;
-        
-        // Get receiver's display name and avatar
-        try {
-          const receiverDoc = await getDoc(doc(db, "users", messageData.receiverId));
-          if (receiverDoc.exists()) {
-            const receiverData = receiverDoc.data();
-            messageData.receiverName = receiverData.displayName || "Anonymous";
-            messageData.receiverAvatar = receiverData.avatar || null;
-          } else {
-            messageData.receiverName = "Anonymous";
-            messageData.receiverAvatar = null;
-          }
-        } catch (err) {
-          messageData.receiverName = "Anonymous";
-          messageData.receiverAvatar = null;
-        }
-
-        allMessages.push(messageData);
-      }
-
-      console.log(`📨 Total messages found: ${allMessages.length} (${receivedSnapshot.size} received, ${sentSnapshot.size} sent)`);
-
-      // Sort by timestamp (newest first)
-      allMessages.sort((a, b) => {
-        const aTime = a.createdAt?.toMillis?.() || 0;
-        const bTime = b.createdAt?.toMillis?.() || 0;
-        return bTime - aTime;
-      });
-
-      // Group messages by conversation partner
-      const conversationsMap = new Map<string, Conversation>();
-
-      for (const msg of allMessages) {
-        // Determine who the "other" user is
-        const otherUserId = msg.senderId === userId ? msg.receiverId : msg.senderId;
-        const otherUserName = msg.senderId === userId 
-          ? (msg.receiverName || "Anonymous")
-          : (msg.senderName || "Anonymous");
-        const otherUserAvatar = msg.senderId === userId
-          ? (msg.receiverAvatar || null)
-          : (msg.senderAvatar || null);
-
-        // If this conversation doesn't exist yet, or this message is newer, update it
-        const existing = conversationsMap.get(otherUserId);
-        
-        if (!existing) {
-          // Count unread messages in this conversation
-          const unreadCount = allMessages.filter(
-            m => m.senderId === otherUserId && m.receiverId === userId && !m.read
-          ).length;
-
-          conversationsMap.set(otherUserId, {
-            otherUserId,
-            otherUserName,
-            otherUserAvatar,
-            lastMessage: msg,
-            unreadCount,
-          });
-        }
-      }
-
-      // Convert map to array
-      const conversationsList = Array.from(conversationsMap.values());
-
-      // Sort by last message timestamp
-      conversationsList.sort((a, b) => {
-        const aTime = a.lastMessage.createdAt?.toMillis?.() || 0;
-        const bTime = b.lastMessage.createdAt?.toMillis?.() || 0;
-        return bTime - aTime;
-      });
-
-      console.log(`💬 Grouped into ${conversationsList.length} conversations`);
-
-      setConversations(conversationsList);
-
-      // ✅ Step 3: Update cache
-      await setCache(CACHE_KEYS.LOCKER_NOTES(userId), conversationsList);
-      console.log("✅ Locker notes cached");
-
-      setShowingCached(false);
-      setLoading(false);
-    } catch (error) {
-      console.error("Error fetching messages:", error);
-      soundPlayer.play('error');
-      setShowingCached(false);
-      setLoading(false);
-    }
-  };
-
-  /* ========================= PULL TO REFRESH ========================= */
-
-  const onRefresh = async () => {
-    setRefreshing(true);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    
-    // Clear cache indicator on manual refresh
-    setShowingCached(false);
-    await fetchMessages();
-    
-    setRefreshing(false);
-  };
-
-  /* ========================= HANDLERS ========================= */
-
-  const handleComposeNew = () => {
-    // ✅ ANTI-BOT: Check email verification before allowing compose
-    if (!isEmailVerified()) {
-      soundPlayer.play('error');
-      Alert.alert("Email Not Verified", EMAIL_VERIFICATION_MESSAGE);
-      return;
-    }
-
-    soundPlayer.play('click');
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push("/messages/select-partner");
-  };
-
-  const handleDeleteConversation = async (otherUserId: string) => {
-    const currentUserId = auth.currentUser?.uid;
-    
-    if (!currentUserId) {
-      soundPlayer.play('error');
-      if (Platform.OS === 'web') {
-        alert("Error: User not authenticated. Please log in again.");
-      } else {
-        Alert.alert("Error", "User not authenticated. Please log in again.");
-      }
-      return;
-    }
-
-    const confirmDelete = async () => {
-      if (Platform.OS === 'web') {
-        return window.confirm("Delete this conversation? This will remove all messages with this user.");
-      } else {
-        return new Promise<boolean>((resolve) => {
-          Alert.alert(
-            "Delete Conversation",
-            "Delete this conversation? This will remove all messages with this user.",
-            [
-              {
-                text: "Cancel",
-                style: "cancel",
-                onPress: () => {
-                  soundPlayer.play('click');
-                  resolve(false);
-                },
-              },
-              {
-                text: "Delete",
-                style: "destructive",
-                onPress: () => {
-                  soundPlayer.play('error');
-                  resolve(true);
-                },
-              },
-            ]
-          );
-        });
-      }
+    return () => {
+      mounted = false;
     };
+  }, [otherUserId]);
 
-    const shouldDelete = await confirmDelete();
-    if (!shouldDelete) return;
+  const lastMessageText =
+    typeof item.lastMessage === "string"
+      ? item.lastMessage
+      : item.lastMessage?.content || "";
 
-    try {
-      console.log("Starting delete with userId:", currentUserId, "otherUserId:", otherUserId);
-      
-      // Delete all messages between current user and the other user
-      const q1 = query(
-        collection(db, "messages"),
-        where("senderId", "==", currentUserId),
-        where("receiverId", "==", otherUserId)
-      );
+  const getRelativeTime = (timestamp: any) => {
+    if (!timestamp?.toDate) return "Recently";
 
-      const q2 = query(
-        collection(db, "messages"),
-        where("senderId", "==", otherUserId),
-        where("receiverId", "==", currentUserId)
-      );
+    const now = new Date();
+    const date = timestamp.toDate();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
 
-      const [sent, received] = await Promise.all([
-        getDocs(q1),
-        getDocs(q2),
-      ]);
+    if (diffMins < 1) return "Just now";
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays === 1) return "Yesterday";
+    if (diffDays < 7) return `${diffDays}d ago`;
 
-      console.log("Found messages to delete - sent:", sent.size, "received:", received.size);
-
-      const deletePromises: Promise<void>[] = [];
-      
-      sent.forEach((docSnap) => {
-        deletePromises.push(deleteDoc(docSnap.ref));
-      });
-
-      received.forEach((docSnap) => {
-        deletePromises.push(deleteDoc(docSnap.ref));
-      });
-
-      await Promise.all(deletePromises);
-
-      soundPlayer.play('postThought');
-      console.log("Successfully deleted", deletePromises.length, "messages");
-
-      // Remove from local state
-      const updatedConversations = conversations.filter((conv) => conv.otherUserId !== otherUserId);
-      setConversations(updatedConversations);
-
-      // ✅ Update cache after deletion
-      await setCache(CACHE_KEYS.LOCKER_NOTES(currentUserId), updatedConversations);
-
-      if (Platform.OS !== 'web') {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      } else {
-        alert("Conversation deleted successfully");
-      }
-    } catch (error) {
-      console.error("Error deleting conversation:", error);
-      soundPlayer.play('error');
-      if (Platform.OS === 'web') {
-        alert("Failed to delete conversation: " + (error as Error).message);
-      } else {
-        Alert.alert("Error", "Failed to delete conversation");
-      }
-    }
+    return date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    });
   };
 
-  const renderConversation = ({ item }: { item: Conversation }) => {
-    const isMyMessage = item.lastMessage.senderId === userId;
-    const hasUnread = item.unreadCount > 0;
+  const renderRightActions = (
+    progress: Animated.AnimatedInterpolation<number>,
+    dragX: Animated.AnimatedInterpolation<number>
+  ) => {
+    const translateX = dragX.interpolate({
+      inputRange: [-100, 0],
+      outputRange: [0, 100],
+      extrapolate: "clamp",
+    });
+
+    const opacity = dragX.interpolate({
+      inputRange: [-100, -50, 0],
+      outputRange: [1, 0.8, 0],
+      extrapolate: "clamp",
+    });
 
     return (
-      <View style={styles.messageWrapper}>
-        <TouchableOpacity
-          style={[styles.messageCard, hasUnread && styles.unreadCard]}
-          onPress={() => {
-            soundPlayer.play('click');
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.push(`/messages/${item.otherUserId}`);
-          }}
-        >
-          <View style={styles.messageHeader}>
-            <View style={styles.senderInfo}>
-              {item.otherUserAvatar ? (
-                <Image
-                  source={{ uri: item.otherUserAvatar }}
-                  style={styles.avatarImage}
-                />
-              ) : (
-                <View style={styles.avatarCircle}>
-                  <Text style={styles.avatarText}>
-                    {item.otherUserName[0]?.toUpperCase() || "?"}
-                  </Text>
-                </View>
-              )}
-              <View>
-                <Text style={styles.senderName}>{item.otherUserName}</Text>
-                <Text style={styles.timestamp}>
-                  {item.lastMessage.createdAt?.toDate?.()?.toLocaleDateString() || "Recently"}
-                </Text>
-              </View>
-            </View>
-            {hasUnread && <View style={styles.unreadBadge} />}
-          </View>
-
-          <Text style={styles.messageContent} numberOfLines={2}>
-            {isMyMessage && <Text style={styles.youText}>You: </Text>}
-            {item.lastMessage.content}
-          </Text>
-        </TouchableOpacity>
-
+      <Animated.View
+        style={[
+          styles.deleteAction,
+          {
+            transform: [{ translateX }],
+            opacity,
+          },
+        ]}
+      >
         <TouchableOpacity
           style={styles.deleteButton}
           onPress={() => {
-            soundPlayer.play('click');
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            handleDeleteConversation(item.otherUserId);
+            swipeableRef.current?.close();
+            onDelete();
           }}
         >
-          <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+          <Ionicons name="trash" size={24} color="#FFF" />
+          <Text style={styles.deleteText}>Delete</Text>
         </TouchableOpacity>
-      </View>
+      </Animated.View>
     );
   };
 
   return (
-    <View style={styles.container}>
-      <SafeAreaView edges={["top"]} style={styles.safeTop} />
-
-      <TopNavBar />
-
-      <View style={styles.header}>
-        <TouchableOpacity
-          onPress={() => {
-            soundPlayer.play('click');
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.push('/clubhouse');
-          }}
-          style={styles.closeButton}
-        >
-          <Image
-            source={require("@/assets/icons/Close.png")}
-            style={styles.closeIcon}
-            resizeMode="contain"
-          />
-        </TouchableOpacity>
-
-        <Text style={styles.title}>Locker Notes</Text>
-
-        <TouchableOpacity
-          onPress={handleComposeNew}
-          style={styles.composeButton}
-        >
-          <Ionicons name="create-outline" size={24} color="#FFFFFF" />
-        </TouchableOpacity>
-      </View>
-
-      {/* Cache indicator - only show when cache is displayed */}
-      {showingCached && !loading && (
-        <View style={styles.cacheIndicator}>
-          <ActivityIndicator size="small" color="#0D5C3A" />
-          <Text style={styles.cacheText}>Updating locker notes...</Text>
-        </View>
-      )}
-
-      {loading && !showingCached ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#0D5C3A" />
-          <Text style={styles.loadingText}>Loading messages...</Text>
-        </View>
-      ) : (
-        <FlatList
-          data={conversations}
-          renderItem={renderConversation}
-          keyExtractor={(item) => item.otherUserId}
-          contentContainerStyle={styles.listContent}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor="#0D5C3A"
-              colors={["#0D5C3A"]}
-            />
-          }
-          ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Ionicons name="mail-outline" size={64} color="#999" />
-              <Text style={styles.emptyText}>No locker notes yet</Text>
-              <Text style={styles.emptySubtext}>
-                Your locker notes will appear here
+    <Swipeable
+      ref={swipeableRef}
+      renderRightActions={renderRightActions}
+      rightThreshold={40}
+      friction={2}
+      overshootRight={false}
+      onSwipeableOpen={(direction) => {
+        if (direction === "right") {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        }
+      }}
+    >
+      <TouchableOpacity
+        style={[styles.messageCard, unread > 0 && styles.unreadCard]}
+        onPress={onOpen}
+        activeOpacity={0.9}
+      >
+        <View style={styles.messageHeader}>
+          <View style={styles.senderInfo}>
+            {avatar ? (
+              <Image source={{ uri: avatar }} style={styles.avatarImage} />
+            ) : (
+              <View style={styles.avatarCircle}>
+                <Text style={styles.avatarText}>
+                  {name[0]?.toUpperCase() || "?"}
+                </Text>
+              </View>
+            )}
+            <View style={styles.senderDetails}>
+              <View style={styles.nameRow}>
+                <Text style={styles.senderName}>{name}</Text>
+                {unread > 0 && (
+                  <View style={styles.unreadBadge}>
+                    <Text style={styles.unreadBadgeText}>{unread}</Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.timestamp}>
+                {getRelativeTime(item.lastMessageAt)}
               </Text>
             </View>
-          }
-        />
-      )}
+          </View>
 
-      <BottomActionBar />
-      <SwingFooter />
-    </View>
+          <Ionicons name="chevron-forward" size={20} color="#CCC" />
+        </View>
+
+        <Text numberOfLines={2} style={styles.messageContent}>
+          {lastMessageText || "No messages yet"}
+        </Text>
+      </TouchableOpacity>
+    </Swipeable>
   );
 }
+
+/* -------------------------------------------------------------------------- */
+/* SCREEN                                                                     */
+/* -------------------------------------------------------------------------- */
+
+export default function MessagesScreen() {
+  const router = useRouter();
+  const userId = auth.currentUser?.uid;
+  const { getCache, setCache } = useCache();
+
+  const [threads, setThreads] = useState<Thread[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showingCached, setShowingCached] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    if (userId) loadThreadsWithCache();
+  }, [userId]);
+
+  /* ------------------------------------------------------------------------ */
+  /* DATA                                                                     */
+  /* ------------------------------------------------------------------------ */
+
+  const loadThreadsWithCache = async () => {
+    if (!userId) return;
+
+    const cached = await getCache(CACHE_KEYS.LOCKER_NOTES(userId));
+    if (cached) {
+      setThreads(cached);
+      setShowingCached(true);
+      setLoading(false);
+    }
+
+    await fetchThreads(true);
+  };
+
+  const fetchThreads = async (background = false) => {
+    if (!userId) return;
+
+    try {
+      if (!background) setLoading(true);
+
+      const q = query(
+        collection(db, "threads"),
+        where("participants", "array-contains", userId),
+        orderBy("lastMessageAt", "desc")
+      );
+
+      const snap = await getDocs(q);
+
+      // Filter out threads that current user has deleted
+      const items: Thread[] = snap.docs
+        .map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<Thread, "id">),
+        }))
+        .filter((thread) => {
+          // Don't show threads where current user is in deletedBy array
+          const deletedBy = thread.deletedBy || [];
+          return !deletedBy.includes(userId);
+        });
+
+      setThreads(items);
+      await setCache(CACHE_KEYS.LOCKER_NOTES(userId), items);
+
+      setShowingCached(false);
+      setLoading(false);
+    } catch (err) {
+      console.error("❌ Thread fetch error:", err);
+      setLoading(false);
+      setShowingCached(false);
+    }
+  };
+
+  /* ------------------------------------------------------------------------ */
+  /* DELETE THREAD (SOFT DELETE - HIDES FOR USER)                             */
+  /* ------------------------------------------------------------------------ */
+
+  const deleteThread = async (threadId: string) => {
+    Alert.alert(
+      "Delete Conversation",
+      "This will remove this conversation from your inbox. The other person will still be able to see it.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              soundPlayer.play("click");
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+              // Soft delete: Add current user to deletedBy array
+              const threadRef = doc(db, "threads", threadId);
+              const threadSnap = await getDoc(threadRef);
+
+              if (threadSnap.exists()) {
+                const threadData = threadSnap.data();
+                const deletedBy = threadData.deletedBy || [];
+
+                // Add current user to deletedBy
+                if (!deletedBy.includes(userId)) {
+                  deletedBy.push(userId);
+                }
+
+                await updateDoc(threadRef, {
+                  deletedBy,
+                  updatedAt: serverTimestamp(),
+                });
+
+                // Check if both users have deleted - trigger full delete via Cloud Function
+                const participants = threadData.participants || [];
+                const allDeleted = participants.every((p: string) =>
+                  deletedBy.includes(p)
+                );
+
+                if (allDeleted) {
+                  console.log(
+                    "🗑️ Both users deleted thread - Cloud Function will clean up"
+                  );
+                }
+              }
+
+              // Update local state
+              const updated = threads.filter((t) => t.id !== threadId);
+              setThreads(updated);
+              await setCache(CACHE_KEYS.LOCKER_NOTES(userId!), updated);
+
+              soundPlayer.play("postThought");
+            } catch (err) {
+              console.error("❌ Delete failed:", err);
+              soundPlayer.play("error");
+              Alert.alert("Error", "Failed to delete conversation.");
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  /* ------------------------------------------------------------------------ */
+  /* EMPTY STATE                                                              */
+  /* ------------------------------------------------------------------------ */
+
+  const renderEmptyState = () => (
+    <View style={styles.emptyContainer}>
+      <Ionicons name="chatbubbles-outline" size={80} color="#CCC" />
+      <Text style={styles.emptyTitle}>No Locker Notes Yet</Text>
+      <Text style={styles.emptySubtitle}>
+        Start a conversation with one of your partners!
+      </Text>
+      <TouchableOpacity
+        style={styles.emptyButton}
+        onPress={() => {
+          soundPlayer.play("click");
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          if (!isEmailVerified()) {
+            Alert.alert("Email Not Verified", EMAIL_VERIFICATION_MESSAGE);
+            return;
+          }
+          router.push("/messages/select-partner");
+        }}
+      >
+        <Ionicons name="create-outline" size={20} color="#FFF" />
+        <Text style={styles.emptyButtonText}>New Message</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  /* ------------------------------------------------------------------------ */
+  /* UI                                                                       */
+  /* ------------------------------------------------------------------------ */
+
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <View style={styles.container}>
+        <SafeAreaView edges={["top"]} style={styles.safeTop} />
+        <TopNavBar />
+
+        <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.closeButton}
+            onPress={() => {
+              soundPlayer.play("click");
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.push("/clubhouse");
+            }}
+          >
+            <Image
+              source={require("@/assets/icons/Close.png")}
+              style={styles.closeIcon}
+            />
+          </TouchableOpacity>
+
+          <Text style={styles.title}>Locker Notes</Text>
+
+          <TouchableOpacity
+            style={styles.composeButton}
+            onPress={() => {
+              soundPlayer.play("click");
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              if (!isEmailVerified()) {
+                Alert.alert("Email Not Verified", EMAIL_VERIFICATION_MESSAGE);
+                return;
+              }
+              router.push("/messages/select-partner");
+            }}
+          >
+            <Ionicons name="create-outline" size={24} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
+
+        {/* Swipe hint for first-time users */}
+        {threads.length > 0 && (
+          <View style={styles.swipeHint}>
+            <Ionicons name="arrow-back" size={14} color="#999" />
+            <Text style={styles.swipeHintText}>Swipe left to delete</Text>
+          </View>
+        )}
+
+        {loading && !showingCached ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#0D5C3A" />
+          </View>
+        ) : threads.length === 0 ? (
+          renderEmptyState()
+        ) : (
+          <FlatList
+            data={threads}
+            keyExtractor={(i) => i.id}
+            renderItem={({ item }) => (
+              <ThreadRow
+                item={item}
+                userId={userId!}
+                onOpen={() => {
+                  soundPlayer.play("click");
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  router.push(`/messages/${item.id}`);
+                }}
+                onDelete={() => deleteThread(item.id)}
+              />
+            )}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={() => {
+                  setRefreshing(true);
+                  fetchThreads().finally(() => setRefreshing(false));
+                }}
+                tintColor="#0D5C3A"
+                colors={["#0D5C3A"]}
+              />
+            }
+            contentContainerStyle={styles.listContent}
+            showsVerticalScrollIndicator={false}
+          />
+        )}
+
+        <BottomActionBar />
+        <SwingFooter />
+      </View>
+    </GestureHandlerRootView>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* STYLES                                                                     */
+/* -------------------------------------------------------------------------- */
 
 const styles = StyleSheet.create({
   container: {
@@ -519,11 +498,9 @@ const styles = StyleSheet.create({
 
   header: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    backgroundColor: "#F4EED8",
+    justifyContent: "space-between",
+    padding: 16,
   },
 
   closeButton: {
@@ -543,7 +520,7 @@ const styles = StyleSheet.create({
   closeIcon: {
     width: 20,
     height: 20,
-    tintColor: "#FFFFFF",
+    tintColor: "#fff",
   },
 
   title: {
@@ -568,21 +545,18 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
 
-  cacheIndicator: {
+  swipeHint: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
+    gap: 6,
     paddingVertical: 8,
-    backgroundColor: "#FFF3CD",
-    borderBottomWidth: 1,
-    borderBottomColor: "#FFECB5",
+    backgroundColor: "rgba(0, 0, 0, 0.03)",
   },
-  
-  cacheText: {
+
+  swipeHintText: {
     fontSize: 12,
-    color: "#664D03",
-    fontWeight: "600",
+    color: "#999",
   },
 
   loadingContainer: {
@@ -591,34 +565,21 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
-  loadingText: {
-    marginTop: 10,
-    color: "#0D5C3A",
-    fontSize: 16,
-  },
-
   listContent: {
     padding: 16,
     paddingBottom: 140,
   },
 
-  messageWrapper: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 12,
-    gap: 8,
-  },
-
   messageCard: {
-    flex: 1,
-    backgroundColor: "white",
+    backgroundColor: "#fff",
     borderRadius: 12,
     padding: 16,
+    marginBottom: 12,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowRadius: 3,
+    elevation: 2,
   },
 
   unreadCard: {
@@ -631,40 +592,67 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 12,
+    marginBottom: 8,
   },
 
   senderInfo: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
+    flex: 1,
+  },
+
+  senderDetails: {
+    flex: 1,
+  },
+
+  nameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
 
   avatarCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: "#0D5C3A",
     justifyContent: "center",
     alignItems: "center",
   },
 
-  avatarImage: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  avatarText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 18,
   },
 
-  avatarText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "700",
+  avatarImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
   },
 
   senderName: {
-    fontSize: 16,
     fontWeight: "700",
     color: "#0D5C3A",
+    fontSize: 16,
+  },
+
+  unreadBadge: {
+    backgroundColor: "#FF3B30",
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 6,
+  },
+
+  unreadBadgeText: {
+    color: "#FFF",
+    fontSize: 12,
+    fontWeight: "700",
   },
 
   timestamp: {
@@ -673,50 +661,83 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  unreadBadge: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: "#FFD700",
-  },
-
   messageContent: {
-    fontFamily: 'Caveat_400Regular',
+    fontFamily: "Caveat_400Regular",
     fontSize: 18,
+    color: "#666",
     lineHeight: 24,
-    color: "#333",
   },
 
-  youText: {
-    fontWeight: "700",
-    color: "#0D5C3A",
+  // Swipe delete action
+  deleteAction: {
+    backgroundColor: "#FF3B30",
+    justifyContent: "center",
+    alignItems: "flex-end",
+    borderRadius: 12,
+    marginBottom: 12,
   },
 
   deleteButton: {
-    padding: 12,
-    backgroundColor: "#FFE5E5",
-    borderRadius: 12,
     justifyContent: "center",
     alignItems: "center",
+    width: 80,
+    height: "100%",
+    paddingHorizontal: 16,
   },
 
+  deleteText: {
+    color: "#FFF",
+    fontSize: 12,
+    fontWeight: "600",
+    marginTop: 4,
+  },
+
+  // Empty state
   emptyContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    paddingTop: 100,
+    padding: 40,
   },
 
-  emptyText: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: "#0D5C3A",
-    marginTop: 16,
-    marginBottom: 8,
+  emptyTitle: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#333",
+    marginTop: 20,
   },
 
-  emptySubtext: {
-    fontSize: 14,
-    color: "#999",
+  emptySubtitle: {
+    fontSize: 16,
+    color: "#666",
+    marginTop: 8,
+    textAlign: "center",
+    lineHeight: 22,
+  },
+
+  emptyButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 12,
+    marginTop: 24,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+
+  emptyButtonText: {
+    color: "#FFF",
+    fontSize: 16,
+    fontWeight: "700",
   },
 });
+
+
+
+

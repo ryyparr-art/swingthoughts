@@ -7,20 +7,22 @@ import { auth, db } from "@/constants/firebaseConfig";
 import { getPostTypeLabel } from "@/constants/postTypes";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { FeedItem, FeedPost, FeedScore, generateAlgorithmicFeed } from "@/utils/feedAlgorithm";
-import { createNotification } from "@/utils/notificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { getUserProfile } from "@/utils/userProfileHelpers";
 
 import {
+  addDoc,
   arrayRemove,
   arrayUnion,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
   increment,
   orderBy,
   query,
+  serverTimestamp,
   updateDoc,
   where,
 } from "firebase/firestore";
@@ -154,8 +156,8 @@ export default function ClubhouseScreen() {
   const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
   const [thoughts, setThoughts] = useState<Thought[]>([]);
   const [loading, setLoading] = useState(true);
-  const [hasLoadedOnce, setHasLoadedOnce] = useState(false); // ✅ NEW: Track if we've loaded before
-  const [isCheckingCache, setIsCheckingCache] = useState(true); // ✅ NEW: Track cache check
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [isCheckingCache, setIsCheckingCache] = useState(true);
   const [currentUserId, setCurrentUserId] = useState("");
   const [currentUserData, setCurrentUserData] = useState<any>(null);
   const [useAlgorithmicFeed, setUseAlgorithmicFeed] = useState(true);
@@ -203,6 +205,7 @@ export default function ClubhouseScreen() {
   }, []);
 
   /* ------------------ PERMISSIONS ------------------ */
+  // Permission for creating posts (requires terms acceptance or verification)
   const canWrite = (() => {
     if (!currentUserData) return false;
 
@@ -218,6 +221,29 @@ export default function ClubhouseScreen() {
       currentUserData.userType === "PGA Professional"
     ) {
       return currentUserData.verified === true;
+    }
+
+    return false;
+  })();
+
+  // ✅ NEW: Permission for interactions (likes, comments)
+  // Golfers/Juniors can interact once signed in
+  // Course/PGA must be verified through admin
+  const canInteract = (() => {
+    if (!currentUserId || !currentUserData) return false;
+
+    if (
+      currentUserData.userType === "Golfer" ||
+      currentUserData.userType === "Junior"
+    ) {
+      return true; // Golfers/Juniors can always interact once signed in
+    }
+
+    if (
+      currentUserData.userType === "Course" ||
+      currentUserData.userType === "PGA Professional"
+    ) {
+      return currentUserData.verified === true; // Must be admin verified
     }
 
     return false;
@@ -296,9 +322,9 @@ export default function ClubhouseScreen() {
         const thoughtsFromCache = await convertFeedToThoughts(cached);
         setThoughts(thoughtsFromCache);
         setFeedItems(cached);
-        setLoading(false); // ✅ Hide full loading immediately
-        setHasLoadedOnce(true); // ✅ Mark that we've loaded once
-        setShowingCached(true); // ✅ Show "Updating feed..." banner
+        setLoading(false);
+        setHasLoadedOnce(true);
+        setShowingCached(true);
         
         // Step 2: Fetch fresh in background
         await loadFeed(true);
@@ -388,7 +414,7 @@ export default function ClubhouseScreen() {
       
       setShowingCached(false);
       setLoading(false);
-      setHasLoadedOnce(true); // ✅ Mark that we've successfully loaded
+      setHasLoadedOnce(true);
     } catch (error) {
       console.error("❌ Feed load error:", error);
       soundPlayer.play('error');
@@ -779,14 +805,25 @@ export default function ClubhouseScreen() {
 
   /* ------------------ LIKE ------------------ */
   const handleLike = async (thought: Thought) => {
+    // ✅ Check if user is signed in
     if (!currentUserId) {
       soundPlayer.play('error');
-      return Alert.alert("Please sign in to like posts");
+      return Alert.alert("Sign In Required", "Please sign in to like posts.");
     }
 
+    // ✅ Check if user can interact (Course/PGA need verification)
+    if (!canInteract) {
+      soundPlayer.play('error');
+      return Alert.alert(
+        "Verification Required",
+        "Your account must be verified before you can interact with posts. Please wait for admin verification."
+      );
+    }
+
+    // ✅ Can't like your own post
     if (thought.userId === currentUserId) {
       soundPlayer.play('error');
-      return Alert.alert("You can't like your own post");
+      return Alert.alert("Can't Like", "You can't like your own post.");
     }
 
     try {
@@ -796,22 +833,7 @@ export default function ClubhouseScreen() {
       const ref = doc(db, "thoughts", thought.id);
       const hasLiked = thought.likedBy?.includes(currentUserId);
 
-      await updateDoc(ref, {
-        likes: increment(hasLiked ? -1 : 1),
-        likedBy: hasLiked
-          ? arrayRemove(currentUserId)
-          : arrayUnion(currentUserId),
-      });
-
-      if (!hasLiked) {
-        await createNotification({
-          userId: thought.userId,
-          type: "like",
-          actorId: currentUserId,
-          postId: thought.id,
-        });
-      }
-
+      // ✅ Optimistic UI update - update local state immediately
       setThoughts((prev) =>
         prev.map((t) =>
           t.id === thought.id
@@ -825,19 +847,69 @@ export default function ClubhouseScreen() {
             : t
         )
       );
+
+      if (hasLiked) {
+        // Unlike: update post and delete like document
+        await updateDoc(ref, {
+          likes: increment(-1),
+          likedBy: arrayRemove(currentUserId),
+        });
+
+        // Delete the like document
+        const likesQuery = query(
+          collection(db, "likes"),
+          where("userId", "==", currentUserId),
+          where("postId", "==", thought.id)
+        );
+        const likesSnapshot = await getDocs(likesQuery);
+        likesSnapshot.forEach(async (likeDoc) => {
+          await deleteDoc(likeDoc.ref);
+        });
+      } else {
+        // Like: update post and create like document
+        await updateDoc(ref, {
+          likes: increment(1),
+          likedBy: arrayUnion(currentUserId),
+        });
+
+        // Create like document (triggers Cloud Function for notification)
+        await addDoc(collection(db, "likes"), {
+          userId: currentUserId,
+          postId: thought.id,
+          postAuthorId: thought.userId,
+          createdAt: serverTimestamp(),
+        });
+      }
     } catch (err) {
       console.error("Like error:", err);
       soundPlayer.play('error');
+      
+      // ✅ Revert optimistic update on error
+      const hasLiked = thought.likedBy?.includes(currentUserId);
+      setThoughts((prev) =>
+        prev.map((t) =>
+          t.id === thought.id
+            ? {
+                ...t,
+                likes: hasLiked ? t.likes + 1 : t.likes - 1,
+                likedBy: hasLiked
+                  ? [...(t.likedBy || []), currentUserId]
+                  : t.likedBy?.filter((id) => id !== currentUserId),
+              }
+            : t
+        )
+      );
     }
   };
 
   /* ------------------ COMMENTS ------------------ */
   const handleComments = (thought: Thought) => {
-    if (!canWrite) {
+    // ✅ Check if user can interact (Course/PGA need verification)
+    if (!canInteract) {
       soundPlayer.play('error');
       return Alert.alert(
         "Verification Required",
-        "Commenting unlocks after verification."
+        "Your account must be verified before you can comment. Please wait for admin verification."
       );
     }
 
@@ -870,12 +942,14 @@ export default function ClubhouseScreen() {
     activeFilters.searchQuery
   );
 
+  // ✅ FIXED: Update comment count in local state when comment is added
   const handleCommentAdded = () => {
     if (!selectedThought) return;
 
     soundPlayer.play('postThought');
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
+    // ✅ Update the thoughts array with new comment count
     setThoughts((prev) =>
       prev.map((t) =>
         t.id === selectedThought.id
@@ -884,6 +958,7 @@ export default function ClubhouseScreen() {
       )
     );
 
+    // ✅ Also update the selectedThought so modal shows correct count
     setSelectedThought((prev) => 
       prev ? { ...prev, comments: (prev.comments || 0) + 1 } : prev
     );
@@ -1059,7 +1134,7 @@ export default function ClubhouseScreen() {
   /* ------------------ RENDER ------------------ */
   const renderThought = ({ item }: { item: Thought }) => {
     const hasLiked = item.likedBy?.includes(currentUserId);
-    const hasComments = !!item.comments && item.comments > 0;
+    const hasComments = (item.comments || 0) > 0; // ✅ Fixed: Cleaner check
     const isOwnPost = item.userId === currentUserId;
     const isHighlighted = highlightPostId === item.id;
     const isVideoPlaying = playingVideos.has(item.id);
@@ -1408,7 +1483,7 @@ export default function ClubhouseScreen() {
 
       {selectedThought && (
         <CommentsModal
-          visible={true}
+          visible={commentsModalVisible}
           thoughtId={selectedThought.id}
           postContent={selectedThought.content}
           postOwnerId={selectedThought.userId}
@@ -1450,7 +1525,7 @@ export default function ClubhouseScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F4EED8" },
   safeTop: { backgroundColor: "#0D5C3A" },
-  carouselWrapper: { height: 70 }, // ✅ Increased from 50 to 70
+  carouselWrapper: { height: 70 },
   
   cacheIndicator: {
     flexDirection: "row",

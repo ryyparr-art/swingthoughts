@@ -1,5 +1,4 @@
 import { db } from "@/constants/firebaseConfig";
-import { createNotification } from "@/utils/notificationHelpers";
 import {
   addDoc,
   arrayUnion,
@@ -93,6 +92,9 @@ export async function checkExistingRequest(
 
 /**
  * Accept a partner request
+ * 
+ * ✅ Notifications handled by Cloud Function: onPartnerRequestUpdated
+ * When status changes to "approved", Cloud Function sends partner_accepted notification
  */
 export async function acceptPartnerRequest(
   currentUserId: string,
@@ -118,11 +120,12 @@ export async function acceptPartnerRequest(
   const requestDoc = requestSnap.docs[0];
   console.log("✅ Found partner request:", requestDoc.id);
   
-  // Update request status to approved
+  // Update request status to approved (triggers onPartnerRequestUpdated Cloud Function)
   await updateDoc(doc(db, "partnerRequests", requestDoc.id), {
     status: "approved",
+    approvedAt: serverTimestamp(),
   });
-  console.log("✅ Updated request status to approved");
+  console.log("✅ Updated request status to approved (triggers Cloud Function notification)");
   
   // Create partnership record
   const partnershipRef = await addDoc(collection(db, "partners"), {
@@ -146,23 +149,19 @@ export async function acceptPartnerRequest(
   });
   console.log("✅ Updated otherUser partners array");
   
-  // Create notification for the other user
-  console.log("📧 Creating partner_accepted notification for:", otherUserId);
-  try {
-    await createNotification({
-      userId: otherUserId,
-      type: "partner_accepted",
-      actorId: currentUserId,
-    });
-    console.log("✅ Partner accepted notification created successfully!");
-  } catch (notifError) {
-    console.error("❌ Failed to create notification:", notifError);
-    // Don't throw - partnership still succeeded
-  }
+  // ✅ NO CLIENT-SIDE NOTIFICATION
+  // partner_accepted notification is sent by onPartnerRequestUpdated Cloud Function
+  console.log("📬 Notification handled by Cloud Function");
   
   console.log("🎉 Partner accept complete!");
 }
 
+/**
+ * Send a partner request
+ * 
+ * ✅ Notifications handled by Cloud Function: onPartnerRequestCreated
+ * When partnerRequests document is created, Cloud Function sends partner_request notification
+ */
 export async function sendPartnerRequest(
   fromUserId: string,
   toUserId: string
@@ -179,7 +178,7 @@ export async function sendPartnerRequest(
     throw new Error("A partner request already exists between you");
   }
 
-  // Create the partner request
+  // Create the partner request (triggers onPartnerRequestCreated Cloud Function)
   await addDoc(collection(db, "partnerRequests"), {
     fromUserId,
     toUserId,
@@ -187,18 +186,7 @@ export async function sendPartnerRequest(
     createdAt: serverTimestamp(),
   });
 
-  // Create notification for the recipient
-  console.log("📧 Creating partner request notification:", {
-    userId: toUserId,
-    type: "partner_request",
-    actorId: fromUserId,
-  });
-  
-  await createNotification({
-    userId: toUserId,
-    type: "partner_request",
-    actorId: fromUserId,
-  });
-  
-  console.log("✅ Partner request notification created successfully");
+  // ✅ NO CLIENT-SIDE NOTIFICATION
+  // partner_request notification is sent by onPartnerRequestCreated Cloud Function
+  console.log("📬 Partner request created (notification handled by Cloud Function)");
 }

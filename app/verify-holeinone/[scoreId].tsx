@@ -1,6 +1,5 @@
 import { auth, db } from "@/constants/firebaseConfig";
 import { checkAndAwardBadges } from "@/utils/badgeUtils";
-import { createNotification } from "@/utils/notificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -9,8 +8,11 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
+  query,
   serverTimestamp,
   updateDoc,
+  where,
 } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
@@ -29,9 +31,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 interface ScoreData {
   userId: string;
   userName: string;
+  userAvatar?: string;
   courseId: number;
   courseName: string;
   holeNumber: number;
+  holeCount?: number;
   roundDescription: string;
   scorecardImageUrl: string;
   status: "pending" | "verified" | "denied";
@@ -41,12 +45,30 @@ interface ScoreData {
   createdAt: any;
 }
 
+interface HoleInOneData {
+  id: string;
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+  verifierId: string;
+  verifierName: string;
+  scoreId: string;
+  courseId: number;
+  courseName: string;
+  holeNumber: number;
+  holeCount?: number;
+  status: "pending" | "verified" | "denied";
+  scorecardImageUrl: string;
+  createdAt: any;
+}
+
 export default function VerifyHoleInOneScreen() {
   const router = useRouter();
   const { scoreId } = useLocalSearchParams();
   
   const [loading, setLoading] = useState(true);
   const [scoreData, setScoreData] = useState<ScoreData | null>(null);
+  const [holeInOneData, setHoleInOneData] = useState<HoleInOneData | null>(null);
   const [posterAvatar, setPosterAvatar] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
 
@@ -63,6 +85,7 @@ export default function VerifyHoleInOneScreen() {
     }
 
     try {
+      // Load score document
       const scoreDoc = await getDoc(doc(db, "scores", scoreId));
       
       if (!scoreDoc.exists()) {
@@ -95,6 +118,25 @@ export default function VerifyHoleInOneScreen() {
 
       setScoreData(data);
 
+      // Find the corresponding hole_in_ones document
+      const holeInOneQuery = query(
+        collection(db, "hole_in_ones"),
+        where("scoreId", "==", scoreId),
+        where("status", "==", "pending")
+      );
+      const holeInOneSnap = await getDocs(holeInOneQuery);
+      
+      if (!holeInOneSnap.empty) {
+        const hioDoc = holeInOneSnap.docs[0];
+        setHoleInOneData({
+          id: hioDoc.id,
+          ...hioDoc.data(),
+        } as HoleInOneData);
+        console.log("✅ Found hole_in_ones document:", hioDoc.id);
+      } else {
+        console.log("⚠️ No hole_in_ones document found for scoreId:", scoreId);
+      }
+
       // Load poster's avatar
       const userDoc = await getDoc(doc(db, "users", data.userId));
       if (userDoc.exists()) {
@@ -112,15 +154,12 @@ export default function VerifyHoleInOneScreen() {
 
   // Render content with @ mention styling
   const renderContentWithMentions = (content: string, taggedPartners: any[] = []) => {
-    // Create a map of all mentions for quick lookup
     const mentionMap: { [key: string]: string } = {};
     
-    // Add partners to mention map
     taggedPartners.forEach((partner) => {
       mentionMap[`@${partner.displayName}`] = partner.userId;
     });
     
-    // Build regex pattern from all valid mentions
     const mentionPatterns = Object.keys(mentionMap)
       .map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
       .sort((a, b) => b.length - a.length);
@@ -218,31 +257,45 @@ export default function VerifyHoleInOneScreen() {
 
       console.log("🏆 Badge awarded");
 
-      // 3. Create clubhouse post
+      // 3. Create clubhouse post (triggers onThoughtCreated for partner notifications)
       const postContent = `${scoreData.roundDescription}\n\n📍 @${scoreData.courseName}\n🎯 Hole ${scoreData.holeNumber} - Hole in One!`;
 
       const thoughtData = {
         thoughtId: `thought_${Date.now()}`,
         userId: scoreData.userId,
+        userName: scoreData.userName,
+        displayName: scoreData.userName,
+        userAvatar: posterAvatar,
+        avatar: posterAvatar,
         content: postContent,
-        postType: "Hole in 1 Achieved!",
+        postType: "holeinone",
+        achievementType: "holeinone",
         imageUrl: scoreData.scorecardImageUrl,
         createdAt: serverTimestamp(),
+        createdAtTimestamp: Date.now(),
         likes: 0,
         likedBy: [],
         comments: 0,
+        engagementScore: 0,
+        viewCount: 0,
+        lastActivityAt: serverTimestamp(),
+        hasMedia: true,
+        mediaType: "images" as const,
+        imageUrls: [scoreData.scorecardImageUrl],
+        imageCount: 1,
         scoreId: scoreId,
         taggedPartners: scoreData.taggedPartners || [],
         taggedCourses: [{
           courseId: scoreData.courseId,
           courseName: scoreData.courseName,
         }],
+        contentLowercase: postContent.toLowerCase(),
       };
 
       const thoughtRef = await addDoc(collection(db, "thoughts"), thoughtData);
       console.log("✅ Clubhouse post created:", thoughtRef.id);
 
-      // 3b. ✅ FIXED: Update course_leaders with postId for this hole-in-one
+      // 4. Update course_leaders with hole-in-one and postId
       try {
         const courseLeaderRef = doc(db, "course_leaders", scoreData.courseId.toString());
         const courseLeaderDoc = await getDoc(courseLeaderRef);
@@ -252,20 +305,18 @@ export default function VerifyHoleInOneScreen() {
           displayName: scoreData.userName,
           hole: scoreData.holeNumber,
           achievedAt: serverTimestamp(),
-          postId: thoughtRef.id, // ← THE KEY FIX: Store the postId
+          postId: thoughtRef.id,
         };
         
         if (courseLeaderDoc.exists()) {
           const existingHoleinones = courseLeaderDoc.data()?.holeinones || [];
           
-          // Check if this hole-in-one already exists (shouldn't happen, but handle it)
           const existingIndex = existingHoleinones.findIndex(
             (hio: any) => hio.userId === scoreData.userId && hio.hole === scoreData.holeNumber
           );
           
           let updatedHoleinones;
           if (existingIndex >= 0) {
-            // Update existing entry with postId
             updatedHoleinones = [...existingHoleinones];
             updatedHoleinones[existingIndex] = {
               ...updatedHoleinones[existingIndex],
@@ -273,7 +324,6 @@ export default function VerifyHoleInOneScreen() {
             };
             console.log("✅ Updated existing hole-in-one with postId");
           } else {
-            // Add new hole-in-one entry (most common case)
             updatedHoleinones = [...existingHoleinones, holeInOneEntry];
             console.log("✅ Added new hole-in-one entry with postId");
           }
@@ -282,7 +332,6 @@ export default function VerifyHoleInOneScreen() {
             holeinones: updatedHoleinones,
           });
         } else {
-          // Course leader doesn't exist yet, create it with hole-in-one
           await updateDoc(courseLeaderRef, {
             courseId: scoreData.courseId,
             courseName: scoreData.courseName,
@@ -291,39 +340,26 @@ export default function VerifyHoleInOneScreen() {
           console.log("✅ Created course_leaders entry with hole-in-one");
         }
       } catch (error) {
-        console.error("⚠️ Error updating hole-in-one postId:", error);
-        // Don't fail the entire approval if this fails
+        console.error("⚠️ Error updating course_leaders:", error);
       }
 
-      // 4. Send notification to poster
-      await createNotification({
-        userId: scoreData.userId,
-        type: "holeinone_verified",
-        actorId: auth.currentUser!.uid,
-        postId: thoughtRef.id,
-        customMessage: `✅ ${auth.currentUser?.displayName || "Your partner"} verified your hole-in-one!`,
-      });
-
-      // 5. Get poster's partners and send notifications (exclude verifier)
-      const posterDoc = await getDoc(doc(db, "users", scoreData.userId));
-      if (posterDoc.exists()) {
-        const partners = posterDoc.data()?.partners || [];
-        
-        for (const partnerId of partners) {
-          if (partnerId !== auth.currentUser!.uid) {
-            await createNotification({
-              userId: partnerId,
-              type: "partner_holeinone",
-              actorId: scoreData.userId,
-              postId: thoughtRef.id,
-              courseId: scoreData.courseId,
-              customMessage: `${scoreData.userName} hit a hole in 1 @${scoreData.courseName}!`,
-            });
-          }
-        }
-        
-        console.log("✅ Partner notifications sent");
+      // 5. ✅ Update hole_in_ones document status (triggers onHoleInOneUpdated Cloud Function)
+      // This sends holeinone_verified notification to the poster
+      if (holeInOneData) {
+        await updateDoc(doc(db, "hole_in_ones", holeInOneData.id), {
+          status: "verified",
+          verifiedAt: serverTimestamp(),
+          postId: thoughtRef.id,
+        });
+        console.log("✅ hole_in_ones document updated (triggers Cloud Function notification)");
+      } else {
+        console.log("⚠️ No hole_in_ones document to update");
       }
+
+      // ✅ NO CLIENT-SIDE NOTIFICATIONS
+      // - holeinone_verified → Triggered by onHoleInOneUpdated Cloud Function
+      // - partner_holeinone → Triggered by onThoughtCreated Cloud Function (postType: holeinone)
+      console.log("📬 Notifications handled by Cloud Functions");
 
       soundPlayer.play('achievement');
       setProcessing(false);
@@ -385,7 +421,7 @@ export default function VerifyHoleInOneScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
 
     try {
-      // Update score status
+      // 1. Update score status
       await updateDoc(doc(db, "scores", scoreId), {
         status: "denied",
         deniedAt: serverTimestamp(),
@@ -394,14 +430,21 @@ export default function VerifyHoleInOneScreen() {
 
       console.log("❌ Score denied");
 
-      // Send notification to poster
-      await createNotification({
-        userId: scoreData.userId,
-        type: "holeinone_denied",
-        actorId: auth.currentUser!.uid,
-        scoreId: scoreId,
-        customMessage: `❌ ${auth.currentUser?.displayName || "Your partner"} did not verify your hole-in-one submission`,
-      });
+      // 2. ✅ Update hole_in_ones document status (triggers onHoleInOneUpdated Cloud Function)
+      // This sends holeinone_denied notification to the poster
+      if (holeInOneData) {
+        await updateDoc(doc(db, "hole_in_ones", holeInOneData.id), {
+          status: "denied",
+          deniedAt: serverTimestamp(),
+        });
+        console.log("✅ hole_in_ones document updated (triggers Cloud Function notification)");
+      } else {
+        console.log("⚠️ No hole_in_ones document to update");
+      }
+
+      // ✅ NO CLIENT-SIDE NOTIFICATIONS
+      // - holeinone_denied → Triggered by onHoleInOneUpdated Cloud Function
+      console.log("📬 Notification handled by Cloud Function");
 
       soundPlayer.play('error');
       setProcessing(false);

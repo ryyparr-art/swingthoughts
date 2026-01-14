@@ -1,6 +1,5 @@
 import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
 import { auth, db } from "@/constants/firebaseConfig";
-import { createNotification } from "@/utils/notificationHelpers";
 import {
   checkRateLimit,
   EMAIL_VERIFICATION_MESSAGE,
@@ -14,6 +13,8 @@ import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import {
   addDoc,
+  arrayRemove,
+  arrayUnion,
   collection,
   deleteDoc,
   doc,
@@ -23,6 +24,8 @@ import {
   onSnapshot,
   orderBy,
   query,
+  serverTimestamp,
+  Timestamp,
   updateDoc,
   where,
 } from "firebase/firestore";
@@ -65,6 +68,9 @@ interface Comment {
   parentCommentId?: string;  // null/undefined = top-level, commentId = reply
   depth: number;             // 0 = top-level, 1+ = nested
   replyCount: number;        // How many direct replies
+  
+  // ✅ Optimistic UI flag
+  isOptimistic?: boolean;
 }
 
 interface UserProfile {
@@ -82,6 +88,7 @@ export default function CommentsModal({
   const router = useRouter();
   const inputRef = useRef<TextInput>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollViewRef = useRef<ScrollView>(null);
 
   const [comments, setComments] = useState<Comment[]>([]);
   const [userMap, setUserMap] = useState<Record<string, UserProfile>>({});
@@ -111,6 +118,28 @@ export default function CommentsModal({
   const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
 
   const currentUserId = auth.currentUser?.uid;
+
+  /* ---------------- LOAD CURRENT USER PROFILE ---------------- */
+  useEffect(() => {
+    if (!visible || !currentUserId) return;
+
+    const loadCurrentUser = async () => {
+      try {
+        const userProfile = await getUserProfile(currentUserId);
+        setUserMap(prev => ({
+          ...prev,
+          [currentUserId]: {
+            displayName: userProfile.displayName,
+            avatar: userProfile.avatar || undefined,
+          },
+        }));
+      } catch (error) {
+        console.error("Error loading current user profile:", error);
+      }
+    };
+
+    loadCurrentUser();
+  }, [visible, currentUserId]);
 
   /* ---------------- LOAD USER PARTNERS ---------------- */
   useEffect(() => {
@@ -184,10 +213,21 @@ export default function CommentsModal({
           parentCommentId: data.parentCommentId || null,
           depth: data.depth ?? 0,
           replyCount: data.replyCount ?? 0,
+          isOptimistic: false,
         } as Comment;
       });
 
-      setComments(loaded);
+      // ✅ Remove any optimistic comments that now have real versions
+      setComments(prev => {
+        const optimisticIds = prev.filter(c => c.isOptimistic).map(c => c.id);
+        // Keep optimistic comments that haven't been confirmed yet
+        const stillPendingOptimistic = prev.filter(c => 
+          c.isOptimistic && !loaded.some(real => 
+            real.content === c.content && real.userId === c.userId
+          )
+        );
+        return [...loaded, ...stillPendingOptimistic];
+      });
 
       // ✅ Load user profiles with helper (handles deleted users)
       const uniqueUserIds = Array.from(new Set(loaded.map((c) => c.userId)));
@@ -210,7 +250,7 @@ export default function CommentsModal({
         })
       );
 
-      setUserMap(userData);
+      setUserMap(prev => ({ ...prev, ...userData }));
       setLoading(false);
     }, (error) => {
       console.error("Comments listener error:", error);
@@ -454,7 +494,7 @@ export default function CommentsModal({
     );
   };
 
-  /* ---------------- POST/UPDATE COMMENT WITH THREADING ---------------- */
+  /* ---------------- POST/UPDATE COMMENT WITH CLOUD FUNCTIONS ---------------- */
   const post = async () => {
     if (!text.trim() || !currentUserId) return;
 
@@ -479,123 +519,125 @@ export default function CommentsModal({
     soundPlayer.play('postThought');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
+    // ✅ Store comment data before clearing
+    const commentContent = text.trim();
+    const commentTaggedPartners = [...taggedPartners];
+    const commentTaggedCourses = [...taggedCourses];
+    const commentReplyingTo = replyingToCommentId;
+
     try {
       if (editingCommentId) {
-        // UPDATE existing comment
+        // UPDATE existing comment (no notifications needed)
         await updateDoc(doc(db, "thoughts", thoughtId, "comments", editingCommentId), {
-          content: text.trim(),
-          taggedPartners: taggedPartners,
-          taggedCourses: taggedCourses,
+          content: commentContent,
+          taggedPartners: commentTaggedPartners,
+          taggedCourses: commentTaggedCourses,
         });
 
-        // ✅ No need to manually update state - real-time listener handles it!
         setEditingCommentId(null);
         setOriginalEditText("");
       } else {
-        // CREATE new comment or reply
-        const parentComment = replyingToCommentId 
-          ? comments.find(c => c.id === replyingToCommentId)
+        // ✅ OPTIMISTIC UI: Add comment immediately before Firestore write
+        const parentComment = commentReplyingTo 
+          ? comments.find(c => c.id === commentReplyingTo)
           : null;
 
-        const commentData = {
-          content: text.trim(),
+        const optimisticComment: Comment = {
+          id: `optimistic-${Date.now()}`,
+          content: commentContent,
           userId: currentUserId,
-          createdAt: new Date(),
+          createdAt: Timestamp.now(),
           likes: 0,
           likedBy: [],
-          taggedPartners: taggedPartners,
-          taggedCourses: taggedCourses,
-          // ✅ Threading fields
-          parentCommentId: replyingToCommentId || null,
+          taggedPartners: commentTaggedPartners,
+          taggedCourses: commentTaggedCourses,
+          parentCommentId: commentReplyingTo || undefined,
           depth: parentComment ? (parentComment.depth + 1) : 0,
           replyCount: 0,
+          isOptimistic: true,
         };
 
-        const commentRef = await addDoc(
-          collection(db, "thoughts", thoughtId, "comments"),
-          commentData
-        );
+        // Add optimistic comment to state immediately
+        setComments(prev => [...prev, optimisticComment]);
 
-        // ✅ If replying, increment parent's replyCount
-        if (replyingToCommentId) {
-          const parentRef = doc(db, "thoughts", thoughtId, "comments", replyingToCommentId);
-          await updateDoc(parentRef, {
-            replyCount: increment(1),
-          });
-          
-          // ✅ Auto-expand parent to show new reply
-          setExpandedComments(prev => new Set(prev).add(replyingToCommentId));
+        // If replying, auto-expand parent to show new reply
+        if (commentReplyingTo) {
+          setExpandedComments(prev => new Set(prev).add(commentReplyingTo));
         }
 
-        await updateDoc(doc(db, "thoughts", thoughtId), {
-          comments: increment(1),
-        });
+        // Scroll to bottom to show new comment
+        setTimeout(() => {
+          scrollViewRef.current?.scrollToEnd({ animated: true });
+        }, 100);
 
-        // Check if post owner was tagged
-        const postOwnerWasTagged = taggedPartners.some(p => p.userId === postOwnerId);
+        // ✅ Build taggedUsers array for Cloud Function (just user IDs)
+        const taggedUserIds: string[] = commentTaggedPartners.map(p => p.userId);
 
-        // Create comment notification for post owner (only if NOT tagged and not a reply)
-        if (postOwnerId && postOwnerId !== currentUserId && !postOwnerWasTagged && !replyingToCommentId) {
-          await createNotification({
-            userId: postOwnerId,
-            type: "comment",
-            actorId: currentUserId,
-            postId: thoughtId,
-          });
-        }
-
-        // ✅ If replying, notify the parent comment author
-        if (replyingToCommentId && parentComment && parentComment.userId !== currentUserId) {
-          await createNotification({
-            userId: parentComment.userId,
-            type: "comment", // Could add "reply" type if desired
-            actorId: currentUserId,
-            postId: thoughtId,
-            commentId: commentRef.id,
-          });
-        }
-
-        // Create mention notifications for tagged partners
-        for (const partner of taggedPartners) {
-          if (partner.userId !== currentUserId) {
-            await createNotification({
-              userId: partner.userId,
-              type: "mention_comment",
-              actorId: currentUserId,
-              postId: thoughtId,
-              commentId: commentRef.id,
-            });
-          }
-        }
-
-        // Create mention notifications for tagged courses (claimed courses)
-        for (const course of taggedCourses) {
+        // ✅ Also find course owners to include in taggedUsers
+        for (const course of commentTaggedCourses) {
           try {
-            // Find the user who owns this course
             const usersQuery = query(
               collection(db, "users"),
               where("ownedCourseId", "==", course.courseId)
             );
             const usersSnap = await getDocs(usersQuery);
-
             if (!usersSnap.empty) {
-              const courseOwner = usersSnap.docs[0];
-              const courseOwnerId = courseOwner.id;
-
-              if (courseOwnerId !== currentUserId && courseOwnerId !== postOwnerId) {
-                await createNotification({
-                  userId: courseOwnerId,
-                  type: "mention_comment",
-                  actorId: currentUserId,
-                  postId: thoughtId,
-                  commentId: commentRef.id,
-                });
+              const courseOwnerId = usersSnap.docs[0].id;
+              if (!taggedUserIds.includes(courseOwnerId)) {
+                taggedUserIds.push(courseOwnerId);
               }
             }
           } catch (error) {
-            console.error("Error notifying course owner:", error);
+            console.error("Error finding course owner:", error);
           }
         }
+
+        // ✅ Step 1: Create comment in subcollection (for display)
+        const subcollectionCommentData = {
+          content: commentContent,
+          userId: currentUserId,
+          createdAt: serverTimestamp(),
+          likes: 0,
+          likedBy: [],
+          taggedPartners: commentTaggedPartners,
+          taggedCourses: commentTaggedCourses,
+          // Threading fields
+          parentCommentId: commentReplyingTo || null,
+          depth: parentComment ? (parentComment.depth + 1) : 0,
+          replyCount: 0,
+        };
+
+        const subcollectionRef = await addDoc(
+          collection(db, "thoughts", thoughtId, "comments"),
+          subcollectionCommentData
+        );
+
+        // ✅ Step 2: Create comment in top-level "comments" collection (triggers Cloud Function)
+        await addDoc(collection(db, "comments"), {
+          userId: currentUserId,
+          postId: thoughtId,
+          postAuthorId: postOwnerId,
+          content: commentContent,
+          taggedUsers: taggedUserIds,
+          parentCommentId: commentReplyingTo || null,
+          parentCommentAuthorId: parentComment?.userId || null,
+          createdAt: serverTimestamp(),
+          // Reference to subcollection comment
+          subcollectionCommentId: subcollectionRef.id,
+        });
+
+        // ✅ If replying, increment parent's replyCount
+        if (commentReplyingTo) {
+          const parentRef = doc(db, "thoughts", thoughtId, "comments", commentReplyingTo);
+          await updateDoc(parentRef, {
+            replyCount: increment(1),
+          });
+        }
+
+        // Update post comment count
+        await updateDoc(doc(db, "thoughts", thoughtId), {
+          comments: increment(1),
+        });
 
         // ✅ ANTI-BOT: Update rate limit timestamp
         await updateRateLimitTimestamp("comment");
@@ -603,6 +645,7 @@ export default function CommentsModal({
         onCommentAdded();
       }
 
+      // ✅ Clear input AFTER successful post
       setText("");
       setTaggedPartners([]);
       setTaggedCourses([]);
@@ -610,12 +653,15 @@ export default function CommentsModal({
       setReplyingToCommentId(null);
       setReplyingToUsername("");
       
-      // ✅ No need to refetch - real-time listener shows new comment automatically!
       setPosting(false);
     } catch (error) {
       console.error("Error posting/updating comment:", error);
       soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      
+      // ✅ Remove optimistic comment on error
+      setComments(prev => prev.filter(c => !c.isOptimistic));
+      
       setPosting(false);
     }
   };
@@ -690,7 +736,6 @@ export default function CommentsModal({
                 comments: increment(-1),
               });
 
-              // ✅ No need to manually update state - real-time listener handles it!
             } catch (error) {
               console.error("Error deleting comment:", error);
               soundPlayer.play('error');
@@ -759,6 +804,7 @@ export default function CommentsModal({
   /* ---------------- LONG PRESS MENU ---------------- */
   const handleLongPressComment = (comment: Comment) => {
     if (comment.userId !== currentUserId) return;
+    if (comment.isOptimistic) return; // Don't allow actions on optimistic comments
 
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -784,9 +830,10 @@ export default function CommentsModal({
     );
   };
 
-  /* ---------------- LIKE COMMENT ---------------- */
+  /* ---------------- LIKE COMMENT (WITH CLOUD FUNCTION TRIGGER) ---------------- */
   const toggleLike = async (comment: Comment) => {
     if (!currentUserId) return;
+    if (comment.isOptimistic) return; // Don't allow likes on optimistic comments
 
     soundPlayer.play('dart');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -794,14 +841,43 @@ export default function CommentsModal({
     const ref = doc(db, "thoughts", thoughtId, "comments", comment.id);
     const hasLiked = comment.likedBy?.includes(currentUserId);
 
-    await updateDoc(ref, {
-      likes: increment(hasLiked ? -1 : 1),
-      likedBy: hasLiked
-        ? comment.likedBy?.filter((id) => id !== currentUserId)
-        : [...(comment.likedBy || []), currentUserId],
-    });
+    if (hasLiked) {
+      // ✅ UNLIKE: Update comment + delete comment_like document
+      await updateDoc(ref, {
+        likes: increment(-1),
+        likedBy: arrayRemove(currentUserId),
+      });
 
-    // ✅ No need to manually update state - real-time listener handles it!
+      // Find and delete the comment_like document
+      try {
+        const likesQuery = query(
+          collection(db, "comment_likes"),
+          where("userId", "==", currentUserId),
+          where("commentId", "==", comment.id)
+        );
+        const likesSnap = await getDocs(likesQuery);
+        likesSnap.forEach(async (likeDoc) => {
+          await deleteDoc(likeDoc.ref);
+        });
+      } catch (error) {
+        console.error("Error deleting comment_like:", error);
+      }
+    } else {
+      // ✅ LIKE: Update comment + create comment_like document (triggers Cloud Function)
+      await updateDoc(ref, {
+        likes: increment(1),
+        likedBy: arrayUnion(currentUserId),
+      });
+
+      // Create comment_like document - triggers onCommentLikeCreated Cloud Function
+      await addDoc(collection(db, "comment_likes"), {
+        userId: currentUserId,
+        commentId: comment.id,
+        commentAuthorId: comment.userId,
+        postId: thoughtId,
+        createdAt: serverTimestamp(),
+      });
+    }
   };
 
   return (
@@ -847,7 +923,7 @@ export default function CommentsModal({
             ) : comments.length === 0 ? (
               <Text style={styles.empty}>No comments yet</Text>
             ) : (
-              <ScrollView>
+              <ScrollView ref={scrollViewRef}>
                 {(() => {
                   const { topLevel, repliesMap } = buildCommentTree();
                   
@@ -864,7 +940,8 @@ export default function CommentsModal({
                           style={[
                             styles.commentRow,
                             isReply && styles.commentRowReply,
-                            { marginLeft: comment.depth * 20 } // Indent based on depth
+                            { marginLeft: comment.depth * 20 }, // Indent based on depth
+                            comment.isOptimistic && styles.commentRowOptimistic,
                           ]}
                           onLongPress={() => handleLongPressComment(comment)}
                           delayLongPress={500}
@@ -909,39 +986,51 @@ export default function CommentsModal({
                             {renderCommentWithTags(comment)}
                             
                             {/* ✅ Reply and View Replies buttons */}
-                            <View style={styles.commentActions}>
-                              <TouchableOpacity 
-                                onPress={() => handleReply(comment)}
-                                style={styles.replyButton}
-                              >
-                                <Text style={styles.replyButtonText}>Reply</Text>
-                              </TouchableOpacity>
-                              
-                              {comment.replyCount > 0 && (
+                            {!comment.isOptimistic && (
+                              <View style={styles.commentActions}>
                                 <TouchableOpacity 
-                                  onPress={() => toggleReplies(comment.id)}
-                                  style={styles.viewRepliesButton}
+                                  onPress={() => handleReply(comment)}
+                                  style={styles.replyButton}
                                 >
-                                  <Text style={styles.viewRepliesText}>
-                                    {isExpanded ? "▼" : "▶"} {comment.replyCount} {comment.replyCount === 1 ? "reply" : "replies"}
-                                  </Text>
+                                  <Text style={styles.replyButtonText}>Reply</Text>
                                 </TouchableOpacity>
-                              )}
-                            </View>
+                                
+                                {comment.replyCount > 0 && (
+                                  <TouchableOpacity 
+                                    onPress={() => toggleReplies(comment.id)}
+                                    style={styles.viewRepliesButton}
+                                  >
+                                    <Text style={styles.viewRepliesText}>
+                                      {isExpanded ? "▼" : "▶"} {comment.replyCount} {comment.replyCount === 1 ? "reply" : "replies"}
+                                    </Text>
+                                  </TouchableOpacity>
+                                )}
+                              </View>
+                            )}
+                            
+                            {/* ✅ Posting indicator for optimistic comments */}
+                            {comment.isOptimistic && (
+                              <View style={styles.postingIndicator}>
+                                <ActivityIndicator size="small" color="#0D5C3A" />
+                                <Text style={styles.postingText}>Posting...</Text>
+                              </View>
+                            )}
                           </View>
 
-                          <TouchableOpacity
-                            onPress={() => toggleLike(comment)}
-                            style={styles.likeButton}
-                          >
-                            <Image
-                              source={require("@/assets/icons/Throw Darts.png")}
-                              style={[
-                                styles.likeIcon,
-                                hasLiked && styles.likeIconActive,
-                              ]}
-                            />
-                          </TouchableOpacity>
+                          {!comment.isOptimistic && (
+                            <TouchableOpacity
+                              onPress={() => toggleLike(comment)}
+                              style={styles.likeButton}
+                            >
+                              <Image
+                                source={require("@/assets/icons/Throw Darts.png")}
+                                style={[
+                                  styles.likeIcon,
+                                  hasLiked && styles.likeIconActive,
+                                ]}
+                              />
+                            </TouchableOpacity>
+                          )}
                         </TouchableOpacity>
                         
                         {/* ✅ Render replies if expanded */}
@@ -1027,7 +1116,7 @@ export default function CommentsModal({
                 autoCapitalize="sentences"
                 spellCheck={true}
                 textAlignVertical="top"
-                selectionColor="#0D5C3A" // Green selection color hints at mentions
+                selectionColor="#0D5C3A"
               />
               
               {/* Show validated mentions as chips below when typing */}
@@ -1129,6 +1218,10 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   
+  commentRowOptimistic: {
+    opacity: 0.7,
+  },
+  
   repliesContainer: {
     marginTop: -10,
   },
@@ -1199,6 +1292,20 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#666",
   },
+  
+  postingIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 6,
+  },
+  
+  postingText: {
+    fontSize: 11,
+    color: "#666",
+    fontStyle: "italic",
+  },
+  
   likeButton: {
     padding: 6,
   },
@@ -1338,7 +1445,6 @@ const styles = StyleSheet.create({
     opacity: 0.4,
   },
 });
-
 
 
 
