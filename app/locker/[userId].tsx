@@ -404,20 +404,23 @@ export default function LockerUserScreen() {
   };
 
   const handleLockerNote = () => {
-    if (partnershipStatus !== "partners") {
-      soundPlayer.play('error');
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-      Alert.alert(
-        "Locker Note Locked",
-        `Notes in the locker aren't available until ${profile?.displayName} accepts your Partner invitation.`
-      );
-      return;
-    }
+  if (partnershipStatus !== "partners") {
+    soundPlayer.play('error');
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    Alert.alert(
+      "Locker Note Locked",
+      `Notes in the locker aren't available until ${profile?.displayName} accepts your Partner invitation.`
+    );
+    return;
+  }
 
-    soundPlayer.play('click');
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push(`/messages/${viewingUserId}`);
-  };
+  soundPlayer.play('click');
+  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+  // Construct deterministic thread ID
+  const threadId = [currentUserId, viewingUserId].sort().join("_");
+  router.push(`/messages/${threadId}`);
+};
 
   /* ========================= UI ========================= */
 

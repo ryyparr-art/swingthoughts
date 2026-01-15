@@ -10,6 +10,7 @@ import {
 } from "@/utils/rateLimitHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 
+import { Ionicons } from "@expo/vector-icons";
 import Slider from "@react-native-community/slider";
 import { ResizeMode, Video } from "expo-av";
 import * as Haptics from "expo-haptics";
@@ -28,13 +29,14 @@ import {
   Image,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 import { Video as VideoCompressor } from "react-native-compressor";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -120,6 +122,7 @@ const IMAGE_QUALITY = 0.7;
 const MAX_IMAGES = 3;
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
+const SCREEN_HEIGHT = Dimensions.get('window').height;
 
 /* -------------------------------- TYPES -------------------------------- */
 
@@ -143,6 +146,12 @@ interface GolfCourse {
   };
 }
 
+interface PendingImage {
+  uri: string;
+  width: number;
+  height: number;
+}
+
 /* ======================================================================== */
 
 export default function CreateScreen() {
@@ -161,6 +170,13 @@ export default function CreateScreen() {
   const [videoThumbnailUri, setVideoThumbnailUri] = useState<string | null>(null);
   const [isPosting, setIsPosting] = useState(false);
   const [isProcessingMedia, setIsProcessingMedia] = useState(false);
+
+  // ✅ NEW: Image cropping flow states
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [currentCropIndex, setCurrentCropIndex] = useState(0);
+  const [showCropModal, setShowCropModal] = useState(false);
+  const [cropOffset, setCropOffset] = useState({ x: 0, y: 0 });
+  const [cropScale, setCropScale] = useState(1);
 
   // Video states
   const [videoDuration, setVideoDuration] = useState(0);
@@ -281,6 +297,13 @@ export default function CreateScreen() {
           setVideoUri(postData.videoUrl);
           setVideoThumbnailUri(postData.videoThumbnailUrl || null);
           setMediaType("video");
+          // Show trimmer for existing videos too
+          if (postData.videoDuration) {
+            setVideoDuration(postData.videoDuration);
+            setTrimStart(postData.videoTrimStart || 0);
+            setTrimEnd(postData.videoTrimEnd || Math.min(postData.videoDuration, MAX_VIDEO_DURATION));
+            setShowVideoTrimmer(true);
+          }
         }
         
         const existingMentions: string[] = [];
@@ -380,9 +403,9 @@ export default function CreateScreen() {
     }
   };
 
-  /* --------------------------- UNIFIED MEDIA PICKER --------------------------- */
+  /* --------------------------- IMAGE PICKER (STEP 1) --------------------------- */
 
-  const pickMedia = async () => {
+  const pickImages = async () => {
     try {
       soundPlayer.play('click');
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -395,15 +418,62 @@ export default function CreateScreen() {
           'Permission Required',
           'Please allow photo library access in your device settings to upload media.',
           [
-            { 
-              text: 'Cancel', 
-              style: 'cancel',
-              onPress: () => soundPlayer.play('click')
-            },
-            { 
-              text: 'Open Settings', 
-              onPress: () => soundPlayer.play('click')
-            }
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings' }
+          ]
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsMultipleSelection: true,
+        quality: 1, // Keep full quality for cropping
+        allowsEditing: false,
+      });
+
+      if (!result.canceled && result.assets.length > 0) {
+        const selectedImages = result.assets.slice(0, MAX_IMAGES);
+        
+        // Store pending images with dimensions for cropping
+        const pending: PendingImage[] = selectedImages.map(asset => ({
+          uri: asset.uri,
+          width: asset.width || 1080,
+          height: asset.height || 1080,
+        }));
+        
+        setPendingImages(pending);
+        setCurrentCropIndex(0);
+        setCropOffset({ x: 0, y: 0 });
+        setCropScale(1);
+        setShowCropModal(true);
+        
+        soundPlayer.play('click');
+      }
+    } catch (error) {
+      console.error("Image picker error:", error);
+      soundPlayer.play('error');
+      Alert.alert("Error", "Failed to select images. Please try again.");
+    }
+  };
+
+  /* --------------------------- VIDEO PICKER --------------------------- */
+
+  const pickVideo = async () => {
+    try {
+      soundPlayer.play('click');
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      
+      if (status !== 'granted') {
+        soundPlayer.play('error');
+        Alert.alert(
+          'Permission Required',
+          'Please allow photo library access in your device settings to upload media.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Open Settings' }
           ]
         );
         return;
@@ -411,88 +481,165 @@ export default function CreateScreen() {
 
       setIsProcessingMedia(true);
 
-      // Allow both images and videos
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images", "videos"],
-        allowsMultipleSelection: true, // Enable multi-select for images
-        allowsEditing: false, // Disable to allow multiple selection
+        mediaTypes: ["videos"],
+        allowsEditing: false,
         quality: 0.8,
-        videoMaxDuration: 60,
+        videoMaxDuration: 120, // Allow up to 2 minutes, then trim
       });
 
       if (!result.canceled && result.assets.length > 0) {
-        const firstAsset = result.assets[0];
+        const asset = result.assets[0];
+        const duration = asset.duration || 0;
         
-        // Check if it's a video
-        if (firstAsset.type === 'video' || firstAsset.duration) {
-          // VIDEO HANDLING
-          const duration = firstAsset.duration || 0;
-          
-          if (duration / 1000 > 60) {
-            soundPlayer.play('error');
-            Alert.alert(
-              "Video Too Long",
-              "Please select a video shorter than 60 seconds.",
-              [{ text: "OK", onPress: () => soundPlayer.play('click') }]
-            );
-            setIsProcessingMedia(false);
-            return;
-          }
-          
-          const compressedUri = await compressVideo(firstAsset.uri);
-          const thumbnailUri = await generateVideoThumbnail(compressedUri);
-          
-          setVideoDuration(duration / 1000);
-          setVideoUri(compressedUri);
-          setVideoThumbnailUri(thumbnailUri);
-          setMediaType("video");
-          setImageUris([]); // Clear images
-          setIsVideoPlaying(false);
-
-          if (duration / 1000 > MAX_VIDEO_DURATION) {
-            setTrimStart(0);
-            setTrimEnd(MAX_VIDEO_DURATION);
-            setShowVideoTrimmer(true);
-            
-            soundPlayer.play('click');
-            Alert.alert(
-              "Trim Your Video",
-              `Your video is ${(duration / 1000).toFixed(0)} seconds. Use the sliders below to select the best 30-second clip.`,
-              [{ text: "Got it", onPress: () => soundPlayer.play('click') }]
-            );
-          } else {
-            setTrimStart(0);
-            setTrimEnd(duration / 1000);
-            setShowVideoTrimmer(false);
-          }
-          
+        if (duration / 1000 > 120) {
+          soundPlayer.play('error');
+          Alert.alert(
+            "Video Too Long",
+            "Please select a video shorter than 2 minutes.",
+            [{ text: "OK" }]
+          );
           setIsProcessingMedia(false);
-        } else {
-          // IMAGE HANDLING (up to 3)
-          const selectedImages = result.assets.slice(0, MAX_IMAGES);
-          
-          const compressedImages: string[] = [];
-          for (const asset of selectedImages) {
-            const compressed = await compressImage(asset.uri);
-            compressedImages.push(compressed);
-          }
-          
-          setImageUris(compressedImages);
-          setMediaType("images");
-          setVideoUri(null); // Clear video
-          setVideoThumbnailUri(null);
-          setCurrentImageIndex(0);
-          setIsProcessingMedia(false);
+          return;
         }
+        
+        const compressedUri = await compressVideo(asset.uri);
+        const thumbnailUri = await generateVideoThumbnail(compressedUri);
+        
+        const durationSeconds = duration / 1000;
+        setVideoDuration(durationSeconds);
+        setVideoUri(compressedUri);
+        setVideoThumbnailUri(thumbnailUri);
+        setMediaType("video");
+        setImageUris([]); // Clear images
+        setIsVideoPlaying(false);
+
+        // ✅ Always show trimmer - even for short videos
+        setTrimStart(0);
+        setTrimEnd(Math.min(durationSeconds, MAX_VIDEO_DURATION));
+        setShowVideoTrimmer(true);
+        
+        if (durationSeconds > MAX_VIDEO_DURATION) {
+          soundPlayer.play('click');
+          Alert.alert(
+            "Trim Your Video",
+            `Your video is ${durationSeconds.toFixed(0)} seconds. Use the sliders below to select the best ${MAX_VIDEO_DURATION}-second clip.`,
+            [{ text: "Got it" }]
+          );
+        }
+        
+        setIsProcessingMedia(false);
       } else {
         setIsProcessingMedia(false);
       }
     } catch (error) {
-      console.error("Media picker error:", error);
+      console.error("Video picker error:", error);
       soundPlayer.play('error');
-      Alert.alert("Error", "Failed to select media. Please try again.");
+      Alert.alert("Error", "Failed to select video. Please try again.");
       setIsProcessingMedia(false);
     }
+  };
+
+  /* --------------------------- CROP IMAGE (STEP 2) --------------------------- */
+
+  const handleCropComplete = async () => {
+    if (currentCropIndex >= pendingImages.length) return;
+    
+    const currentImage = pendingImages[currentCropIndex];
+    
+    try {
+      setIsProcessingMedia(true);
+      
+      // Calculate crop region based on offset and scale
+      const cropSize = Math.min(currentImage.width, currentImage.height) / cropScale;
+      const originX = Math.max(0, (currentImage.width - cropSize) / 2 - cropOffset.x * (currentImage.width / SCREEN_WIDTH));
+      const originY = Math.max(0, (currentImage.height - cropSize) / 2 - cropOffset.y * (currentImage.height / SCREEN_WIDTH));
+      
+      // Crop and compress the image
+      const manipResult = await ImageManipulator.manipulateAsync(
+        currentImage.uri,
+        [
+          {
+            crop: {
+              originX: Math.max(0, Math.min(originX, currentImage.width - cropSize)),
+              originY: Math.max(0, Math.min(originY, currentImage.height - cropSize)),
+              width: cropSize,
+              height: cropSize,
+            },
+          },
+          { resize: { width: MAX_IMAGE_WIDTH } },
+        ],
+        { compress: IMAGE_QUALITY, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      
+      // Add to final images
+      const newImageUris = [...imageUris, manipResult.uri];
+      setImageUris(newImageUris);
+      
+      // Move to next image or finish
+      if (currentCropIndex < pendingImages.length - 1) {
+        setCurrentCropIndex(currentCropIndex + 1);
+        setCropOffset({ x: 0, y: 0 });
+        setCropScale(1);
+        setIsProcessingMedia(false);
+      } else {
+        // All images cropped
+        setShowCropModal(false);
+        setPendingImages([]);
+        setCurrentCropIndex(0);
+        setMediaType("images");
+        setIsProcessingMedia(false);
+        soundPlayer.play('postThought');
+      }
+    } catch (error) {
+      console.error("Crop error:", error);
+      soundPlayer.play('error');
+      Alert.alert("Error", "Failed to crop image. Please try again.");
+      setIsProcessingMedia(false);
+    }
+  };
+
+  const handleSkipCrop = async () => {
+    if (currentCropIndex >= pendingImages.length) return;
+    
+    const currentImage = pendingImages[currentCropIndex];
+    
+    try {
+      setIsProcessingMedia(true);
+      
+      // Just compress without cropping
+      const compressed = await compressImage(currentImage.uri);
+      
+      const newImageUris = [...imageUris, compressed];
+      setImageUris(newImageUris);
+      
+      if (currentCropIndex < pendingImages.length - 1) {
+        setCurrentCropIndex(currentCropIndex + 1);
+        setCropOffset({ x: 0, y: 0 });
+        setCropScale(1);
+        setIsProcessingMedia(false);
+      } else {
+        setShowCropModal(false);
+        setPendingImages([]);
+        setCurrentCropIndex(0);
+        setMediaType("images");
+        setIsProcessingMedia(false);
+        soundPlayer.play('postThought');
+      }
+    } catch (error) {
+      console.error("Skip crop error:", error);
+      setIsProcessingMedia(false);
+    }
+  };
+
+  const handleCancelCrop = () => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setShowCropModal(false);
+    setPendingImages([]);
+    setCurrentCropIndex(0);
+    setCropOffset({ x: 0, y: 0 });
+    setCropScale(1);
   };
 
   /* --------------------------- ADD MORE IMAGES --------------------------- */
@@ -511,33 +658,32 @@ export default function CreateScreen() {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') return;
 
-      setIsProcessingMedia(true);
-
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
         allowsMultipleSelection: true,
-        quality: 0.8,
+        quality: 1,
+        allowsEditing: false,
       });
 
       if (!result.canceled && result.assets.length > 0) {
         const remainingSlots = MAX_IMAGES - imageUris.length;
-        const newImages = result.assets.slice(0, remainingSlots);
+        const selectedImages = result.assets.slice(0, remainingSlots);
         
-        const compressedImages: string[] = [];
-        for (const asset of newImages) {
-          const compressed = await compressImage(asset.uri);
-          compressedImages.push(compressed);
-        }
+        const pending: PendingImage[] = selectedImages.map(asset => ({
+          uri: asset.uri,
+          width: asset.width || 1080,
+          height: asset.height || 1080,
+        }));
         
-        setImageUris([...imageUris, ...compressedImages]);
-        setIsProcessingMedia(false);
-      } else {
-        setIsProcessingMedia(false);
+        setPendingImages(pending);
+        setCurrentCropIndex(0);
+        setCropOffset({ x: 0, y: 0 });
+        setCropScale(1);
+        setShowCropModal(true);
       }
     } catch (error) {
       console.error("Add images error:", error);
       soundPlayer.play('error');
-      setIsProcessingMedia(false);
     }
   };
 
@@ -1020,7 +1166,7 @@ export default function CreateScreen() {
           longitude: userLon || null,
         },
         
-        // ✅ Denormalized user data - using consistent naming (displayName, not userName)
+        // Denormalized user data
         userName: currentUserData.displayName || "Unknown",
         displayName: currentUserData.displayName || "Unknown",
         userAvatar: currentUserData.avatar || null,
@@ -1037,7 +1183,7 @@ export default function CreateScreen() {
         imageUrl: null, // Deprecated
         videoUrl: uploadedVideoUrl,
         videoThumbnailUrl: uploadedThumbnailUrl,
-        videoDuration: uploadedVideoUrl ? (trimEnd - trimStart) : null,
+        videoDuration: uploadedVideoUrl ? videoDuration : null,
         videoTrimStart: uploadedVideoUrl ? trimStart : null,
         videoTrimEnd: uploadedVideoUrl ? trimEnd : null,
         
@@ -1117,6 +1263,169 @@ export default function CreateScreen() {
     }
   };
 
+  /* --------------------------- SEEK VIDEO TO TRIM POSITION --------------------------- */
+
+  const seekToTrimStart = async () => {
+    if (videoRef.current) {
+      await videoRef.current.setPositionAsync(trimStart * 1000);
+    }
+  };
+
+  /* --------------------------- CROP MODAL UI --------------------------- */
+
+  const renderCropModal = () => {
+    if (!showCropModal || pendingImages.length === 0) return null;
+    
+    const currentImage = pendingImages[currentCropIndex];
+    if (!currentImage) return null;
+    
+    const imageAspect = currentImage.width / currentImage.height;
+    const containerSize = SCREEN_WIDTH - 48;
+    
+    return (
+      <Modal
+        visible={showCropModal}
+        animationType="slide"
+        presentationStyle="fullScreen"
+      >
+        <SafeAreaView style={styles.cropModalContainer}>
+          {/* Header */}
+          <View style={styles.cropModalHeader}>
+            <TouchableOpacity onPress={handleCancelCrop} style={styles.cropHeaderButton}>
+              <Ionicons name="close" size={28} color="#FFF" />
+            </TouchableOpacity>
+            
+            <Text style={styles.cropModalTitle}>
+              Crop Image {currentCropIndex + 1} of {pendingImages.length}
+            </Text>
+            
+            <TouchableOpacity 
+              onPress={handleCropComplete} 
+              style={styles.cropHeaderButton}
+              disabled={isProcessingMedia}
+            >
+              {isProcessingMedia ? (
+                <ActivityIndicator size="small" color="#FFD700" />
+              ) : (
+                <Ionicons name="checkmark" size={28} color="#FFD700" />
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* Crop Area */}
+          <View style={styles.cropAreaContainer}>
+            <View style={[styles.cropArea, { width: containerSize, height: containerSize }]}>
+              <Image
+                source={{ uri: currentImage.uri }}
+                style={[
+                  styles.cropImage,
+                  {
+                    width: imageAspect >= 1 ? containerSize * cropScale : containerSize * imageAspect * cropScale,
+                    height: imageAspect >= 1 ? containerSize / imageAspect * cropScale : containerSize * cropScale,
+                    transform: [
+                      { translateX: cropOffset.x },
+                      { translateY: cropOffset.y },
+                    ],
+                  },
+                ]}
+                resizeMode="contain"
+              />
+              
+              {/* Crop Grid Overlay */}
+              <View style={styles.cropGridOverlay} pointerEvents="none">
+                <View style={styles.cropGridRow}>
+                  <View style={styles.cropGridCell} />
+                  <View style={[styles.cropGridCell, styles.cropGridCellBorder]} />
+                  <View style={styles.cropGridCell} />
+                </View>
+                <View style={[styles.cropGridRow, styles.cropGridRowBorder]}>
+                  <View style={styles.cropGridCell} />
+                  <View style={[styles.cropGridCell, styles.cropGridCellBorder]} />
+                  <View style={styles.cropGridCell} />
+                </View>
+                <View style={styles.cropGridRow}>
+                  <View style={styles.cropGridCell} />
+                  <View style={[styles.cropGridCell, styles.cropGridCellBorder]} />
+                  <View style={styles.cropGridCell} />
+                </View>
+              </View>
+            </View>
+          </View>
+
+          {/* Controls */}
+          <View style={styles.cropControls}>
+            <Text style={styles.cropControlLabel}>Zoom</Text>
+            <Slider
+              style={styles.cropSlider}
+              minimumValue={1}
+              maximumValue={3}
+              value={cropScale}
+              onValueChange={setCropScale}
+              minimumTrackTintColor="#FFD700"
+              maximumTrackTintColor="#444"
+              thumbTintColor="#FFD700"
+            />
+            
+            <View style={styles.cropOffsetControls}>
+              <View style={styles.cropOffsetRow}>
+                <Text style={styles.cropControlLabel}>Horizontal</Text>
+                <Slider
+                  style={styles.cropSlider}
+                  minimumValue={-100}
+                  maximumValue={100}
+                  value={cropOffset.x}
+                  onValueChange={(x) => setCropOffset({ ...cropOffset, x })}
+                  minimumTrackTintColor="#FFD700"
+                  maximumTrackTintColor="#444"
+                  thumbTintColor="#FFD700"
+                />
+              </View>
+              
+              <View style={styles.cropOffsetRow}>
+                <Text style={styles.cropControlLabel}>Vertical</Text>
+                <Slider
+                  style={styles.cropSlider}
+                  minimumValue={-100}
+                  maximumValue={100}
+                  value={cropOffset.y}
+                  onValueChange={(y) => setCropOffset({ ...cropOffset, y })}
+                  minimumTrackTintColor="#FFD700"
+                  maximumTrackTintColor="#444"
+                  thumbTintColor="#FFD700"
+                />
+              </View>
+            </View>
+
+            {/* Action Buttons */}
+            <View style={styles.cropActionButtons}>
+              <TouchableOpacity 
+                style={styles.cropSkipButton}
+                onPress={handleSkipCrop}
+                disabled={isProcessingMedia}
+              >
+                <Text style={styles.cropSkipButtonText}>Skip Crop</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={styles.cropConfirmButton}
+                onPress={handleCropComplete}
+                disabled={isProcessingMedia}
+              >
+                {isProcessingMedia ? (
+                  <ActivityIndicator size="small" color="#0D5C3A" />
+                ) : (
+                  <Text style={styles.cropConfirmButtonText}>
+                    {currentCropIndex < pendingImages.length - 1 ? "Next Image" : "Done"}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </SafeAreaView>
+      </Modal>
+    );
+  };
+
   /* --------------------------- UI ---------------------------- */
 
   return (
@@ -1182,7 +1491,7 @@ export default function CreateScreen() {
         >
           {/* MEDIA SECTION */}
           <View style={styles.section}>
-            {isProcessingMedia ? (
+            {isProcessingMedia && !showCropModal ? (
               <View style={styles.mediaPreviewBox}>
                 <ActivityIndicator size="large" color="#0D5C3A" />
                 <Text style={styles.processingText}>Processing media...</Text>
@@ -1238,8 +1547,9 @@ export default function CreateScreen() {
                         style={styles.addMoreButton}
                         onPress={addMoreImages}
                       >
+                        <Ionicons name="add-circle-outline" size={20} color="#FFF" />
                         <Text style={styles.addMoreText}>
-                          + Add More ({imageUris.length}/{MAX_IMAGES})
+                          Add More ({imageUris.length}/{MAX_IMAGES})
                         </Text>
                       </TouchableOpacity>
                     )}
@@ -1267,7 +1577,7 @@ export default function CreateScreen() {
                           onPress={toggleVideoPlayback}
                         >
                           <View style={styles.playButton}>
-                            <Text style={styles.playIcon}>▶</Text>
+                            <Ionicons name="play" size={32} color="#0D5C3A" />
                           </View>
                         </TouchableOpacity>
                       )}
@@ -1278,54 +1588,95 @@ export default function CreateScreen() {
                           onPress={toggleVideoPlayback}
                         >
                           <View style={styles.pauseButton}>
-                            <Text style={styles.pauseIcon}>⏸</Text>
+                            <Ionicons name="pause" size={28} color="#0D5C3A" />
                           </View>
                         </TouchableOpacity>
                       )}
                     </View>
 
-                    {/* Video Trimmer */}
+                    {/* ✅ Video Trimmer - ALWAYS VISIBLE */}
                     {showVideoTrimmer && (
                       <View style={styles.videoTrimmer}>
-                        <Text style={styles.trimmerLabel}>
-                          Trim Video: {trimStart.toFixed(1)}s - {trimEnd.toFixed(1)}s 
-                          ({(trimEnd - trimStart).toFixed(1)}s clip)
-                        </Text>
+                        <View style={styles.trimmerHeader}>
+                          <Ionicons name="cut-outline" size={20} color="#0D5C3A" />
+                          <Text style={styles.trimmerLabel}>
+                            Select Clip: {trimStart.toFixed(1)}s - {trimEnd.toFixed(1)}s 
+                          </Text>
+                          <Text style={styles.trimmerDuration}>
+                            ({(trimEnd - trimStart).toFixed(1)}s)
+                          </Text>
+                        </View>
+                        
+                        {/* Timeline visualization */}
+                        <View style={styles.timelineContainer}>
+                          <View style={styles.timeline}>
+                            <View 
+                              style={[
+                                styles.timelineSelected,
+                                {
+                                  left: `${(trimStart / videoDuration) * 100}%`,
+                                  width: `${((trimEnd - trimStart) / videoDuration) * 100}%`,
+                                }
+                              ]} 
+                            />
+                          </View>
+                          <View style={styles.timelineLabels}>
+                            <Text style={styles.timelineLabel}>0s</Text>
+                            <Text style={styles.timelineLabel}>{videoDuration.toFixed(0)}s</Text>
+                          </View>
+                        </View>
                         
                         <View style={styles.sliderContainer}>
-                          <Text style={styles.sliderLabel}>Start</Text>
-                          <Slider
-                            style={styles.slider}
-                            minimumValue={0}
-                            maximumValue={Math.max(0, videoDuration - 1)}
-                            value={trimStart}
-                            onValueChange={(value) => {
-                              setTrimStart(value);
-                              if (trimEnd - value > MAX_VIDEO_DURATION) {
-                                setTrimEnd(value + MAX_VIDEO_DURATION);
-                              }
-                            }}
-                            minimumTrackTintColor="#0D5C3A"
-                            maximumTrackTintColor="#E0E0E0"
-                            thumbTintColor="#0D5C3A"
-                          />
-                          <Text style={styles.sliderValue}>{trimStart.toFixed(1)}s</Text>
+                          <Text style={styles.sliderLabel}>Start Time</Text>
+                          <View style={styles.sliderRow}>
+                            <Slider
+                              style={styles.slider}
+                              minimumValue={0}
+                              maximumValue={Math.max(0, videoDuration - 1)}
+                              value={trimStart}
+                              onValueChange={(value) => {
+                                setTrimStart(value);
+                                if (trimEnd - value > MAX_VIDEO_DURATION) {
+                                  setTrimEnd(value + MAX_VIDEO_DURATION);
+                                }
+                                if (trimEnd <= value) {
+                                  setTrimEnd(Math.min(value + 1, videoDuration));
+                                }
+                              }}
+                              onSlidingComplete={seekToTrimStart}
+                              minimumTrackTintColor="#0D5C3A"
+                              maximumTrackTintColor="#E0E0E0"
+                              thumbTintColor="#0D5C3A"
+                            />
+                            <Text style={styles.sliderValue}>{trimStart.toFixed(1)}s</Text>
+                          </View>
                         </View>
 
                         <View style={styles.sliderContainer}>
-                          <Text style={styles.sliderLabel}>End</Text>
-                          <Slider
-                            style={styles.slider}
-                            minimumValue={trimStart + 1}
-                            maximumValue={Math.min(videoDuration, trimStart + MAX_VIDEO_DURATION)}
-                            value={trimEnd}
-                            onValueChange={setTrimEnd}
-                            minimumTrackTintColor="#0D5C3A"
-                            maximumTrackTintColor="#E0E0E0"
-                            thumbTintColor="#0D5C3A"
-                          />
-                          <Text style={styles.sliderValue}>{trimEnd.toFixed(1)}s</Text>
+                          <Text style={styles.sliderLabel}>End Time</Text>
+                          <View style={styles.sliderRow}>
+                            <Slider
+                              style={styles.slider}
+                              minimumValue={Math.max(trimStart + 0.5, 0.5)}
+                              maximumValue={Math.min(videoDuration, trimStart + MAX_VIDEO_DURATION)}
+                              value={trimEnd}
+                              onValueChange={setTrimEnd}
+                              minimumTrackTintColor="#0D5C3A"
+                              maximumTrackTintColor="#E0E0E0"
+                              thumbTintColor="#0D5C3A"
+                            />
+                            <Text style={styles.sliderValue}>{trimEnd.toFixed(1)}s</Text>
+                          </View>
                         </View>
+
+                        {videoDuration > MAX_VIDEO_DURATION && (
+                          <View style={styles.trimmerWarning}>
+                            <Ionicons name="information-circle-outline" size={16} color="#664D03" />
+                            <Text style={styles.trimmerWarningText}>
+                              Maximum clip length is {MAX_VIDEO_DURATION} seconds
+                            </Text>
+                          </View>
+                        )}
                       </View>
                     )}
 
@@ -1342,23 +1693,35 @@ export default function CreateScreen() {
                         setIsVideoPlaying(false);
                       }}
                     >
-                      <Text style={styles.removeMediaText}>✕ Remove Video</Text>
+                      <Ionicons name="trash-outline" size={18} color="#FFF" />
+                      <Text style={styles.removeMediaText}>Remove Video</Text>
                     </TouchableOpacity>
                   </View>
                 )}
               </View>
             ) : (
-              /* UNIFIED MEDIA PICKER */
-              <TouchableOpacity
-                style={styles.mediaPickerButton}
-                onPress={pickMedia}
-                disabled={!writable}
-              >
-                <Text style={styles.mediaPickerIcon}>📷</Text>
-                <Text style={styles.mediaPickerText}>Select Media</Text>
-                <Text style={styles.mediaPickerHint}>Add up to 3 photos</Text>
-                <Text style={styles.mediaPickerHint}>or 1 video (30s max)</Text>
-              </TouchableOpacity>
+              /* ✅ SEPARATE MEDIA PICKERS */
+              <View style={styles.mediaPickerContainer}>
+                <TouchableOpacity
+                  style={styles.mediaPickerButton}
+                  onPress={pickImages}
+                  disabled={!writable}
+                >
+                  <Ionicons name="images-outline" size={40} color="#0D5C3A" />
+                  <Text style={styles.mediaPickerText}>Add Photos</Text>
+                  <Text style={styles.mediaPickerHint}>Up to {MAX_IMAGES} images</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.mediaPickerButton}
+                  onPress={pickVideo}
+                  disabled={!writable}
+                >
+                  <Ionicons name="videocam-outline" size={40} color="#0D5C3A" />
+                  <Text style={styles.mediaPickerText}>Add Video</Text>
+                  <Text style={styles.mediaPickerHint}>{MAX_VIDEO_DURATION}s max clip</Text>
+                </TouchableOpacity>
+              </View>
             )}
           </View>
 
@@ -1459,6 +1822,9 @@ export default function CreateScreen() {
           <View style={{ height: 100 }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* ✅ Crop Modal */}
+      {renderCropModal()}
     </SafeAreaView>
   );
 }
@@ -1562,9 +1928,15 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
 
-  // Unified Media Picker
+  // ✅ Separate Media Pickers
+  mediaPickerContainer: {
+    flexDirection: "row",
+    gap: 12,
+  },
+
   mediaPickerButton: {
-    height: 180,
+    flex: 1,
+    height: 140,
     borderRadius: 12,
     backgroundColor: "#FFF",
     borderWidth: 2,
@@ -1575,28 +1947,23 @@ const styles = StyleSheet.create({
     padding: 16,
   },
 
-  mediaPickerIcon: {
-    fontSize: 48,
-    marginBottom: 12,
-  },
-
   mediaPickerText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "700",
     color: "#0D5C3A",
-    marginBottom: 8,
+    marginTop: 8,
   },
 
   mediaPickerHint: {
-    fontSize: 13,
+    fontSize: 12,
     color: "#666",
     textAlign: "center",
-    marginTop: 2,
+    marginTop: 4,
   },
 
   // Image Carousel
   imageCarouselItem: {
-    height: 240,
+    height: 280,
     borderRadius: 12,
     overflow: "hidden",
     position: "relative",
@@ -1646,11 +2013,14 @@ const styles = StyleSheet.create({
   },
 
   addMoreButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
     marginTop: 12,
     paddingVertical: 12,
     borderRadius: 8,
     backgroundColor: "#0D5C3A",
-    alignItems: "center",
   },
 
   addMoreText: {
@@ -1662,7 +2032,7 @@ const styles = StyleSheet.create({
   // Media Preview
   mediaPreviewBox: {
     width: "100%",
-    height: 240,
+    height: 280,
     borderRadius: 12,
     overflow: "hidden",
     backgroundColor: "#000",
@@ -1698,40 +2068,33 @@ const styles = StyleSheet.create({
   },
 
   playButton: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: "rgba(255,255,255,0.9)",
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "rgba(255,255,255,0.95)",
     alignItems: "center",
     justifyContent: "center",
-  },
-
-  playIcon: {
-    fontSize: 28,
-    color: "#0D5C3A",
-    marginLeft: 4,
+    paddingLeft: 4,
   },
 
   pauseButton: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: "rgba(255,255,255,0.9)",
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "rgba(255,255,255,0.95)",
     alignItems: "center",
     justifyContent: "center",
   },
 
-  pauseIcon: {
-    fontSize: 24,
-    color: "#0D5C3A",
-  },
-
   removeVideoButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
     marginTop: 12,
     paddingVertical: 12,
     borderRadius: 8,
     backgroundColor: "#FF3B30",
-    alignItems: "center",
   },
 
   removeMediaText: {
@@ -1740,7 +2103,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 
-  // Video Trimmer
+  // ✅ Enhanced Video Trimmer
   videoTrimmer: {
     backgroundColor: "#FFF",
     borderRadius: 12,
@@ -1750,38 +2113,108 @@ const styles = StyleSheet.create({
     borderColor: "#E0E0E0",
   },
 
+  trimmerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 16,
+  },
+
   trimmerLabel: {
     fontSize: 14,
     fontWeight: "700",
     color: "#0D5C3A",
+    flex: 1,
+  },
+
+  trimmerDuration: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#FFD700",
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+
+  // Timeline
+  timelineContainer: {
     marginBottom: 16,
-    textAlign: "center",
+  },
+
+  timeline: {
+    height: 8,
+    backgroundColor: "#E0E0E0",
+    borderRadius: 4,
+    overflow: "hidden",
+    position: "relative",
+  },
+
+  timelineSelected: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    backgroundColor: "#0D5C3A",
+    borderRadius: 4,
+  },
+
+  timelineLabels: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 4,
+  },
+
+  timelineLabel: {
+    fontSize: 10,
+    color: "#999",
   },
 
   sliderContainer: {
-    marginBottom: 16,
+    marginBottom: 12,
   },
 
   sliderLabel: {
     fontSize: 12,
     fontWeight: "600",
     color: "#666",
-    marginBottom: 8,
+    marginBottom: 4,
+  },
+
+  sliderRow: {
+    flexDirection: "row",
+    alignItems: "center",
   },
 
   slider: {
-    width: "100%",
+    flex: 1,
     height: 40,
   },
 
   sliderValue: {
-    fontSize: 12,
+    fontSize: 13,
     color: "#0D5C3A",
     fontWeight: "700",
+    width: 45,
     textAlign: "right",
-    marginTop: 4,
   },
 
+  trimmerWarning: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#FFF3CD",
+    padding: 10,
+    borderRadius: 8,
+    marginTop: 8,
+  },
+
+  trimmerWarningText: {
+    fontSize: 12,
+    color: "#664D03",
+    flex: 1,
+  },
+
+  // Type Grid
   typeGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1897,5 +2330,139 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#666",
     marginTop: 2,
+  },
+
+  // ✅ Crop Modal Styles
+  cropModalContainer: {
+    flex: 1,
+    backgroundColor: "#1a1a1a",
+  },
+
+  cropModalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: "#0D5C3A",
+  },
+
+  cropHeaderButton: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  cropModalTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFF",
+  },
+
+  cropAreaContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+
+  cropArea: {
+    backgroundColor: "#000",
+    overflow: "hidden",
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: "#FFD700",
+    position: "relative",
+  },
+
+  cropImage: {
+    position: "absolute",
+  },
+
+  cropGridOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+
+  cropGridRow: {
+    flex: 1,
+    flexDirection: "row",
+  },
+
+  cropGridRowBorder: {
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: "rgba(255, 215, 0, 0.3)",
+  },
+
+  cropGridCell: {
+    flex: 1,
+  },
+
+  cropGridCellBorder: {
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: "rgba(255, 215, 0, 0.3)",
+  },
+
+  cropControls: {
+    backgroundColor: "#2a2a2a",
+    padding: 20,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+  },
+
+  cropControlLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#999",
+    marginBottom: 8,
+  },
+
+  cropSlider: {
+    width: "100%",
+    height: 40,
+  },
+
+  cropOffsetControls: {
+    marginTop: 16,
+  },
+
+  cropOffsetRow: {
+    marginBottom: 12,
+  },
+
+  cropActionButtons: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 20,
+  },
+
+  cropSkipButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 10,
+    backgroundColor: "#444",
+    alignItems: "center",
+  },
+
+  cropSkipButtonText: {
+    color: "#FFF",
+    fontWeight: "600",
+    fontSize: 15,
+  },
+
+  cropConfirmButton: {
+    flex: 2,
+    paddingVertical: 14,
+    borderRadius: 10,
+    backgroundColor: "#FFD700",
+    alignItems: "center",
+  },
+
+  cropConfirmButtonText: {
+    color: "#0D5C3A",
+    fontWeight: "700",
+    fontSize: 15,
   },
 });

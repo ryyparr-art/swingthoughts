@@ -51,6 +51,8 @@ const SCREEN_WIDTH = Dimensions.get("window").width;
 interface Thread {
   id: string;
   participants: string[];
+  participantNames?: Record<string, string>;
+  participantAvatars?: Record<string, string | null>;
   lastMessage?: any;
   lastMessageAt?: any;
   unreadCount?: Record<string, number>;
@@ -76,13 +78,26 @@ function ThreadRow({
   const unread = item.unreadCount?.[userId] ?? 0;
   const swipeableRef = useRef<Swipeable>(null);
 
-  const [name, setName] = useState("User");
-  const [avatar, setAvatar] = useState<string | null>(null);
+  // ✅ First try to use denormalized data from thread document
+  const [name, setName] = useState(
+    item.participantNames?.[otherUserId] || "User"
+  );
+  const [avatar, setAvatar] = useState<string | null>(
+    item.participantAvatars?.[otherUserId] || null
+  );
 
+  // ✅ Only fetch from users collection if denormalized data is missing
   useEffect(() => {
+    // If we already have name from denormalized data, don't fetch
+    if (item.participantNames?.[otherUserId]) {
+      console.log("✅ Using denormalized name:", item.participantNames[otherUserId]);
+      return;
+    }
+
     let mounted = true;
 
     (async () => {
+      console.log("⚠️ Fetching user data (denormalized data missing):", otherUserId);
       const snap = await getDoc(doc(db, "users", otherUserId));
       if (mounted && snap.exists()) {
         const u = snap.data();
@@ -94,7 +109,7 @@ function ThreadRow({
     return () => {
       mounted = false;
     };
-  }, [otherUserId]);
+  }, [otherUserId, item.participantNames]);
 
   const lastMessageText =
     typeof item.lastMessage === "string"
@@ -278,6 +293,16 @@ export default function MessagesScreen() {
           const deletedBy = thread.deletedBy || [];
           return !deletedBy.includes(userId);
         });
+
+      console.log(`✅ Loaded ${items.length} threads`);
+      
+      // Log denormalized data availability
+      items.forEach((thread, idx) => {
+        const otherId = thread.participants.find(p => p !== userId);
+        const hasName = !!thread.participantNames?.[otherId!];
+        const hasAvatar = !!thread.participantAvatars?.[otherId!];
+        console.log(`  Thread ${idx + 1}: name=${hasName}, avatar=${hasAvatar}`);
+      });
 
       setThreads(items);
       await setCache(CACHE_KEYS.LOCKER_NOTES(userId), items);

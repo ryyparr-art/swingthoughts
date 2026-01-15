@@ -54,6 +54,15 @@ interface Message {
   editedAt?: any;
 }
 
+interface ThreadData {
+  participants: string[];
+  participantNames?: Record<string, string>;
+  participantAvatars?: Record<string, string | null>;
+  lastMessage?: any;
+  lastMessageAt?: any;
+  unreadCount?: Record<string, number>;
+}
+
 /* ========================= SCREEN ========================= */
 
 export default function MessageThreadScreen() {
@@ -73,6 +82,9 @@ export default function MessageThreadScreen() {
   const [otherUserName, setOtherUserName] = useState("User");
   const [otherUserAvatar, setOtherUserAvatar] = useState<string | null>(null);
   const [threadExists, setThreadExists] = useState(false);
+  
+  // ✅ Track if we've already marked messages as read this session
+  const [hasMarkedRead, setHasMarkedRead] = useState(false);
 
   // Edit modal state
   const [editModalVisible, setEditModalVisible] = useState(false);
@@ -118,26 +130,46 @@ export default function MessageThreadScreen() {
 
       setOtherUserId(partnerId);
 
-      // ✅ Fetch partner's user data
-      const partnerDoc = await getDoc(doc(db, "users", partnerId));
-      if (partnerDoc.exists()) {
-        const partnerData = partnerDoc.data();
-        setOtherUserName(partnerData.displayName || "User");
-        setOtherUserAvatar(partnerData.avatar || null);
-        console.log("✅ Partner data loaded:", partnerData.displayName);
-      }
-
-      // ✅ Check if thread already exists
+      // ✅ First try to get denormalized data from thread document
       const threadSnap = await getDoc(threadRef);
-      setThreadExists(threadSnap.exists());
-
+      
       if (threadSnap.exists()) {
-        console.log("✅ Thread exists, subscribing to messages");
+        const threadData = threadSnap.data() as ThreadData;
+        setThreadExists(true);
+        
+        // ✅ Use denormalized data from thread if available
+        if (threadData.participantNames?.[partnerId]) {
+          setOtherUserName(threadData.participantNames[partnerId]);
+          console.log("✅ Using denormalized name:", threadData.participantNames[partnerId]);
+        }
+        
+        if (threadData.participantAvatars?.[partnerId]) {
+          setOtherUserAvatar(threadData.participantAvatars[partnerId]);
+          console.log("✅ Using denormalized avatar");
+        }
+        
+        // ✅ Mark messages as read immediately when opening thread
+        const unreadCount = threadData.unreadCount?.[userId] || 0;
+        if (unreadCount > 0) {
+          console.log(`📬 Thread has ${unreadCount} unread messages, marking as read...`);
+          await markAllMessagesAsRead();
+        }
       } else {
         console.log("📝 Thread doesn't exist yet - will be created on first message");
       }
 
-      // ✅ Subscribe to messages (works even if thread doesn't exist yet)
+      // ✅ Fallback: Fetch partner's user data if denormalized data not available
+      if (!otherUserName || otherUserName === "User") {
+        const partnerDoc = await getDoc(doc(db, "users", partnerId));
+        if (partnerDoc.exists()) {
+          const partnerData = partnerDoc.data();
+          setOtherUserName(partnerData.displayName || "User");
+          setOtherUserAvatar(partnerData.avatar || null);
+          console.log("✅ Partner data loaded from users collection:", partnerData.displayName);
+        }
+      }
+
+      // ✅ Subscribe to messages
       subscribeToMessages();
 
       setLoading(false);
@@ -152,13 +184,34 @@ export default function MessageThreadScreen() {
       const cached = await getCache(cacheKey);
       if (cached) {
         setMessages(cached.messages || []);
-        setOtherUserName(cached.otherUserName || "User");
-        setOtherUserAvatar(cached.otherUserAvatar || null);
+        if (cached.otherUserName) setOtherUserName(cached.otherUserName);
+        if (cached.otherUserAvatar) setOtherUserAvatar(cached.otherUserAvatar);
         setShowingCached(true);
         setLoading(false);
       }
     } catch {
       // Cache miss is fine
+    }
+  };
+
+  /* ========================= MARK AS READ ========================= */
+
+  const markAllMessagesAsRead = async () => {
+    if (!userId || !threadId || hasMarkedRead) return;
+    
+    try {
+      console.log("📖 Marking all messages as read...");
+      
+      // ✅ Reset unread count in thread document
+      await updateDoc(threadRef, {
+        [`unreadCount.${userId}`]: 0,
+        updatedAt: serverTimestamp(),
+      });
+      
+      setHasMarkedRead(true);
+      console.log("✅ Unread count reset to 0");
+    } catch (error) {
+      console.error("❌ Error marking messages as read:", error);
     }
   };
 
@@ -186,33 +239,39 @@ export default function MessageThreadScreen() {
         setLoading(false);
         setShowingCached(false);
 
-        // ✅ Update cache
+        // ✅ Update cache with current user data
         await setCache(cacheKey, {
           messages: msgs,
           otherUserName,
           otherUserAvatar,
         });
 
-        // ✅ Mark unread messages as read
-        const unread = msgs.filter(
+        // ✅ Mark individual unread messages as read
+        const unreadMessages = msgs.filter(
           (m) => m.receiverId === userId && !m.read
         );
 
-        if (unread.length > 0 && threadExists) {
+        if (unreadMessages.length > 0) {
+          console.log(`📬 Found ${unreadMessages.length} unread messages in snapshot`);
+          
           try {
+            // Mark each message as read
             await Promise.all(
-              unread.map((m) =>
+              unreadMessages.map((m) =>
                 updateDoc(
                   doc(db, "threads", threadId, "messages", m.messageId),
                   { read: true, readAt: serverTimestamp() }
                 )
               )
             );
+            console.log("✅ Individual messages marked as read");
 
+            // Also update the thread's unread count
             await updateDoc(threadRef, {
               [`unreadCount.${userId}`]: 0,
               updatedAt: serverTimestamp(),
             });
+            console.log("✅ Thread unread count reset");
           } catch (error) {
             console.error("❌ Error marking messages as read:", error);
           }
@@ -993,6 +1052,5 @@ const styles = StyleSheet.create({
     color: "#FFF",
   },
 });
-
 
 

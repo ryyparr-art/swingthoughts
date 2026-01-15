@@ -62,9 +62,9 @@ interface Thought {
   content: string;
   postType?: string;
   
-  // NEW: Multi-image support
-  imageUrl?: string; // Deprecated, kept for backwards compat
-  imageUrls?: string[]; // NEW: Array of images
+  // Multi-image support
+  imageUrl?: string;
+  imageUrls?: string[];
   imageCount?: number;
   
   videoUrl?: string;
@@ -78,7 +78,7 @@ interface Thought {
   likedBy?: string[];
   comments?: number;
   
-  // NEW: Denormalized user data (from post)
+  // Denormalized user data (from post)
   userName?: string;
   userAvatar?: string;
   userHandicap?: number;
@@ -94,7 +94,7 @@ interface Thought {
   ownedCourseId?: number;
   linkedCourseId?: number;
   
-  // NEW: Region data
+  // Region data
   regionKey?: string;
   geohash?: string;
   location?: {
@@ -104,13 +104,16 @@ interface Thought {
     longitude?: number;
   };
   
-  // NEW: Engagement metrics
+  // Engagement metrics
   engagementScore?: number;
   viewCount?: number;
   
-  // NEW: Media metadata
+  // Media metadata
   hasMedia?: boolean;
   mediaType?: "images" | "video" | null;
+  
+  // Score reference
+  scoreId?: string;
 }
 
 /* ------------------ WEB VIDEO COMPONENT ------------------ */
@@ -180,12 +183,29 @@ export default function ClubhouseScreen() {
   // Image carousel states
   const [currentImageIndexes, setCurrentImageIndexes] = useState<{ [key: string]: number }>({});
   
-  // Get highlight param from navigation
+  // ============================================
+  // NOTIFICATION NAVIGATION PARAMS
+  // ============================================
   const highlightPostId = Array.isArray(params.highlightPostId) 
     ? params.highlightPostId[0] 
     : params.highlightPostId;
 
-  console.log("🎯 Clubhouse highlightPostId from params:", highlightPostId);
+  const scrollToPostId = Array.isArray(params.scrollToPostId)
+    ? params.scrollToPostId[0]
+    : params.scrollToPostId;
+
+  const highlightScoreId = Array.isArray(params.highlightScoreId)
+    ? params.highlightScoreId[0]
+    : params.highlightScoreId;
+
+  // Determine which post to scroll to (and whether to highlight)
+  const targetPostId = highlightPostId || scrollToPostId;
+  const shouldHighlight = !!highlightPostId; // Only highlight if highlightPostId is set
+
+  // Track the found post ID when searching by scoreId
+  const [foundPostIdFromScore, setFoundPostIdFromScore] = useState<string | null>(null);
+
+  console.log("🎯 Clubhouse params:", { highlightPostId, scrollToPostId, highlightScoreId });
 
   /* ------------------ AUTH ------------------ */
   useEffect(() => {
@@ -205,7 +225,6 @@ export default function ClubhouseScreen() {
   }, []);
 
   /* ------------------ PERMISSIONS ------------------ */
-  // Permission for creating posts (requires terms acceptance or verification)
   const canWrite = (() => {
     if (!currentUserData) return false;
 
@@ -226,9 +245,6 @@ export default function ClubhouseScreen() {
     return false;
   })();
 
-  // ✅ NEW: Permission for interactions (likes, comments)
-  // Golfers/Juniors can interact once signed in
-  // Course/PGA must be verified through admin
   const canInteract = (() => {
     if (!currentUserId || !currentUserData) return false;
 
@@ -236,20 +252,20 @@ export default function ClubhouseScreen() {
       currentUserData.userType === "Golfer" ||
       currentUserData.userType === "Junior"
     ) {
-      return true; // Golfers/Juniors can always interact once signed in
+      return true;
     }
 
     if (
       currentUserData.userType === "Course" ||
       currentUserData.userType === "PGA Professional"
     ) {
-      return currentUserData.verified === true; // Must be admin verified
+      return currentUserData.verified === true;
     }
 
     return false;
   })();
 
-  /* ------------------ FETCH WITH CACHE - FINAL FIX ------------------ */
+  /* ------------------ FETCH WITH CACHE ------------------ */
   useEffect(() => {
     if (currentUserId && currentUserData?.regionKey) {
       const quickCacheCheck = async () => {
@@ -262,36 +278,30 @@ export default function ClubhouseScreen() {
           return;
         }
 
-        // Quick memory cache check (should be instant)
         const cached = await getCache(CACHE_KEYS.FEED(currentUserId), userRegionKey);
         
         if (cached && cached.length > 0) {
           console.log("⚡ Cache found - loading cached thoughts immediately");
           
           try {
-            // ✅ Use FAST conversion (no Firestore calls!)
             const thoughtsFromCache = convertCachedFeedToThoughts(cached);
             setThoughts(thoughtsFromCache);
             setFeedItems(cached);
             
-            // Now hide loading and checking
             setLoading(false);
             setIsCheckingCache(false);
             setHasLoadedOnce(true);
-            setShowingCached(true); // Show "Updating feed..." banner
+            setShowingCached(true);
             
-            // ✅ Refresh in background
             await loadFeed(true);
           } catch (error) {
             console.error("❌ Error loading cached thoughts:", error);
-            // If cache load fails, fall back to normal load
             setIsCheckingCache(false);
             setLoading(true);
             await loadFeed();
           }
         } else {
           console.log("📭 No cache - loading fresh");
-          // No cache - show loading screen and load normally
           setIsCheckingCache(false);
           setLoading(true);
           await loadFeed();
@@ -300,70 +310,58 @@ export default function ClubhouseScreen() {
       
       quickCacheCheck();
     }
-  }, [currentUserId, currentUserData?.regionKey, highlightPostId]);
-
-  const loadFeedWithCache = async () => {
-    try {
-      const userRegionKey = currentUserData?.regionKey;
-      
-      if (!userRegionKey) {
-        console.warn("⚠️ No regionKey found, loading without cache");
-        await loadFeed();
-        return;
-      }
-
-      // Step 1: Check cache FIRST
-      const cached = await getCache(CACHE_KEYS.FEED(currentUserId), userRegionKey);
-      
-      if (cached && cached.length > 0) {
-        console.log("⚡ Cache hit - showing cached feed instantly");
-        
-        // Show cached data immediately
-        const thoughtsFromCache = await convertFeedToThoughts(cached);
-        setThoughts(thoughtsFromCache);
-        setFeedItems(cached);
-        setLoading(false);
-        setHasLoadedOnce(true);
-        setShowingCached(true);
-        
-        // Step 2: Fetch fresh in background
-        await loadFeed(true);
-      } else {
-        console.log("📭 Cache miss - loading fresh with full screen");
-        
-        // No cache - show full loading screen only if we haven't loaded before
-        if (!hasLoadedOnce) {
-          setLoading(true);
-        }
-        await loadFeed();
-      }
-
-    } catch (error) {
-      console.error("❌ Feed cache error:", error);
-      await loadFeed();
-    }
-  };
+  }, [currentUserId, currentUserData?.regionKey, targetPostId, highlightScoreId]);
 
   const loadFeed = async (isBackgroundRefresh: boolean = false) => {
     try {
-      // ✅ Only show full loading if this is NOT a background refresh AND we haven't loaded before
       if (!isBackgroundRefresh && !hasLoadedOnce) {
         setLoading(true);
       }
       
       let highlightedThought: Thought | null = null;
-      if (highlightPostId) {
-        console.log("🎯 Fetching highlighted post first:", highlightPostId);
+      
+      // ============================================
+      // HANDLE highlightPostId or scrollToPostId
+      // ============================================
+      if (targetPostId) {
+        console.log("🎯 Fetching target post:", targetPostId);
         try {
-          const postDoc = await getDoc(doc(db, "thoughts", highlightPostId));
+          const postDoc = await getDoc(doc(db, "thoughts", targetPostId));
           
           if (postDoc.exists()) {
             const data = postDoc.data();
             highlightedThought = convertPostDataToThought(postDoc.id, data);
-            console.log("✅ Highlighted post fetched successfully");
+            console.log("✅ Target post fetched successfully");
           }
         } catch (error) {
-          console.error("❌ Error fetching highlighted post:", error);
+          console.error("❌ Error fetching target post:", error);
+          soundPlayer.play('error');
+        }
+      }
+      
+      // ============================================
+      // HANDLE highlightScoreId (fallback for older notifications)
+      // ============================================
+      if (!highlightedThought && highlightScoreId) {
+        console.log("🎯 Fetching post by scoreId:", highlightScoreId);
+        try {
+          const thoughtsQuery = query(
+            collection(db, "thoughts"),
+            where("scoreId", "==", highlightScoreId)
+          );
+          const snapshot = await getDocs(thoughtsQuery);
+          
+          if (!snapshot.empty) {
+            const postDoc = snapshot.docs[0];
+            const data = postDoc.data();
+            highlightedThought = convertPostDataToThought(postDoc.id, data);
+            setFoundPostIdFromScore(postDoc.id);
+            console.log("✅ Found post by scoreId:", postDoc.id);
+          } else {
+            console.warn("⚠️ No post found for scoreId:", highlightScoreId);
+          }
+        } catch (error) {
+          console.error("❌ Error fetching post by scoreId:", error);
           soundPlayer.play('error');
         }
       }
@@ -383,14 +381,13 @@ export default function ClubhouseScreen() {
         const thoughtsFromFeed = await convertFeedToThoughts(feed);
         
         if (highlightedThought) {
-          const filteredThoughts = thoughtsFromFeed.filter(t => t.id !== highlightPostId);
+          const filteredThoughts = thoughtsFromFeed.filter(t => t.id !== highlightedThought!.id);
           setThoughts([highlightedThought, ...filteredThoughts]);
           console.log("✅ Added highlighted post to top of algorithmic feed");
         } else {
           setThoughts(thoughtsFromFeed);
         }
 
-        // Step 3: Update cache using CacheContext
         if (userRegionKey) {
           await setCache(
             CACHE_KEYS.FEED(currentUserId),
@@ -405,8 +402,8 @@ export default function ClubhouseScreen() {
         
         if (highlightedThought) {
           setThoughts(prev => {
-            const filteredPrev = prev.filter(t => t.id !== highlightPostId);
-            return [highlightedThought, ...filteredPrev];
+            const filteredPrev = prev.filter(t => t.id !== highlightedThought!.id);
+            return [highlightedThought!, ...filteredPrev];
           });
           console.log("✅ Added highlighted post to top of filtered feed");
         }
@@ -423,12 +420,7 @@ export default function ClubhouseScreen() {
     }
   };
 
-  /**
-   * Convert raw Firestore post data to Thought object
-   * Uses denormalized user data from post if available
-   */
   const convertPostDataToThought = (postId: string, data: any): Thought => {
-    // NEW: Get images array (handle both old single imageUrl and new imageUrls array)
     let images: string[] = [];
     if (data.imageUrls && Array.isArray(data.imageUrls) && data.imageUrls.length > 0) {
       images = data.imageUrls;
@@ -444,10 +436,9 @@ export default function ClubhouseScreen() {
       content: data.content || data.caption || "",
       postType: data.postType,
       
-      // NEW: Multi-image support
       imageUrls: images,
       imageCount: images.length,
-      imageUrl: data.imageUrl, // Keep for backwards compat
+      imageUrl: data.imageUrl,
       
       videoUrl: data.videoUrl,
       videoThumbnailUrl: data.videoThumbnailUrl,
@@ -460,13 +451,11 @@ export default function ClubhouseScreen() {
       likedBy: data.likedBy || [],
       comments: data.comments || 0,
       
-      // NEW: Use denormalized user data from post (if available)
       userName: data.userName,
       userAvatar: data.userAvatar,
       userHandicap: data.userHandicap,
       userVerified: data.userVerified,
       
-      // Legacy fields (will be populated if denormalized data not present)
       displayName: data.userName || data.displayName,
       avatarUrl: data.userAvatar || data.avatarUrl,
       
@@ -476,18 +465,17 @@ export default function ClubhouseScreen() {
       ownedCourseId: data.ownedCourseId,
       linkedCourseId: data.linkedCourseId,
       
-      // NEW: Region data
       regionKey: data.regionKey,
       geohash: data.geohash,
       location: data.location,
       
-      // NEW: Engagement metrics
       engagementScore: data.engagementScore,
       viewCount: data.viewCount,
       
-      // NEW: Media metadata
       hasMedia: data.hasMedia,
       mediaType: data.mediaType,
+      
+      scoreId: data.scoreId,
     };
     
     return thought;
@@ -505,7 +493,6 @@ export default function ClubhouseScreen() {
           const data = postDoc.data();
           const thought = convertPostDataToThought(postDoc.id, data);
           
-          // Use feed item's denormalized data if post data doesn't have it
           if (!thought.displayName) thought.displayName = postItem.displayName;
           if (!thought.avatarUrl) thought.avatarUrl = postItem.avatar;
           
@@ -536,10 +523,6 @@ export default function ClubhouseScreen() {
     return thoughts;
   };
 
-  /**
-   * ✅ NEW: Fast conversion from cache - uses denormalized data, no Firestore calls
-   * This is INSTANT for showing cached feed
-   */
   const convertCachedFeedToThoughts = (feedItems: FeedItem[]): Thought[] => {
     const thoughts: Thought[] = [];
     
@@ -547,7 +530,6 @@ export default function ClubhouseScreen() {
       if (item.type === "post") {
         const postItem = item as FeedPost;
         
-        // ✅ Map FeedPost fields to Thought fields with proper type handling
         thoughts.push({
           id: postItem.id,
           thoughtId: postItem.thoughtId || postItem.id,
@@ -556,7 +538,6 @@ export default function ClubhouseScreen() {
           content: postItem.content || postItem.caption || "",
           postType: postItem.postType,
           
-          // Media
           imageUrl: postItem.imageUrl || undefined,
           imageUrls: postItem.imageUrls || [],
           imageCount: postItem.imageCount || 0,
@@ -566,13 +547,11 @@ export default function ClubhouseScreen() {
           videoTrimStart: postItem.videoTrimStart || undefined,
           videoTrimEnd: postItem.videoTrimEnd || undefined,
           
-          // Engagement
           createdAt: postItem.createdAt,
           likes: postItem.likes || 0,
           likedBy: postItem.likedBy || [],
           comments: postItem.comments || 0,
           
-          // ✅ User data - map to both field name formats
           displayName: postItem.displayName,
           avatarUrl: postItem.avatar,
           userName: postItem.displayName,
@@ -580,14 +559,12 @@ export default function ClubhouseScreen() {
           userHandicap: postItem.handicap ? parseInt(postItem.handicap) : undefined,
           userVerified: postItem.verified,
           
-          // Tags - ensure courseId is number
           taggedCourses: (postItem.taggedCourses || []).map(c => ({
             courseId: typeof c.courseId === 'string' ? parseInt(c.courseId) : c.courseId,
             courseName: c.courseName
           })),
           taggedPartners: postItem.taggedPartners || [],
           
-          // Location - ensure proper typing
           regionKey: postItem.regionKey,
           geohash: postItem.geohash,
           location: postItem.location ? {
@@ -597,7 +574,6 @@ export default function ClubhouseScreen() {
             longitude: postItem.location.longitude || undefined,
           } : undefined,
           
-          // Metadata
           hasMedia: postItem.hasMedia,
           mediaType: (postItem.mediaType === "images" || postItem.mediaType === "video") ? postItem.mediaType : null,
           engagementScore: postItem.relevanceScore,
@@ -653,7 +629,6 @@ export default function ClubhouseScreen() {
         const data = docSnap.data();
         const thought = convertPostDataToThought(docSnap.id, data);
         
-        // NEW: If denormalized user data not present, fetch profile
         if (!thought.displayName || !thought.userName) {
           try {
             const userProfile = await getUserProfile(thought.userId);
@@ -805,13 +780,11 @@ export default function ClubhouseScreen() {
 
   /* ------------------ LIKE ------------------ */
   const handleLike = async (thought: Thought) => {
-    // ✅ Check if user is signed in
     if (!currentUserId) {
       soundPlayer.play('error');
       return Alert.alert("Sign In Required", "Please sign in to like posts.");
     }
 
-    // ✅ Check if user can interact (Course/PGA need verification)
     if (!canInteract) {
       soundPlayer.play('error');
       return Alert.alert(
@@ -820,59 +793,55 @@ export default function ClubhouseScreen() {
       );
     }
 
-    // ✅ Can't like your own post
     if (thought.userId === currentUserId) {
       soundPlayer.play('error');
       return Alert.alert("Can't Like", "You can't like your own post.");
     }
+
+    const wasLiked = thought.likedBy?.includes(currentUserId) || false;
+    const originalLikes = thought.likes || 0;
 
     try {
       soundPlayer.play('dart');
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
       const ref = doc(db, "thoughts", thought.id);
-      const hasLiked = thought.likedBy?.includes(currentUserId);
 
-      // ✅ Optimistic UI update - update local state immediately
       setThoughts((prev) =>
         prev.map((t) =>
           t.id === thought.id
             ? {
                 ...t,
-                likes: hasLiked ? t.likes - 1 : t.likes + 1,
-                likedBy: hasLiked
-                  ? t.likedBy?.filter((id) => id !== currentUserId)
+                likes: wasLiked ? Math.max(0, t.likes - 1) : t.likes + 1,
+                likedBy: wasLiked
+                  ? (t.likedBy || []).filter((id) => id !== currentUserId)
                   : [...(t.likedBy || []), currentUserId],
               }
             : t
         )
       );
 
-      if (hasLiked) {
-        // Unlike: update post and delete like document
+      if (wasLiked) {
         await updateDoc(ref, {
           likes: increment(-1),
           likedBy: arrayRemove(currentUserId),
         });
 
-        // Delete the like document
         const likesQuery = query(
           collection(db, "likes"),
           where("userId", "==", currentUserId),
           where("postId", "==", thought.id)
         );
         const likesSnapshot = await getDocs(likesQuery);
-        likesSnapshot.forEach(async (likeDoc) => {
+        for (const likeDoc of likesSnapshot.docs) {
           await deleteDoc(likeDoc.ref);
-        });
+        }
       } else {
-        // Like: update post and create like document
         await updateDoc(ref, {
           likes: increment(1),
           likedBy: arrayUnion(currentUserId),
         });
 
-        // Create like document (triggers Cloud Function for notification)
         await addDoc(collection(db, "likes"), {
           userId: currentUserId,
           postId: thought.id,
@@ -884,17 +853,15 @@ export default function ClubhouseScreen() {
       console.error("Like error:", err);
       soundPlayer.play('error');
       
-      // ✅ Revert optimistic update on error
-      const hasLiked = thought.likedBy?.includes(currentUserId);
       setThoughts((prev) =>
         prev.map((t) =>
           t.id === thought.id
             ? {
                 ...t,
-                likes: hasLiked ? t.likes + 1 : t.likes - 1,
-                likedBy: hasLiked
+                likes: originalLikes,
+                likedBy: wasLiked
                   ? [...(t.likedBy || []), currentUserId]
-                  : t.likedBy?.filter((id) => id !== currentUserId),
+                  : (t.likedBy || []).filter((id) => id !== currentUserId),
               }
             : t
         )
@@ -904,7 +871,6 @@ export default function ClubhouseScreen() {
 
   /* ------------------ COMMENTS ------------------ */
   const handleComments = (thought: Thought) => {
-    // ✅ Check if user can interact (Course/PGA need verification)
     if (!canInteract) {
       soundPlayer.play('error');
       return Alert.alert(
@@ -942,23 +908,29 @@ export default function ClubhouseScreen() {
     activeFilters.searchQuery
   );
 
-  // ✅ FIXED: Update comment count in local state when comment is added
   const handleCommentAdded = () => {
-    if (!selectedThought) return;
+    console.log("📝 handleCommentAdded called");
+    console.log("📝 selectedThought:", selectedThought?.id);
+    
+    if (!selectedThought) {
+      console.log("❌ No selectedThought, cannot update count");
+      return;
+    }
 
     soundPlayer.play('postThought');
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-    // ✅ Update the thoughts array with new comment count
-    setThoughts((prev) =>
-      prev.map((t) =>
-        t.id === selectedThought.id
-          ? { ...t, comments: (t.comments || 0) + 1 }
-          : t
-      )
-    );
+    setThoughts((prev) => {
+      console.log("📝 Updating thoughts, looking for:", selectedThought.id);
+      return prev.map((t) => {
+        if (t.id === selectedThought.id) {
+          console.log("✅ Found thought, updating comments from", t.comments, "to", (t.comments || 0) + 1);
+          return { ...t, comments: (t.comments || 0) + 1 };
+        }
+        return t;
+      });
+    });
 
-    // ✅ Also update the selectedThought so modal shows correct count
     setSelectedThought((prev) => 
       prev ? { ...prev, comments: (prev.comments || 0) + 1 } : prev
     );
@@ -969,21 +941,22 @@ export default function ClubhouseScreen() {
     setRefreshing(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     
-    // Clear cache on manual refresh
     setShowingCached(false);
     await loadFeed();
     
     setRefreshing(false);
   };
 
-  /* ------------------ SCROLL TO HIGHLIGHTED POST ------------------ */
+  /* ------------------ SCROLL TO TARGET POST ------------------ */
   useEffect(() => {
-    if (!highlightPostId || loading || thoughts.length === 0) return;
-
-    console.log("🎯 Scrolling to highlighted post:", highlightPostId);
-    console.log("📊 Thoughts count:", thoughts.length);
+    // Determine the actual post ID to scroll to
+    const scrollTargetId = targetPostId || foundPostIdFromScore;
     
-    const postIndex = thoughts.findIndex((t) => t.id === highlightPostId);
+    if (!scrollTargetId || loading || thoughts.length === 0) return;
+
+    console.log("🎯 Scrolling to post:", scrollTargetId, shouldHighlight ? "(highlighted)" : "(no highlight)");
+    
+    const postIndex = thoughts.findIndex((t) => t.id === scrollTargetId);
     
     if (postIndex !== -1) {
       console.log("✅ Post found at index:", postIndex);
@@ -995,7 +968,7 @@ export default function ClubhouseScreen() {
             animated: true,
             viewPosition: 0.2,
           });
-          console.log("✅ Scrolled to highlighted post");
+          console.log("✅ Scrolled to post");
         } catch (error) {
           console.log("⚠️ Scroll error, using offset instead");
           flatListRef.current?.scrollToOffset({
@@ -1005,27 +978,24 @@ export default function ClubhouseScreen() {
         }
       }, 500);
     } else {
-      console.warn("⚠️ Highlighted post not found in feed after load");
+      console.warn("⚠️ Target post not found in feed");
       soundPlayer.play('error');
       Alert.alert("Post Not Found", "This post may have been deleted.");
     }
-  }, [highlightPostId, loading, thoughts.length]);
+  }, [targetPostId, foundPostIdFromScore, loading, thoughts.length]);
 
   /* ------------------ RENDER CONTENT WITH MENTIONS ------------------ */
   const renderContentWithMentions = (content: string, taggedPartners: any[] = [], taggedCourses: any[] = []) => {
     const mentionMap: { [key: string]: { type: string; id: string | number } } = {};
     
-    // Map partner mentions
     taggedPartners.forEach((partner) => {
       mentionMap[`@${partner.displayName}`] = { type: 'partner', id: partner.userId };
     });
     
-    // Map course mentions
     taggedCourses.forEach((course) => {
       mentionMap[`@${course.courseName}`] = { type: 'course', id: course.courseId };
     });
     
-    // Sort by length (longest first) to match longer names before shorter substrings
     const mentionPatterns = Object.keys(mentionMap)
       .map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
       .sort((a, b) => b.length - a.length);
@@ -1103,7 +1073,6 @@ export default function ClubhouseScreen() {
           keyExtractor={(item, index) => `${thought.id}-image-${index}`}
         />
         
-        {/* Pagination Dots */}
         {images.length > 1 && (
           <View style={styles.imagePaginationDots}>
             {images.map((_, index) => (
@@ -1118,7 +1087,6 @@ export default function ClubhouseScreen() {
           </View>
         )}
         
-        {/* Image Counter Badge */}
         {images.length > 1 && (
           <View style={styles.imageCountBadge}>
             <Ionicons name="images" size={14} color="#FFF" />
@@ -1134,10 +1102,15 @@ export default function ClubhouseScreen() {
   /* ------------------ RENDER ------------------ */
   const renderThought = ({ item }: { item: Thought }) => {
     const hasLiked = item.likedBy?.includes(currentUserId);
-    const hasComments = (item.comments || 0) > 0; // ✅ Fixed: Cleaner check
+    const hasComments = (item.comments || 0) > 0;
     const isOwnPost = item.userId === currentUserId;
-    const isHighlighted = highlightPostId === item.id;
     const isVideoPlaying = playingVideos.has(item.id);
+    
+    // ✅ Only highlight if highlightPostId matches (not scrollToPostId)
+    const isHighlighted = shouldHighlight && (
+      highlightPostId === item.id || 
+      foundPostIdFromScore === item.id
+    );
     
     const isLowLeader = item.postType === "low-leader";
     const isScore = item.postType === "score";
@@ -1178,7 +1151,6 @@ export default function ClubhouseScreen() {
       });
     };
     
-    // NEW: Get display name and avatar (prefer denormalized data)
     const displayName = item.userName || item.displayName || "Unknown";
     const avatarUrl = item.userAvatar || item.avatarUrl;
 
@@ -1254,7 +1226,6 @@ export default function ClubhouseScreen() {
           </View>
         </View>
 
-        {/* NEW: Image Carousel */}
         {renderImagesCarousel(item)}
 
         {item.videoUrl && (
@@ -1381,7 +1352,6 @@ export default function ClubhouseScreen() {
 
       <TopNavBar />
 
-      {/* Cache indicator - only show when cache is displayed */}
       {showingCached && !loading && (
         <View style={styles.cacheIndicator}>
           <ActivityIndicator size="small" color="#0D5C3A" />
@@ -1653,7 +1623,6 @@ const styles = StyleSheet.create({
     height: 300 
   },
   
-  // NEW: Image Carousel Styles
   imagePaginationDots: {
     position: "absolute",
     bottom: 12,

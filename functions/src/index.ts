@@ -10,6 +10,44 @@ const db = getFirestore();
 const expo = new Expo();
 
 // ============================================================================
+// SMART NOTIFICATION GROUPING CONFIG
+// ============================================================================
+
+// Time window for grouping (in milliseconds)
+const GROUPING_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+// Notification types that should be grouped
+const GROUPABLE_TYPES = {
+  // Group by: postId (same post, multiple actors)
+  POST_GROUPED: ["like", "comment", "comment_like", "share"],
+  
+  // Group by: actorId (same person, multiple actions)
+  ACTOR_GROUPED: ["message"],
+  
+  // Never group (always create individual notifications)
+  INDIVIDUAL: [
+    "reply",
+    "partner_request",
+    "partner_accepted", 
+    "mention_post",
+    "mention_comment",
+    "partner_posted",
+    "partner_scored",
+    "partner_lowman",
+    "partner_holeinone",
+    "holeinone_pending_poster",
+    "holeinone_verification_request",
+    "holeinone_verified",
+    "holeinone_denied",
+    "membership_submitted",
+    "membership_approved",
+    "membership_rejected",
+    "trending",
+    "system",
+  ],
+};
+
+// ============================================================================
 // HELPER: GET USER DATA
 // ============================================================================
 
@@ -17,6 +55,10 @@ interface UserData {
   displayName?: string;
   avatar?: string;
   partners?: string[];
+  handicap?: number;
+  userType?: string;
+  verified?: boolean;
+  Badges?: any[];
 }
 
 async function getUserData(userId: string): Promise<UserData | null> {
@@ -31,7 +73,129 @@ async function getUserData(userId: string): Promise<UserData | null> {
 }
 
 // ============================================================================
-// HELPER: CREATE NOTIFICATION DOCUMENT
+// HELPER: GENERATE GROUP KEY
+// ============================================================================
+
+function generateGroupKey(
+  type: string,
+  userId: string,
+  postId?: string,
+  commentId?: string,
+  actorId?: string
+): string {
+  // Post-grouped types: same recipient + same post + same type
+  if (GROUPABLE_TYPES.POST_GROUPED.includes(type)) {
+    // For comment_like, group by commentId
+    if (type === "comment_like" && commentId) {
+      return `${userId}:${type}:comment:${commentId}`;
+    }
+    return `${userId}:${type}:post:${postId}`;
+  }
+  
+  // Actor-grouped types: same recipient + same actor + same type
+  if (GROUPABLE_TYPES.ACTOR_GROUPED.includes(type)) {
+    return `${userId}:${type}:actor:${actorId}`;
+  }
+  
+  // Individual types: unique key (won't match anything)
+  return `${userId}:${type}:${Date.now()}:${Math.random()}`;
+}
+
+// ============================================================================
+// HELPER: GENERATE GROUPED MESSAGE
+// ============================================================================
+
+function generateGroupedMessage(
+  type: string,
+  actorName: string,
+  actorCount: number,
+  extraData?: { courseName?: string; holeNumber?: number }
+): string {
+  const othersCount = actorCount - 1;
+  const othersText = othersCount === 1 ? "1 other" : `${othersCount} others`;
+  
+  switch (type) {
+    // Post interactions - GROUPED
+    case "like":
+      if (actorCount === 1) {
+        return `${actorName} landed a dart on your Swing Thought`;
+      }
+      return `${actorName} and ${othersText} landed darts on your Swing Thought`;
+    
+    case "comment":
+      if (actorCount === 1) {
+        return `${actorName} weighed in on your Swing Thought`;
+      }
+      return `${actorName} and ${othersText} weighed in on your Swing Thought`;
+    
+    case "comment_like":
+      if (actorCount === 1) {
+        return `${actorName} landed a dart on your comment`;
+      }
+      return `${actorName} and ${othersText} landed darts on your comment`;
+    
+    case "share":
+      if (actorCount === 1) {
+        return `${actorName} shared your Swing Thought`;
+      }
+      return `${actorName} and ${othersText} shared your Swing Thought`;
+    
+    // Messages - GROUPED BY ACTOR
+    case "message":
+      if (actorCount === 1) {
+        return `${actorName} left a note in your locker`;
+      }
+      return `${actorName} left you ${actorCount} notes in your locker`;
+    
+    // Partner interactions - NOT GROUPED (but included for completeness)
+    case "reply":
+      return `${actorName} replied to your comment`;
+    
+    case "partner_request":
+      return `${actorName} wants to Partner Up`;
+    
+    case "partner_accepted":
+      return `${actorName} has agreed to be your Partner`;
+    
+    case "partner_posted":
+      return `${actorName} has a new Swing Thought`;
+    
+    case "partner_scored":
+      return `${actorName} logged a round${extraData?.courseName ? ` at ${extraData.courseName}` : ""}`;
+    
+    case "partner_lowman":
+      return `${actorName} became the low leader${extraData?.courseName ? ` @${extraData.courseName}` : ""}`;
+    
+    case "partner_holeinone":
+      return `${actorName} hit a hole-in-one${extraData?.holeNumber ? ` on hole ${extraData.holeNumber}` : ""}${extraData?.courseName ? ` at ${extraData.courseName}` : ""}!`;
+    
+    // Mentions - NOT GROUPED
+    case "mention_post":
+      return `${actorName} tagged you in a Swing Thought`;
+    
+    case "mention_comment":
+      return `${actorName} tagged you in a comment`;
+    
+    // Hole-in-one
+    case "holeinone_pending_poster":
+      return `Your hole-in-one is pending verification from ${actorName}`;
+    
+    case "holeinone_verification_request":
+      return `${actorName} needs you to verify their hole-in-one`;
+    
+    case "holeinone_verified":
+      return `✅ ${actorName} verified your hole-in-one!`;
+    
+    case "holeinone_denied":
+      return `❌ ${actorName} did not verify your hole-in-one`;
+    
+    default:
+      return `${actorName} interacted with you`;
+  }
+}
+
+// ============================================================================
+// HELPER: CREATE NOTIFICATION DOCUMENT (WITH SMART GROUPING)
 // ============================================================================
 
 interface CreateNotificationParams {
@@ -68,10 +232,132 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
   // Skip if user is acting on their own content
   if (actorId && userId === actorId) return;
 
+  const now = Timestamp.now();
   const expiresAt = Timestamp.fromDate(
     new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
   );
 
+  // Check if this notification type should be grouped
+  const isGroupable = 
+    GROUPABLE_TYPES.POST_GROUPED.includes(type) || 
+    GROUPABLE_TYPES.ACTOR_GROUPED.includes(type);
+
+  if (isGroupable && actorId) {
+    // ============================================
+    // SMART GROUPING LOGIC
+    // ============================================
+    const groupKey = generateGroupKey(type, userId, postId, commentId, actorId);
+    const windowStart = new Date(Date.now() - GROUPING_WINDOW_MS);
+
+    try {
+      // Look for existing unread notification to update
+      const existingQuery = await db
+        .collection("notifications")
+        .where("userId", "==", userId)
+        .where("groupKey", "==", groupKey)
+        .where("read", "==", false)
+        .where("updatedAt", ">", Timestamp.fromDate(windowStart))
+        .limit(1)
+        .get();
+
+      if (!existingQuery.empty) {
+        // ============================================
+        // UPDATE EXISTING NOTIFICATION
+        // ============================================
+        const existingDoc = existingQuery.docs[0];
+        const existingData = existingDoc.data();
+
+        // Check if this actor already exists
+        const actors = existingData.actors || [];
+        const actorExists = actors.some((a: any) => a.userId === actorId);
+
+        let newActors = [...actors];
+        let newActorCount = existingData.actorCount || 1;
+
+        if (!actorExists) {
+          // Add new actor to the front (most recent first)
+          newActors = [
+            {
+              userId: actorId,
+              displayName: actorName || "Someone",
+              avatar: actorAvatar || null,
+              timestamp: now,
+            },
+            ...actors.slice(0, 9), // Keep max 10 actors
+          ];
+          newActorCount = newActorCount + 1;
+        } else if (GROUPABLE_TYPES.ACTOR_GROUPED.includes(type)) {
+          // For actor-grouped (messages), increment count even if same actor
+          newActorCount = newActorCount + 1;
+        }
+
+        // Generate updated message
+        const updatedMessage = generateGroupedMessage(type, actorName || "Someone", newActorCount, { courseName });
+
+        await existingDoc.ref.update({
+          actors: newActors,
+          actorCount: newActorCount,
+          actorId: actorId, // Most recent actor
+          actorName: actorName || "Someone",
+          actorAvatar: actorAvatar || null,
+          lastActorId: actorId,
+          message: updatedMessage,
+          updatedAt: now,
+          read: false, // Reset to unread
+        });
+
+        console.log(`✅ Updated grouped notification ${existingDoc.id} (${newActorCount} actors)`);
+        return;
+      }
+    } catch (error) {
+      console.error("Error checking for existing notification:", error);
+      // Fall through to create new notification
+    }
+
+    // ============================================
+    // CREATE NEW GROUPED NOTIFICATION
+    // ============================================
+    const notificationData: any = {
+      userId,
+      type,
+      actorId: actorId || null,
+      actorName: actorName || "Someone",
+      actorAvatar: actorAvatar || null,
+      message,
+      read: false,
+      createdAt: now,
+      updatedAt: now,
+      expiresAt,
+      
+      // Grouping fields
+      groupKey,
+      lastActorId: actorId,
+      actors: [
+        {
+          userId: actorId,
+          displayName: actorName || "Someone",
+          avatar: actorAvatar || null,
+          timestamp: now,
+        },
+      ],
+      actorCount: 1,
+    };
+
+    if (postId) notificationData.postId = postId;
+    if (commentId) notificationData.commentId = commentId;
+    if (courseId) notificationData.courseId = courseId;
+    if (courseName) notificationData.courseName = courseName;
+    if (scoreId) notificationData.scoreId = scoreId;
+    if (regionKey) notificationData.regionKey = regionKey;
+
+    await db.collection("notifications").add(notificationData);
+    console.log("✅ Created new grouped notification");
+    return;
+  }
+
+  // ============================================
+  // NON-GROUPED NOTIFICATION (Original behavior)
+  // ============================================
   const notificationData: any = {
     userId,
     type,
@@ -80,7 +366,8 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
     actorAvatar: actorAvatar || null,
     message,
     read: false,
-    createdAt: Timestamp.now(),
+    createdAt: now,
+    updatedAt: now,
     expiresAt,
   };
 
@@ -92,6 +379,7 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
   if (regionKey) notificationData.regionKey = regionKey;
 
   await db.collection("notifications").add(notificationData);
+  console.log("✅ Created notification");
 }
 
 // ============================================================================
@@ -256,7 +544,7 @@ export const sendPushNotification = onDocumentCreated(
 );
 
 // ============================================================================
-// 2. SCORES - partner_lowman, partner_scored, partner_holeinone
+// 2. SCORES - Creates thought/post, leaderboard, badges, notifications
 // ============================================================================
 
 export const onScoreCreated = onDocumentCreated(
@@ -287,6 +575,10 @@ export const onScoreCreated = onDocumentCreated(
         roundDescription,
         hadHoleInOne,
         holeNumber,
+        taggedPartners,
+        tee,
+        teeYardage,
+        geohash,
       } = score;
 
       if (
@@ -300,268 +592,279 @@ export const onScoreCreated = onDocumentCreated(
         return;
       }
 
-      if (holeCount !== 18) {
-        console.log("⏭️ Skipping leaderboard update (9-hole round)");
-        return;
-      }
-
-      if (!regionKey) {
-        console.warn("⚠️ Score missing regionKey");
-        return;
-      }
-
-      // ============================================
-      // UPDATE REGIONAL LEADERBOARD
-      // ============================================
-      const leaderboardId = `${regionKey}_${courseId}`;
-      const leaderboardRef = db.collection("leaderboards").doc(leaderboardId);
-      const leaderboardSnap = await leaderboardRef.get();
-
-      const newScoreEntry = {
-        userId,
-        displayName: userName || "Unknown",
-        grossScore,
-        netScore,
-        createdAt: Timestamp.now(),
-      };
-
-      let isNewLowman = false;
-
-      if (!leaderboardSnap.exists) {
-        await leaderboardRef.set({
-          regionKey,
-          courseId,
-          courseName,
-          location: location || null,
-          topScores18: [newScoreEntry],
-          lowNetScore18: netScore,
-          totalScores18: 1,
-          topScores9: [],
-          lowNetScore9: null,
-          totalScores9: 0,
-          totalScores: 1,
-          holesInOne: [],
-          createdAt: Timestamp.now(),
-          lastUpdated: Timestamp.now(),
-        });
-
-        isNewLowman = true;
-        console.log("✅ New leaderboard created, user is lowman");
-      } else {
-        const leaderboardData = leaderboardSnap.data();
-        const topScores18 = leaderboardData?.topScores18 || [];
-        const previousLowNetScore = leaderboardData?.lowNetScore18 || 999;
-
-        topScores18.push(newScoreEntry);
-        topScores18.sort((a: any, b: any) => {
-          if (a.netScore !== b.netScore) return a.netScore - b.netScore;
-          if (a.grossScore !== b.grossScore) return a.grossScore - b.grossScore;
-          return a.createdAt.toMillis() - b.createdAt.toMillis();
-        });
-
-        const updatedTopScores18 = topScores18.slice(0, 10);
-        const newLowNetScore = updatedTopScores18[0].netScore;
-
-        if (
-          updatedTopScores18[0].userId === userId &&
-          newLowNetScore < previousLowNetScore
-        ) {
-          isNewLowman = true;
-          console.log("🏆 NEW LOWMAN! User:", userId);
-        }
-
-        await leaderboardRef.update({
-          topScores18: updatedTopScores18,
-          lowNetScore18: newLowNetScore,
-          totalScores18: FieldValue.increment(1),
-          totalScores: FieldValue.increment(1),
-          lastUpdated: Timestamp.now(),
-        });
-
-        console.log("✅ Leaderboard updated");
-      }
-
-      // ============================================
-      // AWARD BADGES (if lowman)
-      // ============================================
-      if (isNewLowman) {
-        console.log("🏆 Awarding badges...");
-
-        const lowmanBadge = {
-          type: "lowman",
-          courseId,
-          courseName,
-          achievedAt: Timestamp.now(),
-          score: grossScore,
-          displayName: "Lowman",
-        };
-
-        const userRef = db.collection("users").doc(userId);
-        const userSnap = await userRef.get();
-        const currentBadges = userSnap.data()?.Badges || [];
-
-        await userRef.update({
-          Badges: [...currentBadges, lowmanBadge],
-        });
-
-        console.log("✅ Lowman badge awarded");
-
-        // Check for tier upgrades
-        const leaderboardsSnap = await db
-          .collection("leaderboards")
-          .where("regionKey", "==", regionKey)
-          .get();
-
-        let lowmanCount = 0;
-        leaderboardsSnap.forEach((doc) => {
-          const data = doc.data();
-          const topScores = data.topScores18 || [];
-          if (topScores.length > 0 && topScores[0].userId === userId) {
-            lowmanCount++;
-          }
-        });
-
-        const existingBadges = userSnap.data()?.Badges || [];
-        const filteredBadges = existingBadges.filter(
-          (b: any) => b.type !== "scratch" && b.type !== "ace"
-        );
-
-        if (lowmanCount >= 3) {
-          await userRef.update({
-            Badges: [
-              ...filteredBadges,
-              {
-                type: "ace",
-                courseId: 0,
-                courseName: "Multiple Courses",
-                achievedAt: Timestamp.now(),
-                displayName: "Ace",
-              },
-            ],
-          });
-          console.log("🏆 Upgraded to Ace badge!");
-        } else if (lowmanCount >= 2) {
-          await userRef.update({
-            Badges: [
-              ...filteredBadges,
-              {
-                type: "scratch",
-                courseId: 0,
-                courseName: "Multiple Courses",
-                achievedAt: Timestamp.now(),
-                displayName: "Scratch",
-              },
-            ],
-          });
-          console.log("🏆 Upgraded to Scratch badge!");
-        }
-
-        // ============================================
-        // CREATE CLUBHOUSE POST (if lowman)
-        // ============================================
-        const userData = userSnap.data();
-
-        await db.collection("thoughts").add({
-          thoughtId: `thought_${Date.now()}`,
-          userId,
-          userName: userData?.displayName || "Unknown",
-          userAvatar: userData?.avatar || null,
-          userHandicap: userData?.handicap || 0,
-          userType: userData?.userType || "Golfer",
-          userVerified: userData?.verified || false,
-          postType: "low-leader",
-          achievementType: "lowman",
-          content: `Shot a ${grossScore} at ${courseName}! ${roundDescription || ""}`,
-          scoreId,
-          imageUrl: scorecardImageUrl || null,
-          regionKey,
-          geohash: score.geohash || null,
-          location,
-          taggedPartners: score.taggedPartners || [],
-          taggedCourses: [{ courseId, courseName }],
-          createdAt: Timestamp.now(),
-          createdAtTimestamp: Date.now(),
-          likes: 0,
-          likedBy: [],
-          comments: 0,
-          engagementScore: 0,
-          viewCount: 0,
-          lastActivityAt: Timestamp.now(),
-          hasMedia: !!scorecardImageUrl,
-          mediaType: scorecardImageUrl ? "images" : null,
-          imageUrls: scorecardImageUrl ? [scorecardImageUrl] : [],
-          imageCount: scorecardImageUrl ? 1 : 0,
-          contentLowercase: `shot a ${grossScore} at ${courseName.toLowerCase()}! ${(roundDescription || "").toLowerCase()}`,
-        });
-
-        console.log("✅ Clubhouse post created");
-
-        // ============================================
-        // SEND PARTNER_LOWMAN NOTIFICATIONS
-        // ============================================
-        const partners = userData?.partners || [];
-
-        if (Array.isArray(partners) && partners.length > 0) {
-          for (const partnerId of partners) {
-            await createNotificationDocument({
-              userId: partnerId,
-              type: "partner_lowman",
-              actorId: userId,
-              actorName: userName,
-              actorAvatar: userData?.avatar || null,
-              scoreId,
-              courseId,
-              courseName,
-              message: `${userName} became the low leader @${courseName}`,
-              regionKey,
-            });
-          }
-          console.log("✅ Sent partner_lowman notifications to", partners.length, "partners");
-        }
-      }
-
-      // ============================================
-      // SEND PARTNER_SCORED NOTIFICATIONS (for all scores)
-      // ============================================
+      // Get user data for notifications and post creation
       const userRef = db.collection("users").doc(userId);
       const userSnap = await userRef.get();
       const userData = userSnap.data();
+
+      if (!userData) {
+        console.log("⚠️ User not found:", userId);
+        return;
+      }
+
+      // ============================================
+      // DETERMINE POST TYPE (check if lowman for 18-hole rounds)
+      // ============================================
+      let isNewLowman = false;
+      let postType = "score";
+      let achievementType: string | null = null;
+
+      if (holeCount === 18 && regionKey) {
+        const leaderboardId = `${regionKey}_${courseId}`;
+        const leaderboardRef = db.collection("leaderboards").doc(leaderboardId);
+        const leaderboardSnap = await leaderboardRef.get();
+
+        const newScoreEntry = {
+          userId,
+          displayName: userName || "Unknown",
+          grossScore,
+          netScore,
+          createdAt: Timestamp.now(),
+        };
+
+        if (!leaderboardSnap.exists) {
+          await leaderboardRef.set({
+            regionKey,
+            courseId,
+            courseName,
+            location: location || null,
+            topScores18: [newScoreEntry],
+            lowNetScore18: netScore,
+            totalScores18: 1,
+            topScores9: [],
+            lowNetScore9: null,
+            totalScores9: 0,
+            totalScores: 1,
+            holesInOne: [],
+            createdAt: Timestamp.now(),
+            lastUpdated: Timestamp.now(),
+          });
+
+          isNewLowman = true;
+          console.log("✅ New leaderboard created, user is lowman");
+        } else {
+          const leaderboardData = leaderboardSnap.data();
+          const topScores18 = leaderboardData?.topScores18 || [];
+          const previousLowNetScore = leaderboardData?.lowNetScore18 || 999;
+
+          topScores18.push(newScoreEntry);
+          topScores18.sort((a: any, b: any) => {
+            if (a.netScore !== b.netScore) return a.netScore - b.netScore;
+            if (a.grossScore !== b.grossScore) return a.grossScore - b.grossScore;
+            return a.createdAt.toMillis() - b.createdAt.toMillis();
+          });
+
+          const updatedTopScores18 = topScores18.slice(0, 10);
+          const newLowNetScore = updatedTopScores18[0].netScore;
+
+          if (
+            updatedTopScores18[0].userId === userId &&
+            newLowNetScore < previousLowNetScore
+          ) {
+            isNewLowman = true;
+            console.log("🏆 NEW LOWMAN! User:", userId);
+          }
+
+          await leaderboardRef.update({
+            topScores18: updatedTopScores18,
+            lowNetScore18: newLowNetScore,
+            totalScores18: FieldValue.increment(1),
+            totalScores: FieldValue.increment(1),
+            lastUpdated: Timestamp.now(),
+          });
+
+          console.log("✅ Leaderboard updated");
+        }
+
+        // ============================================
+        // AWARD BADGES (if lowman)
+        // ============================================
+        if (isNewLowman) {
+          console.log("🏆 Awarding badges...");
+          postType = "low-leader";
+          achievementType = "lowman";
+
+          const lowmanBadge = {
+            type: "lowman",
+            courseId,
+            courseName,
+            achievedAt: Timestamp.now(),
+            score: grossScore,
+            displayName: "Lowman",
+          };
+
+          const currentBadges = userData?.Badges || [];
+
+          await userRef.update({
+            Badges: [...currentBadges, lowmanBadge],
+          });
+
+          console.log("✅ Lowman badge awarded");
+
+          // Check for tier upgrades
+          const leaderboardsSnap = await db
+            .collection("leaderboards")
+            .where("regionKey", "==", regionKey)
+            .get();
+
+          let lowmanCount = 0;
+          leaderboardsSnap.forEach((doc) => {
+            const data = doc.data();
+            const topScores = data.topScores18 || [];
+            if (topScores.length > 0 && topScores[0].userId === userId) {
+              lowmanCount++;
+            }
+          });
+
+          const existingBadges = userData?.Badges || [];
+          const filteredBadges = existingBadges.filter(
+            (b: any) => b.type !== "scratch" && b.type !== "ace"
+          );
+
+          if (lowmanCount >= 3) {
+            await userRef.update({
+              Badges: [
+                ...filteredBadges,
+                {
+                  type: "ace",
+                  courseId: 0,
+                  courseName: "Multiple Courses",
+                  achievedAt: Timestamp.now(),
+                  displayName: "Ace",
+                },
+              ],
+            });
+            console.log("🏆 Upgraded to Ace badge!");
+          } else if (lowmanCount >= 2) {
+            await userRef.update({
+              Badges: [
+                ...filteredBadges,
+                {
+                  type: "scratch",
+                  courseId: 0,
+                  courseName: "Multiple Courses",
+                  achievedAt: Timestamp.now(),
+                  displayName: "Scratch",
+                },
+              ],
+            });
+            console.log("🏆 Upgraded to Scratch badge!");
+          }
+        }
+      }
+
+      // ============================================
+      // CREATE CLUBHOUSE POST (for ALL scores)
+      // ============================================
+      const teeDetails = teeYardage 
+        ? `from "${tee}", ${teeYardage} yards`
+        : tee ? `from "${tee}"` : "";
+      const postContent = `Shot a ${grossScore} @${courseName} ${teeDetails}! ${roundDescription || ""}`.trim();
+
+      const thoughtData: any = {
+        thoughtId: `thought_${Date.now()}`,
+        userId,
+        userName: userData?.displayName || "Unknown",
+        displayName: userData?.displayName || "Unknown",
+        userAvatar: userData?.avatar || null,
+        avatar: userData?.avatar || null,
+        userHandicap: userData?.handicap || 0,
+        userType: userData?.userType || "Golfer",
+        userVerified: userData?.verified || false,
+        postType,
+        achievementType,
+        content: postContent,
+        scoreId,
+        imageUrl: scorecardImageUrl || null,
+        regionKey: regionKey || null,
+        geohash: geohash || null,
+        location: location || null,
+        taggedPartners: taggedPartners || [],
+        taggedCourses: [{ courseId, courseName }],
+        createdAt: Timestamp.now(),
+        createdAtTimestamp: Date.now(),
+        likes: 0,
+        likedBy: [],
+        comments: 0,
+        engagementScore: 0,
+        viewCount: 0,
+        lastActivityAt: Timestamp.now(),
+        hasMedia: !!scorecardImageUrl,
+        mediaType: scorecardImageUrl ? "images" : null,
+        imageUrls: scorecardImageUrl ? [scorecardImageUrl] : [],
+        imageCount: scorecardImageUrl ? 1 : 0,
+        contentLowercase: postContent.toLowerCase(),
+        // Flag to prevent duplicate notifications in onThoughtCreated
+        createdByScoreFunction: true,
+      };
+
+      const thoughtRef = await db.collection("thoughts").add(thoughtData);
+      const thoughtId = thoughtRef.id;
+
+      console.log("✅ Clubhouse post created:", thoughtId);
+
+      // Update score document with thoughtId
+      await snap.ref.update({ thoughtId });
+      console.log("✅ Score updated with thoughtId");
+
+      // ============================================
+      // SEND PARTNER NOTIFICATIONS (with postId!)
+      // ============================================
       const partners = userData?.partners || [];
 
       if (Array.isArray(partners) && partners.length > 0) {
+        // partner_scored (for ALL scores)
         for (const partnerId of partners) {
           await createNotificationDocument({
             userId: partnerId,
             type: "partner_scored",
             actorId: userId,
-            actorName: userName,
+            actorName: userName || userData?.displayName,
             actorAvatar: userData?.avatar || null,
+            postId: thoughtId, // ✅ NOW INCLUDED
             scoreId,
             courseId,
             courseName,
-            message: `${userName} logged a round at ${courseName}`,
+            message: `${userName || userData?.displayName} logged a round at ${courseName}`,
             regionKey,
           });
         }
         console.log("✅ Sent partner_scored notifications to", partners.length, "partners");
-      }
 
-      // ============================================
-      // SEND PARTNER_HOLEINONE NOTIFICATIONS (if applicable)
-      // ============================================
-      if (hadHoleInOne && holeNumber) {
-        if (Array.isArray(partners) && partners.length > 0) {
+        // partner_lowman (if applicable)
+        if (isNewLowman) {
+          for (const partnerId of partners) {
+            await createNotificationDocument({
+              userId: partnerId,
+              type: "partner_lowman",
+              actorId: userId,
+              actorName: userName || userData?.displayName,
+              actorAvatar: userData?.avatar || null,
+              postId: thoughtId, // ✅ NOW INCLUDED
+              scoreId,
+              courseId,
+              courseName,
+              message: `${userName || userData?.displayName} became the low leader @${courseName}`,
+              regionKey,
+            });
+          }
+          console.log("✅ Sent partner_lowman notifications to", partners.length, "partners");
+        }
+
+        // partner_holeinone (if applicable)
+        if (hadHoleInOne && holeNumber) {
           for (const partnerId of partners) {
             await createNotificationDocument({
               userId: partnerId,
               type: "partner_holeinone",
               actorId: userId,
-              actorName: userName,
+              actorName: userName || userData?.displayName,
               actorAvatar: userData?.avatar || null,
+              postId: thoughtId, // ✅ NOW INCLUDED
               scoreId,
               courseId,
               courseName,
-              message: `${userName} hit a hole-in-one on hole ${holeNumber} at ${courseName}!`,
+              message: `${userName || userData?.displayName} hit a hole-in-one on hole ${holeNumber} at ${courseName}!`,
               regionKey,
             });
           }
@@ -698,7 +1001,7 @@ export const onMessageCreated = onDocumentCreated(
       }
 
       // ============================================================
-      // CREATE NOTIFICATION
+      // CREATE NOTIFICATION (NOW WITH SMART GROUPING)
       // ============================================================
 
       await createNotificationDocument({
@@ -732,6 +1035,13 @@ export const onThoughtCreated = onDocumentCreated(
       if (!thought) return;
 
       const thoughtId = event.params.thoughtId;
+
+      // ✅ SKIP if this thought was created by onScoreCreated (to avoid duplicate notifications)
+      if (thought.createdByScoreFunction === true) {
+        console.log("⏭️ Skipping partner_posted - thought created by score function");
+        return;
+      }
+
       // Support both old (userName) and new (displayName) field names
       const { userId, userName, displayName, userAvatar, avatar, taggedPartners } = thought;
 
@@ -1211,7 +1521,7 @@ export const onHoleInOneCreated = onDocumentCreated(
       const holeInOne = snap.data();
       if (!holeInOne) return;
 
-      const { userId, verifierId, courseId, courseName, holeNumber } = holeInOne;
+      const { userId, verifierId, courseId, courseName, holeNumber, scoreId } = holeInOne;
 
       if (!userId || !verifierId) {
         console.log("⛔ Hole-in-one missing required fields");
@@ -1228,6 +1538,16 @@ export const onHoleInOneCreated = onDocumentCreated(
         return;
       }
 
+      // ✅ Look up the postId from the score document
+      let postId: string | undefined;
+      if (scoreId) {
+        const scoreSnap = await db.collection("scores").doc(scoreId).get();
+        if (scoreSnap.exists) {
+          postId = scoreSnap.data()?.thoughtId;
+          console.log("✅ Found postId from score:", postId);
+        }
+      }
+
       // Notify poster (pending)
       await createNotificationDocument({
         userId,
@@ -1235,6 +1555,8 @@ export const onHoleInOneCreated = onDocumentCreated(
         actorId: verifierId,
         actorName: verifierData.displayName || "Someone",
         actorAvatar: verifierData.avatar,
+        postId, // ✅ NOW INCLUDED
+        scoreId,
         courseId,
         courseName,
         message: `Your hole-in-one on hole ${holeNumber} is pending verification from ${verifierData.displayName || "Someone"}`,
@@ -1247,6 +1569,7 @@ export const onHoleInOneCreated = onDocumentCreated(
         actorId: userId,
         actorName: userData.displayName || "Someone",
         actorAvatar: userData.avatar,
+        scoreId,
         courseId,
         courseName,
         message: `${userData.displayName || "Someone"} needs you to verify their hole-in-one on hole ${holeNumber}`,
@@ -1268,7 +1591,7 @@ export const onHoleInOneUpdated = onDocumentUpdated(
 
       if (!before || !after) return;
 
-      const { userId, verifierId, courseId, courseName, holeNumber } = after;
+      const { userId, verifierId, courseId, courseName, holeNumber, scoreId } = after;
 
       if (!userId || !verifierId) {
         console.log("⛔ Hole-in-one missing required fields");
@@ -1281,6 +1604,16 @@ export const onHoleInOneUpdated = onDocumentUpdated(
         return;
       }
 
+      // ✅ Look up the postId from the score document
+      let postId: string | undefined;
+      if (scoreId) {
+        const scoreSnap = await db.collection("scores").doc(scoreId).get();
+        if (scoreSnap.exists) {
+          postId = scoreSnap.data()?.thoughtId;
+          console.log("✅ Found postId from score:", postId);
+        }
+      }
+
       // Check if status changed to verified
       if (before.status !== "verified" && after.status === "verified") {
         console.log("✅ Hole-in-one verified for", userId);
@@ -1291,6 +1624,8 @@ export const onHoleInOneUpdated = onDocumentUpdated(
           actorId: verifierId,
           actorName: verifierData.displayName || "Someone",
           actorAvatar: verifierData.avatar,
+          postId, // ✅ NOW INCLUDED
+          scoreId,
           courseId,
           courseName,
           message: `✅ ${verifierData.displayName || "Someone"} verified your hole-in-one on hole ${holeNumber}!`,
@@ -1309,6 +1644,8 @@ export const onHoleInOneUpdated = onDocumentUpdated(
           actorId: verifierId,
           actorName: verifierData.displayName || "Someone",
           actorAvatar: verifierData.avatar,
+          postId, // ✅ NOW INCLUDED
+          scoreId,
           courseId,
           courseName,
           message: `❌ ${verifierData.displayName || "Someone"} did not verify your hole-in-one on hole ${holeNumber}`,

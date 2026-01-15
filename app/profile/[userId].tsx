@@ -51,6 +51,12 @@ interface Stats {
   leaderboardScores: number;
 }
 
+// ✅ Default stats to prevent undefined errors
+const DEFAULT_STATS: Stats = {
+  swingThoughts: 0,
+  leaderboardScores: 0,
+};
+
 export default function ProfileScreen() {
   const router = useRouter();
   const { userId } = useLocalSearchParams();
@@ -60,7 +66,7 @@ export default function ProfileScreen() {
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
-  const [stats, setStats] = useState<Stats>({ swingThoughts: 0, leaderboardScores: 0 });
+  const [stats, setStats] = useState<Stats>(DEFAULT_STATS);
   const [partnerCount, setPartnerCount] = useState(0);
   const [partnersModalVisible, setPartnersModalVisible] = useState(false);
   const [galleryModalVisible, setGalleryModalVisible] = useState(false);
@@ -85,8 +91,9 @@ export default function ProfileScreen() {
       if (cached) {
         console.log("⚡ User profile cache hit:", targetUserId);
         setProfile(cached.profile);
-        setPosts(cached.posts);
-        setStats(cached.stats);
+        setPosts(cached.posts || []);
+        // ✅ Use default stats if cached.stats is undefined
+        setStats(cached.stats ?? DEFAULT_STATS);
         setShowingCached(true);
         setLoading(false);
       }
@@ -166,7 +173,7 @@ export default function ProfileScreen() {
       );
       const scoresSnap = await getDocs(scoresQuery);
 
-      const statsData = {
+      const statsData: Stats = {
         swingThoughts: postsData.length,
         leaderboardScores: scoresSnap.size,
       };
@@ -240,6 +247,13 @@ export default function ProfileScreen() {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/create?editId=${postId}`);
+  };
+
+  /* ========================= HELPER: FORMAT STAT VALUE ========================= */
+  
+  const formatStatValue = (value: number | undefined | null): string => {
+    if (value === undefined || value === null) return "—";
+    return value.toString();
   };
 
   const renderPost = ({ item }: { item: Post }) => {
@@ -397,7 +411,7 @@ export default function ProfileScreen() {
         }
         ListHeaderComponent={
           <>
-            {/* ✅ NEW: Golf Membership Card Style Header */}
+            {/* ✅ Golf Membership Card Style Header */}
             <View style={styles.profileCard}>
               <View style={styles.profileCardInner}>
                 {/* Avatar with Gold Ring */}
@@ -418,20 +432,35 @@ export default function ProfileScreen() {
 
                 {/* Stats Row - Connected Bar */}
                 <View style={styles.statsBar}>
+                  {/* Thoughts */}
                   <View style={styles.statItem}>
-                    <Text style={styles.statValue}>{stats.swingThoughts}</Text>
+                    <View style={styles.statValueRow}>
+                      <Ionicons name="chatbubble-outline" size={14} color="#0D5C3A" style={styles.statIcon} />
+                      <Text style={styles.statValue}>
+                        {formatStatValue(stats?.swingThoughts)}
+                      </Text>
+                    </View>
                     <Text style={styles.statLabel}>THOUGHTS</Text>
                   </View>
 
                   <View style={styles.statDivider} />
 
+                  {/* Handicap */}
                   <View style={styles.statItem}>
-                    <Text style={styles.statValue}>{profile.handicap || "—"}</Text>
+                    <View style={styles.statValueRow}>
+                      <Ionicons name="golf-outline" size={14} color="#0D5C3A" style={styles.statIcon} />
+                      <Text style={styles.statValue}>
+                        {profile.handicap !== undefined && profile.handicap !== null 
+                          ? profile.handicap 
+                          : "—"}
+                      </Text>
+                    </View>
                     <Text style={styles.statLabel}>HANDICAP</Text>
                   </View>
 
                   <View style={styles.statDivider} />
 
+                  {/* Partners */}
                   <TouchableOpacity 
                     style={styles.statItem}
                     onPress={() => {
@@ -440,7 +469,12 @@ export default function ProfileScreen() {
                       setPartnersModalVisible(true);
                     }}
                   >
-                    <Text style={styles.statValue}>{partnerCount}</Text>
+                    <View style={styles.statValueRow}>
+                      <Ionicons name="people-outline" size={14} color="#0D5C3A" style={styles.statIcon} />
+                      <Text style={styles.statValue}>
+                        {formatStatValue(partnerCount)}
+                      </Text>
+                    </View>
                     <View style={styles.statLabelRow}>
                       <Text style={styles.statLabel}>PARTNERS</Text>
                       <Ionicons name="chevron-forward" size={10} color="#999" />
@@ -449,8 +483,14 @@ export default function ProfileScreen() {
 
                   <View style={styles.statDivider} />
 
+                  {/* Scores */}
                   <View style={styles.statItem}>
-                    <Text style={styles.statValue}>{stats.leaderboardScores}</Text>
+                    <View style={styles.statValueRow}>
+                      <Ionicons name="trophy-outline" size={14} color="#0D5C3A" style={styles.statIcon} />
+                      <Text style={styles.statValue}>
+                        {formatStatValue(stats?.leaderboardScores)}
+                      </Text>
+                    </View>
                     <Text style={styles.statLabel}>SCORES</Text>
                   </View>
                 </View>
@@ -555,7 +595,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  /* ✅ NEW: Golf Membership Card Styles */
+  /* ✅ Golf Membership Card Styles */
   profileCard: {
     marginHorizontal: 16,
     marginTop: 20,
@@ -576,9 +616,7 @@ const styles = StyleSheet.create({
     paddingVertical: 24,
     paddingHorizontal: 16,
     alignItems: "center",
-    // Linen/canvas texture effect
     backgroundColor: "#F4EED8",
-    backgroundImage: `linear-gradient(180deg, rgba(255,255,255,0.4) 0%, rgba(0,0,0,0.03) 100%)`,
   },
 
   avatarContainer: {
@@ -648,11 +686,20 @@ const styles = StyleSheet.create({
     backgroundColor: "#E0E0E0",
   },
 
+  statValueRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 2,
+  },
+
+  statIcon: {
+    marginRight: 4,
+  },
+
   statValue: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: "800",
     color: "#0D5C3A",
-    marginBottom: 2,
   },
 
   statLabel: {

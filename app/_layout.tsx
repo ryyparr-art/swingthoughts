@@ -272,10 +272,12 @@ export default function RootLayout() {
 
   // 🔔 PUSH NOTIFICATIONS SETUP
   useEffect(() => {
+    let authModule: any = null;
+    
     const setupPushNotifications = async () => {
       try {
-        const { auth } = await import("../constants/firebaseConfig");
-        const uid = auth.currentUser?.uid;
+        authModule = await import("../constants/firebaseConfig");
+        const uid = authModule.auth.currentUser?.uid;
         
         if (!uid) {
           console.log("⏭️ Skipping push notification setup - no user logged in");
@@ -293,29 +295,157 @@ export default function RootLayout() {
     };
 
     // Set up listener for when user taps on a notification
-    const notificationResponseSubscription = setupNotificationResponseListener((response) => {
+    const notificationResponseSubscription = setupNotificationResponseListener(async (response) => {
       const data = response.notification.request.content.data;
+      const type = data.type as string;
       
-      console.log("📬 Notification tapped:", data);
+      console.log("📬 Notification tapped:", { type, ...data });
 
-      // Navigate based on notification type
-      if (data.postId) {
-        router.push({
-          pathname: "/clubhouse",
-          params: { highlightPostId: data.postId as string },
-        });
-      } else if (data.actorId) {
-        router.push(`/locker/${data.actorId as string}`);
-      } else if (data.scoreId) {
-        router.push({
-          pathname: "/clubhouse",
-          params: { highlightScoreId: data.scoreId as string },
-        });
-      } else if (data.courseId) {
-        router.push({
-          pathname: "/leaderboard",
-          params: { highlightCourseId: String(data.courseId) },
-        });
+      // Ensure we have auth module loaded
+      if (!authModule) {
+        authModule = await import("../constants/firebaseConfig");
+      }
+
+      // ============================================
+      // ROUTE BASED ON NOTIFICATION TYPE
+      // ============================================
+      switch (type) {
+        // ============================================
+        // POST INTERACTIONS - Go to Clubhouse with highlight
+        // ============================================
+        case "like":
+        case "comment":
+        case "comment_like":
+        case "reply":
+        case "share":
+        case "mention_post":
+        case "mention_comment":
+        case "partner_posted":
+        case "trending":
+          if (data.postId) {
+            router.push({
+              pathname: "/clubhouse",
+              params: { highlightPostId: data.postId as string },
+            });
+          }
+          break;
+
+        // ============================================
+        // SCORE-RELATED - Go to Clubhouse with highlight
+        // ============================================
+        case "partner_scored":
+        case "partner_holeinone":
+        case "holeinone_verified":
+        case "holeinone_pending_poster":
+          if (data.postId) {
+            router.push({
+              pathname: "/clubhouse",
+              params: { highlightPostId: data.postId as string },
+            });
+          } else if (data.scoreId) {
+            // Fallback for older notifications without postId
+            router.push({
+              pathname: "/clubhouse",
+              params: { highlightScoreId: data.scoreId as string },
+            });
+          }
+          break;
+
+        // ============================================
+        // LOWMAN - Go to Leaderboard with highlight
+        // ============================================
+        case "partner_lowman":
+          if (data.courseId) {
+            router.push({
+              pathname: "/leaderboard",
+              params: { 
+                highlightCourseId: String(data.courseId),
+                highlightUserId: data.actorId as string,
+              },
+            });
+          }
+          break;
+
+        // ============================================
+        // HOLE-IN-ONE VERIFICATION REQUEST - Go to verify screen
+        // ============================================
+        case "holeinone_verification_request":
+          if (data.scoreId) {
+            router.push(`/verify-holeinone/${data.scoreId}`);
+          }
+          break;
+
+        // ============================================
+        // HOLE-IN-ONE DENIED - Go to own locker
+        // ============================================
+        case "holeinone_denied":
+          if (data.userId) {
+            router.push(`/locker/${data.userId}`);
+          }
+          break;
+
+        // ============================================
+        // PARTNER INTERACTIONS - Go to their profile
+        // ============================================
+        case "partner_request":
+        case "partner_accepted":
+          if (data.actorId) {
+            router.push(`/locker/${data.actorId}`);
+          }
+          break;
+
+        // ============================================
+        // MESSAGES - Go to message thread
+        // ============================================
+        case "message":
+          // Construct threadId from current user + actor
+          const currentUserId = authModule.auth.currentUser?.uid;
+          if (data.actorId && currentUserId) {
+            const threadId = [currentUserId, data.actorId as string].sort().join("_");
+            router.push(`/messages/${threadId}`);
+          }
+          break;
+
+        // ============================================
+        // MEMBERSHIP - Go to course locker
+        // ============================================
+        case "membership_submitted":
+        case "membership_approved":
+        case "membership_rejected":
+          if (data.courseId) {
+            router.push(`/locker/course/${data.courseId}`);
+          }
+          break;
+
+        // ============================================
+        // FALLBACK - Use generic routing based on available data
+        // ============================================
+        default:
+          console.log("⚠️ Unknown notification type, using fallback routing:", type);
+          
+          // Priority: postId > scoreId > actorId > courseId
+          if (data.postId) {
+            router.push({
+              pathname: "/clubhouse",
+              params: { highlightPostId: data.postId as string },
+            });
+          } else if (data.scoreId) {
+            router.push({
+              pathname: "/clubhouse",
+              params: { highlightScoreId: data.scoreId as string },
+            });
+          } else if (data.actorId) {
+            router.push(`/locker/${data.actorId}`);
+          } else if (data.courseId) {
+            router.push({
+              pathname: "/leaderboard",
+              params: { highlightCourseId: String(data.courseId) },
+            });
+          } else {
+            // Last resort - go to notifications screen
+            router.push("/notifications");
+          }
+          break;
       }
     });
 

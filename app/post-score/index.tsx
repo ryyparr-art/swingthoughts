@@ -1,5 +1,4 @@
 import { auth, db, storage } from "@/constants/firebaseConfig";
-import { checkAndAwardBadges } from "@/utils/badgeUtils";
 import { canPostScores } from "@/utils/canPostScores";
 import {
   checkRateLimit,
@@ -15,7 +14,6 @@ import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
 import {
   addDoc,
-  arrayUnion,
   collection,
   doc,
   getDoc,
@@ -695,6 +693,7 @@ export default function PostScoreScreen() {
       await uploadBytes(imageRef, blob);
       const imageUrl = await getDownloadURL(imageRef);
 
+      // Extract tagged partners from description
       const mentionRegex = /@([\w\s]+?)(?=\s{2,}|$|@|\n)/g;
       const mentions = roundDescription.match(mentionRegex) || [];
 
@@ -728,6 +727,7 @@ export default function PostScoreScreen() {
       const courseId = selectedCourse.id || selectedCourse.courseId;
       const courseName = selectedCourse.course_name || selectedCourse.courseName;
 
+      // ✅ Score data - Cloud Function will create thought, update leaderboards, award badges
       const scoreData: any = {
         userId: auth.currentUser?.uid,
         userName: userData?.displayName || "Unknown",
@@ -738,6 +738,7 @@ export default function PostScoreScreen() {
         netScore: netScore,
         par: selectedTee.par,
         tee: selectedTee.name,
+        teeYardage: selectedTee.yardage || null,
         birdies: birdies ? parseInt(birdies) : 0,
         eagles: eagles ? parseInt(eagles) : 0,
         albatross: albatross ? parseInt(albatross) : 0,
@@ -748,20 +749,19 @@ export default function PostScoreScreen() {
         regionKey: regionKey,
         geohash: geohash,
         createdAt: serverTimestamp(),
+        // Include tagged partners for Cloud Function to use
+        taggedPartners: extractedPartners.map((p) => ({
+          userId: p.userId,
+          displayName: p.displayName,
+        })),
       };
 
       if (hadHoleInOne === "yes") {
         scoreData.holeNumber = parseInt(holeNumber);
       }
 
-      if (extractedPartners.length > 0) {
-        scoreData.taggedPartners = extractedPartners.map((p) => ({
-          userId: p.userId,
-          displayName: p.displayName,
-        }));
-      }
-
       const scoreRef = await addDoc(collection(db, "scores"), scoreData);
+      console.log("✅ Score created:", scoreRef.id);
 
       // ✅ Create hole_in_ones document if applicable (triggers onHoleInOneCreated Cloud Function)
       if (hadHoleInOne === "yes" && selectedVerifier) {
@@ -783,9 +783,10 @@ export default function PostScoreScreen() {
           createdAt: serverTimestamp(),
         });
         
-        console.log("✅ Hole-in-one document created (triggers Cloud Function notifications)");
+        console.log("✅ Hole-in-one document created");
       }
 
+      // ✅ Update user location
       try {
         setSubmittingMessage("Updating location...");
         const { checkAndUpdateLocation, incrementLocationScoreCount } = await import("@/utils/locationHelpers");
@@ -803,6 +804,7 @@ export default function PostScoreScreen() {
         console.error("Location update failed:", locationErr);
       }
 
+      // ✅ Update user stats (birdies, eagles, albatross, hole-in-ones)
       setSubmittingMessage("Updating stats...");
 
       const userUpdates: any = {};
@@ -824,6 +826,7 @@ export default function PostScoreScreen() {
         await updateDoc(doc(db, "users", auth.currentUser!.uid), userUpdates);
       }
 
+      // ✅ Update course stats
       try {
         const courseDocRef = doc(db, "courses", String(courseId));
         const courseUpdates: any = {};
@@ -845,235 +848,12 @@ export default function PostScoreScreen() {
         console.error("Course stats update failed:", courseErr);
       }
 
-      setSubmittingMessage("Checking achievements...");
-
-      let newBadges: any[] = [];
-      
-      if (holeCount === 18) {
-        try {
-          newBadges = await checkAndAwardBadges(
-            auth.currentUser!.uid,
-            courseId!,
-            courseName || "Unknown Course",
-            parseInt(grossScore),
-            hadHoleInOne === "yes",
-            hadHoleInOne === "yes" ? parseInt(holeNumber) : undefined
-          );
-        } catch (badgeError) {
-          console.error("Badge check failed:", badgeError);
-        }
-      }
-
-      if (regionKey) {
-        try {
-          setSubmittingMessage("Updating leaderboards...");
-
-          const leaderboardId = `${regionKey}_${courseId}`;
-          const leaderboardRef = doc(db, "leaderboards", leaderboardId);
-          const leaderboardSnap = await getDoc(leaderboardRef);
-
-          const newScoreEntry = {
-            scoreId: `temp_${Date.now()}`,
-            userId: auth.currentUser!.uid,
-            displayName: userData?.displayName || "Unknown",
-            userName: userData?.displayName || "Unknown",
-            userAvatar: userData?.avatar || null,
-            courseId: courseId!,
-            courseName: courseName || "Unknown Course",
-            grossScore: parseInt(grossScore),
-            netScore: netScore,
-            par: selectedTee.par,
-            tees: selectedTee.name,
-            teePar: selectedTee.par,
-            teeYardage: selectedTee.yardage || 0,
-            createdAt: new Date(),
-          };
-
-          if (leaderboardSnap.exists()) {
-            const leaderboardData = leaderboardSnap.data();
-            
-            const updates: any = {
-              lastUpdated: serverTimestamp(),
-            };
-
-            if (holeCount === 18) {
-              const topScores18 = leaderboardData.topScores18 || [];
-              topScores18.push(newScoreEntry);
-              topScores18.sort((a: any, b: any) => a.netScore - b.netScore);
-              const updatedTopScores18 = topScores18.slice(0, 10);
-
-              updates.topScores18 = updatedTopScores18;
-              updates.lowNetScore18 = updatedTopScores18[0].netScore;
-              updates.totalScores18 = increment(1);
-            } else {
-              const topScores9 = leaderboardData.topScores9 || [];
-              topScores9.push(newScoreEntry);
-              topScores9.sort((a: any, b: any) => a.netScore - b.netScore);
-              const updatedTopScores9 = topScores9.slice(0, 10);
-
-              updates.topScores9 = updatedTopScores9;
-              updates.lowNetScore9 = updatedTopScores9[0].netScore;
-              updates.totalScores9 = increment(1);
-            }
-
-            updates.totalScores = increment(1);
-
-            if (hadHoleInOne === "yes" && selectedVerifier) {
-              updates.holesInOne = arrayUnion({
-                userId: auth.currentUser!.uid,
-                displayName: userData?.displayName || "Unknown",
-                hole: parseInt(holeNumber),
-                holeCount: holeCount,
-                achievedAt: serverTimestamp(),
-                postId: null,
-              });
-            }
-
-            await updateDoc(leaderboardRef, updates);
-          } else {
-            const newLeaderboard: any = {
-              regionKey: regionKey,
-              courseId: courseId,
-              courseName: courseName,
-              location: selectedCourse.location || undefined,
-              totalScores: 1,
-              createdAt: serverTimestamp(),
-              lastUpdated: serverTimestamp(),
-            };
-
-            if (holeCount === 18) {
-              newLeaderboard.topScores18 = [newScoreEntry];
-              newLeaderboard.lowNetScore18 = netScore;
-              newLeaderboard.totalScores18 = 1;
-              newLeaderboard.topScores9 = [];
-              newLeaderboard.totalScores9 = 0;
-            } else {
-              newLeaderboard.topScores9 = [newScoreEntry];
-              newLeaderboard.lowNetScore9 = netScore;
-              newLeaderboard.totalScores9 = 1;
-              newLeaderboard.topScores18 = [];
-              newLeaderboard.totalScores18 = 0;
-            }
-
-            newLeaderboard.holesInOne = hadHoleInOne === "yes" ? [{
-              userId: auth.currentUser!.uid,
-              displayName: userData?.displayName || "Unknown",
-              hole: parseInt(holeNumber),
-              holeCount: holeCount,
-              achievedAt: serverTimestamp(),
-              postId: null,
-            }] : [];
-
-            await setDoc(leaderboardRef, newLeaderboard);
-          }
-        } catch (leaderboardErr) {
-          console.error("Leaderboard update failed:", leaderboardErr);
-        }
-      }
-
-      let postType = "score";
-      let achievementType = null;
-
-      const earnedLowman = newBadges.some((badge) => badge.type === "lowman");
-      if (earnedLowman) {
-        postType = "low-leader";
-        achievementType = "lowman";
-      }
-
-      setSubmittingMessage("Creating post...");
-
-      const teeDetails = selectedTee.yardage 
-        ? `from "${selectedTee.name}", ${selectedTee.yardage} yards`
-        : `from "${selectedTee.name}"`;
-      
-      const postContent = `Shot a ${parseInt(grossScore)} @${courseName} ${teeDetails}! ${roundDescription}`;
-
-      // ✅ Thought document - triggers onThoughtCreated Cloud Function
-      const thoughtRef = await addDoc(collection(db, "thoughts"), {
-        thoughtId: `thought_${Date.now()}`,
-        userId: auth.currentUser?.uid,
-        userName: userData?.displayName,
-        displayName: userData?.displayName,
-        userAvatar: userData?.avatar,
-        avatar: userData?.avatar,
-        userHandicap: userData?.handicap,
-        userType: userData?.userType,
-        userVerified: userData?.verified || false,
-        postType: postType,
-        achievementType: achievementType,
-        content: postContent,
-        scoreId: scoreRef.id,
-        imageUrl: imageUrl,
-        regionKey: regionKey,
-        geohash: geohash,
-        location: selectedCourse.location || undefined,
-        taggedPartners: extractedPartners.map((p) => ({
-          userId: p.userId,
-          displayName: p.displayName,
-        })),
-        taggedCourses: [{
-          courseId: courseId,
-          courseName: courseName,
-        }],
-        teeDetails: {
-          teeName: selectedTee.name,
-          yardage: selectedTee.yardage || null,
-          par: selectedTee.par,
-        },
-        createdAt: serverTimestamp(),
-        createdAtTimestamp: Date.now(),
-        likes: 0,
-        likedBy: [],
-        comments: 0,
-        engagementScore: 0,
-        viewCount: 0,
-        lastActivityAt: serverTimestamp(),
-        hasMedia: true,
-        mediaType: "images" as const,
-        imageUrls: [imageUrl],
-        imageCount: 1,
-        contentLowercase: postContent.toLowerCase(),
-      });
-
-      try {
-        await updateDoc(doc(db, "scores", scoreRef.id), {
-          thoughtId: thoughtRef.id
-        });
-      } catch (thoughtIdError) {
-        console.error("Failed to update score with thoughtId:", thoughtIdError);
-      }
-
-      if (hadHoleInOne === "yes" && regionKey) {
-        try {
-          const leaderboardId = `${regionKey}_${courseId}`;
-          const leaderboardRef = doc(db, "leaderboards", leaderboardId);
-          const leaderboardSnap = await getDoc(leaderboardRef);
-
-          if (leaderboardSnap.exists()) {
-            const leaderboardData = leaderboardSnap.data();
-            const holesInOne = leaderboardData.holesInOne || [];
-
-            const updatedHolesInOne = holesInOne.map((hio: any) => {
-              if (hio.userId === auth.currentUser!.uid && !hio.postId) {
-                return { ...hio, postId: thoughtRef.id };
-              }
-              return hio;
-            });
-
-            await updateDoc(leaderboardRef, { holesInOne: updatedHolesInOne });
-          }
-        } catch (hioErr) {
-          console.error("Hole-in-one postId update failed:", hioErr);
-        }
-      }
-
       await updateRateLimitTimestamp("score");
 
-      // ✅ NO CLIENT-SIDE NOTIFICATIONS - All handled by Cloud Functions:
-      // - onScoreCreated → partner_scored, partner_lowman, partner_holeinone
+      // ✅ All handled by Cloud Functions:
+      // - onScoreCreated → creates thought, leaderboard updates, badges, partner notifications
       // - onHoleInOneCreated → holeinone_pending_poster, holeinone_verification_request
-      // - onThoughtCreated → partner_posted, mention_post
-      console.log("📬 Notifications handled by Cloud Functions");
+      console.log("📬 Score submitted - Cloud Functions handle post creation, leaderboards, badges, and notifications");
 
       soundPlayer.play('achievement');
       setSubmitting(false);

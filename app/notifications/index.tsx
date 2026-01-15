@@ -19,19 +19,27 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+interface NotificationActor {
+  userId: string;
+  displayName: string;
+  avatar?: string;
+  timestamp?: any;
+}
+
 interface Notification {
   id: string;
   userId: string;
   type: string;
   read: boolean;
   createdAt: any;
+  updatedAt?: any;
   message: string;
   
   // Grouped notifications
-  actors?: Array<{ userId: string; displayName: string; avatar?: string }>;
+  actors?: NotificationActor[];
   actorCount?: number;
   
-  // Single actor notifications
+  // Single actor (backward compatibility)
   actorId?: string;
   actorName?: string;
   actorAvatar?: string;
@@ -41,6 +49,10 @@ interface Notification {
   commentId?: string;
   courseId?: number;
   scoreId?: string;
+  
+  // Grouping
+  groupKey?: string;
+  lastActorId?: string;
 }
 
 interface GroupedNotifications {
@@ -48,13 +60,55 @@ interface GroupedNotifications {
   data: Notification[];
 }
 
+// Icon mapping for notification types
+const NOTIFICATION_ICONS: Record<string, { name: string; color: string }> = {
+  // Post interactions
+  like: { name: "heart", color: "#FF3B30" },
+  comment: { name: "chatbubble", color: "#007AFF" },
+  comment_like: { name: "heart", color: "#FF3B30" },
+  reply: { name: "arrow-undo", color: "#007AFF" },
+  share: { name: "share-social", color: "#5856D6" },
+  
+  // Mentions
+  mention_post: { name: "at", color: "#5856D6" },
+  mention_comment: { name: "at", color: "#5856D6" },
+  
+  // Messages
+  message: { name: "mail", color: "#0D5C3A" },
+  
+  // Partner activities
+  partner_request: { name: "person-add", color: "#FFD700" },
+  partner_accepted: { name: "people", color: "#34C759" },
+  partner_posted: { name: "document-text", color: "#0D5C3A" },
+  partner_scored: { name: "golf", color: "#FF9500" },
+  partner_lowman: { name: "trophy", color: "#FFD700" },
+  partner_holeinone: { name: "flag", color: "#FF3B30" },
+  
+  // Trending
+  trending: { name: "flame", color: "#FF9500" },
+  
+  // Hole-in-one verification
+  holeinone_pending_poster: { name: "time", color: "#FF9500" },
+  holeinone_verification_request: { name: "checkmark-circle", color: "#FFD700" },
+  holeinone_verified: { name: "ribbon", color: "#34C759" },
+  holeinone_denied: { name: "close-circle", color: "#FF3B30" },
+  
+  // Membership
+  membership_submitted: { name: "document-text", color: "#007AFF" },
+  membership_approved: { name: "checkmark-circle", color: "#34C759" },
+  membership_rejected: { name: "close-circle", color: "#FF3B30" },
+  
+  // System
+  system: { name: "information-circle", color: "#8E8E93" },
+};
+
 export default function NotificationsScreen() {
   const router = useRouter();
-  const { getCache, setCache } = useCache(); // ✅ Add cache hook
+  const { getCache, setCache } = useCache();
   
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showingCached, setShowingCached] = useState(false); // ✅ Cache indicator
+  const [showingCached, setShowingCached] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
@@ -79,7 +133,7 @@ export default function NotificationsScreen() {
         const notificationsQuery = query(
           collection(db, "notifications"),
           where("userId", "==", uid),
-          orderBy("createdAt", "desc")
+          orderBy("updatedAt", "desc")
         );
 
         unsubscribe = onSnapshot(
@@ -135,11 +189,10 @@ export default function NotificationsScreen() {
     setShowingCached(false);
 
     try {
-      // Fetch fresh data
       const notificationsQuery = query(
         collection(db, "notifications"),
         where("userId", "==", uid),
-        orderBy("createdAt", "desc")
+        orderBy("updatedAt", "desc")
       );
 
       const snapshot = await getDocs(notificationsQuery);
@@ -153,8 +206,6 @@ export default function NotificationsScreen() {
       });
 
       setNotifications(notificationsList);
-
-      // Update cache
       await setCache(CACHE_KEYS.NOTIFICATIONS(uid), notificationsList);
     } catch (error) {
       console.error("Error refreshing notifications:", error);
@@ -175,7 +226,6 @@ export default function NotificationsScreen() {
       await markAllNotificationsAsRead(uid);
       soundPlayer.play('postThought');
       
-      // Update cache with all notifications marked as read
       const updatedNotifications = notifications.map(n => ({ ...n, read: true }));
       setNotifications(updatedNotifications);
       await setCache(CACHE_KEYS.NOTIFICATIONS(uid), updatedNotifications);
@@ -193,7 +243,6 @@ export default function NotificationsScreen() {
     if (!notification.read) {
       await markNotificationAsRead(notification.id);
       
-      // Update cache
       const uid = auth.currentUser?.uid;
       if (uid) {
         const updatedNotifications = notifications.map(n => 
@@ -206,13 +255,19 @@ export default function NotificationsScreen() {
 
     // Navigate based on type
     switch (notification.type) {
+      // ============================================
+      // POST INTERACTIONS - SCROLL TO POST (with highlight)
+      // These are social interactions on posts
+      // ============================================
       case "like":
       case "comment":
+      case "comment_like":
+      case "reply":
       case "share":
+      case "mention_post":
       case "mention_comment":
       case "partner_posted":
       case "trending":
-        // All clubhouse interactions - highlight the post with gold border
         if (notification.postId) {
           router.push({
             pathname: "/clubhouse",
@@ -221,39 +276,33 @@ export default function NotificationsScreen() {
         }
         break;
 
-      case "mention_post":
-        if (notification.postId) {
-          router.push({
-            pathname: "/clubhouse",
-            params: { highlightPostId: notification.postId },
-          });
-        }
-        break;
-
-      case "partner_request":
-      case "partner_accepted":
-        if (notification.actorId) {
-          router.push(`/locker/${notification.actorId}`);
-        }
-        break;
-
-      case "message":
-      case "message_request":
-        if (notification.actorId) {
-          router.push(`/messages/${notification.actorId}`);
-        }
-        break;
-
+      // ============================================
+      // SCORE-RELATED - HIGHLIGHT POST
+      // These are score/achievement notifications
+      // ============================================
       case "partner_scored":
-        if (notification.scoreId) {
+      case "partner_holeinone":
+      case "holeinone_verified":
+      case "holeinone_pending_poster":
+        if (notification.postId) {
+          router.push({
+            pathname: "/clubhouse",
+            params: { highlightPostId: notification.postId },
+          });
+        } else if (notification.scoreId) {
+          // Fallback for older notifications without postId
           router.push({
             pathname: "/clubhouse",
             params: { highlightScoreId: notification.scoreId },
           });
+        } else {
+          router.push("/clubhouse");
         }
         break;
 
-      // ✅ LOW LEADER - Navigate to leaderboard with highlighting
+      // ============================================
+      // LOWMAN - HIGHLIGHT ON LEADERBOARD
+      // ============================================
       case "partner_lowman":
         if (notification.courseId && notification.actorId) {
           router.push({
@@ -266,42 +315,59 @@ export default function NotificationsScreen() {
         }
         break;
 
-      // ===============================
-      // HOLE-IN-ONE ADDITIONS
-      // ===============================
-
+      // ============================================
+      // HOLE-IN-ONE VERIFICATION REQUEST
+      // ============================================
       case "holeinone_verification_request":
-        router.push(`/verify-holeinone/${notification.scoreId}`);
-        break;
-
-      case "holeinone_verified":
-        if (notification.postId) {
-          router.push({
-            pathname: "/clubhouse",
-            params: { highlightPostId: notification.postId },
-          });
-        } else {
-          router.push(`/clubhouse`);
+        if (notification.scoreId) {
+          router.push(`/verify-holeinone/${notification.scoreId}`);
         }
         break;
 
+      // ============================================
+      // HOLE-IN-ONE DENIED - GO TO OWN LOCKER
+      // ============================================
       case "holeinone_denied":
-        router.push(`/profile/${auth.currentUser?.uid}`);
+        router.push(`/locker/${auth.currentUser?.uid}`);
         break;
 
-      case "partner_holeinone":
-        if (notification.postId) {
-          router.push({
-            pathname: "/clubhouse",
-            params: { highlightPostId: notification.postId },
-          });
-        } else {
-          router.push(`/clubhouse`);
+      // ============================================
+      // PARTNER INTERACTIONS (navigate to profile)
+      // ============================================
+      case "partner_request":
+      case "partner_accepted":
+        const actorId = notification.lastActorId || notification.actorId;
+        if (actorId) {
+          router.push(`/locker/${actorId}`);
+        }
+        break;
+
+      // ============================================
+      // MESSAGES (navigate to thread)
+      // ============================================
+      case "message":
+        const messageActorId = notification.lastActorId || notification.actorId;
+        const currentUserId = auth.currentUser?.uid;
+
+        if (messageActorId && currentUserId) {
+          const threadId = [currentUserId, messageActorId].sort().join("_");
+          router.push(`/messages/${threadId}`);
+        }
+        break;
+
+      // ============================================
+      // MEMBERSHIP NOTIFICATIONS (navigate to course locker)
+      // ============================================
+      case "membership_submitted":
+      case "membership_approved":
+      case "membership_rejected":
+        if (notification.courseId) {
+          router.push(`/locker/course/${notification.courseId}`);
         }
         break;
 
       default:
-        // For system notifications, do nothing or navigate to settings
+        console.log("⚠️ Unhandled notification type:", notification.type);
         break;
     }
   };
@@ -320,7 +386,8 @@ export default function NotificationsScreen() {
     const olderNotifs: Notification[] = [];
 
     notifications.forEach((notif) => {
-      const date = notif.createdAt?.toDate();
+      // Use updatedAt if available, fallback to createdAt
+      const date = (notif.updatedAt || notif.createdAt)?.toDate();
       if (!date) return;
 
       if (date >= today) {
@@ -343,44 +410,122 @@ export default function NotificationsScreen() {
     return grouped;
   };
 
-  const renderNotification = ({ item }: { item: Notification }) => {
-    // Get avatar (grouped or single)
-    const avatar = item.actors && item.actors.length > 0
-      ? item.actors[0].avatar
-      : item.actorAvatar;
+  const formatTimeAgo = (timestamp: any): string => {
+    if (!timestamp?.toDate) return "";
+    
+    const date = timestamp.toDate();
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    
+    if (diffMins < 1) return "Just now";
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    
+    return date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    });
+  };
 
+  const renderAvatarStack = (notification: Notification) => {
+    const actors = notification.actors || [];
+    const actorCount = notification.actorCount || 1;
+    
+    // If we have actors array, show stacked avatars
+    if (actors.length > 1) {
+      const displayActors = actors.slice(0, 3); // Show max 3 avatars
+      
+      return (
+        <View style={styles.avatarStack}>
+          {displayActors.map((actor, index) => (
+            <View
+              key={actor.userId}
+              style={[
+                styles.stackedAvatarContainer,
+                { zIndex: displayActors.length - index, marginLeft: index > 0 ? -12 : 0 },
+              ]}
+            >
+              {actor.avatar ? (
+                <Image source={{ uri: actor.avatar }} style={styles.stackedAvatar} />
+              ) : (
+                <View style={styles.stackedAvatarPlaceholder}>
+                  <Text style={styles.stackedAvatarInitial}>
+                    {actor.displayName?.[0]?.toUpperCase() || "?"}
+                  </Text>
+                </View>
+              )}
+            </View>
+          ))}
+          
+          {/* Show +N if more than 3 */}
+          {actorCount > 3 && (
+            <View style={[styles.stackedAvatarContainer, styles.moreAvatars, { marginLeft: -12 }]}>
+              <Text style={styles.moreAvatarsText}>+{actorCount - 3}</Text>
+            </View>
+          )}
+        </View>
+      );
+    }
+    
+    // Single avatar (backward compatibility)
+    const avatar = actors[0]?.avatar || notification.actorAvatar;
+    const displayName = actors[0]?.displayName || notification.actorName || "";
+    
+    return (
+      <View style={styles.singleAvatarContainer}>
+        {avatar ? (
+          <Image source={{ uri: avatar }} style={styles.avatar} />
+        ) : (
+          <View style={styles.avatarPlaceholder}>
+            <Text style={styles.avatarInitial}>
+              {displayName[0]?.toUpperCase() || "?"}
+            </Text>
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderNotificationIcon = (type: string) => {
+    const iconConfig = NOTIFICATION_ICONS[type] || NOTIFICATION_ICONS.system;
+    
+    return (
+      <View style={[styles.notificationIcon, { backgroundColor: `${iconConfig.color}20` }]}>
+        <Ionicons name={iconConfig.name as any} size={14} color={iconConfig.color} />
+      </View>
+    );
+  };
+
+  const renderNotification = ({ item }: { item: Notification }) => {
     return (
       <TouchableOpacity
         style={[styles.notificationCard, !item.read && styles.notificationUnread]}
         onPress={() => handleNotificationTap(item)}
+        activeOpacity={0.7}
       >
-        {/* Avatar */}
-        <View style={styles.avatarContainer}>
-          {avatar ? (
-            <Image source={{ uri: avatar }} style={styles.avatar} />
-          ) : (
-            <View style={styles.avatarPlaceholder}>
-              <Ionicons name="person" size={24} color="#0D5C3A" />
-            </View>
-          )}
+        {/* Avatar Section */}
+        <View style={styles.avatarSection}>
+          {renderAvatarStack(item)}
           {!item.read && <View style={styles.unreadDot} />}
+          {renderNotificationIcon(item.type)}
         </View>
 
         {/* Content */}
         <View style={styles.notificationContent}>
-          <Text style={styles.notificationMessage}>{item.message}</Text>
+          <Text style={[styles.notificationMessage, !item.read && styles.notificationMessageUnread]}>
+            {item.message}
+          </Text>
           <Text style={styles.notificationTime}>
-            {item.createdAt?.toDate().toLocaleString("en-US", {
-              month: "short",
-              day: "numeric",
-              hour: "numeric",
-              minute: "2-digit",
-            })}
+            {formatTimeAgo(item.updatedAt || item.createdAt)}
           </Text>
         </View>
 
-        {/* Icon */}
-        <Ionicons name="chevron-forward" size={20} color="#999" />
+        {/* Chevron */}
+        <Ionicons name="chevron-forward" size={18} color="#CCC" />
       </TouchableOpacity>
     );
   };
@@ -388,6 +533,7 @@ export default function NotificationsScreen() {
   const renderSectionHeader = ({ section }: { section: GroupedNotifications }) => (
     <View style={styles.sectionHeader}>
       <Text style={styles.sectionTitle}>{section.title}</Text>
+      <View style={styles.sectionDivider} />
     </View>
   );
 
@@ -402,6 +548,7 @@ export default function NotificationsScreen() {
   }
 
   const hasUnread = notifications.some((n) => !n.read);
+  const unreadCount = notifications.filter((n) => !n.read).length;
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
@@ -422,21 +569,28 @@ export default function NotificationsScreen() {
           />
         </TouchableOpacity>
 
-        <Text style={styles.headerTitle}>Notifications</Text>
+        <View style={styles.headerTitleContainer}>
+          <Text style={styles.headerTitle}>Notifications</Text>
+          {unreadCount > 0 && (
+            <View style={styles.unreadBadge}>
+              <Text style={styles.unreadBadgeText}>{unreadCount}</Text>
+            </View>
+          )}
+        </View>
 
-        {hasUnread && (
+        {hasUnread ? (
           <TouchableOpacity
             onPress={handleMarkAllAsRead}
             style={styles.markAllButton}
           >
-            <Text style={styles.markAllText}>Mark all read</Text>
+            <Text style={styles.markAllText}>Mark all</Text>
           </TouchableOpacity>
+        ) : (
+          <View style={styles.backButton} />
         )}
-
-        {!hasUnread && <View style={styles.backButton} />}
       </View>
 
-      {/* Cache indicator - only show when cache is displayed */}
+      {/* Cache indicator */}
       {showingCached && !loading && (
         <View style={styles.cacheIndicator}>
           <ActivityIndicator size="small" color="#0D5C3A" />
@@ -447,7 +601,9 @@ export default function NotificationsScreen() {
       {/* Notifications List */}
       {notifications.length === 0 ? (
         <View style={styles.emptyContainer}>
-          <Ionicons name="notifications-off-outline" size={80} color="#CCC" />
+          <View style={styles.emptyIconContainer}>
+            <Ionicons name="notifications-off-outline" size={64} color="#0D5C3A" />
+          </View>
           <Text style={styles.emptyText}>No notifications yet</Text>
           <Text style={styles.emptySubtext}>
             We'll notify you when something happens
@@ -502,7 +658,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   backButton: {
-    width: 40,
+    width: 60,
     alignItems: "flex-start",
   },
   closeIcon: {
@@ -510,20 +666,36 @@ const styles = StyleSheet.create({
     height: 28,
     tintColor: "#FFFFFF",
   },
+  headerTitleContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   headerTitle: {
     fontSize: 18,
     fontWeight: "700",
     color: "#FFFFFF",
-    flex: 1,
-    textAlign: "center",
+  },
+  unreadBadge: {
+    backgroundColor: "#FF3B30",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    minWidth: 20,
+    alignItems: "center",
+  },
+  unreadBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "700",
   },
   markAllButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
+    width: 60,
+    alignItems: "flex-end",
   },
   markAllText: {
     color: "#FFD700",
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "600",
   },
   cacheIndicator: {
@@ -536,7 +708,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#FFECB5",
   },
-  
   cacheText: {
     fontSize: 12,
     color: "#664D03",
@@ -546,15 +717,21 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
   },
   sectionHeader: {
-    backgroundColor: "#F4EED8",
     paddingHorizontal: 16,
     paddingTop: 20,
     paddingBottom: 8,
   },
   sectionTitle: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: "700",
     color: "#0D5C3A",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  sectionDivider: {
+    height: 1,
+    backgroundColor: "#E0E0E0",
   },
   notificationCard: {
     flexDirection: "row",
@@ -562,35 +739,101 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     marginHorizontal: 16,
     marginVertical: 4,
-    padding: 16,
+    padding: 14,
     borderRadius: 12,
     gap: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   notificationUnread: {
-    backgroundColor: "#FFF9E6",
-    borderLeftWidth: 4,
+    backgroundColor: "#FFFEF5",
+    borderLeftWidth: 3,
     borderLeftColor: "#FFD700",
   },
-  avatarContainer: {
+  
+  // Avatar Section
+  avatarSection: {
     position: "relative",
+  },
+  
+  // Single Avatar
+  singleAvatarContainer: {
+    width: 48,
+    height: 48,
   },
   avatar: {
     width: 48,
     height: 48,
     borderRadius: 24,
+    backgroundColor: "#E0E0E0",
   },
   avatarPlaceholder: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: "#E0E0E0",
+    backgroundColor: "#0D5C3A",
     alignItems: "center",
     justifyContent: "center",
   },
+  avatarInitial: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  
+  // Stacked Avatars
+  avatarStack: {
+    flexDirection: "row",
+    alignItems: "center",
+    width: 72,
+    height: 48,
+  },
+  stackedAvatarContainer: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
+    backgroundColor: "#FFFFFF",
+    overflow: "hidden",
+  },
+  stackedAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+  },
+  stackedAvatarPlaceholder: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#0D5C3A",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stackedAvatarInitial: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  moreAvatars: {
+    backgroundColor: "#0D5C3A",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  moreAvatarsText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  
+  // Unread Dot
   unreadDot: {
     position: "absolute",
-    top: 0,
-    right: 0,
+    top: -2,
+    right: -2,
     width: 12,
     height: 12,
     borderRadius: 6,
@@ -598,30 +841,61 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "#FFFFFF",
   },
+  
+  // Notification Icon Badge
+  notificationIcon: {
+    position: "absolute",
+    bottom: -4,
+    right: -4,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
+  },
+  
+  // Content
   notificationContent: {
     flex: 1,
   },
   notificationMessage: {
     fontSize: 14,
-    fontWeight: "600",
+    fontWeight: "500",
     color: "#333",
     marginBottom: 4,
+    lineHeight: 20,
+  },
+  notificationMessageUnread: {
+    fontWeight: "600",
+    color: "#000",
   },
   notificationTime: {
     fontSize: 12,
     color: "#999",
   },
+  
+  // Empty State
   emptyContainer: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 40,
   },
+  emptyIconContainer: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: "rgba(13, 92, 58, 0.1)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 20,
+  },
   emptyText: {
     fontSize: 20,
     fontWeight: "700",
-    color: "#666",
-    marginTop: 16,
+    color: "#333",
   },
   emptySubtext: {
     fontSize: 14,
