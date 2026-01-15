@@ -53,7 +53,7 @@ interface Score {
   teePar: number;
   teeYardage: number;
   createdAt: any;
-  userName?: string;
+  displayName?: string;
   userAvatar?: string | null;
 }
 
@@ -955,7 +955,7 @@ export default function LeaderboardScreen() {
                         )}
 
                         <Text style={styles.playerName} numberOfLines={1}>
-                          {s.userName}
+                          {s.displayName}
                         </Text>
                       </TouchableOpacity>
 
@@ -1112,7 +1112,7 @@ export default function LeaderboardScreen() {
                               ]}
                               numberOfLines={1}
                             >
-                              {s.userName}
+                              {s.displayName}
                             </Text>
                           </TouchableOpacity>
 

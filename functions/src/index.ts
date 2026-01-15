@@ -616,9 +616,17 @@ export const onScoreCreated = onDocumentCreated(
 
         const newScoreEntry = {
           userId,
-          displayName: userName || "Unknown",
+          displayName: userName || userData?.displayName || "Unknown",
+          userAvatar: userData?.avatar || null,
           grossScore,
           netScore,
+          courseId,
+          courseName,
+          tees: tee || null,
+          teeYardage: teeYardage || null,
+          teePar: score.par || 72,
+          par: score.par || 72,
+          scoreId,
           createdAt: Timestamp.now(),
         };
 
@@ -756,10 +764,14 @@ export const onScoreCreated = onDocumentCreated(
       // ============================================
       // CREATE CLUBHOUSE POST (for ALL scores)
       // ============================================
+      console.log("📝 Creating clubhouse post...");
+
       const teeDetails = teeYardage 
         ? `from "${tee}", ${teeYardage} yards`
         : tee ? `from "${tee}"` : "";
       const postContent = `Shot a ${grossScore} @${courseName} ${teeDetails}! ${roundDescription || ""}`.trim();
+
+      console.log("📝 Post content:", postContent);
 
       const thoughtData: any = {
         thoughtId: `thought_${Date.now()}`,
@@ -794,18 +806,28 @@ export const onScoreCreated = onDocumentCreated(
         imageUrls: scorecardImageUrl ? [scorecardImageUrl] : [],
         imageCount: scorecardImageUrl ? 1 : 0,
         contentLowercase: postContent.toLowerCase(),
-        // Flag to prevent duplicate notifications in onThoughtCreated
         createdByScoreFunction: true,
       };
 
-      const thoughtRef = await db.collection("thoughts").add(thoughtData);
-      const thoughtId = thoughtRef.id;
+      console.log("📝 Thought data prepared, adding to Firestore...");
 
-      console.log("✅ Clubhouse post created:", thoughtId);
+      let thoughtId: string | undefined;
+      
+      try {
+        const thoughtRef = await db.collection("thoughts").add(thoughtData);
+        thoughtId = thoughtRef.id;
+        console.log("✅ Clubhouse post created:", thoughtId);
 
-      // Update score document with thoughtId
-      await snap.ref.update({ thoughtId });
-      console.log("✅ Score updated with thoughtId");
+        // Update score document with thoughtId
+        try {
+          await snap.ref.update({ thoughtId });
+          console.log("✅ Score updated with thoughtId:", thoughtId);
+        } catch (updateError) {
+          console.error("❌ Error updating score with thoughtId:", updateError);
+        }
+      } catch (thoughtError) {
+        console.error("❌ Error creating thought:", thoughtError);
+      }
 
       // ============================================
       // SEND PARTNER NOTIFICATIONS (with postId!)
