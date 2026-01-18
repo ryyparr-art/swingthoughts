@@ -8,9 +8,11 @@ import {
   query,
   where,
 } from "firebase/firestore";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Image,
   RefreshControl,
   ScrollView,
@@ -49,6 +51,7 @@ export default function AdminDashboardScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
+  const [syncingTournaments, setSyncingTournaments] = useState(false);
 
   useEffect(() => {
     checkAdminAccess();
@@ -173,6 +176,45 @@ export default function AdminDashboardScreen() {
     fetchMetrics();
   };
 
+  /* ==================== TOURNAMENT SYNC ==================== */
+  const handleSyncTournaments = async () => {
+    Alert.alert(
+      "Sync 2026 Tournaments",
+      "This will fetch all PGA Tour tournaments for 2026 from the API. This may take a few minutes.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Sync",
+          onPress: async () => {
+            try {
+              setSyncingTournaments(true);
+              console.log("🏌️ Starting tournament sync...");
+
+              const functions = getFunctions();
+              const syncSchedule = httpsCallable(functions, "syncTournamentSchedule");
+
+              const result = await syncSchedule({ year: "2026", orgId: "1" });
+              const data = result.data as any;
+
+              console.log("✅ Sync complete:", data);
+
+              Alert.alert(
+                "Sync Complete",
+                `Successfully synced ${data.successCount} tournaments.\n${data.errorCount} errors.`,
+                [{ text: "OK" }]
+              );
+            } catch (error: any) {
+              console.error("❌ Sync failed:", error);
+              Alert.alert("Sync Failed", error.message || "Unknown error occurred");
+            } finally {
+              setSyncingTournaments(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   /* ==================== CALCULATED METRICS ==================== */
   const dau_mau_ratio =
     metrics.activeUsersLast30Days > 0
@@ -274,6 +316,26 @@ export default function AdminDashboardScreen() {
             <Text style={styles.actionLabel}>Migration</Text>
           </TouchableOpacity>
         </View>
+
+        {/* TOURNAMENT SYNC */}
+        <Text style={styles.sectionTitle}>TOURNAMENT DATA</Text>
+        <TouchableOpacity
+          style={[styles.syncButton, syncingTournaments && styles.syncButtonDisabled]}
+          onPress={handleSyncTournaments}
+          disabled={syncingTournaments}
+        >
+          {syncingTournaments ? (
+            <>
+              <ActivityIndicator size="small" color="#FFF" />
+              <Text style={styles.syncButtonText}>Syncing Tournaments...</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="golf" size={20} color="#FFF" />
+              <Text style={styles.syncButtonText}>Sync 2025 PGA Tour Schedule</Text>
+            </>
+          )}
+        </TouchableOpacity>
 
         {/* KEY METRICS */}
         <Text style={styles.sectionTitle}>KEY METRICS</Text>
@@ -445,6 +507,33 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#333",
     textAlign: "center",
+  },
+
+  /* TOURNAMENT SYNC BUTTON */
+  syncButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "#0D5C3A",
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+
+  syncButtonDisabled: {
+    backgroundColor: "#8FAF9D",
+  },
+
+  syncButtonText: {
+    color: "#FFF",
+    fontSize: 15,
+    fontWeight: "700",
   },
 
   /* METRICS */

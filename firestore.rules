@@ -57,7 +57,7 @@ service cloud.firestore {
       let u = getUserData();
       return !('lastMessageTime' in u) ||
         u.lastMessageTime == null ||
-        u.lastMessageTime < request.time - duration.value(10, 's');
+        u.lastMessageTime < request.time - duration.value(0.2, 's');
     }
 
     function canScore() {
@@ -99,27 +99,26 @@ service cloud.firestore {
         request.resource.data.userId == request.auth.uid &&
         request.resource.data.content.size() <= 280;
 
-      allow update, delete: if isSignedIn() &&
+      // ✅ FIXED: Allow owner/admin full update, OR any signed-in user can update engagement fields
+      allow update: if isSignedIn() &&
+        (
+          request.auth.uid == resource.data.userId ||
+          isAdmin() ||
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['likes', 'likedBy', 'comments', 'lastActivityAt', 'engagementScore', 'viewCount'])
+        );
+
+      allow delete: if isSignedIn() &&
         (request.auth.uid == resource.data.userId || isAdmin());
 
-      // COMMENTS SUBCOLLECTION (for display)
+      // COMMENTS SUBCOLLECTION
       match /comments/{commentId} {
         allow read, list: if true;
-
-        allow create: if isSignedIn() &&
-          isEmailVerified() &&
-          canComment() &&
-          request.resource.data.userId == request.auth.uid &&
-          request.resource.data.content.size() <= 500;
-
-        allow update, delete: if isSignedIn() &&
-          (request.auth.uid == resource.data.userId || isAdmin());
+        allow create, update, delete: if isSignedIn();
       }
-    }
-
+    }  
     // ============================================================================
     // COMMENTS (TOP-LEVEL - FOR CLOUD FUNCTION TRIGGERS)
-    // ✅ FIXED: Changed postOwnerId to postAuthorId to match client code
     // ============================================================================
 
     match /comments/{commentId} {
@@ -132,7 +131,16 @@ service cloud.firestore {
         request.resource.data.postId is string &&
         request.resource.data.postAuthorId is string;
 
-      allow update, delete: if isSignedIn() &&
+      // ✅ FIXED: Allow engagement field updates for comment likes
+      allow update: if isSignedIn() &&
+        (
+          request.auth.uid == resource.data.userId ||
+          isAdmin() ||
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['likes', 'likedBy'])
+        );
+
+      allow delete: if isSignedIn() &&
         (request.auth.uid == resource.data.userId || isAdmin());
     }
 
@@ -144,7 +152,6 @@ service cloud.firestore {
       allow read, list: if isSignedIn();
 
       allow create: if isSignedIn() &&
-        isEmailVerified() &&
         request.resource.data.userId == request.auth.uid &&
         request.resource.data.postId is string &&
         request.resource.data.postAuthorId is string;
@@ -163,7 +170,6 @@ service cloud.firestore {
       allow read, list: if isSignedIn();
 
       allow create: if isSignedIn() &&
-        isEmailVerified() &&
         request.resource.data.userId == request.auth.uid &&
         request.resource.data.commentId is string &&
         request.resource.data.commentAuthorId is string;
@@ -218,6 +224,43 @@ service cloud.firestore {
     }
 
     // ============================================================================
+    // TOURNAMENTS (PGA TOUR DATA)
+    // ============================================================================
+
+    match /tournaments/{tournamentId} {
+      // Anyone can read tournament data (public info)
+      allow read, list: if true;
+      
+      // Only Cloud Functions can write (via Admin SDK)
+      allow create, update, delete: if false;
+    }
+
+    // ============================================================================
+    // TOURNAMENT CHATS (LIVE CHAT DURING TOURNAMENTS)
+    // ============================================================================
+
+    // Pattern: tournamentChats_2026_006_live or tournamentChats_2026_006_onpremise
+    match /{chatCollection}/{messageId} {
+      // Only match tournament chat collections
+      allow read, list: if isSignedIn() && 
+        chatCollection.matches('tournamentChats_.*');
+
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        chatCollection.matches('tournamentChats_.*') &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.content.size() <= 280;
+
+      // Allow users to delete their own messages, admins can delete any
+      allow delete: if isSignedIn() &&
+        chatCollection.matches('tournamentChats_.*') &&
+        (request.auth.uid == resource.data.userId || isAdmin());
+
+      // No updates to chat messages
+      allow update: if false;
+    }
+
+    // ============================================================================
     // COURSES / CLUBS
     // ============================================================================
 
@@ -237,7 +280,7 @@ service cloud.firestore {
     }
 
     // ============================================================================
-    // PARTNER REQUESTS (camelCase - matches your code)
+    // PARTNER REQUESTS
     // ============================================================================
 
     match /partnerRequests/{requestId} {
@@ -295,9 +338,6 @@ service cloud.firestore {
       allow read, list: if isSignedIn() &&
         (request.auth.uid == resource.data.userId || isAdmin());
 
-      // Allow create for:
-      // 1. Cloud Functions (via admin SDK - bypasses rules anyway)
-      // 2. Admin users creating notifications directly (for admin verifications screen)
       allow create: if isAdmin();
 
       allow update, delete: if isSignedIn() &&
@@ -310,7 +350,6 @@ service cloud.firestore {
 
     match /threads/{threadId} {
 
-      // ✅ Check if user ID is in the thread ID (format: "userA_userB")
       function isUserInThreadId() {
         return request.auth != null &&
           threadId.matches('.*' + request.auth.uid + '.*');
@@ -321,16 +360,11 @@ service cloud.firestore {
           resource.data.participants.hasAny([request.auth.uid]);
       }
 
-      // 🔑 REQUIRED so inbox queries work
       allow list: if isSignedIn();
 
-      // 🔒 Allow read if:
-      // 1. Thread exists AND user is participant, OR
-      // 2. Thread doesn't exist yet but user ID is in thread ID (deterministic ID pattern)
       allow read: if isSignedIn() && 
         (isParticipant() || isUserInThreadId());
 
-      // ✅ Allow create if user ID is in thread ID
       allow create: if isSignedIn() &&
         isUserInThreadId() &&
         request.resource.data.participants is list &&
@@ -360,22 +394,16 @@ service cloud.firestore {
             .affectedKeys().hasOnly([request.auth.uid])
         );
 
-      // ------------------------------------------------------------------------
       // THREAD MESSAGES
-      // ------------------------------------------------------------------------
-
       match /messages/{messageId} {
 
-        // ✅ Allow if user ID is in parent thread ID
         function isUserInParentThreadId() {
           return request.auth != null &&
             threadId.matches('.*' + request.auth.uid + '.*');
         }
 
-        // 🔑 Allow snapshot listeners if user is in thread ID
         allow list: if isSignedIn() && isUserInParentThreadId();
 
-        // 🔒 Enforce message-level access
         allow read: if request.auth != null &&
           (resource.data.senderId == request.auth.uid ||
            resource.data.receiverId == request.auth.uid ||
@@ -388,21 +416,17 @@ service cloud.firestore {
           request.resource.data.senderId == request.auth.uid &&
           request.resource.data.content.size() <= 1000;
 
-        // ✅ Allow marking as read OR editing own message
         allow update: if isSignedIn() &&
           (
-            // Receiver can mark as read
             (request.auth.uid == resource.data.receiverId &&
              request.resource.data.diff(resource.data)
                .affectedKeys().hasOnly(['read', 'readAt']))
             ||
-            // Sender can edit their own message
             (request.auth.uid == resource.data.senderId &&
              request.resource.data.diff(resource.data)
                .affectedKeys().hasOnly(['content', 'edited', 'editedAt']))
           );
 
-        // ✅ Allow sender to delete their own message (or admin)
         allow delete: if isSignedIn() &&
           (request.auth.uid == resource.data.senderId || isAdmin());
       }
@@ -444,7 +468,6 @@ service cloud.firestore {
         isEmailVerified() &&
         request.resource.data.userId == request.auth.uid;
 
-      // Poster or verifier can update (for verification)
       allow update: if isSignedIn() &&
         (
           request.auth.uid == resource.data.userId ||
@@ -468,7 +491,6 @@ service cloud.firestore {
         isEmailVerified() &&
         request.resource.data.userId == request.auth.uid;
 
-      // Admin can update (approve/reject)
       allow update: if isAdmin();
 
       allow delete: if isSignedIn() &&
@@ -486,28 +508,25 @@ service cloud.firestore {
       allow create: if isSignedIn() &&
         request.resource.data.userId == request.auth.uid;
 
-      // Admin can update (approve/reject)
       allow update: if isAdmin();
 
       allow delete: if isAdmin();
     }
 
     // ============================================================================
-    // COURSE LEADERS (USED BY FEED / CAROUSEL / LOWMAN / HOLE-IN-ONES)
+    // COURSE LEADERS
     // ============================================================================
 
     match /course_leaders/{courseId} {
       allow read, list: if true;
       
-      // Allow signed-in users to create/update (for hole-in-one verification flow)
-      // Cloud Functions also update this via admin SDK
       allow create, update: if isSignedIn() && isEmailVerified();
       
       allow delete: if isAdmin();
     }
 
     // ============================================================================
-    // REPORTS (USER REPORTS ON CONTENT)
+    // REPORTS
     // ============================================================================
 
     match /reports/{reportId} {
@@ -521,7 +540,7 @@ service cloud.firestore {
     }
 
     // ============================================================================
-    // PUSH TOKENS (FOR NOTIFICATIONS)
+    // PUSH TOKENS
     // ============================================================================
 
     match /push_tokens/{tokenId} {
@@ -536,16 +555,14 @@ service cloud.firestore {
     }
 
     // ============================================================================
-    // LEAGUES (FOR LEAGUE SYSTEM - MVP)
+    // LEAGUES
     // ============================================================================
 
     match /leagues/{leagueId} {
       allow read, list: if true;
 
-      // Only admin can create leagues (after approval)
       allow create: if isAdmin();
 
-      // Admin or league host can update
       allow update: if isSignedIn() &&
         (request.auth.uid == resource.data.hostUserId || isAdmin());
 
@@ -555,12 +572,10 @@ service cloud.firestore {
       match /members/{memberId} {
         allow read, list: if isSignedIn();
 
-        // User can join (create their own membership)
         allow create: if isSignedIn() &&
           isEmailVerified() &&
           request.resource.data.userId == request.auth.uid;
 
-        // Host, admin, or member themselves can update
         allow update: if isSignedIn() &&
           (
             request.auth.uid == resource.data.userId ||
@@ -568,7 +583,6 @@ service cloud.firestore {
             isAdmin()
           );
 
-        // Member can leave, host can remove, admin can remove
         allow delete: if isSignedIn() &&
           (
             request.auth.uid == resource.data.userId ||
@@ -595,7 +609,7 @@ service cloud.firestore {
     }
 
     // ============================================================================
-    // LEAGUE APPLICATIONS (HOST APPLICATIONS)
+    // LEAGUE APPLICATIONS
     // ============================================================================
 
     match /league_applications/{applicationId} {
@@ -606,7 +620,6 @@ service cloud.firestore {
         isEmailVerified() &&
         request.resource.data.userId == request.auth.uid;
 
-      // Admin can update (approve/reject)
       allow update: if isAdmin();
 
       allow delete: if isSignedIn() &&
@@ -622,7 +635,6 @@ service cloud.firestore {
     }
   }
 }
-
 
 
 

@@ -423,6 +423,17 @@ export const sendPushNotification = onDocumentCreated(
         return;
       }
 
+      // ✅ Count actual unread notifications for accurate badge
+      const unreadSnapshot = await db
+        .collection("notifications")
+        .where("userId", "==", userId)
+        .where("read", "==", false)
+        .count()
+        .get();
+      
+      const unreadCount = unreadSnapshot.data().count;
+      console.log(`📊 Unread count for ${userId}: ${unreadCount}`);
+
       const pushMessage: ExpoPushMessage = {
         to: expoPushToken,
         sound: "default",
@@ -438,7 +449,7 @@ export const sendPushNotification = onDocumentCreated(
           scoreId: notification.scoreId,
           courseId: notification.courseId,
         },
-        badge: 1,
+        badge: unreadCount,  // ✅ Accurate badge count instead of hardcoded 1
       };
 
       // Customize title based on notification type
@@ -1351,7 +1362,7 @@ export const onCommentCreated = onDocumentCreated(
 // ============================================================================
 
 export const onPartnerRequestCreated = onDocumentCreated(
-  "partner_requests/{requestId}",
+  "partnerRequests/{requestId}",
   async (event) => {
     try {
       const snap = event.data;
@@ -1392,24 +1403,39 @@ export const onPartnerRequestCreated = onDocumentCreated(
 );
 
 export const onPartnerRequestUpdated = onDocumentUpdated(
-  "partner_requests/{requestId}",
+  "partnerRequests/{requestId}",
   async (event) => {
+    console.log("🔥 onPartnerRequestUpdated TRIGGERED");
+    console.log("📄 Request ID:", event.params.requestId);
+    
     try {
       const before = event.data?.before.data();
       const after = event.data?.after.data();
 
-      if (!before || !after) return;
+      console.log("📝 Before status:", before?.status);
+      console.log("📝 After status:", after?.status);
 
-      // Check if status changed to "accepted"
-      if (before.status !== "accepted" && after.status === "accepted") {
+      if (!before || !after) {
+        console.log("⛔ Missing before/after data");
+        return;
+      }
+
+      // Check if status changed to "approved"
+      if (before.status !== "approved" && after.status === "approved") {
         const { fromUserId, toUserId } = after;
+
+        console.log("✅ Status changed to approved!");
+        console.log("👤 fromUserId:", fromUserId);
+        console.log("👤 toUserId:", toUserId);
+
+        // ... rest of function stays the same
 
         if (!fromUserId || !toUserId) {
           console.log("⛔ Partner request missing required fields");
           return;
         }
 
-        console.log("✅ Partner request accepted:", fromUserId, "←→", toUserId);
+        console.log("✅ Partner request approved:", fromUserId, "←→", toUserId);
 
         const userData = await getUserData(toUserId);
         if (!userData) {
@@ -1784,6 +1810,17 @@ export const onThreadUpdated = onDocumentUpdated(
     }
   }
 );
+
+// ============================================================================
+// TOURNAMENT SYNC FUNCTIONS
+// ============================================================================
+
+export {
+  cleanupTournamentChats,
+  getActiveTournament, syncLeaderboard,
+  syncLeaderboardManual, syncTournamentSchedule
+} from "./tournamentSync";
+
 
 
 

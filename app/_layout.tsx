@@ -1,7 +1,9 @@
 import { CacheProvider } from "@/contexts/CacheContext";
+import { markNotificationAsRead } from "@/utils/notificationHelpers";
 import { registerForPushNotificationsAsync, setupNotificationResponseListener } from "@/utils/pushNotificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Caveat_400Regular, Caveat_700Bold, useFonts } from '@expo-google-fonts/caveat';
+import * as Notifications from 'expo-notifications';
 import { Slot, router, usePathname } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
@@ -52,8 +54,7 @@ export default function RootLayout() {
           const isWelcomeTour = pathname === "/welcome-tour";
           
           // 🔑 Auth flow pages (login/signup only - email verification is now a modal on hero page)
-          const isInAuthFlow = pathname === "/auth/login" || 
-                               pathname === "/auth/signup";
+          const isInAuthFlow = pathname === "/auth/login";
           const isInOnboardingFlow = isOnboardingRoute || pathname === "/auth/user-type";
 
           /* =====================================================
@@ -273,6 +274,9 @@ export default function RootLayout() {
   // 🔔 PUSH NOTIFICATIONS SETUP
   useEffect(() => {
     let authModule: any = null;
+
+    // ✅ Clear badge when app opens
+    Notifications.setBadgeCountAsync(0);
     
     const setupPushNotifications = async () => {
       try {
@@ -298,8 +302,19 @@ export default function RootLayout() {
     const notificationResponseSubscription = setupNotificationResponseListener(async (response) => {
       const data = response.notification.request.content.data;
       const type = data.type as string;
+      const notificationId = data.notificationId as string;
       
-      console.log("📬 Notification tapped:", { type, ...data });
+      console.log("📬 Notification tapped:", { type, notificationId, ...data });
+
+      // ✅ Mark notification as read when tapped from push
+      if (notificationId) {
+        try {
+          await markNotificationAsRead(notificationId);
+          console.log("✅ Notification marked as read:", notificationId);
+        } catch (error) {
+          console.error("❌ Error marking notification as read:", error);
+        }
+      }
 
       // Ensure we have auth module loaded
       if (!authModule) {

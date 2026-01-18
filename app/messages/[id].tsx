@@ -37,9 +37,9 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 /* ========================= TYPES ========================= */
 
@@ -70,6 +70,7 @@ export default function MessageThreadScreen() {
   const { id: threadId } = useLocalSearchParams();
   const userId = auth.currentUser?.uid;
   const { getCache, setCache } = useCache();
+  const insets = useSafeAreaInsets();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -555,8 +556,9 @@ export default function MessageThreadScreen() {
       <SafeAreaView edges={["top"]} style={styles.safeTop} />
 
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}  // ✅ Changed from undefined
         style={styles.keyboardView}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
       >
         {/* HEADER */}
         <View style={styles.header}>
@@ -630,11 +632,15 @@ export default function MessageThreadScreen() {
               />
             }
             contentContainerStyle={styles.messagesList}
+            keyboardShouldPersistTaps="handled" 
           />
         )}
 
         {/* INPUT */}
-        <View style={styles.inputWrapper}>
+        <View style={[
+          styles.inputWrapper,
+          Platform.OS === "android" ? { paddingBottom: insets.bottom + 8 } : undefined
+        ]}>
           <View style={styles.inputContainer}>
             <TextInput
               style={styles.input}
@@ -911,7 +917,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFF",
     borderTopWidth: 1,
     borderTopColor: "#E0E0E0",
-    paddingBottom: Platform.OS === "ios" ? 0 : 8,
   },
 
   inputContainer: {

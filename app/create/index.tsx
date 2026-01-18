@@ -403,6 +403,32 @@ export default function CreateScreen() {
     }
   };
 
+  /* --------------------------- MEDIA PICKER WITH ALERT --------------------------- */
+
+  const handleAddMedia = () => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    Alert.alert(
+      "Add Media",
+      "Choose what to add",
+      [
+        {
+          text: `📷 Photos (up to ${MAX_IMAGES})`,
+          onPress: () => pickImages(),
+        },
+        {
+          text: `🎥 Video (${MAX_VIDEO_DURATION}s max)`,
+          onPress: () => pickVideo(),
+        },
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+      ]
+    );
+  };
+
   /* --------------------------- IMAGE PICKER (STEP 1) --------------------------- */
 
   const pickImages = async () => {
@@ -1700,28 +1726,16 @@ export default function CreateScreen() {
                 )}
               </View>
             ) : (
-              /* ✅ SEPARATE MEDIA PICKERS */
-              <View style={styles.mediaPickerContainer}>
-                <TouchableOpacity
-                  style={styles.mediaPickerButton}
-                  onPress={pickImages}
-                  disabled={!writable}
-                >
-                  <Ionicons name="images-outline" size={40} color="#0D5C3A" />
-                  <Text style={styles.mediaPickerText}>Add Photos</Text>
-                  <Text style={styles.mediaPickerHint}>Up to {MAX_IMAGES} images</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.mediaPickerButton}
-                  onPress={pickVideo}
-                  disabled={!writable}
-                >
-                  <Ionicons name="videocam-outline" size={40} color="#0D5C3A" />
-                  <Text style={styles.mediaPickerText}>Add Video</Text>
-                  <Text style={styles.mediaPickerHint}>{MAX_VIDEO_DURATION}s max clip</Text>
-                </TouchableOpacity>
-              </View>
+              /* ✅ SINGLE ADD MEDIA BUTTON */
+              <TouchableOpacity
+                style={styles.addMediaButton}
+                onPress={handleAddMedia}
+                disabled={!writable}
+              >
+                <Ionicons name="camera-outline" size={48} color="#0D5C3A" />
+                <Text style={styles.addMediaText}>Add Media</Text>
+                <Text style={styles.addMediaHint}>Up to {MAX_IMAGES} photos or 1 video</Text>
+              </TouchableOpacity>
             )}
           </View>
 
@@ -1928,15 +1942,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
 
-  // ✅ Separate Media Pickers
-  mediaPickerContainer: {
-    flexDirection: "row",
-    gap: 12,
-  },
-
-  mediaPickerButton: {
-    flex: 1,
-    height: 140,
+  // ✅ Single Add Media Button
+  addMediaButton: {
+    height: 180,
     borderRadius: 12,
     backgroundColor: "#FFF",
     borderWidth: 2,
@@ -1947,18 +1955,18 @@ const styles = StyleSheet.create({
     padding: 16,
   },
 
-  mediaPickerText: {
-    fontSize: 15,
+  addMediaText: {
+    fontSize: 17,
     fontWeight: "700",
     color: "#0D5C3A",
-    marginTop: 8,
+    marginTop: 12,
   },
 
-  mediaPickerHint: {
-    fontSize: 12,
+  addMediaHint: {
+    fontSize: 13,
     color: "#666",
     textAlign: "center",
-    marginTop: 4,
+    marginTop: 6,
   },
 
   // Image Carousel

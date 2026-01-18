@@ -1,11 +1,14 @@
+import TournamentChatModal from "@/components/modals/TournamentChatModal";
 import AdminPanelButton from "@/components/navigation/AdminPanelButton";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import LowmanCarousel from "@/components/navigation/LowmanCarousel";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
+import TournamentLiveBanner from "@/components/TournamentLiveBanner";
 import { auth, db } from "@/constants/firebaseConfig";
 import { getPostTypeLabel } from "@/constants/postTypes";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
+import type { ActiveTournament } from "@/hooks/useTournamentStatus";
 import { FeedItem, FeedPost, FeedScore, generateAlgorithmicFeed } from "@/utils/feedAlgorithm";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { getUserProfile } from "@/utils/userProfileHelpers";
@@ -29,6 +32,7 @@ import {
 
 import { AVPlaybackStatus, ResizeMode, Video } from "expo-av";
 import * as Haptics from "expo-haptics";
+import * as Location from "expo-location";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -155,6 +159,11 @@ export default function ClubhouseScreen() {
   const params = useLocalSearchParams();
   const flatListRef = useRef<FlatList>(null);
   const { getCache, setCache } = useCache();
+
+  // Tournament chat state
+  const [tournamentChatVisible, setTournamentChatVisible] = useState(false);
+  const [selectedTournament, setSelectedTournament] = useState<ActiveTournament | null>(null);
+  const [selectedChatType, setSelectedChatType] = useState<"live" | "onpremise">("live");
   
   const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
   const [thoughts, setThoughts] = useState<Thought[]>([]);
@@ -269,44 +278,84 @@ export default function ClubhouseScreen() {
   useEffect(() => {
     if (currentUserId && currentUserData?.regionKey) {
       const quickCacheCheck = async () => {
-        const userRegionKey = currentUserData?.regionKey;
-        
-        if (!userRegionKey) {
-          setIsCheckingCache(false);
-          setLoading(true);
-          await loadFeed();
-          return;
-        }
+  const userRegionKey = currentUserData?.regionKey;
+  
+  if (!userRegionKey) {
+    setIsCheckingCache(false);
+    setLoading(true);
+    await loadFeed();
+    return;
+  }
 
-        const cached = await getCache(CACHE_KEYS.FEED(currentUserId), userRegionKey);
+  const cached = await getCache(CACHE_KEYS.FEED(currentUserId), userRegionKey);
+  
+  if (cached && cached.length > 0) {
+    console.log("⚡ Cache found - loading cached thoughts immediately");
+    
+    try {
+      let thoughtsFromCache = convertCachedFeedToThoughts(cached);
+      
+      // ✅ Fetch and prepend highlighted post if navigating from notification
+      const scrollTargetId = targetPostId || highlightScoreId;
+      if (scrollTargetId) {
+        console.log("🎯 Fetching highlighted post for cache view:", scrollTargetId);
         
-        if (cached && cached.length > 0) {
-          console.log("⚡ Cache found - loading cached thoughts immediately");
-          
-          try {
-            const thoughtsFromCache = convertCachedFeedToThoughts(cached);
-            setThoughts(thoughtsFromCache);
-            setFeedItems(cached);
-            
-            setLoading(false);
-            setIsCheckingCache(false);
-            setHasLoadedOnce(true);
-            setShowingCached(true);
-            
-            await loadFeed(true);
-          } catch (error) {
-            console.error("❌ Error loading cached thoughts:", error);
-            setIsCheckingCache(false);
-            setLoading(true);
-            await loadFeed();
+        let highlightedThought: Thought | null = null;
+        
+        // Try by postId first
+        if (targetPostId) {
+          const postDoc = await getDoc(doc(db, "thoughts", targetPostId));
+          if (postDoc.exists()) {
+            highlightedThought = convertPostDataToThought(postDoc.id, postDoc.data());
           }
-        } else {
-          console.log("📭 No cache - loading fresh");
-          setIsCheckingCache(false);
-          setLoading(true);
-          await loadFeed();
         }
-      };
+        
+        // Fallback to scoreId
+        if (!highlightedThought && highlightScoreId) {
+          const thoughtsQuery = query(
+            collection(db, "thoughts"),
+            where("scoreId", "==", highlightScoreId)
+          );
+          const snapshot = await getDocs(thoughtsQuery);
+          if (!snapshot.empty) {
+            const postDoc = snapshot.docs[0];
+            highlightedThought = convertPostDataToThought(postDoc.id, postDoc.data());
+            setFoundPostIdFromScore(postDoc.id);
+          }
+        }
+        
+        // Prepend highlighted post to cached feed
+        if (highlightedThought) {
+          console.log("✅ Prepending highlighted post to cached feed");
+          thoughtsFromCache = [
+            highlightedThought,
+            ...thoughtsFromCache.filter(t => t.id !== highlightedThought!.id)
+          ];
+        }
+      }
+      
+      setThoughts(thoughtsFromCache);
+      setFeedItems(cached);
+      
+      setLoading(false);
+      setIsCheckingCache(false);
+      setHasLoadedOnce(true);
+      setShowingCached(true);
+      
+      await loadFeed(true);
+    } catch (error) {
+      console.error("❌ Error loading cached thoughts:", error);
+      setIsCheckingCache(false);
+      setLoading(true);
+      await loadFeed();
+    }
+  } else {
+    console.log("📭 No cache - loading fresh");
+    setIsCheckingCache(false);
+    setLoading(true);
+    await loadFeed();
+  }
+};
       
       quickCacheCheck();
     }
@@ -900,6 +949,132 @@ export default function ClubhouseScreen() {
     setReportModalVisible(true);
   };
 
+  /* ------------------ TOURNAMENT BANNER PRESS ------------------ */
+  const handleTournamentPress = async (tournament: ActiveTournament) => {
+    console.log("🏌️ Tournament banner pressed:", tournament.name);
+  
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    // Check if tournament has location data
+    const hasVenueLocation = tournament.location?.latitude && tournament.location?.longitude;
+  
+    if (!hasVenueLocation) {
+      // No venue location - go directly to Tournament Discussion
+      console.log("🏌️ No venue location, opening Tournament Discussion");
+      setSelectedTournament(tournament);
+      setSelectedChatType("live");
+      setTournamentChatVisible(true);
+      return;
+    }
+
+    // Check user's current location
+    try {
+      // Request location permission if needed
+      const { status } = await Location.requestForegroundPermissionsAsync();
+    
+      if (status !== "granted") {
+        // No location permission - go directly to Tournament Discussion
+        console.log("🏌️ Location permission denied, opening Tournament Discussion");
+        setSelectedTournament(tournament);
+        setSelectedChatType("live");
+        setTournamentChatVisible(true);
+        return;
+      }
+
+      // Get current location
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      const userLat = location.coords.latitude;
+      const userLon = location.coords.longitude;
+      const venueLat = tournament.location!.latitude!;
+      const venueLon = tournament.location!.longitude!;
+
+      // Calculate distance to venue (in miles)
+      const distance = calculateDistanceMiles(userLat, userLon, venueLat, venueLon);
+    
+      console.log("🏌️ Distance to venue:", distance.toFixed(2), "miles");
+
+      // If within 2 miles of venue, offer choice
+      const PROXIMITY_THRESHOLD_MILES = 2;
+    
+      if (distance <= PROXIMITY_THRESHOLD_MILES) {
+        // User is near the venue - show selection alert
+        console.log("🏌️ User is near venue, showing chat type selection");
+      
+      Alert.alert(
+        "Join Tournament Chat",
+        `You're at ${tournament.name}! Which chat would you like to join?`,
+        [
+          {
+            text: "On-Premise Chat",
+            onPress: () => {
+              soundPlayer.play("click");
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              setSelectedTournament(tournament);
+              setSelectedChatType("onpremise");
+              setTournamentChatVisible(true);
+            },
+          },
+          {
+            text: "Tournament Discussion",
+            onPress: () => {
+              soundPlayer.play("click");
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setSelectedTournament(tournament);
+              setSelectedChatType("live");
+              setTournamentChatVisible(true);
+            },
+          },
+          {
+            text: "Cancel",
+            style: "cancel",
+          },
+        ]
+      );
+    } else {
+      // User is not near venue - go directly to Tournament Discussion
+      console.log("🏌️ User is not near venue, opening Tournament Discussion");
+      setSelectedTournament(tournament);
+      setSelectedChatType("live");
+      setTournamentChatVisible(true);
+    }
+  } catch (error) {
+    console.error("🏌️ Error checking location:", error);
+    // On error, just open Tournament Discussion
+    setSelectedTournament(tournament);
+    setSelectedChatType("live");
+    setTournamentChatVisible(true);
+  }
+  };
+
+  /**
+   * Calculate distance between two coordinates in miles
+   * Uses Haversine formula
+   */
+  const calculateDistanceMiles = (
+    lat1: number,
+    lon1: number,
+    lat2: number,
+    lon2: number
+  ): number => {
+    const R = 3959; // Earth's radius in miles
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  };
+
+  const toRad = (deg: number): number => {
+    return deg * (Math.PI / 180);
+  };
+
   const hasActiveFilters = !!(
     activeFilters.type || 
     activeFilters.user || 
@@ -1352,6 +1527,8 @@ export default function ClubhouseScreen() {
 
       <TopNavBar />
 
+      <TournamentLiveBanner onPress={handleTournamentPress} />
+
       {showingCached && !loading && (
         <View style={styles.cacheIndicator}>
           <ActivityIndicator size="small" color="#0D5C3A" />
@@ -1480,6 +1657,19 @@ export default function ClubhouseScreen() {
         postAuthorName={reportingThought?.displayName || ""}
         postContent={reportingThought?.content || ""}
       />
+      {/* Tournament Chat Modal */}
+      {selectedTournament && (
+        <TournamentChatModal
+          visible={tournamentChatVisible}
+          tournament={selectedTournament}
+          chatType={selectedChatType}
+          onClose={() => {
+            setTournamentChatVisible(false);
+            setSelectedTournament(null);
+            setSelectedChatType("live");
+          }}
+        />
+      )}
 
       <BottomActionBar disabled={!canWrite} />
       {currentUserData?.role === "admin" ? (

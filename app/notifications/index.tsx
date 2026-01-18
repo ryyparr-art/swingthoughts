@@ -61,45 +61,52 @@ interface GroupedNotifications {
 }
 
 // Icon mapping for notification types
-const NOTIFICATION_ICONS: Record<string, { name: string; color: string }> = {
-  // Post interactions
-  like: { name: "heart", color: "#FF3B30" },
-  comment: { name: "chatbubble", color: "#007AFF" },
-  comment_like: { name: "heart", color: "#FF3B30" },
-  reply: { name: "arrow-undo", color: "#007AFF" },
-  share: { name: "share-social", color: "#5856D6" },
-  
-  // Mentions
-  mention_post: { name: "at", color: "#5856D6" },
-  mention_comment: { name: "at", color: "#5856D6" },
+// Uses either 'icon' for Ionicons or 'image' for custom assets
+type NotificationIconConfig = {
+  icon?: string;
+  image?: any;
+  color: string;
+};
+
+const NOTIFICATION_ICONS: Record<string, NotificationIconConfig> = {
+ // Post interactions
+like: { image: require("@/assets/icons/Throw Darts.png"), color: "#FF3B30" },
+comment: { image: require("@/assets/icons/Comments.png"), color: "#FFD700" },
+comment_like: { image: require("@/assets/icons/Throw Darts.png"), color: "#FF3B30" },
+reply: { image: require("@/assets/icons/Comments.png"), color: "#FFD700" },
+share: { icon: "share-social", color: "#5856D6" },
+
+// Mentions
+mention_post: { image: require("@/assets/icons/Clubhouse.png"), color: "#5856D6" },
+mention_comment: { image: require("@/assets/icons/Comments.png"), color: "#FFD700" },
   
   // Messages
-  message: { name: "mail", color: "#0D5C3A" },
+  message: { image: require("@/assets/icons/Mail.png"), color: "#0D5C3A" },
   
   // Partner activities
-  partner_request: { name: "person-add", color: "#FFD700" },
-  partner_accepted: { name: "people", color: "#34C759" },
-  partner_posted: { name: "document-text", color: "#0D5C3A" },
-  partner_scored: { name: "golf", color: "#FF9500" },
-  partner_lowman: { name: "trophy", color: "#FFD700" },
-  partner_holeinone: { name: "flag", color: "#FF3B30" },
+  partner_request: { icon: "person-add", color: "#FFD700" },
+  partner_accepted: { icon: "people", color: "#34C759" },
+  partner_posted: { image: require("@/assets/icons/Clubhouse.png"), color: "#0D5C3A" },
+  partner_scored: { icon: "flag", color: "#FF9500" },
+  partner_lowman: { image: require("@/assets/icons/LowLeaderTrophy.png"), color: "#FFD700" },
+  partner_holeinone: { image: require("@/assets/icons/LowLeaderAce.png"), color: "#FF3B30" },
   
   // Trending
-  trending: { name: "flame", color: "#FF9500" },
+  trending: { icon: "flame", color: "#FF9500" },
   
   // Hole-in-one verification
-  holeinone_pending_poster: { name: "time", color: "#FF9500" },
-  holeinone_verification_request: { name: "checkmark-circle", color: "#FFD700" },
-  holeinone_verified: { name: "ribbon", color: "#34C759" },
-  holeinone_denied: { name: "close-circle", color: "#FF3B30" },
+  holeinone_pending_poster: { icon: "time", color: "#FF9500" },
+  holeinone_verification_request: { icon: "hourglass", color: "#FFD700" },
+  holeinone_verified: { icon: "ribbon", color: "#34C759" },
+  holeinone_denied: { icon: "close-circle", color: "#FF3B30" },
   
   // Membership
-  membership_submitted: { name: "document-text", color: "#007AFF" },
-  membership_approved: { name: "checkmark-circle", color: "#34C759" },
-  membership_rejected: { name: "close-circle", color: "#FF3B30" },
+  membership_submitted: { icon: "document-text", color: "#007AFF" },
+  membership_approved: { icon: "checkmark-circle", color: "#34C759" },
+  membership_rejected: { icon: "close-circle", color: "#FF3B30" },
   
   // System
-  system: { name: "information-circle", color: "#8E8E93" },
+  system: { icon: "information-circle", color: "#8E8E93" },
 };
 
 export default function NotificationsScreen() {
@@ -491,14 +498,22 @@ export default function NotificationsScreen() {
   };
 
   const renderNotificationIcon = (type: string) => {
-    const iconConfig = NOTIFICATION_ICONS[type] || NOTIFICATION_ICONS.system;
-    
-    return (
-      <View style={[styles.notificationIcon, { backgroundColor: `${iconConfig.color}20` }]}>
-        <Ionicons name={iconConfig.name as any} size={14} color={iconConfig.color} />
-      </View>
-    );
-  };
+  const iconConfig = NOTIFICATION_ICONS[type] || NOTIFICATION_ICONS.system;
+  
+  return (
+    <View style={[styles.notificationIcon, { backgroundColor: `${iconConfig.color}E6` }]}>
+      {iconConfig.image ? (
+        <Image 
+          source={iconConfig.image} 
+          style={[styles.notificationIconImage, { tintColor: "#FFFFFF" }]} 
+          resizeMode="contain"
+        />
+      ) : (
+        <Ionicons name={iconConfig.icon as any} size={14} color="#FFFFFF" />
+      )}
+    </View>
+  );
+};
 
   const renderNotification = ({ item }: { item: Notification }) => {
     return (
@@ -854,6 +869,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderWidth: 2,
     borderColor: "#FFFFFF",
+  },
+  notificationIconImage: {
+    width: 12,
+    height: 12,
   },
   
   // Content

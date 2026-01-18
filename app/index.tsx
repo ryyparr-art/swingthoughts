@@ -101,131 +101,137 @@ export default function HeroLandingPage() {
 
   /* ================= SIGNUP ================= */
 
-  const handleSignup = async () => {
-    soundPlayer.play('click');
-    setSignupError("");
+const handleSignup = async () => {
+  console.log("📍 SIGNUP: Starting signup from Hero page");
+  soundPlayer.play('click');
+  setSignupError("");
 
-    if (!signupEmail || !signupPassword || !signupConfirmPassword) {
-      soundPlayer.play('error');
-      setSignupError("Please fill in all fields");
-      return;
-    }
+  if (!signupEmail || !signupPassword || !signupConfirmPassword) {
+    soundPlayer.play('error');
+    setSignupError("Please fill in all fields");
+    return;
+  }
 
-    if (signupPassword !== signupConfirmPassword) {
-      soundPlayer.play('error');
-      setSignupError("Passwords do not match");
-      return;
-    }
+  if (signupPassword !== signupConfirmPassword) {
+    soundPlayer.play('error');
+    setSignupError("Passwords do not match");
+    return;
+  }
 
-    if (signupPassword.length < 6) {
-      soundPlayer.play('error');
-      setSignupError("Password must be at least 6 characters");
-      return;
-    }
+  if (signupPassword.length < 6) {
+    soundPlayer.play('error');
+    setSignupError("Password must be at least 6 characters");
+    return;
+  }
 
-    setSignupLoading(true);
+  setSignupLoading(true);
 
+  try {
+    const userCredential = await createUserWithEmailAndPassword(
+      auth,
+      signupEmail,
+      signupPassword
+    );
+    
+    const user = userCredential.user;
+    console.log("✅ Signup successful:", user.email);
+
+    // 🔐 Force session initialization (CRITICAL in Expo)
+    await user.reload();
+
+    // ✅ SEND EMAIL VERIFICATION
     try {
-      const userCredential = await createUserWithEmailAndPassword(
-        auth,
-        signupEmail,
-        signupPassword
+      await sendEmailVerification(user);
+      console.log("✅ Verification email sent to:", user.email);
+    } catch (verifyError: any) {
+      console.error(
+        "❌ Verification email failed:",
+        verifyError.code,
+        verifyError.message
       );
-      
-      const user = userCredential.user;
-      console.log("✅ Signup successful:", user.email);
-
-      // 🔐 Force session initialization (CRITICAL in Expo)
-      await user.reload();
-
-      // ✅ SEND EMAIL VERIFICATION
-      try {
-        await sendEmailVerification(user);
-        console.log("✅ Verification email sent to:", user.email);
-      } catch (verifyError: any) {
-        console.error(
-          "❌ Verification email failed:",
-          verifyError.code,
-          verifyError.message
-        );
-      }
-
-      // 📍 CREATE FIRESTORE USER DOCUMENT
-      const { doc: firestoreDoc, setDoc, serverTimestamp } = await import("firebase/firestore");
-      
-      await setDoc(firestoreDoc(db, "users", user.uid), {
-        userId: user.uid,
-        email: user.email,
-        emailVerified: false, // ← Will be set to true when user verifies email
-        createdAt: serverTimestamp(),
-
-        // Location data (empty for now, will be filled during onboarding)
-        homeCity: "",
-        homeState: "",
-        currentCity: "",
-        currentState: "",
-        locationPermission: false,
-        locationMethod: "manual",
-        homeLocation: null,
-        currentLocation: null,
-        currentLocationUpdatedAt: serverTimestamp(),
-        locationHistory: [],
-
-        // ✅ ANTI-BOT FIELDS
-        displayName: null,
-        displayNameLower: null,
-        lastPostTime: null,
-        lastCommentTime: null,
-        lastMessageTime: null,
-        lastScoreTime: null,
-        banned: false,
-
-        // Onboarding status
-        userType: null,
-        handicap: null,
-        acceptedTerms: false,
-        verified: false,
-        lockerCompleted: false,
-      });
-
-      console.log("✅ Firestore user document created with emailVerified: false");
-
-      soundPlayer.play('postThought');
-      Haptics.notificationAsync(
-        Haptics.NotificationFeedbackType.Success
-      );
-
-      setSignupLoading(false);
-      setShowSignupModal(false);
-
-      // Show email verification modal
-      setVerificationEmail(user.email || signupEmail);
-      setShowEmailVerificationModal(true);
-    } catch (err: any) {
-      console.error("❌ Signup error:", err.code, err.message);
-      
-      soundPlayer.play('error');
-      
-      let errorMessage = "Signup failed. Please try again.";
-      
-      // Provide specific error messages
-      if (err.code === "auth/email-already-in-use") {
-        errorMessage = "This email is already registered.";
-      } else if (err.code === "auth/invalid-email") {
-        errorMessage = "Invalid email address format.";
-      } else if (err.code === "auth/weak-password") {
-        errorMessage = "Password is too weak.";
-      }
-      
-      setSignupError(errorMessage);
-      setSignupLoading(false);
-      
-      // Also show in Alert for debugging
-      if (__DEV__) {
-        Alert.alert("Signup Error", `${err.code}: ${err.message}`);
-      }
     }
-  };
+
+    // 📍 CREATE FIRESTORE USER DOCUMENT
+    const { doc: firestoreDoc, setDoc, serverTimestamp } = await import("firebase/firestore");
+    
+    await setDoc(firestoreDoc(db, "users", user.uid), {
+      userId: user.uid,
+      email: user.email,
+      emailVerified: false, // ← Will be set to true when user verifies email
+      createdAt: serverTimestamp(),
+
+      // Location data (empty for now, will be filled during onboarding)
+      homeCity: "",
+      homeState: "",
+      currentCity: "",
+      currentState: "",
+      locationPermission: false,
+      locationMethod: "manual",
+      homeLocation: null,
+      currentLocation: null,
+      currentLocationUpdatedAt: serverTimestamp(),
+      locationHistory: [],
+
+      // ✅ ANTI-BOT FIELDS
+      displayName: null,
+      displayNameLower: null,
+      lastPostTime: null,
+      lastCommentTime: null,
+      lastMessageTime: null,
+      lastScoreTime: null,
+      banned: false,
+
+      // Onboarding status
+      userType: null,
+      handicap: null,
+      acceptedTerms: false,
+      verified: false,
+      lockerCompleted: false,
+    });
+
+    console.log("✅ Firestore user document created with emailVerified: false");
+
+    soundPlayer.play('postThought');
+    Haptics.notificationAsync(
+      Haptics.NotificationFeedbackType.Success
+    );
+
+    console.log("📍 SIGNUP: About to show email verification modal");
+
+    setSignupLoading(false);
+    setShowSignupModal(false);
+
+    // Show email verification modal
+    setVerificationEmail(user.email || signupEmail);
+    setShowEmailVerificationModal(true);
+    
+    console.log("📍 SIGNUP: setShowEmailVerificationModal(true) called");
+    
+  } catch (err: any) {
+    console.error("❌ Signup error:", err.code, err.message);
+    
+    soundPlayer.play('error');
+    
+    let errorMessage = "Signup failed. Please try again.";
+    
+    // Provide specific error messages
+    if (err.code === "auth/email-already-in-use") {
+      errorMessage = "This email is already registered.";
+    } else if (err.code === "auth/invalid-email") {
+      errorMessage = "Invalid email address format.";
+    } else if (err.code === "auth/weak-password") {
+      errorMessage = "Password is too weak.";
+    }
+    
+    setSignupError(errorMessage);
+    setSignupLoading(false);
+    
+    // Also show in Alert for debugging
+    if (__DEV__) {
+      Alert.alert("Signup Error", `${err.code}: ${err.message}`);
+    }
+  }
+};
 
   const openLoginModal = () => {
     soundPlayer.play('click');
