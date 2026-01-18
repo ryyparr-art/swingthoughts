@@ -236,6 +236,18 @@ service cloud.firestore {
     }
 
     // ============================================================================
+    // TOURNAMENT LEADERBOARDS (LIVE LEADERBOARD DATA)
+    // ============================================================================
+
+    match /tournamentLeaderboards/{leaderboardId} {
+      // Anyone can read leaderboard data (public info)
+      allow read, list: if true;
+      
+      // Only Cloud Functions can write (via Admin SDK)
+      allow create, update, delete: if false;
+    }
+
+    // ============================================================================
     // TOURNAMENT CHATS (LIVE CHAT DURING TOURNAMENTS)
     // ============================================================================
 

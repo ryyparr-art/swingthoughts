@@ -56,6 +56,20 @@ interface LeaderboardRow {
   thru: string;
   currentRoundScore: string;
   status: string;
+  isAmateur?: boolean;
+}
+
+interface LeaderboardPlayer {
+  playerId: string;
+  firstName: string;
+  lastName: string;
+  position: string;
+  previousPosition: string | null;
+  movement: "up" | "down" | "same" | "new";
+  total: string;
+  thru: string;
+  currentRoundScore: string;
+  isAmateur: boolean;
 }
 
 // =================================================================
@@ -188,107 +202,136 @@ function findRegionForLocation(
     // 3. Partial city match
     const partial = REGIONS.find((r: Region) => !r.isFallback && 
       (r.primaryCity.toLowerCase().includes(cityLower) || cityLower.includes(r.primaryCity.toLowerCase()) ||
-       r.majorCities.some((c: string) => c.toLowerCase().includes(cityLower) || cityLower.includes(c.toLowerCase())))
+        r.majorCities.some((c: string) => c.toLowerCase().includes(cityLower) || cityLower.includes(c.toLowerCase())))
     );
     if (partial) { console.log(`✅ Matched by partial city: ${partial.key}`); return partial; }
   }
 
-  // 4. State MSA match
+  // 4. Match by state
   if (stateAbbr) {
-    const stateMatch = REGIONS.find((r: Region) => !r.isFallback && (r.state === stateAbbr || r.states?.includes(stateAbbr)));
-    if (stateMatch) { console.log(`✅ Matched by state MSA: ${stateMatch.key}`); return stateMatch; }
-
-    // 5. State fallback
-    const fallback = REGIONS.find((r: Region) => r.isFallback && r.state === stateAbbr);
-    if (fallback) { console.log(`⚠️ State fallback: ${fallback.key}`); return fallback; }
+    const match = REGIONS.find((r: Region) => !r.isFallback && r.states?.includes(stateAbbr));
+    if (match) { console.log(`✅ Matched by state: ${match.key}`); return match; }
   }
 
-  console.log(`⚠️ Using international fallback`);
-  return REGIONS.find((r: Region) => r.key === "intl_misc") || null;
+  // 5. Fallback to intl_misc for international tournaments
+  const intlMisc = REGIONS.find((r: Region) => r.key === "intl_misc");
+  if (intlMisc) {
+    console.log(`⚠️ Using fallback region: intl_misc`);
+    return intlMisc;
+  }
+
+  console.log(`❌ No region found for: ${city}, ${state}`);
+  return null;
 }
 
 function encodeGeohash(lat: number, lon: number, precision = 5): string {
-  const BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz";
-  let idx = 0, bit = 0, evenBit = true, geohash = "";
-  let latMin = -90, latMax = 90, lonMin = -180, lonMax = 180;
+  const base32 = "0123456789bcdefghjkmnpqrstuvwxyz";
+  let minLat = -90, maxLat = 90, minLon = -180, maxLon = 180;
+  let hash = "", bit = 0, ch = 0, even = true;
 
-  while (geohash.length < precision) {
-    if (evenBit) {
-      const mid = (lonMin + lonMax) / 2;
-      if (lon > mid) { idx |= (1 << (4 - bit)); lonMin = mid; } else { lonMax = mid; }
+  while (hash.length < precision) {
+    if (even) {
+      const mid = (minLon + maxLon) / 2;
+      if (lon >= mid) { ch |= (1 << (4 - bit)); minLon = mid; } else { maxLon = mid; }
     } else {
-      const mid = (latMin + latMax) / 2;
-      if (lat > mid) { idx |= (1 << (4 - bit)); latMin = mid; } else { latMax = mid; }
+      const mid = (minLat + maxLat) / 2;
+      if (lat >= mid) { ch |= (1 << (4 - bit)); minLat = mid; } else { maxLat = mid; }
     }
-    evenBit = !evenBit;
-    if (bit < 4) { bit++; } else { geohash += BASE32[idx]; bit = 0; idx = 0; }
+    even = !even;
+    if (++bit === 5) { hash += base32[ch]; bit = 0; ch = 0; }
   }
-  return geohash;
+  return hash;
 }
 
 function isTournamentLive(startDate: Date, endDate: Date): boolean {
   const now = new Date();
-  const endBuffer = new Date(endDate); endBuffer.setHours(23, 59, 59);
-  if (now < startDate || now > endBuffer) return false;
+  const dayOfWeek = now.getDay();
+  const hour = now.getHours();
 
-  const etString = now.toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "numeric", weekday: "short" });
-  const dayMatch = etString.match(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)/);
-  if (!dayMatch || !["Thu", "Fri", "Sat", "Sun"].includes(dayMatch[1])) return false;
+  // Must be Thu (4), Fri (5), Sat (6), or Sun (0)
+  const isValidDay = [0, 4, 5, 6].includes(dayOfWeek);
+  // Must be between 8am and 8pm
+  const isValidTime = hour >= 8 && hour < 20;
+  // Must be within tournament dates (with 1 day buffer)
+  const bufferMs = 24 * 60 * 60 * 1000;
+  const isWithinDates = now >= new Date(startDate.getTime() - bufferMs) && now <= new Date(endDate.getTime() + bufferMs);
 
-  const hourMatch = etString.match(/(\d+):/);
-  const isPM = etString.includes("PM");
-  let hour = hourMatch ? parseInt(hourMatch[1]) : 0;
-  if (isPM && hour !== 12) hour += 12;
-  if (!isPM && hour === 12) hour = 0;
-  return hour >= 8 && hour < 20;
+  return isValidDay && isValidTime && isWithinDates;
+}
+
+/**
+ * Parse position string to numeric value for comparison
+ * Handles: "1", "2", "T3", "CUT", "WD", etc.
+ */
+function parsePosition(position: string): number {
+  if (!position) return 999;
+  const cleaned = position.replace(/^T/, "").trim();
+  const num = parseInt(cleaned, 10);
+  if (isNaN(num)) return 999; // CUT, WD, etc.
+  return num;
+}
+
+/**
+ * Calculate movement based on previous and current position
+ */
+function calculateMovement(
+  currentPos: string,
+  previousPos: string | null
+): "up" | "down" | "same" | "new" {
+  if (!previousPos) return "new";
+  
+  const current = parsePosition(currentPos);
+  const previous = parsePosition(previousPos);
+  
+  if (current < previous) return "up";
+  if (current > previous) return "down";
+  return "same";
 }
 
 // =================================================================
-// CLOUD FUNCTIONS
+// SCHEDULED: SYNC TOURNAMENT SCHEDULE
 // =================================================================
 
 export const syncTournamentSchedule = onCall(
   { timeoutSeconds: 300, memory: "512MiB", secrets: [RAPIDAPI_KEY, RAPIDAPI_HOST] },
   async (request) => {
-    const year = request.data?.year || new Date().getFullYear().toString();
-    const orgId = request.data?.orgId || "1";
+    const { year = new Date().getFullYear().toString(), orgId = "1" } = request.data || {};
+
+    console.log(`\n🏌️ Starting tournament schedule sync for ${year}...`);
     const apiKey = RAPIDAPI_KEY.value();
     const apiHost = RAPIDAPI_HOST.value();
-
-    if (!apiKey) throw new HttpsError("failed-precondition", "RapidAPI key not configured");
-
-    console.log(`🏌️ Syncing tournament schedule for ${year}`);
+    if (!apiKey || !apiHost) throw new HttpsError("failed-precondition", "Missing API credentials");
 
     try {
-      const scheduleRes = await fetch(`https://${apiHost}/schedule?orgId=${orgId}&year=${year}`, {
+      const res = await fetch(`https://${apiHost}/schedule?orgId=${orgId}&year=${year}`, {
         headers: { "x-rapidapi-host": apiHost, "x-rapidapi-key": apiKey },
       });
-      if (!scheduleRes.ok) throw new Error(`Schedule API error: ${scheduleRes.status}`);
+      if (!res.ok) throw new HttpsError("internal", `API error: ${res.status}`);
 
-      const { schedule: tournaments = [] }: { schedule: TournamentScheduleItem[] } = await scheduleRes.json();
-      console.log(`📅 Found ${tournaments.length} tournaments`);
+      const data = await res.json();
+      const tournaments: TournamentScheduleItem[] = data.schedule || [];
+      console.log(`📋 Found ${tournaments.length} tournaments`);
 
-      const results: { tournId: string; name: string; status: string; error?: string }[] = [];
+      const results: any[] = [];
       let successCount = 0, skippedCount = 0, errorCount = 0;
 
       for (const t of tournaments) {
         try {
-          console.log(`\n📍 Processing: ${t.name} (${t.tournId})`);
-
           const startTs = safeTimestamp(t.date.start);
           const endTs = safeTimestamp(t.date.end);
+
           if (!startTs || !endTs) {
-            console.warn(`⚠️ Skipping: Invalid dates`);
-            results.push({ tournId: t.tournId, name: t.name, status: "skipped", error: "Invalid dates" });
+            console.log(`⏩ Skipping ${t.name}: invalid dates`);
+            results.push({ tournId: t.tournId, name: t.name, status: "skipped", reason: "invalid dates" });
             skippedCount++;
             continue;
           }
 
+          let courseData: any = null, location: any = null, regionKey: string | null = null, geohash: string | null = null;
+
           const detailsRes = await fetch(`https://${apiHost}/tournament?orgId=${orgId}&tournId=${t.tournId}&year=${year}`, {
             headers: { "x-rapidapi-host": apiHost, "x-rapidapi-key": apiKey },
           });
-
-          let courseData = null, regionKey = null, location = null, geohash = null;
 
           if (detailsRes.ok) {
             const details: TournamentDetails = await detailsRes.json();
@@ -341,6 +384,10 @@ export const syncTournamentSchedule = onCall(
   }
 );
 
+// =================================================================
+// SCHEDULED: SYNC LEADERBOARD (Enhanced with position tracking)
+// =================================================================
+
 export const syncLeaderboard = onSchedule(
   { schedule: "0 * * * *", timeZone: "America/New_York", timeoutSeconds: 120, memory: "256MiB", secrets: [RAPIDAPI_KEY, RAPIDAPI_HOST] },
   async () => {
@@ -375,21 +422,60 @@ export const syncLeaderboard = onSchedule(
 
         const data = await res.json();
         const rows: LeaderboardRow[] = data.leaderboardRows || [];
-        const top10 = rows.filter((r: LeaderboardRow) => r.status !== "cut" && r.status !== "wd").slice(0, 10).map((r: LeaderboardRow) => ({
-          position: r.position, firstName: r.firstName, lastName: r.lastName, playerId: r.playerId,
-          total: r.total, thru: r.thru, currentRoundScore: r.currentRoundScore,
-        }));
+        
+        // Get previous leaderboard data for position comparison
+        const leaderboardDocId = `${year}_${t.tournId}`;
+        const prevDoc = await db.collection("tournamentLeaderboards").doc(leaderboardDocId).get();
+        const prevPlayers: Map<string, string> = new Map();
+        
+        if (prevDoc.exists) {
+          const prevData = prevDoc.data();
+          (prevData?.players || []).forEach((p: LeaderboardPlayer) => {
+            prevPlayers.set(p.playerId, p.position);
+          });
+        }
 
-        await db.collection("tournamentLeaderboards").doc(`${year}_${t.tournId}`).set({
-          tournId: t.tournId, tournamentName: t.name, year: parseInt(year),
-          status: data.status || "In Progress", roundId: data.roundId || 1,
-          players: top10, lastUpdated: FieldValue.serverTimestamp(),
+        // Process all active players (not cut/wd)
+        const activePlayers = rows
+          .filter((r: LeaderboardRow) => r.status !== "cut" && r.status !== "wd")
+          .map((r: LeaderboardRow): LeaderboardPlayer => {
+            const previousPosition = prevPlayers.get(r.playerId) || null;
+            return {
+              playerId: r.playerId,
+              firstName: r.firstName,
+              lastName: r.lastName,
+              position: r.position,
+              previousPosition,
+              movement: calculateMovement(r.position, previousPosition),
+              total: r.total,
+              thru: r.thru,
+              currentRoundScore: r.currentRoundScore,
+              isAmateur: r.isAmateur || false,
+            };
+          });
+
+        await db.collection("tournamentLeaderboards").doc(leaderboardDocId).set({
+          tournId: t.tournId,
+          tournamentName: t.name,
+          year: parseInt(year),
+          orgId: t.orgId,
+          status: data.status || "In Progress",
+          roundId: data.roundId || 1,
+          roundStatus: data.roundStatus || "in_progress",
+          cutLine: data.cutLines?.[0]?.cutScore || null,
+          players: activePlayers,
+          lastUpdated: FieldValue.serverTimestamp(),
         });
-        console.log(`✅ Updated: ${top10.length} players`);
+        
+        console.log(`✅ Updated leaderboard: ${activePlayers.length} players (${t.name})`);
       }
     } catch (err) { console.error("❌ Leaderboard sync failed:", err); }
   }
 );
+
+// =================================================================
+// CALLABLE: MANUAL LEADERBOARD SYNC (Enhanced)
+// =================================================================
 
 export const syncLeaderboardManual = onCall(
   { timeoutSeconds: 120, memory: "256MiB", secrets: [RAPIDAPI_KEY, RAPIDAPI_HOST] },
@@ -401,6 +487,8 @@ export const syncLeaderboardManual = onCall(
     const apiHost = RAPIDAPI_HOST.value();
     if (!apiKey) throw new HttpsError("failed-precondition", "No API key");
 
+    console.log(`📊 Manual leaderboard sync: tournId=${tournId}, year=${year}`);
+
     const res = await fetch(`https://${apiHost}/leaderboard?orgId=${orgId}&tournId=${tournId}&year=${year}`, {
       headers: { "x-rapidapi-host": apiHost, "x-rapidapi-key": apiKey },
     });
@@ -408,22 +496,68 @@ export const syncLeaderboardManual = onCall(
 
     const data = await res.json();
     const rows: LeaderboardRow[] = data.leaderboardRows || [];
-    const top10 = rows.filter((r: LeaderboardRow) => r.status !== "cut" && r.status !== "wd").slice(0, 10).map((r: LeaderboardRow) => ({
-      position: r.position, firstName: r.firstName, lastName: r.lastName, playerId: r.playerId,
-      total: r.total, thru: r.thru, currentRoundScore: r.currentRoundScore,
-    }));
+
+    // Get previous leaderboard data for position comparison
+    const leaderboardDocId = `${year}_${tournId}`;
+    const prevDoc = await db.collection("tournamentLeaderboards").doc(leaderboardDocId).get();
+    const prevPlayers: Map<string, string> = new Map();
+    
+    if (prevDoc.exists) {
+      const prevData = prevDoc.data();
+      (prevData?.players || []).forEach((p: LeaderboardPlayer) => {
+        prevPlayers.set(p.playerId, p.position);
+      });
+    }
+
+    // Process all active players (not cut/wd)
+    const activePlayers = rows
+      .filter((r: LeaderboardRow) => r.status !== "cut" && r.status !== "wd")
+      .map((r: LeaderboardRow): LeaderboardPlayer => {
+        const previousPosition = prevPlayers.get(r.playerId) || null;
+        return {
+          playerId: r.playerId,
+          firstName: r.firstName,
+          lastName: r.lastName,
+          position: r.position,
+          previousPosition,
+          movement: calculateMovement(r.position, previousPosition),
+          total: r.total,
+          thru: r.thru,
+          currentRoundScore: r.currentRoundScore,
+          isAmateur: r.isAmateur || false,
+        };
+      });
 
     const tournDoc = await db.collection("tournaments").doc(`${year}_${tournId}`).get();
     const tournamentName = tournDoc.exists ? tournDoc.data()?.name : "Unknown";
 
-    await db.collection("tournamentLeaderboards").doc(`${year}_${tournId}`).set({
-      tournId, tournamentName, year: parseInt(year), status: data.status || "In Progress",
-      roundId: data.roundId || 1, players: top10, lastUpdated: FieldValue.serverTimestamp(),
+    await db.collection("tournamentLeaderboards").doc(leaderboardDocId).set({
+      tournId,
+      tournamentName,
+      year: parseInt(year),
+      orgId,
+      status: data.status || "In Progress",
+      roundId: data.roundId || 1,
+      roundStatus: data.roundStatus || "in_progress",
+      cutLine: data.cutLines?.[0]?.cutScore || null,
+      players: activePlayers,
+      lastUpdated: FieldValue.serverTimestamp(),
     });
 
-    return { success: true, tournamentName, playerCount: top10.length, players: top10 };
+    console.log(`✅ Manual sync complete: ${activePlayers.length} players`);
+
+    return { 
+      success: true, 
+      tournamentName, 
+      playerCount: activePlayers.length, 
+      players: activePlayers.slice(0, 10) // Return top 10 for response
+    };
   }
 );
+
+// =================================================================
+// SCHEDULED: CLEANUP OLD TOURNAMENT CHATS
+// =================================================================
 
 export const cleanupTournamentChats = onSchedule(
   { schedule: "0 3 * * *", timeZone: "America/New_York", timeoutSeconds: 300, memory: "256MiB" },
@@ -449,6 +583,10 @@ export const cleanupTournamentChats = onSchedule(
   }
 );
 
+// =================================================================
+// CALLABLE: GET ACTIVE TOURNAMENT
+// =================================================================
+
 export const getActiveTournament = onCall({ timeoutSeconds: 30 }, async () => {
   const now = new Date();
   const year = now.getFullYear();
@@ -472,8 +610,22 @@ export const getActiveTournament = onCall({ timeoutSeconds: 30 }, async () => {
 
     return {
       active: true,
-      tournament: { tournId: t.tournId, name: t.name, course: t.course, location: t.location, regionKey: t.regionKey },
-      leaderboard: lb ? { players: lb.players, lastUpdated: lb.lastUpdated, status: lb.status, roundId: lb.roundId } : null,
+      tournament: { 
+        tournId: t.tournId, 
+        name: t.name, 
+        course: t.course, 
+        location: t.location, 
+        regionKey: t.regionKey,
+        orgId: t.orgId,
+        year: t.year,
+      },
+      leaderboard: lb ? { 
+        players: lb.players, 
+        lastUpdated: lb.lastUpdated, 
+        status: lb.status, 
+        roundId: lb.roundId,
+        roundStatus: lb.roundStatus,
+      } : null,
       participantCount,
     };
   } catch (err) {

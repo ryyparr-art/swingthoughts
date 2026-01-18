@@ -3,7 +3,7 @@
  * 
  * Full-screen modal for tournament live chat.
  * Features:
- * - Top 10 leaderboard carousel
+ * - Live leaderboard carousel with position movement indicators
  * - Real-time chat messages
  * - @mentions and #hashtags support
  * - Rate limiting (2 second cooldown)
@@ -11,53 +11,45 @@
  * - Cross-platform safe area handling (iOS notch/home indicator, Android nav bar)
  */
 
+import LeaderboardCarousel from "@/components/tournament/LeaderboardCarousel";
 import { auth, db } from "@/constants/firebaseConfig";
+import { useLeaderboard } from "@/hooks/useLeaderboard";
 import type { ActiveTournament } from "@/hooks/useTournamentStatus";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { getUserProfile } from "@/utils/userProfileHelpers";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import {
-    addDoc,
-    collection,
-    getDocs,
-    limit,
-    onSnapshot,
-    orderBy,
-    query,
-    serverTimestamp,
-    Timestamp,
-    where,
+  addDoc,
+  collection,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  Timestamp,
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    FlatList,
-    Image,
-    KeyboardAvoidingView,
-    Modal,
-    Platform,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 // ============================================================================
 // TYPES
 // ============================================================================
-
-interface LeaderboardPlayer {
-  position: number;
-  name: string;
-  score: string; // e.g., "-12", "E", "+3"
-  thru: string;  // e.g., "F", "12", "10"
-  country?: string;
-}
 
 interface ChatMessage {
   id: string;
@@ -89,12 +81,10 @@ export default function TournamentChatModal({
   const insets = useSafeAreaInsets();
   
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [leaderboard, setLeaderboard] = useState<LeaderboardPlayer[]>([]);
   const [newMessage, setNewMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
   const [lastSentTime, setLastSentTime] = useState<number>(0);
-  const [leaderboardUpdatedAt, setLeaderboardUpdatedAt] = useState<Date | null>(null);
   
   const flatListRef = useRef<FlatList>(null);
   const currentUserId = auth.currentUser?.uid;
@@ -113,60 +103,19 @@ export default function TournamentChatModal({
   });
 
   // ============================================================================
-  // FETCH LEADERBOARD
+  // LEADERBOARD DATA (via hook)
   // ============================================================================
 
-  useEffect(() => {
-    if (!visible || !tournament) return;
-
-    const fetchLeaderboard = async () => {
-      try {
-        console.log("🏌️ Fetching leaderboard for:", tournament.name);
-        
-        // Query the tournament document
-        const tournamentDoc = await getDocs(
-          query(
-            collection(db, "tournaments"),
-            where("tournId", "==", tournament.tournId),
-            where("year", "==", tournament.year),
-            limit(1)
-          )
-        );
-
-        if (!tournamentDoc.empty) {
-          const data = tournamentDoc.docs[0].data();
-          
-          if (data.leaderboard && Array.isArray(data.leaderboard)) {
-            // Take top 10
-            const top10 = data.leaderboard.slice(0, 10).map((player: any, index: number) => ({
-              position: player.position || index + 1,
-              name: player.name || player.playerName || "Unknown",
-              score: player.score || player.totalScore || "E",
-              thru: player.thru || player.holesPlayed || "—",
-              country: player.country,
-            }));
-            setLeaderboard(top10);
-            console.log("🏌️ Leaderboard loaded:", top10.length, "players");
-          }
-          
-          if (data.leaderboardUpdatedAt) {
-            setLeaderboardUpdatedAt(data.leaderboardUpdatedAt.toDate());
-          }
-        } else {
-          console.log("🏌️ No leaderboard data found");
-        }
-      } catch (error) {
-        console.error("🏌️ Error fetching leaderboard:", error);
-      }
-    };
-
-    fetchLeaderboard();
-    
-    // Refresh leaderboard every 5 minutes
-    const interval = setInterval(fetchLeaderboard, 5 * 60 * 1000);
-    
-    return () => clearInterval(interval);
-  }, [visible, tournament]);
+  const { 
+    leaderboard, 
+    loading: leaderboardLoading, 
+    error: leaderboardError,
+  } = useLeaderboard(
+    tournament?.tournId,
+    tournament?.year,
+    // orgId is always "1" for PGA Tour
+    "1"
+  );
 
   // ============================================================================
   // SUBSCRIBE TO CHAT MESSAGES
@@ -243,6 +192,11 @@ export default function TournamentChatModal({
 
       const chatCollectionId = `tournamentChats_${tournament.year}_${tournament.tournId}_${chatType}`;
 
+      // Calculate expireAt - messages expire at 3am ET the next day
+      const expireDate = new Date();
+      expireDate.setDate(expireDate.getDate() + 1); // Next day
+      expireDate.setHours(3, 0, 0, 0); // 3am
+
       await addDoc(collection(db, chatCollectionId), {
         userId: currentUserId,
         userName: userProfile.displayName || "Anonymous",
@@ -252,6 +206,7 @@ export default function TournamentChatModal({
         tournamentId: tournament.id,
         tournamentName: tournament.name,
         createdAt: serverTimestamp(),
+        expireAt: Timestamp.fromDate(expireDate),
       });
 
       soundPlayer.play("postThought");
@@ -271,40 +226,6 @@ export default function TournamentChatModal({
     } finally {
       setSending(false);
     }
-  };
-
-  // ============================================================================
-  // RENDER LEADERBOARD ITEM
-  // ============================================================================
-
-  const renderLeaderboardItem = ({ item }: { item: LeaderboardPlayer }) => {
-    const isTopThree = item.position <= 3;
-    const scoreColor = item.score.startsWith("-") 
-      ? "#C41E3A" // Under par - red
-      : item.score === "E" 
-        ? "#333" // Even
-        : "#0D5C3A"; // Over par - green
-
-    return (
-      <View style={[styles.leaderboardCard, isTopThree && styles.leaderboardCardTop]}>
-        <View style={[styles.positionBadge, isTopThree && styles.positionBadgeTop]}>
-          <Text style={[styles.positionText, isTopThree && styles.positionTextTop]}>
-            {item.position}
-          </Text>
-        </View>
-        <Text style={styles.playerName} numberOfLines={1}>
-          {item.name}
-        </Text>
-        <View style={styles.scoreContainer}>
-          <Text style={[styles.scoreText, { color: scoreColor }]}>
-            {item.score}
-          </Text>
-          <Text style={styles.thruText}>
-            {item.thru === "F" ? "F" : `${item.thru}`}
-          </Text>
-        </View>
-      </View>
-    );
   };
 
   // ============================================================================
@@ -398,6 +319,51 @@ export default function TournamentChatModal({
   };
 
   // ============================================================================
+  // HELPER: PARSE NUMBER FROM MONGODB-STYLE OBJECTS
+  // ============================================================================
+
+  const parseNumberValue = (value: any): number | null => {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "number") return value;
+    if (typeof value === "string") return parseInt(value, 10) || null;
+    // Handle MongoDB Extended JSON format: { $numberInt: "123" }
+    if (typeof value === "object" && value.$numberInt) {
+      return parseInt(value.$numberInt, 10);
+    }
+    if (typeof value === "object" && value.$numberLong) {
+      return parseInt(value.$numberLong, 10);
+    }
+    return null;
+  };
+
+  // ============================================================================
+  // HELPER: FORMAT LEADERBOARD LAST UPDATED
+  // ============================================================================
+
+  const getLeaderboardUpdatedText = () => {
+    if (!leaderboard?.lastUpdated) return null;
+    
+    try {
+      const updatedAt = leaderboard.lastUpdated.toDate();
+      const now = new Date();
+      const diffMs = now.getTime() - updatedAt.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+      
+      if (diffMins < 1) return "Updated just now";
+      if (diffMins === 1) return "Updated 1 min ago";
+      if (diffMins < 60) return `Updated ${diffMins} mins ago`;
+      
+      const diffHours = Math.floor(diffMins / 60);
+      if (diffHours === 1) return "Updated 1 hour ago";
+      if (diffHours < 24) return `Updated ${diffHours} hours ago`;
+      
+      return `Updated ${updatedAt.toLocaleDateString()}`;
+    } catch {
+      return null;
+    }
+  };
+
+  // ============================================================================
   // HANDLE CLOSE
   // ============================================================================
 
@@ -481,6 +447,8 @@ export default function TournamentChatModal({
 
   const chatTypeLabel = chatType === "onpremise" ? "On-Premise Chat" : "Tournament Discussion";
   const chatTypeIcon = chatType === "onpremise" ? "location" : "chatbubbles";
+  const leaderboardUpdatedText = getLeaderboardUpdatedText();
+  const roundNumber = parseNumberValue(leaderboard?.roundId);
 
   return (
     <Modal
@@ -517,27 +485,38 @@ export default function TournamentChatModal({
           </TouchableOpacity>
         </View>
 
-        {/* Leaderboard Carousel */}
-        {leaderboard.length > 0 && (
-          <View style={styles.leaderboardSection}>
-            <View style={styles.leaderboardHeader}>
-              <Text style={styles.leaderboardTitle}>Leaderboard</Text>
-              {leaderboardUpdatedAt && (
-                <Text style={styles.leaderboardUpdated}>
-                  Updated {getRelativeTime(Timestamp.fromDate(leaderboardUpdatedAt))} ago
+        {/* Leaderboard Carousel Section */}
+        <View style={styles.leaderboardSection}>
+          {/* Leaderboard Header */}
+          <View style={styles.leaderboardHeader}>
+            <View style={styles.leaderboardHeaderLeft}>
+              <Text style={styles.leaderboardTitle}>LEADERBOARD</Text>
+              {roundNumber && (
+                <Text style={styles.leaderboardRound}>
+                  Round {roundNumber}
                 </Text>
               )}
             </View>
-            <FlatList
-              data={leaderboard}
-              renderItem={renderLeaderboardItem}
-              keyExtractor={(item) => `leader-${item.position}`}
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.leaderboardList}
-            />
+            {leaderboardUpdatedText && (
+              <Text style={styles.leaderboardUpdated}>{leaderboardUpdatedText}</Text>
+            )}
           </View>
-        )}
+
+          {/* Leaderboard Carousel */}
+          <LeaderboardCarousel
+            players={leaderboard?.players || []}
+            isLoading={leaderboardLoading}
+          />
+
+          {/* Error message if leaderboard failed to load */}
+          {leaderboardError && !leaderboardLoading && (
+            <View style={styles.leaderboardError}>
+              <Text style={styles.leaderboardErrorText}>
+                Unable to load leaderboard
+              </Text>
+            </View>
+          )}
+        </View>
 
         {/* Chat Messages */}
         {Platform.OS === "ios" ? (
@@ -618,86 +597,47 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
 
-  // Leaderboard
+  // Leaderboard Section
   leaderboardSection: {
-    backgroundColor: "#FFFFFF",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#E0E0E0",
+    backgroundColor: "#0D5C3A",
+    paddingBottom: 12,
   },
   leaderboardHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 16,
-    marginBottom: 8,
+    paddingTop: 8,
+    paddingBottom: 4,
   },
-  leaderboardTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#0D5C3A",
-  },
-  leaderboardUpdated: {
-    fontSize: 11,
-    color: "#999",
-  },
-  leaderboardList: {
-    paddingHorizontal: 12,
-    gap: 8,
-  },
-  leaderboardCard: {
-    backgroundColor: "#F8F8F8",
-    borderRadius: 8,
-    padding: 10,
-    minWidth: 100,
-    alignItems: "center",
-    marginHorizontal: 4,
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-  },
-  leaderboardCardTop: {
-    backgroundColor: "#FFF9E6",
-    borderColor: "#FFD700",
-  },
-  positionBadge: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: "#E0E0E0",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 6,
-  },
-  positionBadgeTop: {
-    backgroundColor: "#FFD700",
-  },
-  positionText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#666",
-  },
-  positionTextTop: {
-    color: "#0D5C3A",
-  },
-  playerName: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#333",
-    textAlign: "center",
-    marginBottom: 4,
-  },
-  scoreContainer: {
+  leaderboardHeaderLeft: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 8,
   },
-  scoreText: {
-    fontSize: 16,
-    fontWeight: "800",
+  leaderboardTitle: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#F4EED8",
+    letterSpacing: 1,
   },
-  thruText: {
+  leaderboardRound: {
     fontSize: 11,
-    color: "#999",
+    color: "#A8D5BA",
+    fontWeight: "500",
+  },
+  leaderboardUpdated: {
+    fontSize: 10,
+    color: "#A8D5BA",
+  },
+  leaderboardError: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  leaderboardErrorText: {
+    fontSize: 12,
+    color: "#FFB4B4",
+    textAlign: "center",
   },
 
   // Chat
