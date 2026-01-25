@@ -24,11 +24,14 @@ export type NotificationType =
   // Post interactions
   | "like"
   | "comment"
+  | "comment_like"
+  | "reply"
   | "mention_post"
   | "mention_comment"
   | "share"
   // Messaging
   | "message"
+  | "group_message"  // ✅ NEW: Group chat messages
   | "message_request"
   // Follows & connections
   | "partner_request"
@@ -77,6 +80,8 @@ interface CreateNotificationParams {
   courseId?: number;                 // Optional: related course
   courseName?: string;               // Optional: course name
   scoreId?: string;                  // Optional: related score
+  threadId?: string;                 // ✅ NEW: related thread (for messages)
+  groupName?: string;                // ✅ NEW: group chat name (for group_message)
   regionKey?: string;                // Optional: region key for regional features
   rejectionReason?: string;          // Optional: rejection reason for memberships
   customMessage?: string;            // Optional: override default message
@@ -90,10 +95,13 @@ interface CreateNotificationParams {
 const GROUPABLE_TYPES: NotificationType[] = [
   "like",
   "comment",
+  "comment_like",
   "message",
   "partner_scored",
   "partner_posted",
 ];
+
+// Note: "group_message" is NOT in GROUPABLE_TYPES - each recipient gets individual notification
 
 // ============================================================================
 // MESSAGE TEMPLATES
@@ -104,7 +112,8 @@ const getMessageTemplate = async (
   actorName: string,
   courseId?: number,
   courseName?: string,
-  rejectionReason?: string
+  rejectionReason?: string,
+  groupName?: string  // ✅ NEW parameter
 ): Promise<string> => {
   switch (type) {
     // Post interactions
@@ -112,6 +121,10 @@ const getMessageTemplate = async (
       return `${actorName} landed a dart on your Swing Thought`;
     case "comment":
       return `${actorName} weighed in on your Swing Thought`;
+    case "comment_like":
+      return `${actorName} landed a dart on your comment`;
+    case "reply":
+      return `${actorName} replied to your comment`;
     case "mention_post":
       return `${actorName} tagged you in a Swing Thought`;
     case "mention_comment":
@@ -122,6 +135,8 @@ const getMessageTemplate = async (
     // Messaging
     case "message":
       return `${actorName} left a note in your locker`;
+    case "group_message":  // ✅ NEW
+      return `${actorName} sent a message in ${groupName || "a group chat"}`;
     case "message_request":
       return `${actorName} wants to leave a note in your locker`;
 
@@ -222,6 +237,11 @@ const getGroupedMessage = (
       if (remaining === 1) return `${firstName} & 1 other weighed in on your Swing Thought`;
       return `${firstName} & ${remaining} others weighed in on your Swing Thought`;
 
+    case "comment_like":
+      if (remaining === 0) return `${firstName} landed a dart on your comment`;
+      if (remaining === 1) return `${firstName} & 1 other landed darts on your comment`;
+      return `${firstName} & ${remaining} others landed darts on your comment`;
+
     case "message":
       if (remaining === 0) return `${firstName} left a note in your locker`;
       if (remaining === 1) return `${firstName} left 2 notes in your locker`;
@@ -308,7 +328,9 @@ export async function createNotification(params: CreateNotificationParams): Prom
     commentId, 
     courseId, 
     courseName, 
-    scoreId, 
+    scoreId,
+    threadId,      // ✅ NEW
+    groupName,     // ✅ NEW
     regionKey,
     rejectionReason, 
     customMessage,
@@ -347,6 +369,9 @@ export async function createNotification(params: CreateNotificationParams): Prom
       } else if (postId) {
         // Group post interactions (likes, comments) by postId
         groupKey = `${type}_${postId}`;
+      } else if (commentId) {
+        // Group comment interactions by commentId
+        groupKey = `${type}_${commentId}`;
       } else {
         // Fallback to type only
         groupKey = type;
@@ -380,6 +405,11 @@ export async function createNotification(params: CreateNotificationParams): Prom
             updateData.actorId = actorId;
             updateData.actorName = actor.displayName;
             updateData.actorAvatar = actor.avatar;
+          }
+
+          // ✅ Keep threadId if provided
+          if (threadId) {
+            updateData.threadId = threadId;
           }
 
           // Add regionKey if provided
@@ -420,6 +450,8 @@ export async function createNotification(params: CreateNotificationParams): Prom
 
       // Add type-specific fields
       if (postId) newNotification.postId = postId;
+      if (commentId) newNotification.commentId = commentId;
+      if (threadId) newNotification.threadId = threadId;  // ✅ NEW
       if (type === "message" && actorId) {
         newNotification.actorId = actorId;
         newNotification.actorName = actor.displayName;
@@ -429,13 +461,13 @@ export async function createNotification(params: CreateNotificationParams): Prom
 
       await addDoc(collection(db, "notifications"), newNotification);
     } else {
-      // Non-grouped notification
+      // Non-grouped notification (includes group_message)
       const expiresAt = Timestamp.fromDate(
         new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
       );
 
       const actorName = actor?.displayName || "System";
-      const message = customMessage || await getMessageTemplate(type, actorName, courseId, courseName, rejectionReason);
+      const message = customMessage || await getMessageTemplate(type, actorName, courseId, courseName, rejectionReason, groupName);
 
       const notificationData: any = {
         userId,
@@ -460,6 +492,7 @@ export async function createNotification(params: CreateNotificationParams): Prom
       if (courseId) notificationData.courseId = courseId;
       if (courseName) notificationData.courseName = courseName;
       if (scoreId) notificationData.scoreId = scoreId;
+      if (threadId) notificationData.threadId = threadId;  // ✅ NEW
       if (regionKey) notificationData.regionKey = regionKey;
       if (rejectionReason) notificationData.rejectionReason = rejectionReason;
 

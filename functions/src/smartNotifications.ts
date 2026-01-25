@@ -11,6 +11,7 @@
  * - Multiple comments on same post: "displayName and X others commented on your thought"
  * - Partner requests: Always individual (important action)
  * - Mentions: Always individual (need to see each one)
+ * - Group messages: Always individual (each recipient gets their own)
  * 
  * Deploy: firebase deploy --only functions:createSmartNotification
  */
@@ -48,6 +49,7 @@ const GROUPABLE_TYPES = {
     "holeinone_denied",
     "trending",
     "system",
+    "group_message",  // ✅ NEW: Group messages are individual (each recipient gets one)
   ],
 };
 
@@ -61,7 +63,9 @@ interface NotificationData {
   commentId?: string;       // Related comment
   scoreId?: string;         // Related score
   courseId?: number;        // Related course
+  threadId?: string;        // ✅ NEW: Related thread (for messages)
   messagePreview?: string;  // Preview text for messages
+  groupName?: string;       // ✅ NEW: Group chat name (for group_message)
 }
 
 interface NotificationActor {
@@ -94,6 +98,7 @@ interface GroupedNotification {
   commentId?: string;
   scoreId?: string;
   courseId?: number;
+  threadId?: string;  // ✅ NEW
   
   // Grouping metadata
   groupKey: string;
@@ -127,7 +132,8 @@ function generateMessage(
   type: string,
   actorName: string,
   actorCount: number,
-  _messagePreview?: string
+  _messagePreview?: string,
+  groupName?: string  // ✅ NEW parameter
 ): string {
   const othersCount = actorCount - 1;
   const othersText = othersCount === 1 ? "1 other" : `${othersCount} others`;
@@ -152,12 +158,16 @@ function generateMessage(
       }
       return `${actorName} and ${othersText} shared your swing thought`;
     
-    // Messages
+    // Messages (1:1)
     case "message":
       if (actorCount === 1) {
         return `${actorName} left you a note in your locker 📝`;
       }
       return `${actorName} left you ${actorCount} notes in your locker 📝`;
+    
+    // ✅ NEW: Group messages
+    case "group_message":
+      return `${actorName} sent a message in ${groupName || "a group chat"} 👥`;
     
     // Partner interactions (always individual but included for completeness)
     case "partner_request":
@@ -225,7 +235,9 @@ async function createNotificationInternal(data: NotificationData): Promise<{
     commentId,
     scoreId,
     courseId,
+    threadId,      // ✅ NEW
     messagePreview,
+    groupName,     // ✅ NEW
   } = data;
   
   // Don't notify yourself
@@ -277,9 +289,9 @@ async function createNotificationInternal(data: NotificationData): Promise<{
       }
       
       // Generate updated message
-      const message = generateMessage(type, actorName, newActorCount, messagePreview);
+      const message = generateMessage(type, actorName, newActorCount, messagePreview, groupName);
       
-      await existingDoc.ref.update({
+      const updateData: Record<string, any> = {
         actors: newActors,
         actorCount: newActorCount,
         actorId: actorId, // Most recent actor
@@ -289,7 +301,14 @@ async function createNotificationInternal(data: NotificationData): Promise<{
         message: message,
         updatedAt: now,
         read: false, // Reset to unread on new activity
-      });
+      };
+      
+      // ✅ Keep threadId if provided
+      if (threadId) {
+        updateData.threadId = threadId;
+      }
+      
+      await existingDoc.ref.update(updateData);
       
       console.log(`✅ Updated notification ${existingDoc.id} (${newActorCount} actors)`);
       
@@ -301,7 +320,7 @@ async function createNotificationInternal(data: NotificationData): Promise<{
       };
     } else {
       // CREATE new notification
-      const message = generateMessage(type, actorName, 1, messagePreview);
+      const message = generateMessage(type, actorName, 1, messagePreview, groupName);
       
       const newNotification: Record<string, any> = {
         userId,
@@ -337,6 +356,7 @@ async function createNotificationInternal(data: NotificationData): Promise<{
       if (commentId) newNotification.commentId = commentId;
       if (scoreId) newNotification.scoreId = scoreId;
       if (courseId) newNotification.courseId = courseId;
+      if (threadId) newNotification.threadId = threadId;  // ✅ NEW
       
       const docRef = await db.collection("notifications").add(newNotification);
       
@@ -460,6 +480,10 @@ export const onCommentCreated = onDocumentCreated(
 
 /**
  * Firestore Trigger: When a message is sent, create notification
+ * 
+ * NOTE: This trigger uses the legacy "conversations" collection.
+ * The main message handling is in index.ts using "threads" collection.
+ * This can be removed if not using the conversations collection.
  */
 export const onMessageCreated = onDocumentCreated(
   "conversations/{conversationId}/messages/{messageId}",
@@ -495,6 +519,7 @@ export const onMessageCreated = onDocumentCreated(
       actorId: messageData.senderId,
       actorName: senderData?.displayName || "Someone",
       actorAvatar: senderData?.avatar,
+      threadId: conversationId,  // ✅ Include threadId for navigation
       messagePreview: messageData.text?.substring(0, 50),
     });
   }

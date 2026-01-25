@@ -19,17 +19,15 @@ export default function RootLayout() {
     Caveat_700Bold,
   });
 
-  // Load sounds on mount
-  // NEW CODE - WORKS WITH expo-audio version
-useEffect(() => {
-  // Sound player now uses lazy initialization - no need to preload
-  // It will initialize on first play() call
-  
-  return () => {
-    // Use release() instead of cleanup()
-    soundPlayer.release();
-  };
-}, []);
+  // Initialize sounds on mount - MUST happen early to activate audio session
+  useEffect(() => {
+    // Initialize audio session immediately so sounds work from first tap
+    soundPlayer.init();
+    
+    return () => {
+      soundPlayer.release();
+    };
+  }, []);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -403,27 +401,27 @@ useEffect(() => {
           break;
 
         // ============================================
-        // MESSAGES - Go to message thread
-        // ============================================
-        case "message":
-          // Construct threadId from current user + actor
-          const currentUserId = authModule.auth.currentUser?.uid;
-          if (data.actorId && currentUserId) {
-            const threadId = [currentUserId, data.actorId as string].sort().join("_");
-            router.push(`/messages/${threadId}`);
-          }
-          break;
-
-        // ============================================
-        // MEMBERSHIP - Go to course locker
-        // ============================================
-        case "membership_submitted":
-        case "membership_approved":
-        case "membership_rejected":
-          if (data.courseId) {
-            router.push(`/locker/course/${data.courseId}`);
-          }
-          break;
+// MESSAGES - Go to message thread (1:1 and Group)
+// ============================================
+case "message":
+case "group_message":  // ✅ NEW: Handle group messages
+  // ✅ Use threadId if provided (works for both 1:1 and groups)
+  if (data.threadId) {
+    router.push(`/messages/${data.threadId}`);
+  } else if (data.actorId) {
+    // Fallback: construct threadId for legacy 1:1 notifications
+    const currentUserId = authModule.auth.currentUser?.uid;
+    if (currentUserId) {
+      const threadId = [currentUserId, data.actorId as string].sort().join("_");
+      router.push(`/messages/${threadId}`);
+    } else {
+      router.push("/messages");
+    }
+  } else {
+    // Last resort: go to messages list
+    router.push("/messages");
+  }
+  break;
 
         // ============================================
         // FALLBACK - Use generic routing based on available data

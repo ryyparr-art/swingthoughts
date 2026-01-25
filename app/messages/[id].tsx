@@ -46,6 +46,8 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 interface Message {
   messageId: string;
   senderId: string;
+  senderName?: string;      // ✅ NEW: For group chat display
+  senderAvatar?: string;    // ✅ NEW: For group chat display
   receiverId: string;
   content: string;
   createdAt: any;
@@ -58,6 +60,8 @@ interface ThreadData {
   participants: string[];
   participantNames?: Record<string, string>;
   participantAvatars?: Record<string, string | null>;
+  isGroup?: boolean;        // ✅ NEW: Group chat flag
+  groupName?: string;       // ✅ NEW: Group display name
   lastMessage?: any;
   lastMessageAt?: any;
   unreadCount?: Record<string, number>;
@@ -79,6 +83,9 @@ export default function MessageThreadScreen() {
   const [newMessage, setNewMessage] = useState("");
   const [sending, setSending] = useState(false);
 
+  // ✅ UPDATED: Support both 1:1 and group
+  const [isGroup, setIsGroup] = useState(false);
+  const [threadData, setThreadData] = useState<ThreadData | null>(null);
   const [otherUserId, setOtherUserId] = useState<string | null>(null);
   const [otherUserName, setOtherUserName] = useState("User");
   const [otherUserAvatar, setOtherUserAvatar] = useState<string | null>(null);
@@ -92,6 +99,14 @@ export default function MessageThreadScreen() {
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [editedContent, setEditedContent] = useState("");
   const [isUpdating, setIsUpdating] = useState(false);
+
+  // ✅ NEW: Member list modal for groups
+  const [showMemberList, setShowMemberList] = useState(false);
+
+  // ✅ NEW: Edit group name modal
+  const [showEditGroupName, setShowEditGroupName] = useState(false);
+  const [editGroupNameValue, setEditGroupNameValue] = useState("");
+  const [isSavingGroupName, setIsSavingGroupName] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
@@ -119,49 +134,72 @@ export default function MessageThreadScreen() {
       // ✅ Load from cache first for instant UI
       await loadFromCache();
 
-      // ✅ Parse partner ID from deterministic thread ID (format: "userA_userB")
-      const participantIds = threadId.split("_");
-      const partnerId = participantIds.find((id) => id !== userId);
-
-      if (!partnerId) {
-        console.error("❌ Could not parse partner ID from thread ID");
-        setLoading(false);
-        return;
-      }
-
-      setOtherUserId(partnerId);
-
-      // ✅ First try to get denormalized data from thread document
+      // ✅ First check if thread document exists (for groups or existing 1:1)
       const threadSnap = await getDoc(threadRef);
       
       if (threadSnap.exists()) {
-        const threadData = threadSnap.data() as ThreadData;
+        const data = threadSnap.data() as ThreadData;
+        setThreadData(data);
         setThreadExists(true);
         
-        // ✅ Use denormalized data from thread if available
-        if (threadData.participantNames?.[partnerId]) {
-          setOtherUserName(threadData.participantNames[partnerId]);
-          console.log("✅ Using denormalized name:", threadData.participantNames[partnerId]);
-        }
-        
-        if (threadData.participantAvatars?.[partnerId]) {
-          setOtherUserAvatar(threadData.participantAvatars[partnerId]);
-          console.log("✅ Using denormalized avatar");
+        // ✅ Detect if this is a group chat
+        const groupChat = data.isGroup || data.participants.length > 2;
+        setIsGroup(groupChat);
+
+        if (groupChat) {
+          // ✅ GROUP CHAT: Use groupName for header
+          setOtherUserName(data.groupName || "Group Chat");
+          setOtherUserAvatar(null);
+          console.log("✅ Group chat detected:", data.groupName);
+        } else {
+          // ✅ 1:1 CHAT: Parse partner from thread
+          const partnerId = data.participants.find((id) => id !== userId);
+          if (partnerId) {
+            setOtherUserId(partnerId);
+            
+            // Use denormalized data from thread if available
+            if (data.participantNames?.[partnerId]) {
+              setOtherUserName(data.participantNames[partnerId]);
+              console.log("✅ Using denormalized name:", data.participantNames[partnerId]);
+            }
+            if (data.participantAvatars?.[partnerId]) {
+              setOtherUserAvatar(data.participantAvatars[partnerId]);
+            }
+          }
         }
         
         // ✅ Mark messages as read immediately when opening thread
-        const unreadCount = threadData.unreadCount?.[userId] || 0;
+        const unreadCount = data.unreadCount?.[userId] || 0;
         if (unreadCount > 0) {
           console.log(`📬 Thread has ${unreadCount} unread messages, marking as read...`);
           await markAllMessagesAsRead();
         }
       } else {
+        // ✅ Thread doesn't exist - must be new 1:1 chat with deterministic ID
         console.log("📝 Thread doesn't exist yet - will be created on first message");
+        
+        // Parse partner ID from deterministic thread ID (format: "userA_userB")
+        const participantIds = threadId.split("_");
+        const partnerId = participantIds.find((id) => id !== userId);
+
+        if (partnerId) {
+          setOtherUserId(partnerId);
+          setIsGroup(false);
+          
+          // Fetch partner's user data
+          const partnerDoc = await getDoc(doc(db, "users", partnerId));
+          if (partnerDoc.exists()) {
+            const partnerData = partnerDoc.data();
+            setOtherUserName(partnerData.displayName || "User");
+            setOtherUserAvatar(partnerData.avatar || null);
+            console.log("✅ Partner data loaded:", partnerData.displayName);
+          }
+        }
       }
 
-      // ✅ Fallback: Fetch partner's user data if denormalized data not available
-      if (!otherUserName || otherUserName === "User") {
-        const partnerDoc = await getDoc(doc(db, "users", partnerId));
+      // ✅ Fallback: Fetch partner's user data if denormalized data not available (1:1 only)
+      if (!isGroup && otherUserId && (!otherUserName || otherUserName === "User")) {
+        const partnerDoc = await getDoc(doc(db, "users", otherUserId));
         if (partnerDoc.exists()) {
           const partnerData = partnerDoc.data();
           setOtherUserName(partnerData.displayName || "User");
@@ -187,6 +225,7 @@ export default function MessageThreadScreen() {
         setMessages(cached.messages || []);
         if (cached.otherUserName) setOtherUserName(cached.otherUserName);
         if (cached.otherUserAvatar) setOtherUserAvatar(cached.otherUserAvatar);
+        if (cached.isGroup !== undefined) setIsGroup(cached.isGroup);
         setShowingCached(true);
         setLoading(false);
       }
@@ -245,6 +284,7 @@ export default function MessageThreadScreen() {
           messages: msgs,
           otherUserName,
           otherUserAvatar,
+          isGroup,
         });
 
         // ✅ Mark individual unread messages as read
@@ -290,7 +330,10 @@ export default function MessageThreadScreen() {
   /* ========================= SEND ========================= */
 
   const handleSend = async () => {
-    if (!newMessage.trim() || !otherUserId) return;
+    if (!newMessage.trim()) return;
+    
+    // ✅ For groups, we don't have a single receiverId
+    if (!isGroup && !otherUserId) return;
 
     const emailVerified = await isEmailVerified();
     if (!emailVerified) {
@@ -314,11 +357,16 @@ export default function MessageThreadScreen() {
     setSending(true);
 
     try {
+      // ✅ Get sender info for group display
+      const senderName = threadData?.participantNames?.[userId] || "You";
+      const senderAvatar = threadData?.participantAvatars?.[userId] || null;
+
       // ✅ Add message to subcollection
-      // Cloud Function will create/update the thread document automatically!
       await addDoc(messagesRef, {
         senderId: userId,
-        receiverId: otherUserId,
+        senderName: isGroup ? senderName : undefined,      // ✅ Only for groups
+        senderAvatar: isGroup ? senderAvatar : undefined,  // ✅ Only for groups
+        receiverId: isGroup ? null : otherUserId,          // ✅ null for groups
         content: newMessage.trim(),
         createdAt: serverTimestamp(),
         read: false,
@@ -499,55 +547,180 @@ export default function MessageThreadScreen() {
     }
   };
 
+  /* ========================= EDIT GROUP NAME ========================= */
+
+  const openEditGroupName = () => {
+    setEditGroupNameValue(otherUserName);
+    setShowEditGroupName(true);
+  };
+
+  const handleSaveGroupName = async () => {
+    if (!editGroupNameValue.trim() || !isGroup) return;
+    
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setIsSavingGroupName(true);
+
+    try {
+      await updateDoc(threadRef, {
+        groupName: editGroupNameValue.trim(),
+        updatedAt: serverTimestamp(),
+      });
+
+      // Update local state
+      setOtherUserName(editGroupNameValue.trim());
+      
+      // Update threadData
+      if (threadData) {
+        setThreadData({
+          ...threadData,
+          groupName: editGroupNameValue.trim(),
+        });
+      }
+
+      soundPlayer.play("postThought");
+      console.log("✅ Group name updated successfully");
+      setShowEditGroupName(false);
+    } catch (error) {
+      console.error("❌ Failed to update group name:", error);
+      soundPlayer.play("error");
+      Alert.alert("Error", "Failed to update group name. Please try again.");
+    } finally {
+      setIsSavingGroupName(false);
+    }
+  };
+
   /* ========================= RENDER ========================= */
 
   const renderMessage = ({ item }: { item: Message }) => {
     const isMyMessage = item.senderId === userId;
+    
+    // ✅ NEW: Show sender name in group chats for other people's messages
+    const showSenderName = isGroup && !isMyMessage;
+    const senderInitial = item.senderName?.[0]?.toUpperCase() || "?";
+
     return (
       <TouchableOpacity
         activeOpacity={isMyMessage ? 0.7 : 1}
         onLongPress={() => handleLongPress(item)}
         delayLongPress={500}
       >
-        <View
-          style={[
-            styles.messageBubble,
-            isMyMessage ? styles.myMessage : styles.theirMessage,
-          ]}
-        >
-          <Text
+        <View style={styles.messageRow}>
+          {/* ✅ NEW: Show avatar for group messages from others */}
+          {showSenderName && (
+            item.senderAvatar ? (
+              <Image source={{ uri: item.senderAvatar }} style={styles.messageAvatar} />
+            ) : (
+              <View style={styles.messageAvatarPlaceholder}>
+                <Text style={styles.messageAvatarText}>{senderInitial}</Text>
+              </View>
+            )
+          )}
+          
+          <View
             style={[
-              styles.messageText,
-              isMyMessage ? styles.myMessageText : styles.theirMessageText,
+              styles.messageBubble,
+              isMyMessage ? styles.myMessage : styles.theirMessage,
+              showSenderName && styles.theirMessageWithAvatar,
             ]}
           >
-            {item.content}
-          </Text>
-          <View style={styles.messageFooter}>
-            {item.edited && (
-              <Text
-                style={[
-                  styles.editedLabel,
-                  isMyMessage ? styles.myEditedLabel : styles.theirEditedLabel,
-                ]}
-              >
-                edited
-              </Text>
+            {/* ✅ NEW: Show sender name in groups */}
+            {showSenderName && (
+              <Text style={styles.senderNameText}>{item.senderName}</Text>
             )}
             <Text
               style={[
-                styles.timestamp,
-                isMyMessage ? styles.myTimestamp : styles.theirTimestamp,
+                styles.messageText,
+                isMyMessage ? styles.myMessageText : styles.theirMessageText,
               ]}
             >
-              {item.createdAt?.toDate?.()?.toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              }) || "Now"}
+              {item.content}
             </Text>
+            <View style={styles.messageFooter}>
+              {item.edited && (
+                <Text
+                  style={[
+                    styles.editedLabel,
+                    isMyMessage ? styles.myEditedLabel : styles.theirEditedLabel,
+                  ]}
+                >
+                  edited
+                </Text>
+              )}
+              <Text
+                style={[
+                  styles.timestamp,
+                  isMyMessage ? styles.myTimestamp : styles.theirTimestamp,
+                ]}
+              >
+                {item.createdAt?.toDate?.()?.toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                }) || "Now"}
+              </Text>
+            </View>
           </View>
         </View>
       </TouchableOpacity>
+    );
+  };
+
+  // ✅ NEW: Member list modal for groups
+  const renderMemberList = () => {
+    if (!threadData) return null;
+
+    const members = threadData.participants.map((id) => ({
+      id,
+      name: threadData.participantNames?.[id] || "Unknown",
+      avatar: threadData.participantAvatars?.[id] || null,
+      isCurrentUser: id === userId,
+    }));
+
+    return (
+      <Modal
+        visible={showMemberList}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowMemberList(false)}
+      >
+        <TouchableOpacity
+          style={styles.memberModalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowMemberList(false)}
+        >
+          <View style={styles.memberListContainer}>
+            <Text style={styles.memberListTitle}>
+              {members.length} Members
+            </Text>
+            {members.map((member) => (
+              <TouchableOpacity
+                key={member.id}
+                style={styles.memberRow}
+                onPress={() => {
+                  setShowMemberList(false);
+                  if (!member.isCurrentUser) {
+                    router.push(`/locker/${member.id}`);
+                  }
+                }}
+              >
+                {member.avatar ? (
+                  <Image source={{ uri: member.avatar }} style={styles.memberAvatar} />
+                ) : (
+                  <View style={styles.memberAvatarPlaceholder}>
+                    <Text style={styles.memberAvatarText}>
+                      {member.name[0]?.toUpperCase() || "?"}
+                    </Text>
+                  </View>
+                )}
+                <Text style={styles.memberName}>
+                  {member.name}
+                  {member.isCurrentUser && " (You)"}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     );
   };
 
@@ -556,7 +729,7 @@ export default function MessageThreadScreen() {
       <SafeAreaView edges={["top"]} style={styles.safeTop} />
 
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}  // ✅ Changed from undefined
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={styles.keyboardView}
         keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
       >
@@ -579,14 +752,22 @@ export default function MessageThreadScreen() {
           <TouchableOpacity
             style={styles.headerInfo}
             onPress={() => {
-              if (otherUserId) {
-                soundPlayer.play("click");
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              soundPlayer.play("click");
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              if (isGroup) {
+                // ✅ Show member list for groups
+                setShowMemberList(true);
+              } else if (otherUserId) {
                 router.push(`/locker/${otherUserId}`);
               }
             }}
           >
-            {otherUserAvatar ? (
+            {/* ✅ UPDATED: Show group icon or user avatar */}
+            {isGroup ? (
+              <View style={styles.groupHeaderAvatar}>
+                <Ionicons name="people" size={18} color="#FFF" />
+              </View>
+            ) : otherUserAvatar ? (
               <Image
                 source={{ uri: otherUserAvatar }}
                 style={styles.avatarImage}
@@ -598,7 +779,31 @@ export default function MessageThreadScreen() {
                 </Text>
               </View>
             )}
-            <Text style={styles.headerName}>{otherUserName}</Text>
+            <View>
+              {/* ✅ UPDATED: Make group name tappable for editing */}
+              {isGroup ? (
+                <TouchableOpacity
+                  style={styles.groupNameTouchable}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    soundPlayer.play("click");
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    openEditGroupName();
+                  }}
+                >
+                  <Text style={styles.headerName}>{otherUserName}</Text>
+                  <Ionicons name="pencil" size={14} color="rgba(255,255,255,0.7)" />
+                </TouchableOpacity>
+              ) : (
+                <Text style={styles.headerName}>{otherUserName}</Text>
+              )}
+              {/* ✅ NEW: Show member count for groups */}
+              {isGroup && threadData && (
+                <Text style={styles.headerSubtitle}>
+                  {threadData.participants.length} members • Tap name to edit
+                </Text>
+              )}
+            </View>
           </TouchableOpacity>
 
           <View style={{ width: 40 }} />
@@ -614,7 +819,9 @@ export default function MessageThreadScreen() {
             <Ionicons name="chatbubble-outline" size={64} color="#CCC" />
             <Text style={styles.emptyText}>No messages yet</Text>
             <Text style={styles.emptySubtext}>
-              Send the first message to {otherUserName}!
+              {isGroup 
+                ? "Send the first message to the group!"
+                : `Send the first message to ${otherUserName}!`}
             </Text>
           </View>
         ) : (
@@ -739,6 +946,75 @@ export default function MessageThreadScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* ✅ NEW: Member list modal */}
+      {renderMemberList()}
+
+      {/* ✅ NEW: Edit group name modal */}
+      <Modal
+        visible={showEditGroupName}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowEditGroupName(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Edit Group Name</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  soundPlayer.play("click");
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setShowEditGroupName(false);
+                }}
+                style={styles.modalCloseButton}
+              >
+                <Ionicons name="close" size={24} color="#666" />
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              style={styles.groupNameEditInput}
+              value={editGroupNameValue}
+              onChangeText={setEditGroupNameValue}
+              maxLength={50}
+              autoFocus
+              placeholder="Enter group name..."
+              placeholderTextColor="#999"
+              selectTextOnFocus
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                onPress={() => {
+                  soundPlayer.play("click");
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setShowEditGroupName(false);
+                }}
+                style={styles.modalCancelButton}
+              >
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={handleSaveGroupName}
+                disabled={!editGroupNameValue.trim() || isSavingGroupName}
+                style={[
+                  styles.modalSaveButton,
+                  (!editGroupNameValue.trim() || isSavingGroupName) &&
+                    styles.modalSaveButtonDisabled,
+                ]}
+              >
+                {isSavingGroupName ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.modalSaveText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -803,10 +1079,33 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
+  // ✅ NEW: Group header avatar
+  groupHeaderAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
   headerName: {
     color: "#FFF",
     fontSize: 18,
     fontWeight: "700",
+  },
+
+  // ✅ NEW: Header subtitle for member count
+  headerSubtitle: {
+    color: "rgba(255,255,255,0.8)",
+    fontSize: 12,
+  },
+
+  // ✅ NEW: Touchable group name in header
+  groupNameTouchable: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
 
   loadingContainer: {
@@ -841,17 +1140,48 @@ const styles = StyleSheet.create({
     flexGrow: 1,
   },
 
+  // ✅ NEW: Message row for avatar + bubble layout
+  messageRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    marginBottom: 8,
+  },
+
+  // ✅ NEW: Message avatar for groups
+  messageAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    marginRight: 8,
+  },
+
+  messageAvatarPlaceholder: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#0D5C3A",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 8,
+  },
+
+  messageAvatarText: {
+    color: "#FFF",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
   messageBubble: {
     maxWidth: "75%",
     padding: 12,
     borderRadius: 16,
-    marginBottom: 8,
   },
 
   myMessage: {
     alignSelf: "flex-end",
     backgroundColor: "#0D5C3A",
     borderBottomRightRadius: 4,
+    marginLeft: "auto",
   },
 
   theirMessage: {
@@ -863,6 +1193,19 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 2,
     elevation: 2,
+  },
+
+  // ✅ NEW: Adjust bubble when avatar is shown
+  theirMessageWithAvatar: {
+    maxWidth: "70%",
+  },
+
+  // ✅ NEW: Sender name in group messages
+  senderNameText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#0D5C3A",
+    marginBottom: 4,
   },
 
   messageText: {
@@ -1018,6 +1361,19 @@ const styles = StyleSheet.create({
     textAlignVertical: "top",
   },
 
+  // ✅ NEW: Group name edit input (single line)
+  groupNameEditInput: {
+    margin: 16,
+    backgroundColor: "#F4EED8",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
+    color: "#333",
+  },
+
   modalActions: {
     flexDirection: "row",
     justifyContent: "flex-end",
@@ -1055,6 +1411,65 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "700",
     color: "#FFF",
+  },
+
+  // ✅ NEW: Member list modal styles
+  memberModalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 32,
+  },
+
+  memberListContainer: {
+    backgroundColor: "#FFF",
+    borderRadius: 16,
+    padding: 16,
+    width: "100%",
+    maxWidth: 320,
+  },
+
+  memberListTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#0D5C3A",
+    marginBottom: 16,
+    textAlign: "center",
+  },
+
+  memberRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    gap: 12,
+  },
+
+  memberAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+
+  memberAvatarPlaceholder: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#0D5C3A",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  memberAvatarText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFF",
+  },
+
+  memberName: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#333",
   },
 });
 

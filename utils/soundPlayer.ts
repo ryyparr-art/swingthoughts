@@ -96,6 +96,15 @@ class SoundPlayer {
   }
 
   /**
+   * Explicitly initialize audio - call this early in app lifecycle
+   * This ensures the audio session is active from app start
+   */
+  async init(): Promise<void> {
+    if (this.isInitialized || this.isInitializing) return;
+    await this.initialize();
+  }
+
+  /**
    * Get or create a player for a sound type
    */
   private async getPlayer(soundType: SoundType): Promise<AudioPlayer | null> {

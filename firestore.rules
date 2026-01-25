@@ -357,36 +357,76 @@ service cloud.firestore {
     }
 
     // ============================================================================
-    // THREADS (MESSAGING)
+    // THREADS (MESSAGING - 1:1 AND GROUP CHATS)
     // ============================================================================
 
     match /threads/{threadId} {
 
+      // ✅ Check if user ID appears in the thread document ID (for 1:1 chats with deterministic IDs)
       function isUserInThreadId() {
         return request.auth != null &&
           threadId.matches('.*' + request.auth.uid + '.*');
       }
 
+      // ✅ Check if user is in participants array (for both 1:1 and group chats)
       function isParticipant() {
         return request.auth != null &&
           resource.data.participants.hasAny([request.auth.uid]);
       }
 
+      // ✅ Check if user will be a participant in new document (for create)
+      function willBeParticipant() {
+        return request.auth != null &&
+          request.resource.data.participants.hasAny([request.auth.uid]);
+      }
+
+      // List threads - filter by participant on client side
       allow list: if isSignedIn();
 
+      // Read thread if user is participant OR user ID is in thread ID (backward compat)
       allow read: if isSignedIn() && 
         (isParticipant() || isUserInThreadId());
 
+      // ✅ CREATE THREAD:
+      // - 1:1 chat: User ID must be in thread document ID AND in participants
+      // - Group chat: User must be in participants array with isGroup=true and 3+ participants
       allow create: if isSignedIn() &&
-        isUserInThreadId() &&
+        isEmailVerified() &&
         request.resource.data.participants is list &&
-        request.resource.data.participants.hasAny([request.auth.uid]);
+        willBeParticipant() &&
+        (
+          // 1:1 chat: deterministic ID containing user's UID (e.g., "userA_userB")
+          isUserInThreadId() ||
+          // Group chat: Firestore-generated ID, must have isGroup flag and 3+ participants
+          (
+            request.resource.data.isGroup == true && 
+            request.resource.data.participants.size() >= 3 &&
+            request.resource.data.createdBy == request.auth.uid
+          )
+        );
 
+      // Delete thread - only participants or admin
       allow delete: if isAdmin() || isParticipant();
 
+      // ✅ UPDATE THREAD:
+      // - Participants array CANNOT change after creation (immutable)
+      // - Only specific metadata fields can be updated
+      // - Users can only modify their own unreadCount entry
       allow update: if isSignedIn() &&
         isParticipant() &&
+        // Participants array cannot be modified after creation
         request.resource.data.participants == resource.data.participants &&
+        // isGroup flag cannot be changed after creation
+        (
+          !('isGroup' in resource.data) || 
+          request.resource.data.isGroup == resource.data.isGroup
+        ) &&
+        // createdBy cannot be changed after creation
+        (
+          !('createdBy' in resource.data) || 
+          request.resource.data.createdBy == resource.data.createdBy
+        ) &&
+        // Only allow specific fields to be updated
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'lastMessage',
           'lastSenderId',
@@ -396,8 +436,10 @@ service cloud.firestore {
           'participantAvatars',
           'updatedAt',
           'archivedBy',
-          'deletedBy'
+          'deletedBy',
+          'groupName'  // ✅ NEW: Allow group name to be updated by participants
         ]) &&
+        // Unread count: users can only modify their own entry (or admin can modify any)
         (
           !('unreadCount' in request.resource.data) ||
           isAdmin() ||
@@ -406,39 +448,62 @@ service cloud.firestore {
             .affectedKeys().hasOnly([request.auth.uid])
         );
 
-      // THREAD MESSAGES
+      // ============================================================================
+      // THREAD MESSAGES (1:1 AND GROUP)
+      // ============================================================================
       match /messages/{messageId} {
 
+        // Check if user ID is in parent thread ID (for 1:1 chats)
         function isUserInParentThreadId() {
           return request.auth != null &&
             threadId.matches('.*' + request.auth.uid + '.*');
         }
 
-        allow list: if isSignedIn() && isUserInParentThreadId();
+        // ✅ Check if user is participant in parent thread (for group chats)
+        // Note: This requires a document read, use sparingly
+        function isParentThreadParticipant() {
+          return request.auth != null &&
+            get(/databases/$(database)/documents/threads/$(threadId)).data.participants.hasAny([request.auth.uid]);
+        }
 
+        // ✅ List messages if user has access to thread (1:1 OR group)
+        allow list: if isSignedIn() && 
+          (isUserInParentThreadId() || isParentThreadParticipant());
+
+        // ✅ Read message if user is sender, receiver, OR thread participant
         allow read: if request.auth != null &&
-          (resource.data.senderId == request.auth.uid ||
-           resource.data.receiverId == request.auth.uid ||
-           isUserInParentThreadId());
+          (
+            resource.data.senderId == request.auth.uid ||
+            resource.data.receiverId == request.auth.uid ||
+            isUserInParentThreadId() ||
+            isParentThreadParticipant()
+          );
 
+        // ✅ Create message if user has thread access and is the sender
+        // - 1:1: receiverId required
+        // - Group: receiverId not required (message goes to all participants)
         allow create: if isSignedIn() &&
           isEmailVerified() &&
           canMessage() &&
-          isUserInParentThreadId() &&
+          (isUserInParentThreadId() || isParentThreadParticipant()) &&
           request.resource.data.senderId == request.auth.uid &&
           request.resource.data.content.size() <= 1000;
 
+        // Update message - only specific fields by specific users
         allow update: if isSignedIn() &&
           (
+            // Receiver can mark as read (1:1 chats only)
             (request.auth.uid == resource.data.receiverId &&
              request.resource.data.diff(resource.data)
                .affectedKeys().hasOnly(['read', 'readAt']))
             ||
+            // Sender can edit content
             (request.auth.uid == resource.data.senderId &&
              request.resource.data.diff(resource.data)
                .affectedKeys().hasOnly(['content', 'edited', 'editedAt']))
           );
 
+        // Delete message if sender or admin
         allow delete: if isSignedIn() &&
           (request.auth.uid == resource.data.senderId || isAdmin());
       }

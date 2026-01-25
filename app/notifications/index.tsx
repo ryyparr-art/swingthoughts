@@ -52,6 +52,7 @@ interface Notification {
   commentId?: string;
   courseId?: number;
   scoreId?: string;
+  threadId?: string;        // ✅ NEW: For group message notifications
   
   // Grouping
   groupKey?: string;
@@ -84,6 +85,7 @@ const NOTIFICATION_ICONS: Record<string, NotificationIconConfig> = {
   
   // Messages
   message: { image: require("@/assets/icons/Mail.png"), color: "#0D5C3A" },
+  group_message: { icon: "people", color: "#0D5C3A" },  // ✅ NEW: Group message icon
   
   // Partner activities
   partner_request: { icon: "person-add", color: "#FFD700" },
@@ -390,13 +392,21 @@ export default function NotificationsScreen() {
         }
         break;
 
+      // ✅ UPDATED: Handle both 1:1 and group messages
       case "message":
-        const messageActorId = notification.lastActorId || notification.actorId;
-        const currentUserId = auth.currentUser?.uid;
+      case "group_message":
+        // If threadId is provided directly (group chats or new 1:1 notifications)
+        if (notification.threadId) {
+          router.push(`/messages/${notification.threadId}`);
+        } else {
+          // Fallback: construct deterministic ID for legacy 1:1 notifications
+          const messageActorId = notification.lastActorId || notification.actorId;
+          const currentUserId = auth.currentUser?.uid;
 
-        if (messageActorId && currentUserId) {
-          const threadId = [currentUserId, messageActorId].sort().join("_");
-          router.push(`/messages/${threadId}`);
+          if (messageActorId && currentUserId) {
+            const threadId = [currentUserId, messageActorId].sort().join("_");
+            router.push(`/messages/${threadId}`);
+          }
         }
         break;
 

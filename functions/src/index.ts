@@ -44,6 +44,7 @@ const GROUPABLE_TYPES = {
     "membership_rejected",
     "trending",
     "system",
+    "group_message",  // ✅ NEW: Group messages are individual (each recipient gets one)
   ],
 };
 
@@ -109,7 +110,7 @@ function generateGroupedMessage(
   type: string,
   actorName: string,
   actorCount: number,
-  extraData?: { courseName?: string; holeNumber?: number }
+  extraData?: { courseName?: string; holeNumber?: number; groupName?: string }
 ): string {
   const othersCount = actorCount - 1;
   const othersText = othersCount === 1 ? "1 other" : `${othersCount} others`;
@@ -140,12 +141,16 @@ function generateGroupedMessage(
       }
       return `${actorName} and ${othersText} shared your Swing Thought`;
     
-    // Messages - GROUPED BY ACTOR
+    // Messages - GROUPED BY ACTOR (1:1 only)
     case "message":
       if (actorCount === 1) {
         return `${actorName} left a note in your locker`;
       }
       return `${actorName} left you ${actorCount} notes in your locker`;
+    
+    // ✅ NEW: Group messages (not grouped, but included for completeness)
+    case "group_message":
+      return `${actorName} sent a message in ${extraData?.groupName || "a group chat"}`;
     
     // Partner interactions - NOT GROUPED (but included for completeness)
     case "reply":
@@ -209,6 +214,7 @@ interface CreateNotificationParams {
   courseId?: number;
   courseName?: string;
   scoreId?: string;
+  threadId?: string;  // ✅ NEW: For message notifications
   message: string;
   regionKey?: string;
 }
@@ -225,6 +231,7 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
     courseId,
     courseName,
     scoreId,
+    threadId,  // ✅ NEW
     message,
     regionKey,
   } = params;
@@ -294,7 +301,7 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
         // Generate updated message
         const updatedMessage = generateGroupedMessage(type, actorName || "Someone", newActorCount, { courseName });
 
-        await existingDoc.ref.update({
+        const updateData: any = {
           actors: newActors,
           actorCount: newActorCount,
           actorId: actorId, // Most recent actor
@@ -304,7 +311,14 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
           message: updatedMessage,
           updatedAt: now,
           read: false, // Reset to unread
-        });
+        };
+
+        // ✅ Keep threadId if provided
+        if (threadId) {
+          updateData.threadId = threadId;
+        }
+
+        await existingDoc.ref.update(updateData);
 
         console.log(`✅ Updated grouped notification ${existingDoc.id} (${newActorCount} actors)`);
         return;
@@ -348,6 +362,7 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
     if (courseId) notificationData.courseId = courseId;
     if (courseName) notificationData.courseName = courseName;
     if (scoreId) notificationData.scoreId = scoreId;
+    if (threadId) notificationData.threadId = threadId;  // ✅ NEW
     if (regionKey) notificationData.regionKey = regionKey;
 
     await db.collection("notifications").add(notificationData);
@@ -376,6 +391,7 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
   if (courseId) notificationData.courseId = courseId;
   if (courseName) notificationData.courseName = courseName;
   if (scoreId) notificationData.scoreId = scoreId;
+  if (threadId) notificationData.threadId = threadId;  // ✅ NEW
   if (regionKey) notificationData.regionKey = regionKey;
 
   await db.collection("notifications").add(notificationData);
@@ -448,8 +464,9 @@ export const sendPushNotification = onDocumentCreated(
           userId: notification.userId,
           scoreId: notification.scoreId,
           courseId: notification.courseId,
+          threadId: notification.threadId,  // ✅ NEW: Include for deep linking
         },
-        badge: unreadCount,  // ✅ Accurate badge count instead of hardcoded 1
+        badge: unreadCount,
       };
 
       // Customize title based on notification type
@@ -495,6 +512,9 @@ export const sendPushNotification = onDocumentCreated(
           break;
         case "message":
           pushMessage.title = "📬 New Locker Note";
+          break;
+        case "group_message":  // ✅ NEW
+          pushMessage.title = "👥 Group Message";
           break;
         case "holeinone_pending_poster":
           pushMessage.title = "⏳ Awaiting Verification";
@@ -854,7 +874,7 @@ export const onScoreCreated = onDocumentCreated(
             actorId: userId,
             actorName: userName || userData?.displayName,
             actorAvatar: userData?.avatar || null,
-            postId: thoughtId, // ✅ NOW INCLUDED
+            postId: thoughtId,
             scoreId,
             courseId,
             courseName,
@@ -873,7 +893,7 @@ export const onScoreCreated = onDocumentCreated(
               actorId: userId,
               actorName: userName || userData?.displayName,
               actorAvatar: userData?.avatar || null,
-              postId: thoughtId, // ✅ NOW INCLUDED
+              postId: thoughtId,
               scoreId,
               courseId,
               courseName,
@@ -893,7 +913,7 @@ export const onScoreCreated = onDocumentCreated(
               actorId: userId,
               actorName: userName || userData?.displayName,
               actorAvatar: userData?.avatar || null,
-              postId: thoughtId, // ✅ NOW INCLUDED
+              postId: thoughtId,
               scoreId,
               courseId,
               courseName,
@@ -913,7 +933,7 @@ export const onScoreCreated = onDocumentCreated(
 );
 
 // ============================================================================
-// 3. MESSAGES - message
+// 3. MESSAGES - message, group_message
 // ============================================================================
 
 export const onMessageCreated = onDocumentCreated(
@@ -926,43 +946,111 @@ export const onMessageCreated = onDocumentCreated(
       const message = snap.data();
       if (!message) return;
 
-      const { senderId, receiverId, content, createdAt } = message;
+      const { senderId, receiverId, content, createdAt, senderName, senderAvatar } = message;
 
-      if (!senderId || !receiverId) {
-        console.log("⛔ Message missing senderId or receiverId");
+      if (!senderId) {
+        console.log("⛔ Message missing senderId");
         return;
       }
-
-      console.log("📨 New message:", senderId, "→", receiverId);
-
-      // ============================================================
-      // THREAD ID (FROM PATH PARAM)
-      // ============================================================
 
       const { threadId } = event.params;
       const threadRef = db.collection("threads").doc(threadId);
       const threadSnap = await threadRef.get();
-
       const messageTimestamp = createdAt || Timestamp.now();
 
       // ============================================================
-      // FETCH USER DATA (FOR NAMES + AVATARS)
+      // FETCH SENDER DATA
       // ============================================================
-
       const senderData = await getUserData(senderId);
-      const receiverData = await getUserData(receiverId);
+      if (!senderData) {
+        console.log("⚠️ Sender not found:", senderId);
+        return;
+      }
 
-      if (!senderData || !receiverData) {
-        console.log("⚠️ Sender or receiver user not found");
+      const actualSenderName = senderName || senderData.displayName || "Someone";
+      const actualSenderAvatar = senderAvatar || senderData.avatar || null;
+
+      // ============================================================
+      // DETERMINE IF GROUP OR 1:1
+      // ============================================================
+      const existingThreadData = threadSnap.exists ? threadSnap.data() : null;
+      const isGroup = existingThreadData?.isGroup || false;
+      const participants = existingThreadData?.participants || [];
+
+      console.log(`📨 New message in ${isGroup ? "GROUP" : "1:1"} thread:`, threadId);
+
+      // ============================================================
+      // GROUP CHAT HANDLING
+      // ============================================================
+      if (isGroup && threadSnap.exists) {
+        // Update thread with new message
+        const unreadUpdates: Record<string, any> = {};
+        
+        // Increment unread for all participants except sender
+        for (const participantId of participants) {
+          if (participantId !== senderId) {
+            unreadUpdates[`unreadCount.${participantId}`] = FieldValue.increment(1);
+          }
+        }
+
+        await threadRef.update({
+          ...unreadUpdates,
+          lastMessage: {
+            senderId,
+            senderName: actualSenderName,
+            content,
+            createdAt: messageTimestamp,
+          },
+          lastSenderId: senderId,
+          lastMessageAt: messageTimestamp,
+          updatedAt: Timestamp.now(),
+          // Clear deletedBy when new message arrives
+          deletedBy: [],
+        });
+
+        console.log("🧵 Group thread updated:", threadId);
+
+        // ============================================================
+        // SEND GROUP NOTIFICATIONS TO ALL OTHER PARTICIPANTS
+        // ============================================================
+        const groupName = existingThreadData?.groupName || "Group Chat";
+        
+        for (const participantId of participants) {
+          if (participantId === senderId) continue; // Don't notify sender
+
+          await createNotificationDocument({
+            userId: participantId,
+            type: "group_message",
+            actorId: senderId,
+            actorName: actualSenderName,
+            actorAvatar: actualSenderAvatar,
+            threadId, // ✅ Include threadId for navigation
+            message: `${actualSenderName} sent a message in ${groupName}`,
+          });
+        }
+
+        console.log(`✅ Sent group message notifications to ${participants.length - 1} participants`);
         return;
       }
 
       // ============================================================
-      // CREATE OR UPDATE THREAD
+      // 1:1 CHAT HANDLING (Original behavior)
       // ============================================================
+      if (!receiverId) {
+        console.log("⛔ 1:1 message missing receiverId");
+        return;
+      }
+
+      console.log("📨 1:1 message:", senderId, "→", receiverId);
+
+      const receiverData = await getUserData(receiverId);
+      if (!receiverData) {
+        console.log("⚠️ Receiver not found:", receiverId);
+        return;
+      }
 
       if (!threadSnap.exists) {
-        // 🆕 NEW THREAD
+        // 🆕 NEW 1:1 THREAD
         await threadRef.set({
           participants: [senderId, receiverId],
 
@@ -994,9 +1082,9 @@ export const onMessageCreated = onDocumentCreated(
           updatedAt: Timestamp.now(),
         });
 
-        console.log("🧵 Thread created:", threadId);
+        console.log("🧵 1:1 Thread created:", threadId);
       } else {
-        // 🔄 EXISTING THREAD - Also clear deletedBy when new message arrives
+        // 🔄 EXISTING 1:1 THREAD
         const threadData = threadSnap.data();
         const updateData: any = {
           [`unreadCount.${receiverId}`]: FieldValue.increment(1),
@@ -1023,30 +1111,30 @@ export const onMessageCreated = onDocumentCreated(
           updatedAt: Timestamp.now(),
         };
 
-        // Clear deletedBy array when new message arrives (restores thread for both users)
+        // Clear deletedBy array when new message arrives
         if (threadData?.deletedBy && threadData.deletedBy.length > 0) {
           updateData.deletedBy = [];
         }
 
         await threadRef.update(updateData);
 
-        console.log("🧵 Thread updated:", threadId);
+        console.log("🧵 1:1 Thread updated:", threadId);
       }
 
       // ============================================================
-      // CREATE NOTIFICATION (NOW WITH SMART GROUPING)
+      // CREATE 1:1 NOTIFICATION (with threadId)
       // ============================================================
-
       await createNotificationDocument({
         userId: receiverId,
         type: "message",
         actorId: senderId,
         actorName: senderData.displayName || "Someone",
         actorAvatar: senderData.avatar || undefined,
+        threadId, // ✅ Include threadId for navigation
         message: `${senderData.displayName || "Someone"} left a note in your locker`,
       });
 
-      console.log("✅ Message thread + notification processed");
+      console.log("✅ 1:1 message thread + notification processed");
     } catch (error) {
       console.error("🔥 onMessageCreated failed:", error);
     }
@@ -1428,8 +1516,6 @@ export const onPartnerRequestUpdated = onDocumentUpdated(
         console.log("👤 fromUserId:", fromUserId);
         console.log("👤 toUserId:", toUserId);
 
-        // ... rest of function stays the same
-
         if (!fromUserId || !toUserId) {
           console.log("⛔ Partner request missing required fields");
           return;
@@ -1603,7 +1689,7 @@ export const onHoleInOneCreated = onDocumentCreated(
         actorId: verifierId,
         actorName: verifierData.displayName || "Someone",
         actorAvatar: verifierData.avatar,
-        postId, // ✅ NOW INCLUDED
+        postId,
         scoreId,
         courseId,
         courseName,
@@ -1672,7 +1758,7 @@ export const onHoleInOneUpdated = onDocumentUpdated(
           actorId: verifierId,
           actorName: verifierData.displayName || "Someone",
           actorAvatar: verifierData.avatar,
-          postId, // ✅ NOW INCLUDED
+          postId,
           scoreId,
           courseId,
           courseName,
@@ -1692,7 +1778,7 @@ export const onHoleInOneUpdated = onDocumentUpdated(
           actorId: verifierId,
           actorName: verifierData.displayName || "Someone",
           actorAvatar: verifierData.avatar,
-          postId, // ✅ NOW INCLUDED
+          postId,
           scoreId,
           courseId,
           courseName,
@@ -1754,7 +1840,7 @@ export const onShareCreated = onDocumentCreated(
 );
 
 // ============================================================================
-// 12. THREAD CLEANUP - Delete thread when both users have deleted
+// 12. THREAD CLEANUP - Delete thread when all users have deleted
 // ============================================================================
 
 export const onThreadUpdated = onDocumentUpdated(

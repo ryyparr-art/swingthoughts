@@ -10,7 +10,14 @@ import { auth, db } from "@/constants/firebaseConfig";
 import { getPostTypeLabel } from "@/constants/postTypes";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import type { ActiveTournament } from "@/hooks/useTournamentStatus";
-import { FeedItem, FeedPost, FeedScore, generateAlgorithmicFeed } from "@/utils/feedAlgorithm";
+import {
+  coldStartShuffle,
+  FeedItem,
+  FeedPost,
+  FeedScore,
+  generateAlgorithmicFeed,
+  warmStartShuffle,
+} from "@/utils/feedAlgorithm";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { getUserProfile } from "@/utils/userProfileHelpers";
 
@@ -265,14 +272,14 @@ export default function ClubhouseScreen() {
         if (!userRegionKey) {
           setIsCheckingCache(false);
           setLoading(true);
-          await loadFeed();
+          await loadFeed(false); // Cold start
           return;
         }
 
         const cached = await getCache(CACHE_KEYS.FEED(currentUserId), userRegionKey);
         
         if (cached && cached.length > 0) {
-          console.log("⚡ Cache found - loading cached thoughts immediately");
+          console.log("⚡ Warm start - cache found, applying shuffle (top 3 preserved)");
           
           try {
             let thoughtsFromCache = convertCachedFeedToThoughts(cached);
@@ -316,7 +323,11 @@ export default function ClubhouseScreen() {
               }
             }
             
-            setThoughts(thoughtsFromCache);
+            // ✅ WARM START: Top 3 preserved, rest shuffled
+            const shuffledThoughts = warmStartShuffle(thoughtsFromCache);
+            console.log("🔀 Warm start shuffle applied");
+            
+            setThoughts(shuffledThoughts);
             setFeedItems(cached);
             
             setLoading(false);
@@ -324,18 +335,19 @@ export default function ClubhouseScreen() {
             setHasLoadedOnce(true);
             setShowingCached(true);
             
+            // Background refresh - silent update only
             await loadFeed(true);
           } catch (error) {
             console.error("❌ Error loading cached thoughts:", error);
             setIsCheckingCache(false);
             setLoading(true);
-            await loadFeed();
+            await loadFeed(false); // Cold start fallback
           }
         } else {
-          console.log("📭 No cache - loading fresh");
+          console.log("📭 Cold start - no cache, loading fresh");
           setIsCheckingCache(false);
           setLoading(true);
-          await loadFeed();
+          await loadFeed(false); // Cold start
         }
       };
       
@@ -398,7 +410,7 @@ export default function ClubhouseScreen() {
       }
       
       if (useAlgorithmicFeed && Object.keys(activeFilters).length === 0) {
-        console.log("🚀 Using algorithmic feed");
+        console.log("🚀 Using algorithmic feed v2 (recency + proximity + engagement)");
         
         const userRegionKey = currentUserData?.regionKey || "";
         
@@ -407,16 +419,40 @@ export default function ClubhouseScreen() {
         }
         
         const feed = await generateAlgorithmicFeed(currentUserId, userRegionKey, 20);
+        
+        // ✅ BACKGROUND REFRESH: Silent merge - update cache only, don't change visible feed
+        if (isBackgroundRefresh) {
+          console.log("🔄 Background refresh - updating cache silently (no reshuffle)");
+          setFeedItems(feed);
+          
+          if (userRegionKey) {
+            await setCache(
+              CACHE_KEYS.FEED(currentUserId),
+              feed,
+              userRegionKey
+            );
+            console.log("✅ Cache updated silently");
+          }
+          
+          setShowingCached(false);
+          return; // Don't update visible thoughts
+        }
+        
+        // ✅ COLD START / PULL-TO-REFRESH: Full reshuffle
+        console.log("🔀 Cold start - applying full shuffle");
         setFeedItems(feed);
         
         const thoughtsFromFeed = await convertFeedToThoughts(feed);
         
+        // Apply cold start shuffle (algorithm already has randomness, this adds more variety)
+        const shuffledThoughts = coldStartShuffle(thoughtsFromFeed);
+        
         if (highlightedThought) {
-          const filteredThoughts = thoughtsFromFeed.filter(t => t.id !== highlightedThought!.id);
+          const filteredThoughts = shuffledThoughts.filter(t => t.id !== highlightedThought!.id);
           setThoughts([highlightedThought, ...filteredThoughts]);
           console.log("✅ Added highlighted post to top of algorithmic feed");
         } else {
-          setThoughts(thoughtsFromFeed);
+          setThoughts(shuffledThoughts);
         }
 
         if (userRegionKey) {
@@ -542,9 +578,9 @@ export default function ClubhouseScreen() {
           content: `Posted ${scoreItem.netScore} (${scoreItem.netScore - scoreItem.par > 0 ? '+' : ''}${scoreItem.netScore - scoreItem.par}) at ${scoreItem.courseName}${scoreItem.isLowman ? ' 🏆 NEW LOWMAN!' : ''}`,
           postType: scoreItem.isLowman ? "low-leader" : "score",
           createdAt: scoreItem.createdAt,
-          likes: 0,
+          likes: scoreItem.likes || 0,
           likedBy: [],
-          comments: 0,
+          comments: scoreItem.comments || 0,
           displayName: scoreItem.displayName,
           avatarUrl: scoreItem.avatar,
           courseName: scoreItem.courseName,
@@ -625,9 +661,9 @@ export default function ClubhouseScreen() {
           content: `Posted ${scoreItem.netScore} (${scoreItem.netScore - scoreItem.par > 0 ? '+' : ''}${scoreItem.netScore - scoreItem.par}) at ${scoreItem.courseName}${scoreItem.isLowman ? ' 🏆 NEW LOWMAN!' : ''}`,
           postType: scoreItem.isLowman ? "low-leader" : "score",
           createdAt: scoreItem.createdAt,
-          likes: 0,
+          likes: scoreItem.likes || 0,
           likedBy: [],
-          comments: 0,
+          comments: scoreItem.comments || 0,
           displayName: scoreItem.displayName,
           avatarUrl: scoreItem.avatar,
           userName: scoreItem.displayName,
@@ -1036,8 +1072,11 @@ export default function ClubhouseScreen() {
     setRefreshing(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     
+    console.log("🔄 Pull-to-refresh - full reshuffle (cold start behavior)");
     setShowingCached(false);
-    await loadFeed();
+    
+    // Pull-to-refresh = cold start behavior (full reshuffle)
+    await loadFeed(false);
     
     setRefreshing(false);
   };
@@ -1520,7 +1559,7 @@ export default function ClubhouseScreen() {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           setActiveFilters(f);
           setUseAlgorithmicFeed(Object.keys(f).length === 0);
-          loadFeed();
+          loadFeed(false); // Cold start when applying filters
         }}
         onSelectPost={(postId: string) => {
           soundPlayer.play('click');

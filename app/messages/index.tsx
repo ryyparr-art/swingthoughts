@@ -53,6 +53,8 @@ interface Thread {
   participants: string[];
   participantNames?: Record<string, string>;
   participantAvatars?: Record<string, string | null>;
+  isGroup?: boolean;           // ✅ NEW: Group chat flag
+  groupName?: string;          // ✅ NEW: Group display name
   lastMessage?: any;
   lastMessageAt?: any;
   unreadCount?: Record<string, number>;
@@ -74,20 +76,36 @@ function ThreadRow({
   onOpen: () => void;
   onDelete: () => void;
 }) {
-  const otherUserId = item.participants.find((p) => p !== userId)!;
   const unread = item.unreadCount?.[userId] ?? 0;
   const swipeableRef = useRef<Swipeable>(null);
 
-  // ✅ First try to use denormalized data from thread document
-  const [name, setName] = useState(
-    item.participantNames?.[otherUserId] || "User"
-  );
-  const [avatar, setAvatar] = useState<string | null>(
-    item.participantAvatars?.[otherUserId] || null
-  );
+  // ✅ NEW: Detect if this is a group chat
+  const isGroup = item.isGroup || item.participants.length > 2;
 
-  // ✅ Only fetch from users collection if denormalized data is missing
+  // For 1:1 chats, get the other user's ID
+  const otherUserId = !isGroup 
+    ? item.participants.find((p) => p !== userId)! 
+    : null;
+
+  // ✅ UPDATED: Handle both 1:1 and group display names
+  const [name, setName] = useState(() => {
+    if (isGroup) {
+      return item.groupName || "Group Chat";
+    }
+    return otherUserId ? (item.participantNames?.[otherUserId] || "User") : "User";
+  });
+  
+  const [avatar, setAvatar] = useState<string | null>(() => {
+    if (isGroup) {
+      return null; // Groups use icon instead
+    }
+    return otherUserId ? (item.participantAvatars?.[otherUserId] || null) : null;
+  });
+
+  // ✅ Only fetch from users collection if denormalized data is missing (1:1 only)
   useEffect(() => {
+    if (isGroup || !otherUserId) return;
+
     // If we already have name from denormalized data, don't fetch
     if (item.participantNames?.[otherUserId]) {
       console.log("✅ Using denormalized name:", item.participantNames[otherUserId]);
@@ -109,7 +127,7 @@ function ThreadRow({
     return () => {
       mounted = false;
     };
-  }, [otherUserId, item.participantNames]);
+  }, [otherUserId, item.participantNames, isGroup]);
 
   const lastMessageText =
     typeof item.lastMessage === "string"
@@ -136,6 +154,17 @@ function ThreadRow({
       month: "short",
       day: "numeric",
     });
+  };
+
+  // ✅ NEW: Build group subtitle showing member names
+  const getSubtitle = () => {
+    if (!lastMessageText && isGroup && item.participantNames) {
+      const otherNames = Object.entries(item.participantNames)
+        .filter(([id]) => id !== userId)
+        .map(([, n]) => n);
+      return otherNames.join(", ");
+    }
+    return lastMessageText || "No messages yet";
   };
 
   const renderRightActions = (
@@ -198,7 +227,19 @@ function ThreadRow({
       >
         <View style={styles.messageHeader}>
           <View style={styles.senderInfo}>
-            {avatar ? (
+            {/* ✅ UPDATED: Show group icon or user avatar */}
+            {isGroup ? (
+              <View style={styles.groupAvatarContainer}>
+                <View style={styles.avatarCircle}>
+                  <Ionicons name="people" size={22} color="#FFF" />
+                </View>
+                <View style={styles.memberCountBadge}>
+                  <Text style={styles.memberCountText}>
+                    {item.participants.length}
+                  </Text>
+                </View>
+              </View>
+            ) : avatar ? (
               <Image source={{ uri: avatar }} style={styles.avatarImage} />
             ) : (
               <View style={styles.avatarCircle}>
@@ -209,7 +250,9 @@ function ThreadRow({
             )}
             <View style={styles.senderDetails}>
               <View style={styles.nameRow}>
-                <Text style={styles.senderName}>{name}</Text>
+                <Text style={styles.senderName} numberOfLines={1}>
+                  {name}
+                </Text>
                 {unread > 0 && (
                   <View style={styles.unreadBadge}>
                     <Text style={styles.unreadBadgeText}>{unread}</Text>
@@ -226,7 +269,7 @@ function ThreadRow({
         </View>
 
         <Text numberOfLines={2} style={styles.messageContent}>
-          {lastMessageText || "No messages yet"}
+          {getSubtitle()}
         </Text>
       </TouchableOpacity>
     </Swipeable>
@@ -298,10 +341,15 @@ export default function MessagesScreen() {
       
       // Log denormalized data availability
       items.forEach((thread, idx) => {
-        const otherId = thread.participants.find(p => p !== userId);
-        const hasName = !!thread.participantNames?.[otherId!];
-        const hasAvatar = !!thread.participantAvatars?.[otherId!];
-        console.log(`  Thread ${idx + 1}: name=${hasName}, avatar=${hasAvatar}`);
+        const isGroup = thread.isGroup || thread.participants.length > 2;
+        if (isGroup) {
+          console.log(`  Thread ${idx + 1}: GROUP (${thread.participants.length} members)`);
+        } else {
+          const otherId = thread.participants.find(p => p !== userId);
+          const hasName = !!thread.participantNames?.[otherId!];
+          const hasAvatar = !!thread.participantAvatars?.[otherId!];
+          console.log(`  Thread ${idx + 1}: 1:1 name=${hasName}, avatar=${hasAvatar}`);
+        }
       });
 
       setThreads(items);
@@ -352,7 +400,7 @@ export default function MessagesScreen() {
                   updatedAt: serverTimestamp(),
                 });
 
-                // Check if both users have deleted - trigger full delete via Cloud Function
+                // Check if all users have deleted - trigger full delete via Cloud Function
                 const participants = threadData.participants || [];
                 const allDeleted = participants.every((p: string) =>
                   deletedBy.includes(p)
@@ -360,7 +408,7 @@ export default function MessagesScreen() {
 
                 if (allDeleted) {
                   console.log(
-                    "🗑️ Both users deleted thread - Cloud Function will clean up"
+                    "🗑️ All users deleted thread - Cloud Function will clean up"
                   );
                 }
               }
@@ -658,10 +706,37 @@ const styles = StyleSheet.create({
     borderRadius: 24,
   },
 
+  // ✅ NEW: Group avatar styles
+  groupAvatarContainer: {
+    position: "relative",
+  },
+
+  memberCountBadge: {
+    position: "absolute",
+    bottom: -2,
+    right: -2,
+    backgroundColor: "#FFD700",
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+    borderWidth: 2,
+    borderColor: "#FFF",
+  },
+
+  memberCountText: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#333",
+  },
+
   senderName: {
     fontWeight: "700",
     color: "#0D5C3A",
     fontSize: 16,
+    flexShrink: 1,
   },
 
   unreadBadge: {
