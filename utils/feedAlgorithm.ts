@@ -1,28 +1,30 @@
 /**
- * Feed Algorithm v2 — Recency + Proximity + Engagement + Shuffle
+ * Feed Algorithm v3 — Time Bracket System
  * 
- * Key Changes from v1:
- * - Time is primary factor (recency-first)
- * - Proximity determines bonus and engagement weight
- * - Engagement scaled by proximity (local engagement matters more)
- * - Shuffle factor adds variety on each load
+ * Core Principle: Recency is king, with trending as the only exception
  * 
- * Formula:
- * Final Score = Time + Proximity + Relationship + (Engagement × Proximity Multiplier) + Shuffle
+ * How it works:
+ * 1. Posts are assigned to TIME BRACKETS based on age
+ * 2. Brackets are STRICT - posts never cross brackets (except trending)
+ * 3. TRENDING posts (30+ engagement) get promoted ONE bracket up
+ * 4. Within each bracket, posts are sorted by bonuses + shuffle
+ * 5. On refresh, cards shuffle WITHIN brackets only - feed stays chronological
  * 
- * Scoring:
- * - Time: 0-1hr: 100, 1-6hr: 80, 6-24hr: 60, 1-3d: 40, 3-7d: 20, 7d+: 10
- * - Proximity: Local: +30, Expanded: +15, Global: +0
- * - Relationship: Partner: +10
- * - Engagement: (darts + comments×2) → 0: +0, 1-5: +5, 6-15: +10, 16-30: +15, 30+: +20
- * - Engagement Multiplier: Local: 100%, Expanded: 50%, Global: 25%
- * - Shuffle: Random +0 to +15
+ * Time Brackets:
+ * - Bracket 1: 0-1hr
+ * - Bracket 2: 1-6hr
+ * - Bracket 3: 6-24hr
+ * - Bracket 4: 1-3 days
+ * - Bracket 5: 3-7 days
+ * - Bracket 6: 7-14 days
+ * - Bracket 7: 14+ days
  * 
- * Cache Behavior (handled in clubhouse component):
- * - Cold start: Full shuffle
- * - Warm start: Top 3 preserved, positions 4+ shuffled
- * - Background refresh: Silent merge, no reorder
- * - Pull-to-refresh: Full reshuffle
+ * Within-Bracket Bonuses:
+ * - Local: +15
+ * - Expanded: +8
+ * - Partner: +5
+ * - Engagement: +5 to +20
+ * - Shuffle: 0-5
  */
 
 import { db } from "@/constants/firebaseConfig";
@@ -98,7 +100,9 @@ export interface FeedPost {
   lastActivityAt?: Timestamp;
   
   // Algorithm fields
-  relevanceScore: number;
+  timeBracket: number;
+  displayBracket: number;  // After trending promotion
+  withinBracketScore: number;
   relevanceReason: string;
 }
 
@@ -118,7 +122,9 @@ export interface FeedScore {
   likes?: number;
   comments?: number;
   createdAt: Timestamp;
-  relevanceScore: number;
+  timeBracket: number;
+  displayBracket: number;
+  withinBracketScore: number;
   relevanceReason: string;
 }
 
@@ -141,38 +147,28 @@ const userProfileCache = new Map<string, any>();
 const lowmanCache = new Map<number, any>();
 
 /* ================================================================ */
-/* SCORING CONSTANTS                                                */
+/* CONSTANTS                                                        */
 /* ================================================================ */
 
-// Time score based on post age
-const TIME_SCORES = {
-  UNDER_1_HOUR: 100,
-  UNDER_6_HOURS: 80,
-  UNDER_24_HOURS: 60,
-  UNDER_3_DAYS: 40,
-  UNDER_7_DAYS: 20,
-  OVER_7_DAYS: 10,
+// Time brackets
+const TIME_BRACKETS = {
+  BRACKET_1: { max: 1 * 60 * 60 * 1000, label: "0-1hr" },           // 0-1 hour
+  BRACKET_2: { max: 6 * 60 * 60 * 1000, label: "1-6hr" },           // 1-6 hours
+  BRACKET_3: { max: 24 * 60 * 60 * 1000, label: "6-24hr" },         // 6-24 hours
+  BRACKET_4: { max: 3 * 24 * 60 * 60 * 1000, label: "1-3d" },       // 1-3 days
+  BRACKET_5: { max: 7 * 24 * 60 * 60 * 1000, label: "3-7d" },       // 3-7 days
+  BRACKET_6: { max: 14 * 24 * 60 * 60 * 1000, label: "7-14d" },     // 7-14 days
+  BRACKET_7: { max: Infinity, label: "14d+" },                       // 14+ days
 };
 
-// Proximity bonus
+// Within-bracket bonuses
 const PROXIMITY_BONUS = {
-  local: 30,
-  expanded: 15,
+  local: 15,
+  expanded: 8,
   global: 0,
 };
 
-// Engagement multiplier by proximity
-const ENGAGEMENT_MULTIPLIER = {
-  local: 1.0,
-  expanded: 0.5,
-  global: 0.25,
-};
-
-// Relationship bonus
-const RELATIONSHIP_BONUS = {
-  partner: 10,
-  none: 0,
-};
+const PARTNER_BONUS = 5;
 
 // Engagement bonus thresholds (darts + comments×2)
 const ENGAGEMENT_THRESHOLDS = [
@@ -183,43 +179,63 @@ const ENGAGEMENT_THRESHOLDS = [
   { min: 0, bonus: 0 },
 ];
 
-// Shuffle range
-const SHUFFLE_MAX = 15;
+// Trending threshold for bracket promotion
+const TRENDING_THRESHOLD = 30;
+
+// Shuffle range (small - only affects within-bracket order)
+const SHUFFLE_MAX = 5;
 
 /* ================================================================ */
 /* SCORING FUNCTIONS                                                */
 /* ================================================================ */
 
 /**
- * Calculate time score based on post age
+ * Get time bracket (1-7) based on post age
  */
-function getTimeScore(createdAt: Timestamp): number {
+function getTimeBracket(createdAt: Timestamp): number {
   const now = Date.now();
   const postTime = createdAt.toMillis();
   const ageMs = now - postTime;
   
-  const ONE_HOUR = 60 * 60 * 1000;
-  const SIX_HOURS = 6 * ONE_HOUR;
-  const ONE_DAY = 24 * ONE_HOUR;
-  const THREE_DAYS = 3 * ONE_DAY;
-  const SEVEN_DAYS = 7 * ONE_DAY;
-  
-  if (ageMs < ONE_HOUR) return TIME_SCORES.UNDER_1_HOUR;
-  if (ageMs < SIX_HOURS) return TIME_SCORES.UNDER_6_HOURS;
-  if (ageMs < ONE_DAY) return TIME_SCORES.UNDER_24_HOURS;
-  if (ageMs < THREE_DAYS) return TIME_SCORES.UNDER_3_DAYS;
-  if (ageMs < SEVEN_DAYS) return TIME_SCORES.UNDER_7_DAYS;
-  return TIME_SCORES.OVER_7_DAYS;
+  if (ageMs < TIME_BRACKETS.BRACKET_1.max) return 1;
+  if (ageMs < TIME_BRACKETS.BRACKET_2.max) return 2;
+  if (ageMs < TIME_BRACKETS.BRACKET_3.max) return 3;
+  if (ageMs < TIME_BRACKETS.BRACKET_4.max) return 4;
+  if (ageMs < TIME_BRACKETS.BRACKET_5.max) return 5;
+  if (ageMs < TIME_BRACKETS.BRACKET_6.max) return 6;
+  return 7;
 }
 
 /**
- * Calculate base engagement bonus (before proximity multiplier)
+ * Get bracket label for debugging
+ */
+function getBracketLabel(bracket: number): string {
+  const labels = ["", "0-1hr", "1-6hr", "6-24hr", "1-3d", "3-7d", "7-14d", "14d+"];
+  return labels[bracket] || "unknown";
+}
+
+/**
+ * Calculate engagement points (darts + comments×2)
+ */
+function getEngagementPoints(likes: number = 0, comments: number = 0): number {
+  return likes + (comments * 2);
+}
+
+/**
+ * Check if post is trending (30+ engagement)
+ */
+function isTrending(likes: number = 0, comments: number = 0): boolean {
+  return getEngagementPoints(likes, comments) >= TRENDING_THRESHOLD;
+}
+
+/**
+ * Get engagement bonus for within-bracket scoring
  */
 function getEngagementBonus(likes: number = 0, comments: number = 0): number {
-  const engagementPoints = likes + (comments * 2);
+  const points = getEngagementPoints(likes, comments);
   
   for (const threshold of ENGAGEMENT_THRESHOLDS) {
-    if (engagementPoints >= threshold.min) {
+    if (points >= threshold.min) {
       return threshold.bonus;
     }
   }
@@ -260,27 +276,20 @@ function getProximityTier(
 }
 
 /**
- * Calculate final score for a feed item
+ * Calculate within-bracket score (determines order within same bracket)
  */
-function calculateFinalScore(
-  createdAt: Timestamp,
+function calculateWithinBracketScore(
   proximityTier: ProximityTier,
   isPartner: boolean,
   likes: number = 0,
   comments: number = 0
-): { score: number; breakdown: string } {
-  const timeScore = getTimeScore(createdAt);
+): number {
   const proximityBonus = PROXIMITY_BONUS[proximityTier];
-  const relationshipBonus = isPartner ? RELATIONSHIP_BONUS.partner : RELATIONSHIP_BONUS.none;
+  const partnerBonus = isPartner ? PARTNER_BONUS : 0;
   const engagementBonus = getEngagementBonus(likes, comments);
-  const scaledEngagement = Math.floor(engagementBonus * ENGAGEMENT_MULTIPLIER[proximityTier]);
   const shuffleFactor = getShuffleFactor();
   
-  const finalScore = timeScore + proximityBonus + relationshipBonus + scaledEngagement + shuffleFactor;
-  
-  const breakdown = `T:${timeScore} P:${proximityBonus} R:${relationshipBonus} E:${scaledEngagement} S:${shuffleFactor}`;
-  
-  return { score: finalScore, breakdown };
+  return proximityBonus + partnerBonus + engagementBonus + shuffleFactor;
 }
 
 /**
@@ -289,21 +298,23 @@ function calculateFinalScore(
 function getRelevanceReason(
   proximityTier: ProximityTier,
   isPartner: boolean,
-  engagementPoints: number
+  likes: number = 0,
+  comments: number = 0,
+  wasPromoted: boolean = false
 ): string {
   const parts: string[] = [];
   
+  if (wasPromoted) parts.push("🔥 Trending");
   if (isPartner) parts.push("Partner");
   
   if (proximityTier === "local") parts.push("Local");
   else if (proximityTier === "expanded") parts.push("Nearby");
-  else parts.push("Global");
   
-  if (engagementPoints >= 30) parts.push("🔥 Trending");
-  else if (engagementPoints >= 16) parts.push("Popular");
-  else if (engagementPoints >= 6) parts.push("Engaging");
+  const engagementPoints = getEngagementPoints(likes, comments);
+  if (!wasPromoted && engagementPoints >= 16) parts.push("Popular");
+  else if (!wasPromoted && engagementPoints >= 6) parts.push("Engaging");
   
-  return parts.join(" · ");
+  return parts.length > 0 ? parts.join(" · ") : "";
 }
 
 /* ================================================================ */
@@ -315,7 +326,7 @@ export async function generateAlgorithmicFeed(
   regionKey: string,
   maxItems: number = 20
 ): Promise<FeedItem[]> {
-  console.log("🚀 Feed v2 — Recency + Proximity + Engagement");
+  console.log("🚀 Feed v3 — Time Bracket System");
   console.log("📍 Region:", regionKey);
 
   // Step 1: Build user context
@@ -329,95 +340,102 @@ export async function generateAlgorithmicFeed(
     fetchCoursePosts(context),
   ]);
 
-  // Step 3: Score all items
+  // Step 3: Process and deduplicate all items
   const allItems: FeedItem[] = [];
+  const seenIds = new Set<string>();
 
   // Process local posts
   for (const post of localPosts) {
+    if (seenIds.has(post.id)) continue;
+    seenIds.add(post.id);
+    
     const isPartner = context.partnerIds.includes(post.userId);
-    const { score, breakdown } = calculateFinalScore(
-      post.createdAt,
-      "local",
-      isPartner,
-      post.likes,
-      post.comments
-    );
+    const trending = isTrending(post.likes, post.comments);
+    const timeBracket = getTimeBracket(post.createdAt);
+    const displayBracket = trending ? Math.max(1, timeBracket - 1) : timeBracket;
+    const withinBracketScore = calculateWithinBracketScore("local", isPartner, post.likes, post.comments);
     
     allItems.push({
       ...post,
-      relevanceScore: score,
-      relevanceReason: getRelevanceReason("local", isPartner, (post.likes || 0) + (post.comments || 0) * 2),
+      timeBracket,
+      displayBracket,
+      withinBracketScore,
+      relevanceReason: getRelevanceReason("local", isPartner, post.likes, post.comments, trending && timeBracket !== displayBracket),
     });
   }
 
-  // Process expanded posts (skip duplicates)
-  const localIds = new Set(localPosts.map(p => p.id));
+  // Process expanded posts
   for (const post of expandedPosts) {
-    if (localIds.has(post.id)) continue;
+    if (seenIds.has(post.id)) continue;
+    seenIds.add(post.id);
     
     const isPartner = context.partnerIds.includes(post.userId);
-    const { score, breakdown } = calculateFinalScore(
-      post.createdAt,
-      "expanded",
-      isPartner,
-      post.likes,
-      post.comments
-    );
+    const trending = isTrending(post.likes, post.comments);
+    const timeBracket = getTimeBracket(post.createdAt);
+    const displayBracket = trending ? Math.max(1, timeBracket - 1) : timeBracket;
+    const withinBracketScore = calculateWithinBracketScore("expanded", isPartner, post.likes, post.comments);
     
     allItems.push({
       ...post,
-      relevanceScore: score,
-      relevanceReason: getRelevanceReason("expanded", isPartner, (post.likes || 0) + (post.comments || 0) * 2),
+      timeBracket,
+      displayBracket,
+      withinBracketScore,
+      relevanceReason: getRelevanceReason("expanded", isPartner, post.likes, post.comments, trending && timeBracket !== displayBracket),
     });
   }
 
-  // Process global posts (skip duplicates)
-  const seenIds = new Set([...localIds, ...expandedPosts.map(p => p.id)]);
+  // Process global posts
   for (const post of globalPosts) {
     if (seenIds.has(post.id)) continue;
+    seenIds.add(post.id);
     
     const isPartner = context.partnerIds.includes(post.userId);
-    const { score, breakdown } = calculateFinalScore(
-      post.createdAt,
-      "global",
-      isPartner,
-      post.likes,
-      post.comments
-    );
+    const trending = isTrending(post.likes, post.comments);
+    const timeBracket = getTimeBracket(post.createdAt);
+    const displayBracket = trending ? Math.max(1, timeBracket - 1) : timeBracket;
+    const withinBracketScore = calculateWithinBracketScore("global", isPartner, post.likes, post.comments);
     
     allItems.push({
       ...post,
-      relevanceScore: score,
-      relevanceReason: getRelevanceReason("global", isPartner, (post.likes || 0) + (post.comments || 0) * 2),
+      timeBracket,
+      displayBracket,
+      withinBracketScore,
+      relevanceReason: getRelevanceReason("global", isPartner, post.likes, post.comments, trending && timeBracket !== displayBracket),
     });
   }
 
-  // Process course scores (skip duplicates)
+  // Process course scores
   for (const score of coursePosts) {
     if (seenIds.has(score.id)) continue;
+    seenIds.add(score.id);
     
     const isPartner = context.partnerIds.includes(score.userId);
-    const proximityTier = getProximityTier(undefined, undefined, context.regionKey, context.geohash);
-    const { score: finalScore } = calculateFinalScore(
-      score.createdAt,
-      proximityTier,
-      isPartner,
-      score.likes,
-      score.comments
-    );
+    const trending = isTrending(score.likes, score.comments);
+    const timeBracket = getTimeBracket(score.createdAt);
+    const displayBracket = trending ? Math.max(1, timeBracket - 1) : timeBracket;
+    const withinBracketScore = calculateWithinBracketScore("local", isPartner, score.likes, score.comments);
     
     allItems.push({
       ...score,
-      relevanceScore: finalScore,
+      timeBracket,
+      displayBracket,
+      withinBracketScore,
       relevanceReason: score.isLowman ? "🏆 Lowman at your course" : "Score at your course",
     });
   }
 
-  // Step 4: Sort by final score (highest first)
+  // Step 4: Sort by display bracket (primary), then within-bracket score (secondary)
   const sorted = allItems.sort((a, b) => {
-    if (b.relevanceScore !== a.relevanceScore) {
-      return b.relevanceScore - a.relevanceScore;
+    // Primary: lower display bracket = higher priority
+    if (a.displayBracket !== b.displayBracket) {
+      return a.displayBracket - b.displayBracket;
     }
+    
+    // Secondary: higher within-bracket score = higher priority
+    if (a.withinBracketScore !== b.withinBracketScore) {
+      return b.withinBracketScore - a.withinBracketScore;
+    }
+    
     // Tiebreaker: more recent first
     return b.createdAt.toMillis() - a.createdAt.toMillis();
   });
@@ -425,8 +443,15 @@ export async function generateAlgorithmicFeed(
   // Step 5: Return top items
   const finalFeed = sorted.slice(0, maxItems);
 
+  // Log bracket distribution
+  const bracketCounts: Record<number, number> = {};
+  finalFeed.forEach(item => {
+    bracketCounts[item.displayBracket] = (bracketCounts[item.displayBracket] || 0) + 1;
+  });
+  
   console.log("✅ Feed generated:", {
     total: finalFeed.length,
+    brackets: Object.entries(bracketCounts).map(([b, c]) => `${getBracketLabel(Number(b))}: ${c}`).join(", "),
     local: localPosts.length,
     expanded: expandedPosts.length,
     global: globalPosts.length,
@@ -616,7 +641,10 @@ async function fetchCoursePosts(context: UserContext): Promise<FeedScore[]> {
       likes: data.likes || 0,
       comments: data.comments || 0,
       createdAt: data.createdAt,
-      relevanceScore: 0, // Will be set in main function
+      // Algorithm fields - set in main function
+      timeBracket: 0,
+      displayBracket: 0,
+      withinBracketScore: 0,
       relevanceReason: "",
     });
   });
@@ -706,8 +734,10 @@ async function processPosts(
       thoughtId: data.thoughtId,
       lastActivityAt: data.lastActivityAt,
       
-      // Algorithm (placeholder - set in main function)
-      relevanceScore: 0,
+      // Algorithm fields - set in main function
+      timeBracket: 0,
+      displayBracket: 0,
+      withinBracketScore: 0,
       relevanceReason: "",
     });
   }
@@ -804,21 +834,50 @@ export function shuffleArray<T>(array: T[]): T[] {
 }
 
 /**
- * Apply warm start shuffle (preserve top 3, shuffle rest)
+ * Shuffle within brackets only - maintains chronological bracket order
+ * Use this for warm start / pull-to-refresh
  */
-export function warmStartShuffle<T>(items: T[]): T[] {
+export function shuffleWithinBrackets<T extends { displayBracket: number }>(items: T[]): T[] {
+  // Group items by bracket
+  const buckets = new Map<number, T[]>();
+  
+  for (const item of items) {
+    const bracket = item.displayBracket;
+    if (!buckets.has(bracket)) {
+      buckets.set(bracket, []);
+    }
+    buckets.get(bracket)!.push(item);
+  }
+  
+  // Sort bracket keys and shuffle within each
+  const sortedBrackets = Array.from(buckets.keys()).sort((a, b) => a - b);
+  const result: T[] = [];
+  
+  for (const bracket of sortedBrackets) {
+    const bucketItems = buckets.get(bracket)!;
+    const shuffled = shuffleArray(bucketItems);
+    result.push(...shuffled);
+  }
+  
+  return result;
+}
+
+/**
+ * Apply warm start shuffle (preserve top 3, shuffle rest within brackets)
+ */
+export function warmStartShuffle<T extends { displayBracket: number }>(items: T[]): T[] {
   if (items.length <= 3) return items;
   
   const top3 = items.slice(0, 3);
   const rest = items.slice(3);
-  const shuffledRest = shuffleArray(rest);
+  const shuffledRest = shuffleWithinBrackets(rest);
   
   return [...top3, ...shuffledRest];
 }
 
 /**
- * Apply cold start shuffle (full shuffle)
+ * Apply cold start shuffle (full shuffle within brackets)
  */
-export function coldStartShuffle<T>(items: T[]): T[] {
-  return shuffleArray(items);
+export function coldStartShuffle<T extends { displayBracket: number }>(items: T[]): T[] {
+  return shuffleWithinBrackets(items);
 }

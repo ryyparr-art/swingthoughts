@@ -53,6 +53,7 @@ import {
   TouchableOpacity,
   View
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 interface Props {
   visible: boolean;
@@ -91,6 +92,7 @@ export default function CommentsModal({
   onCommentAdded,
 }: Props) {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const inputRef = useRef<TextInput>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
@@ -863,7 +865,7 @@ export default function CommentsModal({
             </View>
           )}
 
-          <View style={styles.inputWrapper}>
+          <View style={[styles.inputWrapper, { paddingBottom: Math.max(insets.bottom, 12) }]}>
             {replyingToCommentId && (
               <View style={styles.replyingIndicator}>
                 <Text style={styles.replyingText}>Replying to @{replyingToUsername}</Text>
@@ -1004,7 +1006,6 @@ const styles = StyleSheet.create({
   imageViewerCloseButton: { position: "absolute", top: 60, right: 20, backgroundColor: "rgba(255, 255, 255, 0.2)", borderRadius: 20, padding: 10 },
   imageViewerCloseIcon: { width: 24, height: 24, tintColor: "#FFF" },
 });
-
 
 
 
