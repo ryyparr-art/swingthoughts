@@ -9,8 +9,10 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
@@ -20,6 +22,11 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+const API_KEY = process.env.EXPO_PUBLIC_GOLFCOURSE_API_KEY;
+const API_BASE = "https://api.golfcourseapi.com/v1";
+
+/* ---------------- TYPES ---------------- */
 
 interface Clubs {
   driver?: string;
@@ -38,12 +45,58 @@ interface Badge {
   courseId?: number;
 }
 
+type UserLocation = {
+  city?: string;
+  state?: string;
+  latitude?: number;
+  longitude?: number;
+};
+
+type Course = {
+  id?: number;
+  courseId?: number;
+  course_name?: string;
+  courseName?: string;
+  location?: {
+    city: string;
+    state: string;
+    latitude?: number;
+    longitude?: number;
+  };
+  distance?: number;
+};
+
+/* ---------------- HELPERS ---------------- */
+
+function haversine(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const toRad = (v: number) => (v * Math.PI) / 180;
+  const R = 3958.8;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+/* ---------------- COMPONENT ---------------- */
+
 export default function ModifyLockerScreen() {
   const router = useRouter();
   const userId = auth.currentUser?.uid;
 
+  // User location for distance calc
+  const [location, setLocation] = useState<UserLocation | null>(null);
+
+  // Course selection state
+  const [selectedCourse, setSelectedCourse] = useState<Course | null>(null);
+  const [cachedCourses, setCachedCourses] = useState<Course[]>([]);
+  const [searchResults, setSearchResults] = useState<Course[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showCourseModal, setShowCourseModal] = useState(false);
+  const [searching, setSearching] = useState(false);
+
   // Identity fields
-  const [homeCourse, setHomeCourse] = useState("");
   const [gameIdentity, setGameIdentity] = useState("");
 
   // Equipment fields
@@ -76,8 +129,33 @@ export default function ModifyLockerScreen() {
       if (userDoc.exists()) {
         const data = userDoc.data();
         
+        // Load user location
+        setLocation(data.location || null);
+        
+        // Load cached courses
+        const cached = data.cachedCourses || [];
+        if (cached.length > 0) {
+          const uniqueCourses = cached.reduce((acc: Course[], current: Course) => {
+            const exists = acc.find(c => c.courseId === current.courseId || c.id === current.courseId);
+            if (!exists) acc.push(current);
+            return acc;
+          }, []);
+          
+          const sorted = [...uniqueCourses].sort((a, b) => (a.distance || 999) - (b.distance || 999));
+          setCachedCourses(sorted.slice(0, 5));
+        }
+        
+        // Load home course
+        if (data.homeCourse) {
+          if (typeof data.homeCourse === 'object') {
+            setSelectedCourse(data.homeCourse);
+          } else {
+            // Legacy string format - convert to object
+            setSelectedCourse({ courseName: data.homeCourse });
+          }
+        }
+        
         // Load identity
-        setHomeCourse(data.homeCourse || "");
         setGameIdentity(data.gameIdentity || "");
         
         // Load equipment
@@ -111,6 +189,155 @@ export default function ModifyLockerScreen() {
     }
   };
 
+  /* ---------------- COURSE SEARCH ---------------- */
+  const handleSearch = async () => {
+    console.log("🔍 handleSearch called, query:", searchQuery);
+    
+    if (!searchQuery.trim()) {
+      console.log("❌ Empty search query");
+      setSearchResults([]);
+      return;
+    }
+
+    setSearching(true);
+    const query = searchQuery.trim().toLowerCase();
+    
+    try {
+      soundPlayer.play('click');
+      
+      let combinedResults: Course[] = [];
+      
+      // Step 1: Filter user's cached courses locally
+      const cachedMatches = cachedCourses.filter(c => {
+        const name = (c.course_name || c.courseName || "").toLowerCase();
+        const city = c.location?.city?.toLowerCase() || "";
+        return name.includes(query) || city.includes(query);
+      });
+      
+      console.log("📦 Cached course matches:", cachedMatches.length);
+      combinedResults = [...cachedMatches];
+      
+      // Step 2: Search Firestore courses collection (prefix search)
+      try {
+        const { collection: firestoreCollection, getDocs, query: firestoreQuery, where, limit } = await import("firebase/firestore");
+        
+        // Firestore prefix search - courseName starts with query (case-sensitive limitation)
+        const searchUpper = searchQuery.trim().charAt(0).toUpperCase() + searchQuery.trim().slice(1);
+        const coursesRef = firestoreCollection(db, "courses");
+        
+        const firestoreSearch = firestoreQuery(
+          coursesRef,
+          where("courseName", ">=", searchUpper),
+          where("courseName", "<=", searchUpper + "\uf8ff"),
+          limit(10)
+        );
+        
+        const firestoreSnap = await getDocs(firestoreSearch);
+        console.log("🔥 Firestore courses found:", firestoreSnap.size);
+        
+        firestoreSnap.forEach((doc) => {
+          const data = doc.data();
+          const courseId = data.id || parseInt(doc.id) || undefined;
+          
+          // Avoid duplicates
+          const exists = combinedResults.some(c => 
+            (c.id === courseId) || (c.courseId === courseId)
+          );
+          
+          if (!exists) {
+            combinedResults.push({
+              id: courseId,
+              courseId: courseId,
+              course_name: data.courseName,
+              courseName: data.courseName,
+              location: data.location,
+            });
+          }
+        });
+      } catch (firestoreErr) {
+        console.log("⚠️ Firestore search failed, continuing to API:", firestoreErr);
+      }
+      
+      // Step 3: If we have enough results, use them; otherwise hit the external API
+      if (combinedResults.length >= 5) {
+        console.log("✅ Using cached/Firestore results:", combinedResults.length);
+        
+        // Sort by distance if location available
+        if (location?.latitude && location?.longitude) {
+          combinedResults = combinedResults.map((c) => ({
+            ...c,
+            distance: c.location?.latitude && c.location?.longitude
+              ? haversine(location.latitude!, location.longitude!, c.location.latitude, c.location.longitude)
+              : 999,
+          }));
+          combinedResults.sort((a, b) => (a.distance || 999) - (b.distance || 999));
+        }
+        
+        setSearchResults(combinedResults);
+      } else {
+        // Hit external API for more results
+        console.log("🌐 Not enough cached results, fetching from API...");
+        const url = `${API_BASE}/search?search_query=${encodeURIComponent(searchQuery)}`;
+        console.log("🔑 API Key present:", !!API_KEY);
+        
+        const res = await fetch(url, { 
+          headers: { Authorization: `Key ${API_KEY}` } 
+        });
+        
+        console.log("📡 Response status:", res.status);
+        
+        const data = await res.json();
+        const apiCourses: Course[] = data.courses || [];
+        console.log("⛳ API courses found:", apiCourses.length);
+        
+        // Merge API results with cached results (avoid duplicates)
+        apiCourses.forEach((apiCourse) => {
+          const exists = combinedResults.some(c => 
+            (c.id === apiCourse.id) || (c.courseId === apiCourse.id)
+          );
+          if (!exists) {
+            combinedResults.push(apiCourse);
+          }
+        });
+
+        // Sort by distance if location available
+        if (location?.latitude && location?.longitude) {
+          combinedResults = combinedResults.map((c) => ({
+            ...c,
+            distance: c.location?.latitude && c.location?.longitude
+              ? haversine(location.latitude!, location.longitude!, c.location.latitude, c.location.longitude)
+              : 999,
+          }));
+          combinedResults.sort((a, b) => (a.distance || 999) - (b.distance || 999));
+        }
+        
+        setSearchResults(combinedResults);
+      }
+    } catch (err) {
+      console.error("❌ Search error:", err);
+      soundPlayer.play('error');
+      setSearchResults([]);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const handleCourseSelect = (course: Course) => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setSelectedCourse(course);
+    setShowCourseModal(false);
+    setSearchQuery("");
+    setSearchResults([]);
+  };
+
+  const clearSelectedCourse = () => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSelectedCourse(null);
+  };
+
+  /* ---------------- SAVE ---------------- */
   const handleSave = async () => {
     if (!userId) return;
 
@@ -118,17 +345,29 @@ export default function ModifyLockerScreen() {
       soundPlayer.play('click');
       setSaving(true);
 
-      await setDoc(
-        doc(db, "users", userId),
-        {
-          homeCourse: homeCourse.trim(),
-          gameIdentity: gameIdentity.trim(),
-          clubs: clubs,
-          displayBadges: selectedBadges, // Save selected badges
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
-      );
+      const updateData: any = {
+        gameIdentity: gameIdentity.trim(),
+        clubs: clubs,
+        displayBadges: selectedBadges,
+        updatedAt: new Date().toISOString(),
+      };
+
+      // Save home course as object with full details
+      if (selectedCourse) {
+        updateData.homeCourse = {
+          courseId: selectedCourse.id || selectedCourse.courseId,
+          courseName: selectedCourse.course_name || selectedCourse.courseName,
+          location: selectedCourse.location || null,
+        };
+        // Also save as string for backwards compatibility / display
+        updateData.homeCourseName = selectedCourse.course_name || selectedCourse.courseName;
+      } else {
+        // Clear home course if none selected
+        updateData.homeCourse = null;
+        updateData.homeCourseName = null;
+      }
+
+      await setDoc(doc(db, "users", userId), updateData, { merge: true });
 
       soundPlayer.play('postThought');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -162,6 +401,30 @@ export default function ModifyLockerScreen() {
   const handleSaveBadgeSelection = (badges: Badge[]) => {
     setSelectedBadges(badges);
   };
+
+  /* ---------------- RENDER COURSE ITEM ---------------- */
+  const renderCourseItem = ({ item }: { item: Course }) => (
+    <TouchableOpacity
+      style={styles.courseItem}
+      onPress={() => handleCourseSelect(item)}
+    >
+      <View style={styles.courseItemLeft}>
+        <Text style={styles.courseItemName}>
+          {item.course_name || item.courseName || "Unknown Course"}
+        </Text>
+        {item.location && (
+          <Text style={styles.courseItemLocation}>
+            {item.location.city}, {item.location.state}
+          </Text>
+        )}
+      </View>
+      {item.distance !== undefined && item.distance < 999 && (
+        <Text style={styles.courseItemDistance}>
+          {item.distance.toFixed(1)} mi
+        </Text>
+      )}
+    </TouchableOpacity>
+  );
 
   if (loading) {
     return (
@@ -217,31 +480,54 @@ export default function ModifyLockerScreen() {
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Golf Identity</Text>
 
+            {/* Home Course - Now with search */}
             <View style={styles.inputGroup}>
               <View style={styles.labelRow}>
                 <View style={styles.labelWithIcon}>
                   <Ionicons name="flag" size={16} color="#0D5C3A" />
                   <Text style={styles.label}>HOME COURSE</Text>
                 </View>
-                {homeCourse !== "" && (
-                  <TouchableOpacity 
-                    onPress={() => {
-                      soundPlayer.play('click');
-                      setHomeCourse("");
-                    }}
-                  >
+                {selectedCourse && (
+                  <TouchableOpacity onPress={clearSelectedCourse}>
                     <Text style={styles.clearButton}>Clear</Text>
                   </TouchableOpacity>
                 )}
               </View>
-              <TextInput
-                style={styles.input}
-                placeholder="e.g., Pebble Beach Golf Links"
-                placeholderTextColor="#999"
-                value={homeCourse}
-                onChangeText={setHomeCourse}
-                autoCapitalize="words"
-              />
+              
+              {selectedCourse ? (
+                <TouchableOpacity
+                  style={styles.selectedCourseContainer}
+                  onPress={() => {
+                    soundPlayer.play('click');
+                    setShowCourseModal(true);
+                  }}
+                >
+                  <View style={styles.selectedCourseInfo}>
+                    <Text style={styles.selectedCourseName}>
+                      {selectedCourse.course_name || selectedCourse.courseName}
+                    </Text>
+                    {selectedCourse.location && (
+                      <Text style={styles.selectedCourseLocation}>
+                        {selectedCourse.location.city}, {selectedCourse.location.state}
+                      </Text>
+                    )}
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color="#0D5C3A" />
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={styles.courseSelectButton}
+                  onPress={() => {
+                    soundPlayer.play('click');
+                    setShowCourseModal(true);
+                  }}
+                >
+                  <Text style={styles.courseSelectButtonText}>
+                    Select your home course
+                  </Text>
+                  <Ionicons name="chevron-forward" size={20} color="#666" />
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.inputGroup}>
@@ -460,6 +746,92 @@ export default function ModifyLockerScreen() {
         }}
         onSave={handleSaveBadgeSelection}
       />
+
+      {/* Course Selection Modal */}
+      <Modal
+        visible={showCourseModal}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShowCourseModal(false)}
+      >
+        <KeyboardAvoidingView 
+          style={{ flex: 1 }}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContainer}>
+              {/* Modal Header */}
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Select Home Course</Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    soundPlayer.play('click');
+                    setShowCourseModal(false);
+                    setSearchQuery("");
+                    setSearchResults([]);
+                  }}
+                >
+                  <Ionicons name="close" size={24} color="#666" />
+                </TouchableOpacity>
+              </View>
+
+              {/* Search Input */}
+              <View style={styles.searchContainer}>
+                <Ionicons name="search" size={20} color="#666" style={styles.searchIcon} />
+                <TextInput
+                  style={styles.searchInput}
+                  placeholder="Search by course name or city..."
+                  placeholderTextColor="#999"
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  onSubmitEditing={handleSearch}
+                  returnKeyType="search"
+                  autoFocus
+                />
+                {searching && (
+                  <ActivityIndicator size="small" color="#0D5C3A" />
+                )}
+              </View>
+
+              {/* Search Button */}
+              <TouchableOpacity
+                style={styles.searchButton}
+                onPress={handleSearch}
+                disabled={searching || !searchQuery.trim()}
+              >
+                <Text style={styles.searchButtonText}>Search</Text>
+              </TouchableOpacity>
+
+              {/* Results */}
+              <FlatList
+                data={searchResults.length > 0 ? searchResults : cachedCourses}
+                keyExtractor={(item, index) => `course-${item.id || item.courseId}-${index}`}
+                renderItem={renderCourseItem}
+                style={styles.courseList}
+                contentContainerStyle={styles.courseListContent}
+                ListHeaderComponent={
+                  searchResults.length === 0 && cachedCourses.length > 0 ? (
+                    <Text style={styles.courseSectionHeader}>Recent Courses</Text>
+                  ) : searchResults.length > 0 ? (
+                    <Text style={styles.courseSectionHeader}>Search Results</Text>
+                  ) : null
+                }
+                ListEmptyComponent={
+                  <View style={styles.emptyContainer}>
+                    <Ionicons name="golf-outline" size={48} color="#CCC" />
+                    <Text style={styles.emptyText}>
+                      {searchQuery.trim() 
+                        ? "No courses found. Try a different search."
+                        : "Search for your home course above"}
+                    </Text>
+                  </View>
+                }
+                keyboardShouldPersistTaps="handled"
+              />
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -579,7 +951,46 @@ const styles = StyleSheet.create({
     borderColor: "#E0E0E0",
   },
 
-  // ✅ Badge Selection Button
+  // Course Selection
+  courseSelectButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 2,
+    borderColor: "#E0E0E0",
+  },
+  courseSelectButtonText: {
+    fontSize: 16,
+    color: "#999",
+  },
+  selectedCourseContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#E8F5E9",
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 2,
+    borderColor: "#0D5C3A",
+  },
+  selectedCourseInfo: {
+    flex: 1,
+  },
+  selectedCourseName: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#0D5C3A",
+  },
+  selectedCourseLocation: {
+    fontSize: 13,
+    color: "#666",
+    marginTop: 2,
+  },
+
+  // Badge Selection Button
   selectBadgesButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -618,7 +1029,7 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
   },
 
-  // ✅ Selected Badges Preview
+  // Selected Badges Preview
   selectedBadgesPreview: {
     marginTop: 12,
     backgroundColor: "#F0F7F4",
@@ -686,5 +1097,121 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#F4EED8",
+  },
+
+  // Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    justifyContent: "flex-end",
+  },
+  modalContainer: {
+    backgroundColor: "#FFF",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: "85%",
+    minHeight: "60%",
+    paddingBottom: Platform.OS === "ios" ? 40 : 24,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E0E0E0",
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#0D5C3A",
+  },
+  searchContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#F5F5F5",
+    marginHorizontal: 16,
+    marginTop: 16,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+  },
+  searchIcon: {
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    paddingVertical: 14,
+    fontSize: 16,
+    color: "#333",
+  },
+  searchButton: {
+    backgroundColor: "#0D5C3A",
+    marginHorizontal: 16,
+    marginTop: 12,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  searchButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFF",
+  },
+  courseList: {
+    flex: 1,
+    marginTop: 8,
+  },
+  courseListContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 20,
+  },
+  courseSectionHeader: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#666",
+    marginTop: 16,
+    marginBottom: 8,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  courseItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#F9F9F9",
+    padding: 16,
+    borderRadius: 12,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+  },
+  courseItemLeft: {
+    flex: 1,
+  },
+  courseItemName: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#0D5C3A",
+  },
+  courseItemLocation: {
+    fontSize: 13,
+    color: "#666",
+    marginTop: 2,
+  },
+  courseItemDistance: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#0D5C3A",
+    marginLeft: 12,
+  },
+  emptyContainer: {
+    alignItems: "center",
+    paddingVertical: 48,
+  },
+  emptyText: {
+    fontSize: 15,
+    color: "#999",
+    textAlign: "center",
+    marginTop: 12,
+    paddingHorizontal: 32,
   },
 });

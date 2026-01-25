@@ -1,11 +1,11 @@
 import CommentsModal from "@/components/modals/CommentsModal";
 import ReportModal from "@/components/modals/ReportModal";
+import { FullscreenVideoPlayer, VideoThumbnail } from "@/components/video/VideoComponents";
 import { auth, db } from "@/constants/firebaseConfig";
 import { getPostTypeLabel } from "@/constants/postTypes";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { getUserProfile } from "@/utils/userProfileHelpers";
 import { Ionicons } from "@expo/vector-icons";
-import { AVPlaybackStatus, ResizeMode, Video } from "expo-av";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import {
@@ -31,12 +31,12 @@ import {
   FlatList,
   Image,
   Modal,
-  Platform,
+  Pressable,
   RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 
@@ -54,9 +54,9 @@ interface Thought {
   content: string;
   postType?: string;
   
-  // NEW: Multi-image support
+  // Multi-image support
   imageUrl?: string; // Deprecated
-  imageUrls?: string[]; // NEW
+  imageUrls?: string[];
   imageCount?: number;
   
   videoUrl?: string;
@@ -95,43 +95,6 @@ interface UserPostsGalleryModalProps {
 }
 
 /* ================================================================ */
-/* WEB VIDEO COMPONENT                                              */
-/* ================================================================ */
-
-const WebVideoPlayer = ({
-  videoUrl,
-  thoughtId,
-  onRefSet,
-  onEnded,
-}: {
-  videoUrl: string;
-  thoughtId: string;
-  onRefSet: (ref: HTMLVideoElement | null) => void;
-  onEnded: () => void;
-}) => {
-  return (
-    <video
-      ref={onRefSet}
-      src={videoUrl}
-      style={{
-        width: "100%",
-        height: "100%",
-        objectFit: "cover",
-        backgroundColor: "#000",
-      }}
-      playsInline
-      preload="metadata"
-      crossOrigin="anonymous"
-      onLoadedData={() => console.log("📹 Video loaded for:", thoughtId)}
-      onError={(e) => {
-        console.error("❌ Video error for:", thoughtId, e);
-      }}
-      onEnded={onEnded}
-    />
-  );
-};
-
-/* ================================================================ */
 /* MAIN COMPONENT                                                   */
 /* ================================================================ */
 
@@ -156,11 +119,19 @@ export default function UserPostsGalleryModal({
   const [reportModalVisible, setReportModalVisible] = useState(false);
   const [reportingThought, setReportingThought] = useState<Thought | null>(null);
 
-  // Video playback states
-  const [playingVideos, setPlayingVideos] = useState<Set<string>>(new Set());
-  const videoRefs = useRef<{ [key: string]: any }>({});
+  // Image viewer state
+  const [expandedImage, setExpandedImage] = useState<string | null>(null);
+
+  // Video viewer state (fullscreen modal)
+  const [expandedVideo, setExpandedVideo] = useState<{
+    url: string;
+    thumbnailUrl?: string;
+    trimStart?: number;
+    trimEnd?: number;
+    duration?: number;
+  } | null>(null);
   
-  // NEW: Image carousel states
+  // Image carousel states
   const [currentImageIndexes, setCurrentImageIndexes] = useState<{ [key: string]: number }>({});
 
   const [highlightedPostId, setHighlightedPostId] = useState<string | undefined>(initialPostId);
@@ -198,7 +169,7 @@ export default function UserPostsGalleryModal({
       for (const docSnap of snapshot.docs) {
         const data = docSnap.data();
         
-        // NEW: Get images array (handle both old and new formats)
+        // Get images array (handle both old and new formats)
         let images: string[] = [];
         if (data.imageUrls && Array.isArray(data.imageUrls) && data.imageUrls.length > 0) {
           images = data.imageUrls;
@@ -214,7 +185,7 @@ export default function UserPostsGalleryModal({
           content: data.content || data.caption || "",
           postType: data.postType,
           
-          // NEW: Multi-image support
+          // Multi-image support
           imageUrls: images,
           imageCount: images.length,
           imageUrl: data.imageUrl,
@@ -292,79 +263,34 @@ export default function UserPostsGalleryModal({
     }
   }, [highlightedPostId, loading, thoughts.length]);
 
-  /* ------------------ VIDEO PLAYBACK ------------------ */
-  const handleVideoPlayback = async (thoughtId: string) => {
-    const videoRef = videoRefs.current[thoughtId];
-    if (!videoRef) return;
-
-    try {
-      soundPlayer.play("click");
-
-      if (Platform.OS === "web") {
-        const videoElement = videoRef as HTMLVideoElement;
-
-        if (videoElement.paused) {
-          await videoElement.play();
-          setPlayingVideos((prev) => new Set(prev).add(thoughtId));
-        } else {
-          videoElement.pause();
-          setPlayingVideos((prev) => {
-            const newSet = new Set(prev);
-            newSet.delete(thoughtId);
-            return newSet;
-          });
-        }
-      } else {
-        const status = await videoRef.getStatusAsync();
-
-        if (status.isLoaded) {
-          if (status.isPlaying) {
-            await videoRef.pauseAsync();
-            setPlayingVideos((prev) => {
-              const newSet = new Set(prev);
-              newSet.delete(thoughtId);
-              return newSet;
-            });
-          } else {
-            await videoRef.playAsync();
-            setPlayingVideos((prev) => new Set(prev).add(thoughtId));
-          }
-        }
-      }
-    } catch (error) {
-      console.error("❌ Video playback error:", error);
-      soundPlayer.play("error");
-    }
+  /* ------------------ EXPAND IMAGE ------------------ */
+  const handleExpandImage = (imageUrl: string) => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setExpandedImage(imageUrl);
   };
 
-  const handleVideoEnd = (thoughtId: string) => {
-    setPlayingVideos((prev) => {
-      const newSet = new Set(prev);
-      newSet.delete(thoughtId);
-      return newSet;
+  /* ------------------ EXPAND VIDEO TO FULLSCREEN ------------------ */
+  const handleExpandVideo = (
+    videoUrl: string,
+    thumbnailUrl?: string,
+    trimStart?: number,
+    trimEnd?: number,
+    duration?: number
+  ) => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setExpandedVideo({
+      url: videoUrl,
+      thumbnailUrl,
+      trimStart: trimStart || 0,
+      trimEnd: trimEnd || duration || 30,
+      duration: duration || 30,
     });
   };
 
-  const handleReplayVideo = async (thoughtId: string) => {
-    const videoRef = videoRefs.current[thoughtId];
-    if (!videoRef) return;
-
-    try {
-      soundPlayer.play("click");
-
-      if (Platform.OS === "web") {
-        const videoElement = videoRef as HTMLVideoElement;
-        videoElement.currentTime = 0;
-        await videoElement.play();
-        setPlayingVideos((prev) => new Set(prev).add(thoughtId));
-      } else {
-        await videoRef.replayAsync();
-        setPlayingVideos((prev) => new Set(prev).add(thoughtId));
-      }
-    } catch (error) {
-      console.error("Video replay error:", error);
-      soundPlayer.play("error");
-    }
+  const handleCloseExpandedVideo = () => {
+    setExpandedVideo(null);
   };
 
   /* ------------------ LIKE ------------------ */
@@ -575,13 +501,17 @@ export default function UserPostsGalleryModal({
             }));
           }}
           renderItem={({ item }) => (
-            <View style={{ width: SCREEN_WIDTH }}>
+            <TouchableOpacity
+              activeOpacity={0.9}
+              onPress={() => handleExpandImage(item)}
+              style={{ width: SCREEN_WIDTH }}
+            >
               <Image 
                 source={{ uri: item }} 
                 style={styles.thoughtImage}
                 resizeMode="cover"
               />
-            </View>
+            </TouchableOpacity>
           )}
           keyExtractor={(item, index) => `${thought.id}-image-${index}`}
         />
@@ -618,7 +548,6 @@ export default function UserPostsGalleryModal({
     const hasComments = !!item.comments && item.comments > 0;
     const isOwnPost = item.userId === currentUserId;
     const isHighlighted = highlightedPostId === item.id;
-    const isVideoPlaying = playingVideos.has(item.id);
 
     const isLowLeader = item.postType === "low-leader";
     const isScore = item.postType === "score";
@@ -717,78 +646,25 @@ export default function UserPostsGalleryModal({
           </View>
         </View>
 
-        {/* NEW: Image Carousel */}
+        {/* Image Carousel - tap to expand */}
         {renderImagesCarousel(item)}
 
+        {/* Video Thumbnail - tap to play fullscreen */}
         {item.videoUrl && (
-          <View style={styles.videoContainer}>
-            {Platform.OS === "web" ? (
-              <WebVideoPlayer
-                videoUrl={item.videoUrl}
-                thoughtId={item.id}
-                onRefSet={(ref) => {
-                  if (ref) {
-                    videoRefs.current[item.id] = ref;
-                  }
-                }}
-                onEnded={() => handleVideoEnd(item.id)}
-              />
-            ) : (
-              <Video
-                ref={(ref) => {
-                  if (ref) {
-                    videoRefs.current[item.id] = ref;
-                  }
-                }}
-                source={{ uri: item.videoUrl }}
-                style={styles.thoughtVideo}
-                resizeMode={ResizeMode.COVER}
-                shouldPlay={false}
-                isLooping={false}
-                isMuted={false}
-                useNativeControls={false}
-                onPlaybackStatusUpdate={(status: AVPlaybackStatus) => {
-                  if (status.isLoaded && status.didJustFinish) {
-                    handleVideoEnd(item.id);
-                  }
-                }}
-              />
-            )}
-
-            <View style={styles.videoBadge}>
-              <Ionicons name="videocam" size={16} color="#FFF" />
-              <Text style={styles.videoBadgeText}>VIDEO</Text>
-            </View>
-
-            {item.videoDuration && (
-              <View style={styles.videoDurationBadge}>
-                <Ionicons name="time-outline" size={12} color="#FFF" />
-                <Text style={styles.videoDurationText}>{Math.round(item.videoDuration)}s</Text>
-              </View>
-            )}
-
-            <TouchableOpacity
-              style={styles.videoOverlay}
-              onPress={() => handleVideoPlayback(item.id)}
-              activeOpacity={0.9}
-            >
-              {!isVideoPlaying && (
-                <View style={styles.videoPlayButton}>
-                  <Ionicons name="play" size={56} color="#FFF" />
-                </View>
-              )}
-            </TouchableOpacity>
-
-            {!isVideoPlaying && (
-              <TouchableOpacity
-                style={styles.replayButton}
-                onPress={() => handleReplayVideo(item.id)}
-              >
-                <Ionicons name="refresh" size={18} color="#FFF" />
-                <Text style={styles.replayText}>Replay</Text>
-              </TouchableOpacity>
-            )}
-          </View>
+          <VideoThumbnail
+            videoUrl={item.videoUrl}
+            thumbnailUrl={item.videoThumbnailUrl}
+            videoDuration={item.videoDuration}
+            onPress={() =>
+              handleExpandVideo(
+                item.videoUrl!,
+                item.videoThumbnailUrl,
+                item.videoTrimStart,
+                item.videoTrimEnd,
+                item.videoDuration
+              )
+            }
+          />
         )}
 
         <View style={styles.contentContainer}>
@@ -858,71 +734,114 @@ export default function UserPostsGalleryModal({
             </View>
           </SafeAreaView>
 
-        {loading ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#0D5C3A" />
-            <Text style={styles.loadingText}>Loading posts...</Text>
-          </View>
-        ) : thoughts.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Ionicons name="images-outline" size={64} color="#CCC" />
-            <Text style={styles.emptyText}>No posts yet</Text>
-          </View>
-        ) : (
-          <FlatList
-            ref={flatListRef}
-            data={thoughts}
-            renderItem={renderThought}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.listContent}
-            onScrollToIndexFailed={(info) => {
-              setTimeout(() => {
-                flatListRef.current?.scrollToOffset({
-                  offset: info.index * 400,
-                  animated: true,
-                });
-              }, 100);
-            }}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={onRefresh}
-                tintColor="#0D5C3A"
-                colors={["#0D5C3A"]}
-              />
-            }
-          />
-        )}
+          {loading ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#0D5C3A" />
+              <Text style={styles.loadingText}>Loading posts...</Text>
+            </View>
+          ) : thoughts.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Ionicons name="images-outline" size={64} color="#CCC" />
+              <Text style={styles.emptyText}>No posts yet</Text>
+            </View>
+          ) : (
+            <FlatList
+              ref={flatListRef}
+              data={thoughts}
+              renderItem={renderThought}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={styles.listContent}
+              onScrollToIndexFailed={(info) => {
+                setTimeout(() => {
+                  flatListRef.current?.scrollToOffset({
+                    offset: info.index * 400,
+                    animated: true,
+                  });
+                }, 100);
+              }}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  tintColor="#0D5C3A"
+                  colors={["#0D5C3A"]}
+                />
+              }
+            />
+          )}
 
-        {selectedThought && (
-          <CommentsModal
-            visible={commentsModalVisible}
-            thoughtId={selectedThought.id}
-            postContent={selectedThought.content}
-            postOwnerId={selectedThought.userId}
+          {/* Image Viewer Modal */}
+          <Modal
+            visible={!!expandedImage}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setExpandedImage(null)}
+          >
+            <Pressable
+              style={styles.mediaViewerBackdrop}
+              onPress={() => setExpandedImage(null)}
+            >
+              <Image
+                source={{ uri: expandedImage || "" }}
+                style={styles.imageViewerImage}
+                resizeMode="contain"
+              />
+              <TouchableOpacity
+                style={styles.mediaViewerCloseButton}
+                onPress={() => {
+                  soundPlayer.play("click");
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setExpandedImage(null);
+                }}
+              >
+                <Image
+                  source={require("@/assets/icons/Close.png")}
+                  style={styles.mediaCloseIcon}
+                />
+              </TouchableOpacity>
+            </Pressable>
+          </Modal>
+
+          {/* Fullscreen Video Player Modal */}
+          {expandedVideo && (
+            <FullscreenVideoPlayer
+              videoUrl={expandedVideo.url}
+              trimStart={expandedVideo.trimStart}
+              trimEnd={expandedVideo.trimEnd}
+              duration={expandedVideo.duration}
+              onClose={handleCloseExpandedVideo}
+            />
+          )}
+
+          {selectedThought && (
+            <CommentsModal
+              visible={commentsModalVisible}
+              thoughtId={selectedThought.id}
+              postContent={selectedThought.content}
+              postOwnerId={selectedThought.userId}
+              onClose={() => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setCommentsModalVisible(false);
+                setSelectedThought(null);
+              }}
+              onCommentAdded={handleCommentAdded}
+            />
+          )}
+
+          <ReportModal
+            visible={reportModalVisible}
             onClose={() => {
               soundPlayer.play("click");
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setCommentsModalVisible(false);
-              setSelectedThought(null);
+              setReportModalVisible(false);
+              setReportingThought(null);
             }}
-            onCommentAdded={handleCommentAdded}
+            postId={reportingThought?.id || ""}
+            postAuthorId={reportingThought?.userId || ""}
+            postAuthorName={reportingThought?.displayName || ""}
+            postContent={reportingThought?.content || ""}
           />
-        )}
-
-        <ReportModal
-          visible={reportModalVisible}
-          onClose={() => {
-            soundPlayer.play("click");
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            setReportModalVisible(false);
-            setReportingThought(null);
-          }}
-          postId={reportingThought?.id || ""}
-          postAuthorId={reportingThought?.userId || ""}
-          postAuthorName={reportingThought?.displayName || ""}
-          postContent={reportingThought?.content || ""}
-        />
         </View>
       </SafeAreaProvider>
     </Modal>
@@ -1125,7 +1044,7 @@ const styles = StyleSheet.create({
     height: 300,
   },
   
-  // NEW: Image Carousel Styles
+  // Image Carousel Styles
   imagePaginationDots: {
     position: "absolute",
     bottom: 12,
@@ -1164,100 +1083,6 @@ const styles = StyleSheet.create({
   imageCountText: {
     color: "#FFF",
     fontSize: 12,
-    fontWeight: "700",
-  },
-
-  videoContainer: {
-    width: "100%",
-    height: 300,
-    backgroundColor: "#000",
-    position: "relative",
-  },
-
-  thoughtVideo: {
-    width: "100%",
-    height: "100%",
-  },
-
-  videoBadge: {
-    position: "absolute",
-    top: 12,
-    left: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: "rgba(13, 92, 58, 0.95)",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
-  },
-
-  videoBadgeText: {
-    color: "#FFF",
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 0.5,
-  },
-
-  videoDurationBadge: {
-    position: "absolute",
-    top: 12,
-    right: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: "rgba(0, 0, 0, 0.75)",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-
-  videoDurationText: {
-    color: "#FFF",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-
-  videoOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "transparent",
-  },
-
-  videoPlayButton: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    backgroundColor: "rgba(13, 92, 58, 0.85)",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 3,
-    borderColor: "rgba(255, 255, 255, 0.3)",
-  },
-
-  replayButton: {
-    position: "absolute",
-    bottom: 16,
-    right: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: "rgba(13, 92, 58, 0.95)",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 24,
-    borderWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.2)",
-  },
-
-  replayText: {
-    color: "#FFF",
-    fontSize: 14,
     fontWeight: "700",
   },
 
@@ -1306,5 +1131,33 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#666",
     fontWeight: "600",
+  },
+
+  // Media Viewer Modal styles
+  mediaViewerBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.95)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  mediaViewerCloseButton: {
+    position: "absolute",
+    top: 60,
+    right: 20,
+    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    borderRadius: 24,
+    padding: 12,
+  },
+
+  mediaCloseIcon: {
+    width: 24,
+    height: 24,
+    tintColor: "#FFF",
+  },
+
+  imageViewerImage: {
+    width: "100%",
+    height: "80%",
   },
 });

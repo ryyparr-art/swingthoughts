@@ -1,200 +1,227 @@
 /**
- * Sound Player Utility
- *
- * - Respects OS silent / volume settings by default
- * - Optional override to allow sound in silent mode (future setting)
- * - Listener system for Settings UI
- * - Expo SDK–safe (no deprecated constants)
- * - Optimized for instant playback to sync with haptics
- *
- * Sounds live in /assets/sounds/
+ * Sound Player Utility - using expo-audio (SDK 55 compatible)
+ * 
+ * Singleton pattern for playing sound effects throughout the app.
+ * Uses createAudioPlayer() instead of hooks since this is used outside React components.
+ * 
+ * IMPORTANT: Audio mode is only configured ONCE at initialization to prevent
+ * conflicts with expo-video's audio session management.
  */
 
-import { Audio } from "expo-av";
+import { AudioPlayer, createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 
-export type SoundName =
-  | "dart"          // Like button
-  | "achievement"  // New lowman, hole-in-one, badges
-  | "error"         // Validation / failed actions
-  | "click"         // Button presses, navigation
-  | "appOpen"       // App launch
-  | "postThought";  // Post thought or score
+// Sound effect types
+type SoundType = 
+  | 'click' 
+  | 'dart' 
+  | 'postThought' 
+  | 'achievement' 
+  | 'appOpen'
+  | 'error';
 
-/**
- * Listener payload for sound settings changes
- */
-export type SoundSettingsListener = (settings: {
-  isMuted: boolean;
-  allowSoundInSilentMode: boolean;
-}) => void;
+// Sound file mappings - matches actual file names in assets/sounds/
+const SOUND_FILES: Record<SoundType, any> = {
+  click: require('@/assets/sounds/Click.mp3'),
+  dart: require('@/assets/sounds/Dart.mp3'),
+  postThought: require('@/assets/sounds/PostThought.mp3'),
+  achievement: require('@/assets/sounds/Achievement.mp3'),
+  appOpen: require('@/assets/sounds/AppOpen.mp3'),
+  error: require('@/assets/sounds/Error.mp3'),
+};
 
 class SoundPlayer {
-  private sounds: Record<string, Audio.Sound> = {};
-  private isLoaded = false;
+  private players: Map<SoundType, AudioPlayer | null> = new Map();
+  private isInitialized = false;
+  private isInitializing = false;
+  private enabled = true;
+  private audioModeConfigured = false;
 
-  // App-level controls
-  private isMuted = false;
-
-  // Future user setting (default: respect OS silent switch)
-  private allowSoundInSilentMode = false;
-
-  // Settings listeners
-  private listeners = new Set<SoundSettingsListener>();
-
-  /**
-   * Emit current settings to all listeners
-   */
-  private notifyListeners() {
-    const snapshot = {
-      isMuted: this.isMuted,
-      allowSoundInSilentMode: this.allowSoundInSilentMode,
-    };
-
-    this.listeners.forEach((listener) => listener(snapshot));
+  constructor() {
+    // Don't initialize in constructor - do it lazily on first play
+    // This prevents issues with audio session on app startup
   }
 
   /**
-   * Configure Expo audio mode based on settings
+   * Configure audio mode ONCE - don't call this repeatedly
+   * as it conflicts with video player audio sessions
    */
-  private async configureAudioMode() {
-    await Audio.setAudioModeAsync({
-      // iOS: respect silent switch unless user explicitly overrides
-      playsInSilentModeIOS: this.allowSoundInSilentMode,
-
-      // Android: respects system volume / DND
-      shouldDuckAndroid: true,
-
-      // UI sounds only
-      staysActiveInBackground: false,
-    });
-  }
-
-  /**
-   * Subscribe to sound settings changes
-   * Returns an unsubscribe function
-   */
-  addListener(listener: SoundSettingsListener) {
-    this.listeners.add(listener);
-
-    // Immediately emit current state
-    listener({
-      isMuted: this.isMuted,
-      allowSoundInSilentMode: this.allowSoundInSilentMode,
-    });
-
-    return () => this.removeListener(listener);
-  }
-
-  /**
-   * Unsubscribe from settings changes
-   */
-  removeListener(listener: SoundSettingsListener) {
-    this.listeners.delete(listener);
-  }
-
-  /**
-   * Preload all sounds (call once on app start)
-   */
-  async loadSounds() {
+  private async configureAudioMode(): Promise<void> {
+    if (this.audioModeConfigured) return;
+    
     try {
-      await this.configureAudioMode();
-
-      const soundFiles: Record<SoundName, any> = {
-        dart: require("@/assets/sounds/Dart.mp3"),
-        achievement: require("@/assets/sounds/Achievement.mp3"),
-        error: require("@/assets/sounds/Error.mp3"),
-        click: require("@/assets/sounds/Click.mp3"),
-        appOpen: require("@/assets/sounds/AppOpen.mp3"),
-        postThought: require("@/assets/sounds/PostThought.mp3"),
-      };
-
-      for (const [key, source] of Object.entries(soundFiles)) {
-        const { sound } = await Audio.Sound.createAsync(source, {
-          shouldPlay: false,
-        });
-
-        this.sounds[key] = sound;
-      }
-
-      this.isLoaded = true;
-      console.log("✅ Sounds loaded successfully");
-    } catch (error) {
-      console.error("❌ Error loading sounds:", error);
-    }
-  }
-
-  /**
-   * Play a sound by name
-   * Optimized for immediate playback to sync with haptics
-   */
-  play(soundName: SoundName) {
-    if (!this.isLoaded || this.isMuted) return;
-
-    try {
-      const sound = this.sounds[soundName];
-      if (!sound) return;
-
-      // ✅ Synchronous fire-and-forget for instant playback
-      // Replay from start if already playing, otherwise just play
-      sound.replayAsync().catch(() => {
-        // If replay fails (sound not playing), just play it
-        sound.playAsync().catch((error) => {
-          console.error(`❌ Error playing sound "${soundName}":`, error);
-        });
+      await setAudioModeAsync({
+        playsInSilentMode: false, // Respect silent mode by default
+        shouldRouteThroughEarpiece: false,
       });
+      this.audioModeConfigured = true;
+      console.log('🔊 Audio mode configured');
     } catch (error) {
-      console.error(`❌ Error with sound "${soundName}":`, error);
+      console.warn('⚠️ Failed to configure audio mode:', error);
+      // Don't throw - allow sounds to play even if mode config fails
     }
   }
 
   /**
-   * App-level mute (immediate)
+   * Initialize all sound players
    */
-  setMuted(muted: boolean) {
-    if (this.isMuted === muted) return;
-
-    this.isMuted = muted;
-    this.notifyListeners();
-  }
-
-  getMuted() {
-    return this.isMuted;
-  }
-
-  /**
-   * FUTURE USER SETTING
-   * Allow sounds even when phone is on silent (iOS only)
-   */
-  async setAllowSoundInSilentMode(allow: boolean) {
-    if (this.allowSoundInSilentMode === allow) return;
-
-    this.allowSoundInSilentMode = allow;
-    await this.configureAudioMode();
-    this.notifyListeners();
-  }
-
-  getAllowSoundInSilentMode() {
-    return this.allowSoundInSilentMode;
-  }
-
-  /**
-   * Cleanup – unload all sounds
-   */
-  async cleanup() {
+  private async initialize(): Promise<void> {
+    if (this.isInitialized || this.isInitializing) return;
+    
+    this.isInitializing = true;
+    
     try {
-      for (const sound of Object.values(this.sounds)) {
-        await sound.unloadAsync();
+      // Configure audio mode once at startup
+      await this.configureAudioMode();
+      
+      // Pre-load commonly used sounds
+      const preloadSounds: SoundType[] = ['click', 'dart', 'error'];
+      
+      for (const soundType of preloadSounds) {
+        try {
+          const player = createAudioPlayer(SOUND_FILES[soundType]);
+          this.players.set(soundType, player);
+        } catch (error) {
+          console.warn(`⚠️ Failed to preload sound: ${soundType}`, error);
+          this.players.set(soundType, null);
+        }
       }
-
-      this.sounds = {};
-      this.isLoaded = false;
-      console.log("✅ Sounds cleaned up");
+      
+      this.isInitialized = true;
+      console.log('🔊 SoundPlayer initialized');
     } catch (error) {
-      console.error("❌ Error cleaning up sounds:", error);
+      console.error('❌ SoundPlayer initialization error:', error);
+    } finally {
+      this.isInitializing = false;
     }
+  }
+
+  /**
+   * Get or create a player for a sound type
+   */
+  private async getPlayer(soundType: SoundType): Promise<AudioPlayer | null> {
+    // Initialize if needed
+    if (!this.isInitialized && !this.isInitializing) {
+      await this.initialize();
+    }
+    
+    // Wait for initialization to complete
+    while (this.isInitializing) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    
+    // Return existing player if we have one
+    if (this.players.has(soundType)) {
+      return this.players.get(soundType) || null;
+    }
+    
+    // Create new player for this sound type
+    try {
+      const player = createAudioPlayer(SOUND_FILES[soundType]);
+      this.players.set(soundType, player);
+      return player;
+    } catch (error) {
+      console.warn(`⚠️ Failed to create player for: ${soundType}`, error);
+      this.players.set(soundType, null);
+      return null;
+    }
+  }
+
+  /**
+   * Play a sound effect
+   * 
+   * NOTE: This does NOT call setAudioModeAsync every time to prevent
+   * conflicts with video player audio sessions.
+   */
+  async play(soundType: SoundType): Promise<void> {
+    if (!this.enabled) return;
+    
+    try {
+      const player = await this.getPlayer(soundType);
+      
+      if (!player) {
+        console.warn(`⚠️ No player available for: ${soundType}`);
+        return;
+      }
+      
+      // Reset to beginning before playing (expo-audio doesn't auto-reset)
+      // Use try-catch because player might be in a bad state
+      try {
+        player.seekTo(0);
+        player.play();
+      } catch (playError) {
+        // If playback fails, try recreating the player
+        console.warn(`⚠️ Playback failed, recreating player for: ${soundType}`);
+        this.players.delete(soundType);
+        
+        const newPlayer = await this.getPlayer(soundType);
+        if (newPlayer) {
+          newPlayer.play();
+        }
+      }
+    } catch (error) {
+      // Silent fail for sounds - don't interrupt user experience
+      console.warn(`⚠️ Sound play error (${soundType}):`, error);
+    }
+  }
+
+  /**
+   * Enable or disable all sounds
+   */
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+    console.log(`🔊 Sounds ${enabled ? 'enabled' : 'disabled'}`);
+  }
+
+  /**
+   * Check if sounds are enabled
+   */
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+
+  /**
+   * Release all sound players
+   * Call this when the app is closing or sounds are no longer needed
+   */
+  async release(): Promise<void> {
+    for (const [soundType, player] of this.players) {
+      if (player) {
+        try {
+          player.release();
+        } catch (error) {
+          console.warn(`⚠️ Failed to release player: ${soundType}`, error);
+        }
+      }
+    }
+    
+    this.players.clear();
+    this.isInitialized = false;
+    this.audioModeConfigured = false;
+    console.log('🔊 SoundPlayer released');
+  }
+
+  /**
+   * Temporarily pause audio mode configuration
+   * Call this before playing videos to prevent conflicts
+   */
+  async prepareForVideo(): Promise<void> {
+    // Don't reconfigure audio mode while video is playing
+    // The video player will manage its own audio session
+    console.log('🎬 Preparing for video playback');
+  }
+
+  /**
+   * Resume audio mode after video playback
+   * Call this after video modal closes
+   */
+  async resumeAfterVideo(): Promise<void> {
+    // Reconfigure audio mode after video closes
+    // This restores sound effect behavior
+    this.audioModeConfigured = false;
+    await this.configureAudioMode();
+    console.log('🔊 Resumed after video playback');
   }
 }
 
-// Singleton export
+// Export singleton instance
 export const soundPlayer = new SoundPlayer();
-

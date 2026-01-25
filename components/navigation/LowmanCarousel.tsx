@@ -336,6 +336,13 @@ export default function LowmanCarousel({
     }
   };
 
+  const handleEmptyCardPress = () => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    console.log("🚀 Tapped empty card, navigating to post-score");
+    router.push("/post-score");
+  };
+
   if (carouselData.length === 0) {
     return (
       <ScrollView
@@ -344,7 +351,11 @@ export default function LowmanCarousel({
         style={styles.scrollStrip}
         contentContainerStyle={styles.container}
       >
-        <View style={styles.emptyCard}>
+        <TouchableOpacity 
+          style={styles.emptyCard}
+          activeOpacity={0.7}
+          onPress={handleEmptyCardPress}
+        >
           <View style={styles.cardContent}>
             <View style={styles.emptyIconContainer}>
               <Text style={styles.emptyCardIcon}>🏆</Text>
@@ -355,11 +366,11 @@ export default function LowmanCarousel({
                 No Leaders Yet
               </Text>
               <Text style={styles.emptyCardSubtitle} numberOfLines={1}>
-                Be the first to post a score
+                Tap to post a score
               </Text>
             </View>
           </View>
-        </View>
+        </TouchableOpacity>
       </ScrollView>
     );
   }
@@ -523,7 +534,6 @@ const styles = StyleSheet.create({
     color: "#666",
   },
 });
-
 
 
 

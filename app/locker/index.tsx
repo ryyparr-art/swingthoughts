@@ -184,6 +184,28 @@ export default function LockerScreen() {
     }
   };
 
+  // ✅ Helper to get home course name (handles both object and string formats)
+  const getHomeCourseName = () => {
+    if (!profile) return null;
+    
+    // New object format
+    if (profile.homeCourse && typeof profile.homeCourse === 'object') {
+      return profile.homeCourse.courseName;
+    }
+    
+    // Backwards compatible string field
+    if (profile.homeCourseName) {
+      return profile.homeCourseName;
+    }
+    
+    // Legacy string format
+    if (profile.homeCourse && typeof profile.homeCourse === 'string') {
+      return profile.homeCourse;
+    }
+    
+    return null;
+  };
+
   const parseBadge = (badge: any) => {
     console.log("🔍 Parsing badge:", JSON.stringify(badge, null, 2));
     
@@ -304,6 +326,8 @@ export default function LockerScreen() {
     );
   }
 
+  const homeCourseName = getHomeCourseName();
+
   return (
     <View style={styles.container}>
       <SafeAreaView edges={["top"]} style={styles.safeTop} />
@@ -374,12 +398,12 @@ export default function LockerScreen() {
             </View>
 
             {/* HOME COURSE & GAME IDENTITY */}
-            {(profile?.homeCourse || profile?.gameIdentity) && (
+            {(homeCourseName || profile?.gameIdentity) && (
               <View style={styles.identityContainer}>
-                {profile?.homeCourse && (
+                {homeCourseName && (
                   <View style={styles.identityRow}>
                     <Ionicons name="flag" size={16} color="rgba(255,255,255,0.9)" />
-                    <Text style={styles.identityText}>{profile.homeCourse}</Text>
+                    <Text style={styles.identityText}>{homeCourseName}</Text>
                   </View>
                 )}
                 {profile?.gameIdentity && (

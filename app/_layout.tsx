@@ -20,23 +20,16 @@ export default function RootLayout() {
   });
 
   // Load sounds on mount
-  useEffect(() => {
-    const initializeSounds = async () => {
-      try {
-        await soundPlayer.loadSounds();
-        console.log("🔊 Sound system initialized");
-      } catch (error) {
-        console.error("⚠️ Sound initialization failed:", error);
-      }
-    };
-
-    initializeSounds();
-
-    // Cleanup on unmount
-    return () => {
-      soundPlayer.cleanup();
-    };
-  }, []);
+  // NEW CODE - WORKS WITH expo-audio version
+useEffect(() => {
+  // Sound player now uses lazy initialization - no need to preload
+  // It will initialize on first play() call
+  
+  return () => {
+    // Use release() instead of cleanup()
+    soundPlayer.release();
+  };
+}, []);
 
   useEffect(() => {
     const initAuth = async () => {

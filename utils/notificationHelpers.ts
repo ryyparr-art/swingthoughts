@@ -277,7 +277,7 @@ async function findExistingGroupNotification(
       where("userId", "==", userId),
       where("groupKey", "==", groupKey),
       where("read", "==", false),
-      orderBy("createdAt", "desc"),
+      orderBy("updatedAt", "desc"),
       limit(1)
     );
 
@@ -370,8 +370,9 @@ export async function createNotification(params: CreateNotificationParams): Prom
             actors: updatedActors,
             actorCount: newCount,
             message: getGroupedMessage(type, updatedActors, newCount),
-            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),  // Use updatedAt for modifications
             read: false,
+            lastActorId: actorId,
           };
 
           // For messages, keep the actorId to allow navigation
@@ -390,7 +391,7 @@ export async function createNotification(params: CreateNotificationParams): Prom
         } else {
           // Actor already in group, just bump timestamp
           await updateDoc(doc(db, "notifications", existing.id), {
-            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),  // Use updatedAt for modifications
             read: false,
           });
         }
@@ -408,10 +409,12 @@ export async function createNotification(params: CreateNotificationParams): Prom
         type,
         read: false,
         createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),  // Set both on creation
         expiresAt,
         groupKey,
         actors: [actor],
         actorCount: 1,
+        lastActorId: actorId,
         message: getGroupedMessage(type, [actor], 1),
       };
 
@@ -439,13 +442,17 @@ export async function createNotification(params: CreateNotificationParams): Prom
         type,
         read: false,
         createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),  // Set both on creation
         expiresAt,
         message,
       };
 
       // Add optional fields
       if (customTitle) notificationData.title = customTitle;
-      if (actorId) notificationData.actorId = actorId;
+      if (actorId) {
+        notificationData.actorId = actorId;
+        notificationData.lastActorId = actorId;
+      }
       if (actor?.displayName) notificationData.actorName = actor.displayName;
       if (actor?.avatar) notificationData.actorAvatar = actor.avatar;
       if (postId) notificationData.postId = postId;
@@ -469,7 +476,10 @@ export async function createNotification(params: CreateNotificationParams): Prom
 
 export async function markNotificationAsRead(notificationId: string): Promise<void> {
   try {
-    await updateDoc(doc(db, "notifications", notificationId), { read: true });
+    await updateDoc(doc(db, "notifications", notificationId), { 
+      read: true,
+      updatedAt: serverTimestamp(),
+    });
   } catch (error) {
     console.error("Error marking notification as read:", error);
   }
@@ -491,7 +501,10 @@ export async function markAllNotificationsAsRead(userId: string): Promise<void> 
     const batch = writeBatch(db);
 
     snapshot.docs.forEach((docSnap) => {
-      batch.update(docSnap.ref, { read: true });
+      batch.update(docSnap.ref, { 
+        read: true,
+        updatedAt: serverTimestamp(),
+      });
     });
 
     await batch.commit();

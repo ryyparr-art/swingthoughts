@@ -27,8 +27,6 @@ import {
   Dimensions,
   FlatList,
   Image,
-  Keyboard,
-  KeyboardAvoidingView,
   Modal,
   Platform,
   ScrollView,
@@ -39,6 +37,7 @@ import {
   View
 } from "react-native";
 import { Video as VideoCompressor } from "react-native-compressor";
+import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 /* -------------------------------- UTILS -------------------------------- */
@@ -57,9 +56,6 @@ function canWrite(userData: any): boolean {
   return false;
 }
 
-/**
- * Calculate geohash for posts (5-char precision = 2.4 miles)
- */
 function encodeGeohash(latitude: number, longitude: number, precision: number = 5): string {
   const BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz";
   let idx = 0;
@@ -104,9 +100,6 @@ function encodeGeohash(latitude: number, longitude: number, precision: number = 
   return geohash;
 }
 
-/**
- * Extract hashtags from content
- */
 function extractHashtags(content: string): string[] {
   const hashtagRegex = /#(\w+)/g;
   const matches = content.match(hashtagRegex) || [];
@@ -136,6 +129,12 @@ interface Course {
   courseName: string;
 }
 
+interface Tournament {
+  tournamentId: string;
+  name: string;
+  type: "tournament" | "league";
+}
+
 interface GolfCourse {
   id: number;
   club_name: string;
@@ -163,7 +162,6 @@ export default function CreateScreen() {
   const [selectedType, setSelectedType] = useState("swing-thought");
   const [content, setContent] = useState("");
   
-  // Media states - multi-image OR single video
   const [mediaType, setMediaType] = useState<"images" | "video" | null>(null);
   const [imageUris, setImageUris] = useState<string[]>([]);
   const [videoUri, setVideoUri] = useState<string | null>(null);
@@ -171,14 +169,12 @@ export default function CreateScreen() {
   const [isPosting, setIsPosting] = useState(false);
   const [isProcessingMedia, setIsProcessingMedia] = useState(false);
 
-  // ✅ NEW: Image cropping flow states
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [currentCropIndex, setCurrentCropIndex] = useState(0);
   const [showCropModal, setShowCropModal] = useState(false);
   const [cropOffset, setCropOffset] = useState({ x: 0, y: 0 });
   const [cropScale, setCropScale] = useState(1);
 
-  // Video states
   const [videoDuration, setVideoDuration] = useState(0);
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(30);
@@ -186,16 +182,17 @@ export default function CreateScreen() {
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
 
   const videoRef = useRef<Video>(null);
-  const scrollViewRef = useRef<ScrollView>(null);
+  const textInputRef = useRef<TextInput>(null);
 
   const [userData, setUserData] = useState<any>(null);
   const writable = canWrite(userData);
 
   const [showAutocomplete, setShowAutocomplete] = useState(false);
-  const [autocompleteType, setAutocompleteType] = useState<"partner" | "course" | null>(null);
+  const [autocompleteType, setAutocompleteType] = useState<"mention" | "hashtag" | null>(null);
   const [autocompleteResults, setAutocompleteResults] = useState<any[]>([]);
-  const [currentMention, setCurrentMention] = useState("");
+  const [currentSearchText, setCurrentSearchText] = useState("");
   const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
+  const [selectedHashtags, setSelectedHashtags] = useState<string[]>([]);
 
   const [allPartners, setAllPartners] = useState<Partner[]>([]);
 
@@ -207,21 +204,7 @@ export default function CreateScreen() {
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
 
   /* --------------------------- KEYBOARD HANDLING --------------------------- */
-
-  useEffect(() => {
-    const keyboardDidShowListener = Keyboard.addListener(
-      'keyboardDidShow',
-      () => {
-        setTimeout(() => {
-          scrollViewRef.current?.scrollToEnd({ animated: true });
-        }, 100);
-      }
-    );
-
-    return () => {
-      keyboardDidShowListener.remove();
-    };
-  }, []);
+  // KeyboardAwareScrollView handles keyboard automatically - no manual handling needed
 
   /* --------------------------- LOAD USER DATA --------------------------- */
 
@@ -286,7 +269,6 @@ export default function CreateScreen() {
         setContent(postData.content || "");
         setSelectedType(postData.postType || "swing-thought");
         
-        // Load media - handle both old (single) and new (multiple) formats
         if (postData.imageUrls && postData.imageUrls.length > 0) {
           setImageUris(postData.imageUrls);
           setMediaType("images");
@@ -297,7 +279,6 @@ export default function CreateScreen() {
           setVideoUri(postData.videoUrl);
           setVideoThumbnailUri(postData.videoThumbnailUrl || null);
           setMediaType("video");
-          // Show trimmer for existing videos too
           if (postData.videoDuration) {
             setVideoDuration(postData.videoDuration);
             setTrimStart(postData.videoTrimStart || 0);
@@ -307,20 +288,31 @@ export default function CreateScreen() {
         }
         
         const existingMentions: string[] = [];
-        
         if (postData.taggedPartners) {
           postData.taggedPartners.forEach((p: any) => {
             existingMentions.push(`@${p.displayName}`);
           });
         }
-        
         if (postData.taggedCourses) {
           postData.taggedCourses.forEach((c: any) => {
             existingMentions.push(`@${c.courseName}`);
           });
         }
-        
         setSelectedMentions(existingMentions);
+        
+        const existingHashtags: string[] = [];
+        if (postData.taggedTournaments) {
+          postData.taggedTournaments.forEach((t: any) => {
+            existingHashtags.push(`#${t.name}`);
+          });
+        }
+        if (postData.taggedLeagues) {
+          postData.taggedLeagues.forEach((l: any) => {
+            existingHashtags.push(`#${l.name}`);
+          });
+        }
+        setSelectedHashtags(existingHashtags);
+        
       } catch (error) {
         console.error("Error loading post:", error);
         soundPlayer.play('error');
@@ -429,7 +421,7 @@ export default function CreateScreen() {
     );
   };
 
-  /* --------------------------- IMAGE PICKER (STEP 1) --------------------------- */
+  /* --------------------------- IMAGE PICKER --------------------------- */
 
   const pickImages = async () => {
     try {
@@ -454,14 +446,13 @@ export default function CreateScreen() {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
         allowsMultipleSelection: true,
-        quality: 1, // Keep full quality for cropping
+        quality: 1,
         allowsEditing: false,
       });
 
       if (!result.canceled && result.assets.length > 0) {
         const selectedImages = result.assets.slice(0, MAX_IMAGES);
         
-        // Store pending images with dimensions for cropping
         const pending: PendingImage[] = selectedImages.map(asset => ({
           uri: asset.uri,
           width: asset.width || 1080,
@@ -511,7 +502,7 @@ export default function CreateScreen() {
         mediaTypes: ["videos"],
         allowsEditing: false,
         quality: 0.8,
-        videoMaxDuration: 120, // Allow up to 2 minutes, then trim
+        videoMaxDuration: 120,
       });
 
       if (!result.canceled && result.assets.length > 0) {
@@ -537,10 +528,9 @@ export default function CreateScreen() {
         setVideoUri(compressedUri);
         setVideoThumbnailUri(thumbnailUri);
         setMediaType("video");
-        setImageUris([]); // Clear images
+        setImageUris([]);
         setIsVideoPlaying(false);
 
-        // ✅ Always show trimmer - even for short videos
         setTrimStart(0);
         setTrimEnd(Math.min(durationSeconds, MAX_VIDEO_DURATION));
         setShowVideoTrimmer(true);
@@ -566,7 +556,7 @@ export default function CreateScreen() {
     }
   };
 
-  /* --------------------------- CROP IMAGE (STEP 2) --------------------------- */
+  /* --------------------------- CROP IMAGE --------------------------- */
 
   const handleCropComplete = async () => {
     if (currentCropIndex >= pendingImages.length) return;
@@ -576,12 +566,10 @@ export default function CreateScreen() {
     try {
       setIsProcessingMedia(true);
       
-      // Calculate crop region based on offset and scale
       const cropSize = Math.min(currentImage.width, currentImage.height) / cropScale;
       const originX = Math.max(0, (currentImage.width - cropSize) / 2 - cropOffset.x * (currentImage.width / SCREEN_WIDTH));
       const originY = Math.max(0, (currentImage.height - cropSize) / 2 - cropOffset.y * (currentImage.height / SCREEN_WIDTH));
       
-      // Crop and compress the image
       const manipResult = await ImageManipulator.manipulateAsync(
         currentImage.uri,
         [
@@ -598,18 +586,15 @@ export default function CreateScreen() {
         { compress: IMAGE_QUALITY, format: ImageManipulator.SaveFormat.JPEG }
       );
       
-      // Add to final images
       const newImageUris = [...imageUris, manipResult.uri];
       setImageUris(newImageUris);
       
-      // Move to next image or finish
       if (currentCropIndex < pendingImages.length - 1) {
         setCurrentCropIndex(currentCropIndex + 1);
         setCropOffset({ x: 0, y: 0 });
         setCropScale(1);
         setIsProcessingMedia(false);
       } else {
-        // All images cropped
         setShowCropModal(false);
         setPendingImages([]);
         setCurrentCropIndex(0);
@@ -633,7 +618,6 @@ export default function CreateScreen() {
     try {
       setIsProcessingMedia(true);
       
-      // Just compress without cropping
       const compressed = await compressImage(currentImage.uri);
       
       const newImageUris = [...imageUris, compressed];
@@ -743,50 +727,85 @@ export default function CreateScreen() {
       setSelectedMentions(cleanedMentions);
     }
 
+    const cleanedHashtags = selectedHashtags.filter((hashtag) => 
+      text.includes(hashtag)
+    );
+    if (cleanedHashtags.length !== selectedHashtags.length) {
+      setSelectedHashtags(cleanedHashtags);
+    }
+
     const lastAtIndex = text.lastIndexOf("@");
-    if (lastAtIndex === -1) {
+    const lastHashIndex = text.lastIndexOf("#");
+    
+    const triggerIndex = Math.max(lastAtIndex, lastHashIndex);
+    const triggerChar = lastAtIndex > lastHashIndex ? "@" : "#";
+    
+    if (triggerIndex === -1) {
       setShowAutocomplete(false);
       return;
     }
 
-    const afterAt = text.slice(lastAtIndex + 1);
+    const afterTrigger = text.slice(triggerIndex + 1);
     
-    if (afterAt.endsWith("  ") || afterAt.includes("\n")) {
+    if (afterTrigger.includes("  ") || afterTrigger.includes("\n")) {
       setShowAutocomplete(false);
       return;
     }
     
-    setCurrentMention(afterAt);
+    const searchText = afterTrigger.split(" ")[0];
+    setCurrentSearchText(searchText);
 
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
     }
 
     debounceRef.current = setTimeout(() => {
-      if (afterAt.length >= 1) {
-        searchMentions(afterAt);
+      if (searchText.length >= 1) {
+        if (triggerChar === "@") {
+          setAutocompleteType("mention");
+          searchMentions(searchText);
+        } else {
+          setAutocompleteType("hashtag");
+          searchHashtags(searchText);
+        }
       }
     }, 300);
   };
 
+  /* --------------------------- SEARCH MENTIONS --------------------------- */
+
   const searchMentions = async (searchText: string) => {
     try {
+      const searchLower = searchText.toLowerCase();
+      
       const partnerResults = allPartners.filter((p) =>
-        p.displayName.toLowerCase().includes(searchText.toLowerCase())
+        p.displayName.toLowerCase().includes(searchLower)
       );
 
-      const coursesQuery = query(collection(db, "courses"));
-      const coursesSnap = await getDocs(coursesQuery);
+      const coursesSnap = await getDocs(collection(db, "courses"));
       
       const courseResults: any[] = [];
-      coursesSnap.forEach((doc) => {
-        const data = doc.data();
+      coursesSnap.forEach((docSnap) => {
+        const data = docSnap.data();
         const courseName = data.course_name || data.courseName || "";
+        const clubName = data.club_name || data.clubName || "";
         
-        if (courseName.toLowerCase().includes(searchText.toLowerCase())) {
+        const matchesCourseName = courseName.toLowerCase().includes(searchLower);
+        const matchesClubName = clubName.toLowerCase().includes(searchLower);
+        
+        if (matchesCourseName || matchesClubName) {
+          let displayName = "";
+          if (clubName && courseName && clubName !== courseName) {
+            displayName = `${clubName} - ${courseName}`;
+          } else if (clubName) {
+            displayName = clubName;
+          } else {
+            displayName = courseName;
+          }
+          
           courseResults.push({
             courseId: data.id,
-            courseName: courseName,
+            courseName: displayName,
             location: data.location 
               ? `${data.location.city}, ${data.location.state}`
               : "",
@@ -806,42 +825,78 @@ export default function CreateScreen() {
       }
 
       if (courseResults.length === 0) {
-        searchCoursesAutocomplete(searchText);
+        searchCoursesAPI(searchText);
       }
     } catch (err) {
-      console.error("Search error:", err);
+      console.error("Search mentions error:", err);
       soundPlayer.play('error');
     }
   };
 
-  const searchCoursesAutocomplete = async (searchText: string) => {
+  /* --------------------------- SEARCH HASHTAGS --------------------------- */
+
+  const searchHashtags = async (searchText: string) => {
     try {
-      const coursesQuery = query(collection(db, "courses"));
-      const coursesSnap = await getDocs(coursesQuery);
+      const searchLower = searchText.toLowerCase();
+      const results: any[] = [];
       
-      const cachedCourses: any[] = [];
-      coursesSnap.forEach((doc) => {
-        const data = doc.data();
-        const courseName = data.course_name || data.courseName || "";
+      const tournamentsSnap = await getDocs(collection(db, "tournaments"));
+      tournamentsSnap.forEach((docSnap) => {
+        const data = docSnap.data();
+        const name = data.name || "";
         
-        if (courseName.toLowerCase().includes(searchText.toLowerCase())) {
-          cachedCourses.push({
-            courseId: data.id,
-            courseName: courseName,
+        if (name.toLowerCase().includes(searchLower)) {
+          results.push({
+            id: docSnap.id,
+            tournamentId: data.tournId || docSnap.id,
+            name: name,
+            type: "tournament",
             location: data.location 
               ? `${data.location.city}, ${data.location.state}`
               : "",
+            startDate: data.startDate,
           });
         }
       });
-
-      if (cachedCourses.length > 0) {
-        setAutocompleteType("course");
-        setAutocompleteResults(cachedCourses);
-        setShowAutocomplete(true);
-        return;
+      
+      try {
+        const leaguesSnap = await getDocs(collection(db, "leagues"));
+        leaguesSnap.forEach((docSnap) => {
+          const data = docSnap.data();
+          const name = data.name || "";
+          
+          if (name.toLowerCase().includes(searchLower)) {
+            results.push({
+              id: docSnap.id,
+              leagueId: data.leagueId || docSnap.id,
+              name: name,
+              type: "league",
+              location: data.location 
+                ? `${data.location.city}, ${data.location.state}`
+                : "",
+            });
+          }
+        });
+      } catch (e) {
+        console.log("Leagues collection not found, skipping");
       }
 
+      if (results.length > 0) {
+        setAutocompleteResults(results);
+        setShowAutocomplete(true);
+      } else {
+        setShowAutocomplete(false);
+      }
+    } catch (err) {
+      console.error("Search hashtags error:", err);
+      soundPlayer.play('error');
+    }
+  };
+
+  /* --------------------------- SEARCH COURSES API --------------------------- */
+
+  const searchCoursesAPI = async (searchText: string) => {
+    try {
       const res = await fetch(
         `${GOLF_COURSE_API_URL}/search?search_query=${encodeURIComponent(searchText)}`,
         {
@@ -859,71 +914,97 @@ export default function CreateScreen() {
       const courses: GolfCourse[] = data.courses || [];
 
       if (courses.length > 0) {
-        setAutocompleteType("course");
         setAutocompleteResults(
-          courses.map((c) => ({
-            courseId: c.id,
-            courseName: c.course_name,
-            location: `${c.location.city}, ${c.location.state}`,
-            type: "course",
-          }))
+          courses.map((c) => {
+            let displayName = "";
+            if (c.club_name && c.course_name && c.club_name !== c.course_name) {
+              displayName = `${c.club_name} - ${c.course_name}`;
+            } else if (c.club_name) {
+              displayName = c.club_name;
+            } else {
+              displayName = c.course_name;
+            }
+            
+            return {
+              courseId: c.id,
+              courseName: displayName,
+              location: `${c.location.city}, ${c.location.state}`,
+              type: "course",
+            };
+          })
         );
         setShowAutocomplete(true);
       }
     } catch (err) {
-      console.error("Course search error:", err);
+      console.error("Course API search error:", err);
       soundPlayer.play('error');
     }
   };
 
-  const handleSelectMention = async (item: any) => {
+  /* --------------------------- HANDLE SELECT AUTOCOMPLETE --------------------------- */
+
+  const handleSelectAutocomplete = async (item: any) => {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-    const lastAtIndex = content.lastIndexOf("@");
-    const beforeAt = content.slice(0, lastAtIndex);
-    const afterMention = content.slice(lastAtIndex + 1 + currentMention.length);
-    
-    let mentionText = "";
-    
-    if (item.type === "partner") {
-      mentionText = `@${item.displayName}`;
-      setContent(`${beforeAt}${mentionText} ${afterMention}`);
-    } else if (item.type === "course") {
-      mentionText = `@${item.courseName}`;
-      setContent(`${beforeAt}${mentionText} ${afterMention}`);
+    if (autocompleteType === "mention") {
+      const lastAtIndex = content.lastIndexOf("@");
+      const beforeAt = content.slice(0, lastAtIndex);
+      const afterSearch = content.slice(lastAtIndex + 1 + currentSearchText.length);
       
-      try {
-        const courseQuery = query(
-          collection(db, "courses"),
-          where("id", "==", item.courseId)
-        );
-        const courseSnap = await getDocs(courseQuery);
+      let mentionText = "";
+      
+      if (item.type === "partner") {
+        mentionText = `@${item.displayName}`;
+      } else if (item.type === "course") {
+        mentionText = `@${item.courseName}`;
         
-        if (courseSnap.empty) {
-          await addDoc(collection(db, "courses"), {
-            id: item.courseId,
-            course_name: item.courseName,
-            location: item.location ? {
-              city: item.location.split(", ")[0],
-              state: item.location.split(", ")[1]
-            } : null,
-          });
+        try {
+          const courseQuery = query(
+            collection(db, "courses"),
+            where("id", "==", item.courseId)
+          );
+          const courseSnap = await getDocs(courseQuery);
+          
+          if (courseSnap.empty) {
+            await addDoc(collection(db, "courses"), {
+              id: item.courseId,
+              course_name: item.courseName,
+              location: item.location ? {
+                city: item.location.split(", ")[0],
+                state: item.location.split(", ")[1]
+              } : null,
+            });
+          }
+        } catch (err) {
+          console.error("Error caching course:", err);
         }
-      } catch (err) {
-        console.error("Error saving course:", err);
-        soundPlayer.play('error');
       }
-    }
 
-    if (mentionText && !selectedMentions.includes(mentionText)) {
-      setSelectedMentions([...selectedMentions, mentionText]);
+      setContent(`${beforeAt}${mentionText} ${afterSearch}`);
+      
+      if (mentionText && !selectedMentions.includes(mentionText)) {
+        setSelectedMentions([...selectedMentions, mentionText]);
+      }
+      
+    } else if (autocompleteType === "hashtag") {
+      const lastHashIndex = content.lastIndexOf("#");
+      const beforeHash = content.slice(0, lastHashIndex);
+      const afterSearch = content.slice(lastHashIndex + 1 + currentSearchText.length);
+      
+      const hashtagText = `#${item.name}`;
+      
+      setContent(`${beforeHash}${hashtagText} ${afterSearch}`);
+      
+      if (hashtagText && !selectedHashtags.includes(hashtagText)) {
+        setSelectedHashtags([...selectedHashtags, hashtagText]);
+      }
     }
 
     setShowAutocomplete(false);
   };
 
-  /* --------------------------- HANDLE CLOSE WITH WARNING --------------------------- */
+  /* --------------------------- HANDLE CLOSE --------------------------- */
 
   const handleClose = async () => {
     soundPlayer.play('click');
@@ -1064,7 +1145,6 @@ export default function CreateScreen() {
       const uid = auth.currentUser?.uid;
       if (!uid) throw new Error("No user");
 
-      // Get user's location data for region/geohash
       const userDoc = await getDoc(doc(db, "users", uid));
       const currentUserData = userDoc.data();
       
@@ -1075,16 +1155,14 @@ export default function CreateScreen() {
       const userCity = currentUserData.currentCity || currentUserData.city || "";
       const userState = currentUserData.currentState || currentUserData.state || "";
 
-      // Calculate geohash (5-char precision)
       const geohash = userLat && userLon ? encodeGeohash(userLat, userLon, 5) : "";
 
-      // Upload images (if any)
+      // Upload images
       const uploadedImageUrls: string[] = [];
       if (mediaType === "images" && imageUris.length > 0) {
         for (let i = 0; i < imageUris.length; i++) {
           const uri = imageUris[i];
           
-          // Only upload if local file
           if (uri.startsWith('file://')) {
             const response = await fetch(uri);
             const blob = await response.blob();
@@ -1096,13 +1174,12 @@ export default function CreateScreen() {
             const url = await getDownloadURL(storageRef);
             uploadedImageUrls.push(url);
           } else {
-            // Existing URL (edit mode)
             uploadedImageUrls.push(uri);
           }
         }
       }
 
-      // Upload video (if any)
+      // Upload video
       let uploadedVideoUrl: string | null = null;
       let uploadedThumbnailUrl: string | null = null;
 
@@ -1117,7 +1194,6 @@ export default function CreateScreen() {
           await uploadBytes(storageRef, blob);
           uploadedVideoUrl = await getDownloadURL(storageRef);
 
-          // Upload thumbnail
           if (videoThumbnailUri) {
             try {
               const thumbnailResponse = await fetch(videoThumbnailUri);
@@ -1137,8 +1213,8 @@ export default function CreateScreen() {
         }
       }
 
-      // Extract mentions
-      const mentionRegex = /@([\w\s]+?)(?=\s{2,}|$|@|\n)/g;
+      // Extract @ mentions
+      const mentionRegex = /@([^@#\n]+?)(?=\s{2,}|$|@|#|\n)/g;
       const mentions = content.match(mentionRegex) || [];
       
       const extractedPartners: Partner[] = [];
@@ -1153,36 +1229,127 @@ export default function CreateScreen() {
         
         if (matchedPartner && !extractedPartners.find((p) => p.userId === matchedPartner.userId)) {
           extractedPartners.push(matchedPartner);
+          console.log("✅ Matched partner:", matchedPartner.displayName);
           continue;
         }
         
         try {
-          const coursesQuery = query(collection(db, "courses"));
-          const coursesSnap = await getDocs(coursesQuery);
+          const coursesSnap = await getDocs(collection(db, "courses"));
           
-          coursesSnap.forEach((doc) => {
-            const data = doc.data();
-            const courseName = data.course_name || data.courseName || "";
+          let foundCourse = false;
+          coursesSnap.forEach((docSnap) => {
+            if (foundCourse) return;
             
-            if (courseName.toLowerCase() === mentionText.toLowerCase() &&
-                !extractedCourses.find((c) => c.courseId === data.id)) {
+            const data = docSnap.data();
+            const courseName = data.course_name || data.courseName || "";
+            const clubName = data.club_name || data.clubName || "";
+            const courseId = data.id || parseInt(docSnap.id) || docSnap.id;
+            
+            let displayName = "";
+            if (clubName && courseName && clubName !== courseName) {
+              displayName = `${clubName} - ${courseName}`;
+            } else if (clubName) {
+              displayName = clubName;
+            } else {
+              displayName = courseName;
+            }
+            
+            const mentionLower = mentionText.toLowerCase();
+            
+            if ((displayName.toLowerCase() === mentionLower ||
+                 clubName.toLowerCase() === mentionLower ||
+                 courseName.toLowerCase() === mentionLower) &&
+                !extractedCourses.find((c) => c.courseId === courseId)) {
+              
               extractedCourses.push({
-                courseId: data.id,
-                courseName: courseName,
+                courseId: courseId,
+                courseName: displayName,
               });
+              foundCourse = true;
+              console.log("✅ Matched course:", displayName, "ID:", courseId);
             }
           });
+          
+          if (!foundCourse) {
+            console.log("⚠️ No course match found for:", mentionText);
+          }
         } catch (err) {
           console.error("Error matching course mentions:", err);
         }
       }
 
-      // Build post data with full architecture
+      // Extract # hashtags
+      const hashtagRegex = /#([^@#\n]+?)(?=\s{2,}|$|@|#|\n)/g;
+      const hashtags = content.match(hashtagRegex) || [];
+      
+      const extractedTournaments: Tournament[] = [];
+      const extractedLeagues: Tournament[] = [];
+      
+      for (const hashtag of hashtags) {
+        const hashtagText = hashtag.substring(1).trim();
+        
+        try {
+          const tournamentsSnap = await getDocs(collection(db, "tournaments"));
+          
+          let foundTournament = false;
+          tournamentsSnap.forEach((docSnap) => {
+            if (foundTournament) return;
+            
+            const data = docSnap.data();
+            const name = data.name || "";
+            
+            if (name.toLowerCase() === hashtagText.toLowerCase() &&
+                !extractedTournaments.find((t) => t.tournamentId === docSnap.id)) {
+              
+              extractedTournaments.push({
+                tournamentId: data.tournId || docSnap.id,
+                name: name,
+                type: "tournament",
+              });
+              foundTournament = true;
+              console.log("✅ Matched tournament:", name);
+            }
+          });
+        } catch (err) {
+          console.error("Error matching tournament:", err);
+        }
+        
+        try {
+          const leaguesSnap = await getDocs(collection(db, "leagues"));
+          
+          let foundLeague = false;
+          leaguesSnap.forEach((docSnap) => {
+            if (foundLeague) return;
+            
+            const data = docSnap.data();
+            const name = data.name || "";
+            
+            if (name.toLowerCase() === hashtagText.toLowerCase() &&
+                !extractedLeagues.find((l) => l.tournamentId === docSnap.id)) {
+              
+              extractedLeagues.push({
+                tournamentId: data.leagueId || docSnap.id,
+                name: name,
+                type: "league",
+              });
+              foundLeague = true;
+              console.log("✅ Matched league:", name);
+            }
+          });
+        } catch (err) {
+          console.log("Leagues collection not found");
+        }
+      }
+
+      console.log("📝 Extracted partners:", extractedPartners);
+      console.log("📝 Extracted courses:", extractedCourses);
+      console.log("📝 Extracted tournaments:", extractedTournaments);
+      console.log("📝 Extracted leagues:", extractedLeagues);
+
       const postData: any = {
         content: content.trim(),
         postType: selectedType,
         
-        // Region data
         regionKey: currentUserData.regionKey || "",
         geohash: geohash,
         location: {
@@ -1192,7 +1359,6 @@ export default function CreateScreen() {
           longitude: userLon || null,
         },
         
-        // Denormalized user data
         userName: currentUserData.displayName || "Unknown",
         displayName: currentUserData.displayName || "Unknown",
         userAvatar: currentUserData.avatar || null,
@@ -1201,19 +1367,17 @@ export default function CreateScreen() {
         userType: currentUserData.userType || "Golfer",
         verified: currentUserData.verified === true || currentUserData.verification?.status === "approved",
         
-        // Media
         hasMedia: uploadedImageUrls.length > 0 || uploadedVideoUrl !== null,
         mediaType: uploadedImageUrls.length > 0 ? "images" : uploadedVideoUrl ? "video" : null,
         imageUrls: uploadedImageUrls,
         imageCount: uploadedImageUrls.length,
-        imageUrl: null, // Deprecated
+        imageUrl: null,
         videoUrl: uploadedVideoUrl,
         videoThumbnailUrl: uploadedThumbnailUrl,
         videoDuration: uploadedVideoUrl ? videoDuration : null,
         videoTrimStart: uploadedVideoUrl ? trimStart : null,
         videoTrimEnd: uploadedVideoUrl ? trimEnd : null,
         
-        // Engagement
         likes: 0,
         likedBy: [],
         comments: 0,
@@ -1221,11 +1385,9 @@ export default function CreateScreen() {
         lastActivityAt: serverTimestamp(),
         viewCount: 0,
         
-        // Search
         contentLowercase: content.trim().toLowerCase(),
         hashtags: extractHashtags(content),
         
-        // Tags
         taggedPartners: extractedPartners.map((p) => ({
           userId: p.userId,
           displayName: p.displayName,
@@ -1234,15 +1396,21 @@ export default function CreateScreen() {
           courseId: c.courseId,
           courseName: c.courseName,
         })),
+        taggedTournaments: extractedTournaments.map((t) => ({
+          tournamentId: t.tournamentId,
+          name: t.name,
+        })),
+        taggedLeagues: extractedLeagues.map((l) => ({
+          leagueId: l.tournamentId,
+          name: l.name,
+        })),
         
-        // Moderation
         isReported: false,
         reportCount: 0,
         isHidden: false,
         moderatedAt: null,
         moderatedBy: null,
         
-        // Performance
         createdAtTimestamp: Date.now(),
       };
 
@@ -1252,7 +1420,7 @@ export default function CreateScreen() {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         Alert.alert("Updated ✏️", "Your thought has been updated.");
       } else {
-        const newPostRef = await addDoc(collection(db, "thoughts"), {
+        await addDoc(collection(db, "thoughts"), {
           thoughtId: `thought_${Date.now()}`,
           userId: uid,
           ...postData,
@@ -1289,8 +1457,6 @@ export default function CreateScreen() {
     }
   };
 
-  /* --------------------------- SEEK VIDEO TO TRIM POSITION --------------------------- */
-
   const seekToTrimStart = async () => {
     if (videoRef.current) {
       await videoRef.current.setPositionAsync(trimStart * 1000);
@@ -1315,7 +1481,6 @@ export default function CreateScreen() {
         presentationStyle="fullScreen"
       >
         <SafeAreaView style={styles.cropModalContainer}>
-          {/* Header */}
           <View style={styles.cropModalHeader}>
             <TouchableOpacity onPress={handleCancelCrop} style={styles.cropHeaderButton}>
               <Ionicons name="close" size={28} color="#FFF" />
@@ -1338,7 +1503,6 @@ export default function CreateScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Crop Area */}
           <View style={styles.cropAreaContainer}>
             <View style={[styles.cropArea, { width: containerSize, height: containerSize }]}>
               <Image
@@ -1357,7 +1521,6 @@ export default function CreateScreen() {
                 resizeMode="contain"
               />
               
-              {/* Crop Grid Overlay */}
               <View style={styles.cropGridOverlay} pointerEvents="none">
                 <View style={styles.cropGridRow}>
                   <View style={styles.cropGridCell} />
@@ -1378,7 +1541,6 @@ export default function CreateScreen() {
             </View>
           </View>
 
-          {/* Controls */}
           <View style={styles.cropControls}>
             <Text style={styles.cropControlLabel}>Zoom</Text>
             <Slider
@@ -1422,7 +1584,6 @@ export default function CreateScreen() {
               </View>
             </View>
 
-            {/* Action Buttons */}
             <View style={styles.cropActionButtons}>
               <TouchableOpacity 
                 style={styles.cropSkipButton}
@@ -1504,17 +1665,15 @@ export default function CreateScreen() {
         </View>
       )}
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        style={styles.flex1}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+      <KeyboardAwareScrollView
+        style={styles.content}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        extraScrollHeight={120}
+        enableOnAndroid={true}
+        enableAutomaticScroll={true}
+        contentContainerStyle={{ paddingBottom: 100 }}
       >
-        <ScrollView 
-          ref={scrollViewRef}
-          style={styles.content} 
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
           {/* MEDIA SECTION */}
           <View style={styles.section}>
             {isProcessingMedia && !showCropModal ? (
@@ -1524,7 +1683,6 @@ export default function CreateScreen() {
               </View>
             ) : (imageUris.length > 0 || videoUri) ? (
               <View>
-                {/* IMAGE CAROUSEL */}
                 {imageUris.length > 0 && (
                   <View>
                     <FlatList
@@ -1552,7 +1710,6 @@ export default function CreateScreen() {
                       keyExtractor={(item, index) => `image-${index}`}
                     />
                     
-                    {/* Pagination Dots */}
                     {imageUris.length > 1 && (
                       <View style={styles.paginationDots}>
                         {imageUris.map((_, index) => (
@@ -1567,7 +1724,6 @@ export default function CreateScreen() {
                       </View>
                     )}
                     
-                    {/* Add More Button */}
                     {imageUris.length < MAX_IMAGES && (
                       <TouchableOpacity
                         style={styles.addMoreButton}
@@ -1582,7 +1738,6 @@ export default function CreateScreen() {
                   </View>
                 )}
 
-                {/* VIDEO PREVIEW */}
                 {videoUri && (
                   <View>
                     <View style={styles.mediaPreviewBox}>
@@ -1596,7 +1751,6 @@ export default function CreateScreen() {
                         shouldPlay={false}
                       />
                       
-                      {/* Play Button Overlay */}
                       {!isVideoPlaying && (
                         <TouchableOpacity
                           style={styles.videoPlayOverlay}
@@ -1620,7 +1774,6 @@ export default function CreateScreen() {
                       )}
                     </View>
 
-                    {/* ✅ Video Trimmer - ALWAYS VISIBLE */}
                     {showVideoTrimmer && (
                       <View style={styles.videoTrimmer}>
                         <View style={styles.trimmerHeader}>
@@ -1633,7 +1786,6 @@ export default function CreateScreen() {
                           </Text>
                         </View>
                         
-                        {/* Timeline visualization */}
                         <View style={styles.timelineContainer}>
                           <View style={styles.timeline}>
                             <View 
@@ -1706,7 +1858,6 @@ export default function CreateScreen() {
                       </View>
                     )}
 
-                    {/* Remove Video Button */}
                     <TouchableOpacity
                       style={styles.removeVideoButton}
                       onPress={() => {
@@ -1726,7 +1877,6 @@ export default function CreateScreen() {
                 )}
               </View>
             ) : (
-              /* ✅ SINGLE ADD MEDIA BUTTON */
               <TouchableOpacity
                 style={styles.addMediaButton}
                 onPress={handleAddMedia}
@@ -1772,9 +1922,10 @@ export default function CreateScreen() {
           {/* CONTENT INPUT */}
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>
-              Tap @ to tag partners or courses
+              Use @ for partners/courses, # for tournaments/leagues
             </Text>
             <TextInput
+              ref={textInputRef}
               style={styles.textInput}
               placeholder="What clicked for you today?"
               placeholderTextColor="#999"
@@ -1802,9 +1953,21 @@ export default function CreateScreen() {
               </View>
             )}
             
+            {selectedHashtags.length > 0 && (
+              <View style={styles.hashtagsPreview}>
+                <Text style={styles.mentionsLabel}>Events:</Text>
+                <View style={styles.mentionChips}>
+                  {selectedHashtags.map((hashtag, idx) => (
+                    <View key={idx} style={styles.hashtagChip}>
+                      <Text style={styles.hashtagChipText}>{hashtag}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+            
             <Text style={styles.charCount}>{content.length}/{MAX_CHARACTERS}</Text>
 
-            {/* AUTOCOMPLETE DROPDOWN */}
             {showAutocomplete && autocompleteResults.length > 0 && (
               <View style={styles.autocompleteContainer}>
                 <ScrollView 
@@ -1814,30 +1977,53 @@ export default function CreateScreen() {
                 >
                   {autocompleteResults.map((item, idx) => (
                     <TouchableOpacity
-                      key={`${item.userId || item.courseId}-${idx}`}
+                      key={`${item.userId || item.courseId || item.id}-${idx}`}
                       style={styles.autocompleteItem}
-                      onPress={() => handleSelectMention(item)}
+                      onPress={() => handleSelectAutocomplete(item)}
                     >
-                      <Text style={styles.autocompleteName}>
-                        {item.type === "partner"
-                          ? `@${item.displayName}`
-                          : `@${item.courseName}`}
-                      </Text>
-                      {item.type === "course" && item.location && (
-                        <Text style={styles.autocompleteLocation}>{item.location}</Text>
-                      )}
+                      <View style={styles.autocompleteItemContent}>
+                        <View style={[
+                          styles.autocompleteIcon,
+                          item.type === "tournament" && styles.tournamentIcon,
+                          item.type === "league" && styles.leagueIcon,
+                        ]}>
+                          <Ionicons 
+                            name={
+                              item.type === "partner" ? "person" :
+                              item.type === "course" ? "golf" :
+                              item.type === "tournament" ? "trophy" :
+                              "ribbon"
+                            } 
+                            size={16} 
+                            color="#FFF" 
+                          />
+                        </View>
+                        
+                        <View style={styles.autocompleteTextContainer}>
+                          <Text style={styles.autocompleteName}>
+                            {item.type === "partner" && `@${item.displayName}`}
+                            {item.type === "course" && `@${item.courseName}`}
+                            {(item.type === "tournament" || item.type === "league") && `#${item.name}`}
+                          </Text>
+                          {item.location && (
+                            <Text style={styles.autocompleteLocation}>{item.location}</Text>
+                          )}
+                          <Text style={styles.autocompleteType}>
+                            {item.type === "partner" ? "Partner" :
+                             item.type === "course" ? "Course" :
+                             item.type === "tournament" ? "Tournament" :
+                             "League"}
+                          </Text>
+                        </View>
+                      </View>
                     </TouchableOpacity>
                   ))}
                 </ScrollView>
               </View>
             )}
           </View>
+        </KeyboardAwareScrollView>
 
-          <View style={{ height: 100 }} />
-        </ScrollView>
-      </KeyboardAvoidingView>
-
-      {/* ✅ Crop Modal */}
       {renderCropModal()}
     </SafeAreaView>
   );
@@ -1848,7 +2034,6 @@ export default function CreateScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F4EED8" },
   flex1: { flex: 1 },
-
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -1857,620 +2042,103 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
-
-  closeButton: {
-    width: 40,
-    alignItems: "flex-start",
-  },
-
-  closeIcon: {
-    width: 28,
-    height: 28,
-    tintColor: "#FFFFFF",
-  },
-
-  headerTitle: { 
-    color: "#FFFFFF", 
-    fontWeight: "700", 
-    fontSize: 18,
-    flex: 1,
-    textAlign: "center",
-  },
-
-  headerRightButtons: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-
-  deleteButton: {
-    width: 40,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  deleteIcon: {
-    fontSize: 22,
-  },
-
-  postButton: {
-    width: 44,
-    height: 44,
-    backgroundColor: "#FFD700",
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  postButtonDisabled: {
-    opacity: 0.4,
-  },
-
-  flagIcon: {
-    fontSize: 24,
-  },
-
-  lockBanner: {
-    backgroundColor: "#FFF3CD",
-    borderColor: "#FFECB5",
-    borderWidth: 1,
-    padding: 12,
-    margin: 12,
-    borderRadius: 10,
-  },
-
-  lockText: {
-    color: "#664D03",
-    textAlign: "center",
-    fontWeight: "600",
-  },
-
-  content: {
-    flex: 1,
-    padding: 16,
-  },
-
-  section: {
-    marginBottom: 24,
-  },
-
-  sectionLabel: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#0D5C3A",
-    marginBottom: 12,
-  },
-
-  // ✅ Single Add Media Button
-  addMediaButton: {
-    height: 180,
-    borderRadius: 12,
-    backgroundColor: "#FFF",
-    borderWidth: 2,
-    borderColor: "#0D5C3A",
-    borderStyle: "dashed",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 16,
-  },
-
-  addMediaText: {
-    fontSize: 17,
-    fontWeight: "700",
-    color: "#0D5C3A",
-    marginTop: 12,
-  },
-
-  addMediaHint: {
-    fontSize: 13,
-    color: "#666",
-    textAlign: "center",
-    marginTop: 6,
-  },
-
-  // Image Carousel
-  imageCarouselItem: {
-    height: 280,
-    borderRadius: 12,
-    overflow: "hidden",
-    position: "relative",
-  },
-
-  carouselImage: {
-    width: "100%",
-    height: "100%",
-  },
-
-  removeImageButton: {
-    position: "absolute",
-    top: 8,
-    right: 8,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(0,0,0,0.6)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  removeImageText: {
-    color: "#FFF",
-    fontSize: 18,
-    fontWeight: "700",
-  },
-
-  paginationDots: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    marginTop: 12,
-    gap: 6,
-  },
-
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "#CCC",
-  },
-
-  dotActive: {
-    backgroundColor: "#0D5C3A",
-    width: 24,
-  },
-
-  addMoreButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    marginTop: 12,
-    paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: "#0D5C3A",
-  },
-
-  addMoreText: {
-    color: "#FFF",
-    fontWeight: "600",
-    fontSize: 14,
-  },
-
-  // Media Preview
-  mediaPreviewBox: {
-    width: "100%",
-    height: 280,
-    borderRadius: 12,
-    overflow: "hidden",
-    backgroundColor: "#000",
-    alignItems: "center",
-    justifyContent: "center",
-    position: "relative",
-  },
-
-  mediaPreview: {
-    width: "100%",
-    height: "100%",
-  },
-
-  processingText: {
-    color: "#0D5C3A",
-    marginTop: 12,
-    fontSize: 14,
-    fontWeight: "600",
-  },
-
-  // Video Controls
-  videoPlayOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.3)",
-  },
-
-  videoPauseOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  playButton: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "rgba(255,255,255,0.95)",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingLeft: 4,
-  },
-
-  pauseButton: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "rgba(255,255,255,0.95)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  removeVideoButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    marginTop: 12,
-    paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: "#FF3B30",
-  },
-
-  removeMediaText: {
-    color: "#FFF",
-    fontWeight: "600",
-    fontSize: 14,
-  },
-
-  // ✅ Enhanced Video Trimmer
-  videoTrimmer: {
-    backgroundColor: "#FFF",
-    borderRadius: 12,
-    padding: 16,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-  },
-
-  trimmerHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 16,
-  },
-
-  trimmerLabel: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#0D5C3A",
-    flex: 1,
-  },
-
-  trimmerDuration: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#FFD700",
-    backgroundColor: "#0D5C3A",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-
-  // Timeline
-  timelineContainer: {
-    marginBottom: 16,
-  },
-
-  timeline: {
-    height: 8,
-    backgroundColor: "#E0E0E0",
-    borderRadius: 4,
-    overflow: "hidden",
-    position: "relative",
-  },
-
-  timelineSelected: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    backgroundColor: "#0D5C3A",
-    borderRadius: 4,
-  },
-
-  timelineLabels: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 4,
-  },
-
-  timelineLabel: {
-    fontSize: 10,
-    color: "#999",
-  },
-
-  sliderContainer: {
-    marginBottom: 12,
-  },
-
-  sliderLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#666",
-    marginBottom: 4,
-  },
-
-  sliderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-
-  slider: {
-    flex: 1,
-    height: 40,
-  },
-
-  sliderValue: {
-    fontSize: 13,
-    color: "#0D5C3A",
-    fontWeight: "700",
-    width: 45,
-    textAlign: "right",
-  },
-
-  trimmerWarning: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: "#FFF3CD",
-    padding: 10,
-    borderRadius: 8,
-    marginTop: 8,
-  },
-
-  trimmerWarningText: {
-    fontSize: 12,
-    color: "#664D03",
-    flex: 1,
-  },
-
-  // Type Grid
-  typeGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
-  },
-
-  typeCard: {
-    flex: 1,
-    minWidth: "45%",
-    paddingVertical: 16,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: "#FFF",
-    borderWidth: 2,
-    borderColor: "#E0E0E0",
-    alignItems: "center",
-  },
-
-  typeCardActive: {
-    backgroundColor: "#0D5C3A",
-    borderColor: "#0D5C3A",
-  },
-
-  typeCardText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#666",
-  },
-
-  typeCardTextActive: {
-    color: "#FFF",
-  },
-
-  textInput: {
-    backgroundColor: "#FFF",
-    borderRadius: 12,
-    padding: 16,
-    fontSize: 16,
-    minHeight: 120,
-    textAlignVertical: "top",
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-  },
-
-  mentionsPreview: {
-    marginTop: 8,
-    padding: 12,
-    backgroundColor: "rgba(13, 92, 58, 0.05)",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "rgba(13, 92, 58, 0.2)",
-  },
-
-  mentionsLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#0D5C3A",
-    marginBottom: 6,
-  },
-
-  mentionChips: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-  },
-
-  mentionChip: {
-    backgroundColor: "#0D5C3A",
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-  },
-
-  mentionChipText: {
-    color: "#FFF",
-    fontSize: 12,
-    fontWeight: "600",
-  },
-
-  charCount: {
-    fontSize: 12,
-    color: "#999",
-    textAlign: "right",
-    marginTop: 4,
-  },
-
-  autocompleteContainer: {
-    backgroundColor: "#FFF",
-    borderRadius: 8,
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-    maxHeight: 200,
-  },
-
-  autocompleteScrollView: {
-    maxHeight: 200,
-  },
-
-  autocompleteItem: {
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F0F0F0",
-  },
-
-  autocompleteName: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#0D5C3A",
-  },
-
-  autocompleteLocation: {
-    fontSize: 12,
-    color: "#666",
-    marginTop: 2,
-  },
-
-  // ✅ Crop Modal Styles
-  cropModalContainer: {
-    flex: 1,
-    backgroundColor: "#1a1a1a",
-  },
-
-  cropModalHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: "#0D5C3A",
-  },
-
-  cropHeaderButton: {
-    width: 44,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  cropModalTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#FFF",
-  },
-
-  cropAreaContainer: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 24,
-  },
-
-  cropArea: {
-    backgroundColor: "#000",
-    overflow: "hidden",
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: "#FFD700",
-    position: "relative",
-  },
-
-  cropImage: {
-    position: "absolute",
-  },
-
-  cropGridOverlay: {
-    ...StyleSheet.absoluteFillObject,
-  },
-
-  cropGridRow: {
-    flex: 1,
-    flexDirection: "row",
-  },
-
-  cropGridRowBorder: {
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: "rgba(255, 215, 0, 0.3)",
-  },
-
-  cropGridCell: {
-    flex: 1,
-  },
-
-  cropGridCellBorder: {
-    borderLeftWidth: 1,
-    borderRightWidth: 1,
-    borderColor: "rgba(255, 215, 0, 0.3)",
-  },
-
-  cropControls: {
-    backgroundColor: "#2a2a2a",
-    padding: 20,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-  },
-
-  cropControlLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#999",
-    marginBottom: 8,
-  },
-
-  cropSlider: {
-    width: "100%",
-    height: 40,
-  },
-
-  cropOffsetControls: {
-    marginTop: 16,
-  },
-
-  cropOffsetRow: {
-    marginBottom: 12,
-  },
-
-  cropActionButtons: {
-    flexDirection: "row",
-    gap: 12,
-    marginTop: 20,
-  },
-
-  cropSkipButton: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 10,
-    backgroundColor: "#444",
-    alignItems: "center",
-  },
-
-  cropSkipButtonText: {
-    color: "#FFF",
-    fontWeight: "600",
-    fontSize: 15,
-  },
-
-  cropConfirmButton: {
-    flex: 2,
-    paddingVertical: 14,
-    borderRadius: 10,
-    backgroundColor: "#FFD700",
-    alignItems: "center",
-  },
-
-  cropConfirmButtonText: {
-    color: "#0D5C3A",
-    fontWeight: "700",
-    fontSize: 15,
-  },
+  closeButton: { width: 40, alignItems: "flex-start" },
+  closeIcon: { width: 28, height: 28, tintColor: "#FFFFFF" },
+  headerTitle: { color: "#FFFFFF", fontWeight: "700", fontSize: 18, flex: 1, textAlign: "center" },
+  headerRightButtons: { flexDirection: "row", alignItems: "center", gap: 8 },
+  deleteButton: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
+  deleteIcon: { fontSize: 22 },
+  postButton: { width: 44, height: 44, backgroundColor: "#FFD700", borderRadius: 22, alignItems: "center", justifyContent: "center" },
+  postButtonDisabled: { opacity: 0.4 },
+  flagIcon: { fontSize: 24 },
+  lockBanner: { backgroundColor: "#FFF3CD", borderColor: "#FFECB5", borderWidth: 1, padding: 12, margin: 12, borderRadius: 10 },
+  lockText: { color: "#664D03", textAlign: "center", fontWeight: "600" },
+  content: { flex: 1, padding: 16 },
+  section: { marginBottom: 24 },
+  sectionLabel: { fontSize: 14, fontWeight: "700", color: "#0D5C3A", marginBottom: 12 },
+  addMediaButton: { height: 180, borderRadius: 12, backgroundColor: "#FFF", borderWidth: 2, borderColor: "#0D5C3A", borderStyle: "dashed", alignItems: "center", justifyContent: "center", padding: 16 },
+  addMediaText: { fontSize: 17, fontWeight: "700", color: "#0D5C3A", marginTop: 12 },
+  addMediaHint: { fontSize: 13, color: "#666", textAlign: "center", marginTop: 6 },
+  imageCarouselItem: { height: 280, borderRadius: 12, overflow: "hidden", position: "relative" },
+  carouselImage: { width: "100%", height: "100%" },
+  removeImageButton: { position: "absolute", top: 8, right: 8, width: 32, height: 32, borderRadius: 16, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center" },
+  removeImageText: { color: "#FFF", fontSize: 18, fontWeight: "700" },
+  paginationDots: { flexDirection: "row", justifyContent: "center", alignItems: "center", marginTop: 12, gap: 6 },
+  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#CCC" },
+  dotActive: { backgroundColor: "#0D5C3A", width: 24 },
+  addMoreButton: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 12, paddingVertical: 12, borderRadius: 8, backgroundColor: "#0D5C3A" },
+  addMoreText: { color: "#FFF", fontWeight: "600", fontSize: 14 },
+  mediaPreviewBox: { width: "100%", height: 280, borderRadius: 12, overflow: "hidden", backgroundColor: "#000", alignItems: "center", justifyContent: "center", position: "relative" },
+  mediaPreview: { width: "100%", height: "100%" },
+  processingText: { color: "#0D5C3A", marginTop: 12, fontSize: 14, fontWeight: "600" },
+  videoPlayOverlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.3)" },
+  videoPauseOverlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
+  playButton: { width: 64, height: 64, borderRadius: 32, backgroundColor: "rgba(255,255,255,0.95)", alignItems: "center", justifyContent: "center", paddingLeft: 4 },
+  pauseButton: { width: 64, height: 64, borderRadius: 32, backgroundColor: "rgba(255,255,255,0.95)", alignItems: "center", justifyContent: "center" },
+  removeVideoButton: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 12, paddingVertical: 12, borderRadius: 8, backgroundColor: "#FF3B30" },
+  removeMediaText: { color: "#FFF", fontWeight: "600", fontSize: 14 },
+  videoTrimmer: { backgroundColor: "#FFF", borderRadius: 12, padding: 16, marginTop: 12, borderWidth: 1, borderColor: "#E0E0E0" },
+  trimmerHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 16 },
+  trimmerLabel: { fontSize: 14, fontWeight: "700", color: "#0D5C3A", flex: 1 },
+  trimmerDuration: { fontSize: 14, fontWeight: "700", color: "#FFD700", backgroundColor: "#0D5C3A", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
+  timelineContainer: { marginBottom: 16 },
+  timeline: { height: 8, backgroundColor: "#E0E0E0", borderRadius: 4, overflow: "hidden", position: "relative" },
+  timelineSelected: { position: "absolute", top: 0, bottom: 0, backgroundColor: "#0D5C3A", borderRadius: 4 },
+  timelineLabels: { flexDirection: "row", justifyContent: "space-between", marginTop: 4 },
+  timelineLabel: { fontSize: 10, color: "#999" },
+  sliderContainer: { marginBottom: 12 },
+  sliderLabel: { fontSize: 12, fontWeight: "600", color: "#666", marginBottom: 4 },
+  sliderRow: { flexDirection: "row", alignItems: "center" },
+  slider: { flex: 1, height: 40 },
+  sliderValue: { fontSize: 13, color: "#0D5C3A", fontWeight: "700", width: 45, textAlign: "right" },
+  trimmerWarning: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#FFF3CD", padding: 10, borderRadius: 8, marginTop: 8 },
+  trimmerWarningText: { fontSize: 12, color: "#664D03", flex: 1 },
+  typeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  typeCard: { flex: 1, minWidth: "45%", paddingVertical: 16, paddingHorizontal: 12, borderRadius: 12, backgroundColor: "#FFF", borderWidth: 2, borderColor: "#E0E0E0", alignItems: "center" },
+  typeCardActive: { backgroundColor: "#0D5C3A", borderColor: "#0D5C3A" },
+  typeCardText: { fontSize: 14, fontWeight: "600", color: "#666" },
+  typeCardTextActive: { color: "#FFF" },
+  textInput: { backgroundColor: "#FFF", borderRadius: 12, padding: 16, fontSize: 16, minHeight: 120, textAlignVertical: "top", borderWidth: 1, borderColor: "#E0E0E0" },
+  mentionsPreview: { marginTop: 8, padding: 12, backgroundColor: "rgba(13, 92, 58, 0.05)", borderRadius: 8, borderWidth: 1, borderColor: "rgba(13, 92, 58, 0.2)" },
+  hashtagsPreview: { marginTop: 8, padding: 12, backgroundColor: "rgba(255, 215, 0, 0.1)", borderRadius: 8, borderWidth: 1, borderColor: "rgba(255, 215, 0, 0.3)" },
+  mentionsLabel: { fontSize: 12, fontWeight: "600", color: "#0D5C3A", marginBottom: 6 },
+  mentionChips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  mentionChip: { backgroundColor: "#0D5C3A", paddingVertical: 4, paddingHorizontal: 10, borderRadius: 12 },
+  mentionChipText: { color: "#FFF", fontSize: 12, fontWeight: "600" },
+  hashtagChip: { backgroundColor: "#FFD700", paddingVertical: 4, paddingHorizontal: 10, borderRadius: 12 },
+  hashtagChipText: { color: "#0D5C3A", fontSize: 12, fontWeight: "700" },
+  charCount: { fontSize: 12, color: "#999", textAlign: "right", marginTop: 4 },
+  autocompleteContainer: { backgroundColor: "#FFF", borderRadius: 8, marginTop: 8, borderWidth: 1, borderColor: "#E0E0E0", maxHeight: 250, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 },
+  autocompleteScrollView: { maxHeight: 250 },
+  autocompleteItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" },
+  autocompleteItemContent: { flexDirection: "row", alignItems: "center", gap: 12 },
+  autocompleteIcon: { width: 32, height: 32, borderRadius: 16, backgroundColor: "#0D5C3A", alignItems: "center", justifyContent: "center" },
+  tournamentIcon: { backgroundColor: "#FFD700" },
+  leagueIcon: { backgroundColor: "#FF6B35" },
+  autocompleteTextContainer: { flex: 1 },
+  autocompleteName: { fontSize: 14, fontWeight: "600", color: "#0D5C3A" },
+  autocompleteLocation: { fontSize: 12, color: "#666", marginTop: 2 },
+  autocompleteType: { fontSize: 10, color: "#999", marginTop: 2, textTransform: "uppercase", letterSpacing: 0.5 },
+  cropModalContainer: { flex: 1, backgroundColor: "#1a1a1a" },
+  cropModalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 12, backgroundColor: "#0D5C3A" },
+  cropHeaderButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  cropModalTitle: { fontSize: 16, fontWeight: "700", color: "#FFF" },
+  cropAreaContainer: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
+  cropArea: { backgroundColor: "#000", overflow: "hidden", borderRadius: 8, borderWidth: 2, borderColor: "#FFD700", position: "relative" },
+  cropImage: { position: "absolute" },
+  cropGridOverlay: { ...StyleSheet.absoluteFillObject },
+  cropGridRow: { flex: 1, flexDirection: "row" },
+  cropGridRowBorder: { borderTopWidth: 1, borderBottomWidth: 1, borderColor: "rgba(255, 215, 0, 0.3)" },
+  cropGridCell: { flex: 1 },
+  cropGridCellBorder: { borderLeftWidth: 1, borderRightWidth: 1, borderColor: "rgba(255, 215, 0, 0.3)" },
+  cropControls: { backgroundColor: "#2a2a2a", padding: 20, borderTopLeftRadius: 20, borderTopRightRadius: 20 },
+  cropControlLabel: { fontSize: 12, fontWeight: "600", color: "#999", marginBottom: 8 },
+  cropSlider: { width: "100%", height: 40 },
+  cropOffsetControls: { marginTop: 16 },
+  cropOffsetRow: { marginBottom: 12 },
+  cropActionButtons: { flexDirection: "row", gap: 12, marginTop: 20 },
+  cropSkipButton: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: "#444", alignItems: "center" },
+  cropSkipButtonText: { color: "#FFF", fontWeight: "600", fontSize: 15 },
+  cropConfirmButton: { flex: 2, paddingVertical: 14, borderRadius: 10, backgroundColor: "#FFD700", alignItems: "center" },
+  cropConfirmButtonText: { color: "#0D5C3A", fontWeight: "700", fontSize: 15 },
 });

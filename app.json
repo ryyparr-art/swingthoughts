@@ -3,6 +3,12 @@
     "name": "SwingThoughts",
     "slug": "swingthoughts",
     "version": "1.0.0",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/5686fe17-0cdc-427b-8271-50f77a43f14b"
+    },
     "orientation": "portrait",
     "icon": "./assets/images/AppIcon.png",
     "scheme": "swingthoughts",
@@ -77,7 +83,9 @@
         }
       ],
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-video",
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true

@@ -5,6 +5,7 @@ import LowmanCarousel from "@/components/navigation/LowmanCarousel";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import TournamentLiveBanner from "@/components/TournamentLiveBanner";
+import { FullscreenVideoPlayer, VideoThumbnail } from "@/components/video/VideoComponents";
 import { auth, db } from "@/constants/firebaseConfig";
 import { getPostTypeLabel } from "@/constants/postTypes";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
@@ -30,7 +31,7 @@ import {
   where,
 } from "firebase/firestore";
 
-import { AVPlaybackStatus, ResizeMode, Video } from "expo-av";
+import { ImageZoom } from "@likashefqet/react-native-image-zoom";
 import * as Haptics from "expo-haptics";
 import * as Location from "expo-location";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -41,13 +42,14 @@ import {
   Dimensions,
   FlatList,
   Image,
-  Platform,
+  Modal,
   RefreshControl,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import CommentsModal from "@/components/modals/CommentsModal";
@@ -57,6 +59,7 @@ import FilterFAB from "@/components/ui/FilterFAB";
 import { Ionicons } from "@expo/vector-icons";
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
+const SCREEN_HEIGHT = Dimensions.get('window').height;
 
 interface Thought {
   id: string;
@@ -95,6 +98,8 @@ interface Thought {
   courseName?: string;
   taggedPartners?: Array<{ userId: string; displayName: string }>;
   taggedCourses?: Array<{ courseId: number; courseName: string }>;
+  taggedTournaments?: Array<{ tournamentId: string; name: string }>;
+  taggedLeagues?: Array<{ leagueId: string; name: string }>;
   ownedCourseId?: number;
   linkedCourseId?: number;
   
@@ -120,40 +125,9 @@ interface Thought {
   scoreId?: string;
 }
 
-/* ------------------ WEB VIDEO COMPONENT ------------------ */
-const WebVideoPlayer = ({ 
-  videoUrl, 
-  thoughtId, 
-  onRefSet, 
-  onEnded 
-}: { 
-  videoUrl: string; 
-  thoughtId: string; 
-  onRefSet: (ref: HTMLVideoElement | null) => void;
-  onEnded: () => void;
-}) => {
-  return (
-    <video
-      ref={onRefSet}
-      src={videoUrl}
-      style={{
-        width: '100%',
-        height: '100%',
-        objectFit: 'cover',
-        backgroundColor: '#000',
-      }}
-      playsInline
-      preload="metadata"
-      crossOrigin="anonymous"
-      onLoadedData={() => console.log("📹 Video loaded for:", thoughtId)}
-      onError={(e) => {
-        console.error("❌ Video error for:", thoughtId, e);
-      }}
-      onEnded={onEnded}
-    />
-  );
-};
-
+/* ==================================================================
+   MAIN CLUBHOUSE SCREEN
+   ================================================================== */
 export default function ClubhouseScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
@@ -185,12 +159,20 @@ export default function ClubhouseScreen() {
   const [reportModalVisible, setReportModalVisible] = useState(false);
   const [reportingThought, setReportingThought] = useState<Thought | null>(null);
 
-  // Video playback states
-  const [playingVideos, setPlayingVideos] = useState<Set<string>>(new Set());
-  const videoRefs = useRef<{ [key: string]: any }>({});
-  
   // Image carousel states
   const [currentImageIndexes, setCurrentImageIndexes] = useState<{ [key: string]: number }>({});
+  
+  // Image viewer state
+  const [expandedImage, setExpandedImage] = useState<string | null>(null);
+  
+  // Video viewer state (fullscreen modal)
+  const [expandedVideo, setExpandedVideo] = useState<{ 
+    url: string; 
+    thumbnailUrl?: string;
+    trimStart?: number;
+    trimEnd?: number;
+    duration?: number;
+  } | null>(null);
   
   // ============================================
   // NOTIFICATION NAVIGATION PARAMS
@@ -278,84 +260,84 @@ export default function ClubhouseScreen() {
   useEffect(() => {
     if (currentUserId && currentUserData?.regionKey) {
       const quickCacheCheck = async () => {
-  const userRegionKey = currentUserData?.regionKey;
-  
-  if (!userRegionKey) {
-    setIsCheckingCache(false);
-    setLoading(true);
-    await loadFeed();
-    return;
-  }
+        const userRegionKey = currentUserData?.regionKey;
+        
+        if (!userRegionKey) {
+          setIsCheckingCache(false);
+          setLoading(true);
+          await loadFeed();
+          return;
+        }
 
-  const cached = await getCache(CACHE_KEYS.FEED(currentUserId), userRegionKey);
-  
-  if (cached && cached.length > 0) {
-    console.log("⚡ Cache found - loading cached thoughts immediately");
-    
-    try {
-      let thoughtsFromCache = convertCachedFeedToThoughts(cached);
-      
-      // ✅ Fetch and prepend highlighted post if navigating from notification
-      const scrollTargetId = targetPostId || highlightScoreId;
-      if (scrollTargetId) {
-        console.log("🎯 Fetching highlighted post for cache view:", scrollTargetId);
+        const cached = await getCache(CACHE_KEYS.FEED(currentUserId), userRegionKey);
         
-        let highlightedThought: Thought | null = null;
-        
-        // Try by postId first
-        if (targetPostId) {
-          const postDoc = await getDoc(doc(db, "thoughts", targetPostId));
-          if (postDoc.exists()) {
-            highlightedThought = convertPostDataToThought(postDoc.id, postDoc.data());
+        if (cached && cached.length > 0) {
+          console.log("⚡ Cache found - loading cached thoughts immediately");
+          
+          try {
+            let thoughtsFromCache = convertCachedFeedToThoughts(cached);
+            
+            // ✅ Fetch and prepend highlighted post if navigating from notification
+            const scrollTargetId = targetPostId || highlightScoreId;
+            if (scrollTargetId) {
+              console.log("🎯 Fetching highlighted post for cache view:", scrollTargetId);
+              
+              let highlightedThought: Thought | null = null;
+              
+              // Try by postId first
+              if (targetPostId) {
+                const postDoc = await getDoc(doc(db, "thoughts", targetPostId));
+                if (postDoc.exists()) {
+                  highlightedThought = convertPostDataToThought(postDoc.id, postDoc.data());
+                }
+              }
+              
+              // Fallback to scoreId
+              if (!highlightedThought && highlightScoreId) {
+                const thoughtsQuery = query(
+                  collection(db, "thoughts"),
+                  where("scoreId", "==", highlightScoreId)
+                );
+                const snapshot = await getDocs(thoughtsQuery);
+                if (!snapshot.empty) {
+                  const postDoc = snapshot.docs[0];
+                  highlightedThought = convertPostDataToThought(postDoc.id, postDoc.data());
+                  setFoundPostIdFromScore(postDoc.id);
+                }
+              }
+              
+              // Prepend highlighted post to cached feed
+              if (highlightedThought) {
+                console.log("✅ Prepending highlighted post to cached feed");
+                thoughtsFromCache = [
+                  highlightedThought,
+                  ...thoughtsFromCache.filter(t => t.id !== highlightedThought!.id)
+                ];
+              }
+            }
+            
+            setThoughts(thoughtsFromCache);
+            setFeedItems(cached);
+            
+            setLoading(false);
+            setIsCheckingCache(false);
+            setHasLoadedOnce(true);
+            setShowingCached(true);
+            
+            await loadFeed(true);
+          } catch (error) {
+            console.error("❌ Error loading cached thoughts:", error);
+            setIsCheckingCache(false);
+            setLoading(true);
+            await loadFeed();
           }
+        } else {
+          console.log("📭 No cache - loading fresh");
+          setIsCheckingCache(false);
+          setLoading(true);
+          await loadFeed();
         }
-        
-        // Fallback to scoreId
-        if (!highlightedThought && highlightScoreId) {
-          const thoughtsQuery = query(
-            collection(db, "thoughts"),
-            where("scoreId", "==", highlightScoreId)
-          );
-          const snapshot = await getDocs(thoughtsQuery);
-          if (!snapshot.empty) {
-            const postDoc = snapshot.docs[0];
-            highlightedThought = convertPostDataToThought(postDoc.id, postDoc.data());
-            setFoundPostIdFromScore(postDoc.id);
-          }
-        }
-        
-        // Prepend highlighted post to cached feed
-        if (highlightedThought) {
-          console.log("✅ Prepending highlighted post to cached feed");
-          thoughtsFromCache = [
-            highlightedThought,
-            ...thoughtsFromCache.filter(t => t.id !== highlightedThought!.id)
-          ];
-        }
-      }
-      
-      setThoughts(thoughtsFromCache);
-      setFeedItems(cached);
-      
-      setLoading(false);
-      setIsCheckingCache(false);
-      setHasLoadedOnce(true);
-      setShowingCached(true);
-      
-      await loadFeed(true);
-    } catch (error) {
-      console.error("❌ Error loading cached thoughts:", error);
-      setIsCheckingCache(false);
-      setLoading(true);
-      await loadFeed();
-    }
-  } else {
-    console.log("📭 No cache - loading fresh");
-    setIsCheckingCache(false);
-    setLoading(true);
-    await loadFeed();
-  }
-};
+      };
       
       quickCacheCheck();
     }
@@ -511,6 +493,8 @@ export default function ClubhouseScreen() {
       courseName: data.courseName,
       taggedPartners: data.taggedPartners || [],
       taggedCourses: data.taggedCourses || [],
+      taggedTournaments: data.taggedTournaments || [],
+      taggedLeagues: data.taggedLeagues || [],
       ownedCourseId: data.ownedCourseId,
       linkedCourseId: data.linkedCourseId,
       
@@ -613,6 +597,8 @@ export default function ClubhouseScreen() {
             courseName: c.courseName
           })),
           taggedPartners: postItem.taggedPartners || [],
+          taggedTournaments: (postItem as any).taggedTournaments || [],
+          taggedLeagues: (postItem as any).taggedLeagues || [],
           
           regionKey: postItem.regionKey,
           geohash: postItem.geohash,
@@ -737,94 +723,28 @@ export default function ClubhouseScreen() {
     }
   };
 
-  /* ------------------ VIDEO PLAYBACK ------------------ */
-  const handleVideoPlayback = async (thoughtId: string) => {
-    const videoRef = videoRefs.current[thoughtId];
-    if (!videoRef) {
-      console.log("❌ No video ref found for:", thoughtId);
-      return;
-    }
-
-    try {
-      console.log("🎬 Video overlay pressed for:", thoughtId);
-      soundPlayer.play('click');
-      
-      if (Platform.OS === 'web') {
-        const videoElement = videoRef as HTMLVideoElement;
-        
-        if (videoElement.paused) {
-          console.log("▶️ Playing video (web):", thoughtId);
-          await videoElement.play();
-          setPlayingVideos(prev => new Set(prev).add(thoughtId));
-        } else {
-          console.log("⏸️ Pausing video (web):", thoughtId);
-          videoElement.pause();
-          setPlayingVideos(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(thoughtId);
-            return newSet;
-          });
-        }
-      } else {
-        const status = await videoRef.getStatusAsync();
-        console.log("📹 Video status:", status);
-        
-        if (status.isLoaded) {
-          if (status.isPlaying) {
-            console.log("⏸️ Pausing video:", thoughtId);
-            await videoRef.pauseAsync();
-            setPlayingVideos(prev => {
-              const newSet = new Set(prev);
-              newSet.delete(thoughtId);
-              return newSet;
-            });
-          } else {
-            console.log("▶️ Playing video:", thoughtId);
-            await videoRef.playAsync();
-            setPlayingVideos(prev => new Set(prev).add(thoughtId));
-          }
-        } else {
-          console.log("⚠️ Video not loaded, attempting to load...");
-          await videoRef.loadAsync({ uri: status.uri || '' }, {}, false);
-          await videoRef.playAsync();
-          setPlayingVideos(prev => new Set(prev).add(thoughtId));
-        }
-      }
-    } catch (error) {
-      console.error("❌ Video playback error:", error);
-      soundPlayer.play('error');
-      Alert.alert("Video Error", "Failed to play video. Please try again.");
-    }
-  };
-
-  const handleVideoEnd = (thoughtId: string) => {
-    setPlayingVideos(prev => {
-      const newSet = new Set(prev);
-      newSet.delete(thoughtId);
-      return newSet;
+  /* ------------------ EXPAND VIDEO TO FULLSCREEN ------------------ */
+  const handleExpandVideo = (
+    videoUrl: string, 
+    thumbnailUrl?: string,
+    trimStart?: number,
+    trimEnd?: number,
+    duration?: number
+  ) => {
+    // Sound plays here BEFORE video modal opens - this is safe
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setExpandedVideo({ 
+      url: videoUrl, 
+      thumbnailUrl,
+      trimStart: trimStart || 0,
+      trimEnd: trimEnd || duration || 30,
+      duration: duration || 30
     });
   };
 
-  const handleReplayVideo = async (thoughtId: string) => {
-    const videoRef = videoRefs.current[thoughtId];
-    if (!videoRef) return;
-
-    try {
-      soundPlayer.play('click');
-      
-      if (Platform.OS === 'web') {
-        const videoElement = videoRef as HTMLVideoElement;
-        videoElement.currentTime = 0;
-        await videoElement.play();
-        setPlayingVideos(prev => new Set(prev).add(thoughtId));
-      } else {
-        await videoRef.replayAsync();
-        setPlayingVideos(prev => new Set(prev).add(thoughtId));
-      }
-    } catch (error) {
-      console.error("Video replay error:", error);
-      soundPlayer.play('error');
-    }
+  const handleCloseExpandedVideo = () => {
+    setExpandedVideo(null);
   };
 
   /* ------------------ LIKE ------------------ */
@@ -1004,50 +924,50 @@ export default function ClubhouseScreen() {
         // User is near the venue - show selection alert
         console.log("🏌️ User is near venue, showing chat type selection");
       
-      Alert.alert(
-        "Join Tournament Chat",
-        `You're at ${tournament.name}! Which chat would you like to join?`,
-        [
-          {
-            text: "On-Premise Chat",
-            onPress: () => {
-              soundPlayer.play("click");
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              setSelectedTournament(tournament);
-              setSelectedChatType("onpremise");
-              setTournamentChatVisible(true);
+        Alert.alert(
+          "Join Tournament Chat",
+          `You're at ${tournament.name}! Which chat would you like to join?`,
+          [
+            {
+              text: "On-Premise Chat",
+              onPress: () => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                setSelectedTournament(tournament);
+                setSelectedChatType("onpremise");
+                setTournamentChatVisible(true);
+              },
             },
-          },
-          {
-            text: "Tournament Discussion",
-            onPress: () => {
-              soundPlayer.play("click");
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setSelectedTournament(tournament);
-              setSelectedChatType("live");
-              setTournamentChatVisible(true);
+            {
+              text: "Tournament Discussion",
+              onPress: () => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setSelectedTournament(tournament);
+                setSelectedChatType("live");
+                setTournamentChatVisible(true);
+              },
             },
-          },
-          {
-            text: "Cancel",
-            style: "cancel",
-          },
-        ]
-      );
-    } else {
-      // User is not near venue - go directly to Tournament Discussion
-      console.log("🏌️ User is not near venue, opening Tournament Discussion");
+            {
+              text: "Cancel",
+              style: "cancel",
+            },
+          ]
+        );
+      } else {
+        // User is not near venue - go directly to Tournament Discussion
+        console.log("🏌️ User is not near venue, opening Tournament Discussion");
+        setSelectedTournament(tournament);
+        setSelectedChatType("live");
+        setTournamentChatVisible(true);
+      }
+    } catch (error) {
+      console.error("🏌️ Error checking location:", error);
+      // On error, just open Tournament Discussion
       setSelectedTournament(tournament);
       setSelectedChatType("live");
       setTournamentChatVisible(true);
     }
-  } catch (error) {
-    console.error("🏌️ Error checking location:", error);
-    // On error, just open Tournament Discussion
-    setSelectedTournament(tournament);
-    setSelectedChatType("live");
-    setTournamentChatVisible(true);
-  }
   };
 
   /**
@@ -1159,8 +1079,15 @@ export default function ClubhouseScreen() {
     }
   }, [targetPostId, foundPostIdFromScore, loading, thoughts.length]);
 
-  /* ------------------ RENDER CONTENT WITH MENTIONS ------------------ */
-  const renderContentWithMentions = (content: string, taggedPartners: any[] = [], taggedCourses: any[] = []) => {
+  /* ------------------ RENDER CONTENT WITH TAGS (@ mentions and # hashtags) ------------------ */
+  const renderContentWithTags = (
+    content: string, 
+    taggedPartners: any[] = [], 
+    taggedCourses: any[] = [],
+    taggedTournaments: any[] = [],
+    taggedLeagues: any[] = []
+  ) => {
+    // Build mention map for @ tags (partners and courses)
     const mentionMap: { [key: string]: { type: string; id: string | number } } = {};
     
     taggedPartners.forEach((partner) => {
@@ -1171,22 +1098,39 @@ export default function ClubhouseScreen() {
       mentionMap[`@${course.courseName}`] = { type: 'course', id: course.courseId };
     });
     
+    // Build hashtag map for # tags (tournaments and leagues)
+    const hashtagMap: { [key: string]: { type: string; id: string; name: string } } = {};
+    
+    taggedTournaments.forEach((tournament) => {
+      hashtagMap[`#${tournament.name}`] = { type: 'tournament', id: tournament.tournamentId, name: tournament.name };
+    });
+    
+    taggedLeagues.forEach((league) => {
+      hashtagMap[`#${league.name}`] = { type: 'league', id: league.leagueId, name: league.name };
+    });
+    
+    // Combine all patterns
     const mentionPatterns = Object.keys(mentionMap)
-      .map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    
+    const hashtagPatterns = Object.keys(hashtagMap)
+      .map(h => h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    
+    const allPatterns = [...mentionPatterns, ...hashtagPatterns]
       .sort((a, b) => b.length - a.length);
     
-    if (mentionPatterns.length === 0) {
+    if (allPatterns.length === 0) {
       return <Text style={styles.content}>{content}</Text>;
     }
     
-    const mentionRegex = new RegExp(`(${mentionPatterns.join('|')})`, 'g');
-    const parts = content.split(mentionRegex);
+    const combinedRegex = new RegExp(`(${allPatterns.join('|')})`, 'g');
+    const parts = content.split(combinedRegex);
     
     return (
       <Text style={styles.content}>
         {parts.map((part, index) => {
+          // Check if it's a mention (@)
           const mention = mentionMap[part];
-          
           if (mention) {
             return (
               <Text
@@ -1205,6 +1149,39 @@ export default function ClubhouseScreen() {
                 {part}
               </Text>
             );
+          }
+          
+          // Check if it's a hashtag (#)
+          const hashtag = hashtagMap[part];
+          if (hashtag) {
+            // Tournaments are tappable, leagues are not (yet)
+            if (hashtag.type === 'tournament') {
+              return (
+                <Text
+                  key={index}
+                  style={styles.hashtag}
+                  onPress={() => {
+                    soundPlayer.play('click');
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    // Open FilterBottomSheet with tournament name as search query
+                    setActiveFilters({ searchQuery: hashtag.name });
+                    setFilterSheetVisible(true);
+                  }}
+                >
+                  {part}
+                </Text>
+              );
+            } else {
+              // League - styled but not tappable (feature coming soon)
+              return (
+                <Text
+                  key={index}
+                  style={styles.hashtagInactive}
+                >
+                  {part}
+                </Text>
+              );
+            }
           }
           
           return <Text key={index}>{part}</Text>;
@@ -1237,13 +1214,22 @@ export default function ClubhouseScreen() {
             }));
           }}
           renderItem={({ item }) => (
-            <View style={{ width: SCREEN_WIDTH }}>
-              <Image 
-                source={{ uri: item }} 
-                style={styles.thoughtImage}
-                resizeMode="cover"
-              />
-            </View>
+            <TouchableOpacity
+              activeOpacity={0.9}
+              onPress={() => {
+                soundPlayer.play('click');
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setExpandedImage(item);
+              }}
+            >
+              <View style={{ width: SCREEN_WIDTH }}>
+                <Image 
+                  source={{ uri: item }} 
+                  style={styles.thoughtImage}
+                  resizeMode="cover"
+                />
+              </View>
+            </TouchableOpacity>
           )}
           keyExtractor={(item, index) => `${thought.id}-image-${index}`}
         />
@@ -1279,7 +1265,6 @@ export default function ClubhouseScreen() {
     const hasLiked = item.likedBy?.includes(currentUserId);
     const hasComments = (item.comments || 0) > 0;
     const isOwnPost = item.userId === currentUserId;
-    const isVideoPlaying = playingVideos.has(item.id);
     
     // ✅ Only highlight if highlightPostId matches (not scrollToPostId)
     const isHighlighted = shouldHighlight && (
@@ -1403,84 +1388,29 @@ export default function ClubhouseScreen() {
 
         {renderImagesCarousel(item)}
 
+        {/* Video Thumbnail - uses VideoThumbnail from VideoComponents */}
         {item.videoUrl && (
-          <View style={styles.videoContainer}>
-            {Platform.OS === 'web' ? (
-              <WebVideoPlayer
-                videoUrl={item.videoUrl}
-                thoughtId={item.id}
-                onRefSet={(ref) => {
-                  if (ref) {
-                    videoRefs.current[item.id] = ref;
-                  }
-                }}
-                onEnded={() => handleVideoEnd(item.id)}
-              />
-            ) : (
-              <Video
-                ref={(ref) => {
-                  if (ref) {
-                    videoRefs.current[item.id] = ref;
-                  }
-                }}
-                source={{ uri: item.videoUrl }}
-                style={styles.thoughtVideo}
-                resizeMode={ResizeMode.COVER}
-                shouldPlay={false}
-                isLooping={false}
-                isMuted={false}
-                useNativeControls={false}
-                onPlaybackStatusUpdate={(status: AVPlaybackStatus) => {
-                  if (status.isLoaded && status.didJustFinish) {
-                    handleVideoEnd(item.id);
-                  }
-                }}
-              />
+          <VideoThumbnail
+            videoUrl={item.videoUrl}
+            thumbnailUrl={item.videoThumbnailUrl}
+            videoDuration={item.videoDuration}
+            onPress={() => handleExpandVideo(
+              item.videoUrl!, 
+              item.videoThumbnailUrl,
+              item.videoTrimStart,
+              item.videoTrimEnd,
+              item.videoDuration
             )}
-            
-            <View style={styles.videoBadge}>
-              <Ionicons name="videocam" size={16} color="#FFF" />
-              <Text style={styles.videoBadgeText}>VIDEO</Text>
-            </View>
-
-            {item.videoDuration && (
-              <View style={styles.videoDurationBadge}>
-                <Ionicons name="time-outline" size={12} color="#FFF" />
-                <Text style={styles.videoDurationText}>
-                  {Math.round(item.videoDuration)}s
-                </Text>
-              </View>
-            )}
-            
-            <TouchableOpacity
-              style={styles.videoOverlay}
-              onPress={() => handleVideoPlayback(item.id)}
-              activeOpacity={0.9}
-            >
-              {!isVideoPlaying && (
-                <View style={styles.videoPlayButton}>
-                  <Ionicons name="play" size={56} color="#FFF" />
-                </View>
-              )}
-            </TouchableOpacity>
-
-            {!isVideoPlaying && (
-              <TouchableOpacity
-                style={styles.replayButton}
-                onPress={() => handleReplayVideo(item.id)}
-              >
-                <Ionicons name="refresh" size={18} color="#FFF" />
-                <Text style={styles.replayText}>Replay</Text>
-              </TouchableOpacity>
-            )}
-          </View>
+          />
         )}
 
         <View style={styles.contentContainer}>
-          {renderContentWithMentions(
+          {renderContentWithTags(
             item.content,
             item.taggedPartners || [],
-            item.taggedCourses || []
+            item.taggedCourses || [],
+            item.taggedTournaments || [],
+            item.taggedLeagues || []
           )}
 
           <View style={styles.footer}>
@@ -1585,14 +1515,14 @@ export default function ClubhouseScreen() {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           setFilterSheetVisible(false);
         }}
-        onApplyFilters={(f) => {
+        onApplyFilters={(f: any) => {
           soundPlayer.play('click');
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           setActiveFilters(f);
           setUseAlgorithmicFeed(Object.keys(f).length === 0);
           loadFeed();
         }}
-        onSelectPost={(postId) => {
+        onSelectPost={(postId: string) => {
           soundPlayer.play('click');
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           console.log('🎯 Post selected from filter:', postId);
@@ -1657,6 +1587,7 @@ export default function ClubhouseScreen() {
         postAuthorName={reportingThought?.displayName || ""}
         postContent={reportingThought?.content || ""}
       />
+
       {/* Tournament Chat Modal */}
       {selectedTournament && (
         <TournamentChatModal
@@ -1671,6 +1602,54 @@ export default function ClubhouseScreen() {
         />
       )}
 
+      {/* Image Viewer Modal with Pinch-to-Zoom */}
+      <Modal 
+        visible={!!expandedImage} 
+        transparent 
+        animationType="fade" 
+        onRequestClose={() => setExpandedImage(null)}
+      >
+        <GestureHandlerRootView style={styles.gestureRoot}>
+          <View style={styles.mediaViewerBackdrop}>
+            <ImageZoom
+              uri={expandedImage || ''}
+              minScale={1}
+              maxScale={3}
+              doubleTapScale={2}
+              isDoubleTapEnabled
+              isPinchEnabled
+              isPanEnabled
+              style={styles.zoomableImage}
+              resizeMode="contain"
+            />
+            <TouchableOpacity 
+              style={styles.mediaViewerCloseButton} 
+              onPress={() => {
+                soundPlayer.play('click');
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setExpandedImage(null);
+              }}
+            >
+              <Image 
+                source={require("@/assets/icons/Close.png")} 
+                style={styles.closeIcon}
+              />
+            </TouchableOpacity>
+          </View>
+        </GestureHandlerRootView>
+      </Modal>
+
+      {/* Fullscreen Video Player Modal - uses FullscreenVideoPlayer from VideoComponents */}
+      {expandedVideo && (
+        <FullscreenVideoPlayer
+          videoUrl={expandedVideo.url}
+          trimStart={expandedVideo.trimStart}
+          trimEnd={expandedVideo.trimEnd}
+          duration={expandedVideo.duration}
+          onClose={handleCloseExpandedVideo}
+        />
+      )}
+
       <BottomActionBar disabled={!canWrite} />
       {currentUserData?.role === "admin" ? (
         <AdminPanelButton />
@@ -1681,7 +1660,9 @@ export default function ClubhouseScreen() {
   );
 }
 
-/* ------------------ STYLES ------------------ */
+/* ==================================================================
+   MAIN STYLES
+   ================================================================== */
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F4EED8" },
   safeTop: { backgroundColor: "#0D5C3A" },
@@ -1854,90 +1835,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   
-  videoContainer: {
-    width: "100%",
-    height: 300,
-    backgroundColor: "#000",
-    position: "relative",
-  },
-  thoughtVideo: {
-    width: "100%",
-    height: "100%",
-  },
-  videoBadge: {
-    position: "absolute",
-    top: 12,
-    left: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: "rgba(13, 92, 58, 0.95)",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
-  },
-  videoBadgeText: {
-    color: "#FFF",
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 0.5,
-  },
-  videoDurationBadge: {
-    position: "absolute",
-    top: 12,
-    right: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: "rgba(0, 0, 0, 0.75)",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  videoDurationText: {
-    color: "#FFF",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  videoOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "transparent",
-  },
-  videoPlayButton: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    backgroundColor: "rgba(13, 92, 58, 0.85)",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 3,
-    borderColor: "rgba(255, 255, 255, 0.3)",
-  },
-  replayButton: {
-    position: "absolute",
-    bottom: 16,
-    right: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: "rgba(13, 92, 58, 0.95)",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 24,
-    borderWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.2)",
-  },
-  replayText: {
-    color: "#FFF",
-    fontSize: 14,
-    fontWeight: "700",
-  },
   contentContainer: { padding: 16 },
   content: { fontSize: 16, marginBottom: 12, color: "#333" },
   mention: {
@@ -1951,4 +1848,54 @@ const styles = StyleSheet.create({
   actionIconLiked: { tintColor: "#FF3B30" },
   actionIconCommented: { tintColor: "#FFD700" },
   actionText: { fontSize: 14, color: "#666", fontWeight: "600" },
+  
+  // Media Viewer Modal styles (shared)
+  gestureRoot: {
+    flex: 1,
+  },
+  mediaViewerBackdrop: { 
+    flex: 1, 
+    backgroundColor: "rgba(0, 0, 0, 0.95)", 
+    justifyContent: "center", 
+    alignItems: "center" 
+  },
+  mediaViewerCloseButton: { 
+    position: "absolute", 
+    top: 60, 
+    right: 20, 
+    backgroundColor: "rgba(255, 255, 255, 0.2)", 
+    borderRadius: 24, 
+    padding: 12,
+    zIndex: 10,
+  },
+  closeIcon: {
+    width: 24,
+    height: 24,
+    tintColor: "#FFF",
+  },
+  
+  // Image viewer specific - zoomable
+  zoomableImage: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT * 0.8,
+  },
+  
+  // Legacy style (keep for reference)
+  imageViewerImage: { 
+    width: "100%", 
+    height: "80%" 
+  },
+  
+  // Hashtag styles
+  hashtag: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#B8860B",
+  },
+  hashtagInactive: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#DAA520",
+    opacity: 0.8,
+  },
 });

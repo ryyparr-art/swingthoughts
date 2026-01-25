@@ -33,7 +33,7 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   onApplyFilters: (filters: any) => void;
-  onSelectPost?: (postId: string) => void; // ✅ NEW: Callback when post is selected
+  onSelectPost?: (postId: string) => void;
   posts: any[];
   currentFilters?: any;
 }
@@ -58,7 +58,7 @@ export default function FilterBottomSheet({
   const [loadingCourses, setLoadingCourses] = useState(false);
   const [partnersOnly, setPartnersOnly] = useState(false);
   
-  // ✅ NEW: Search state
+  // Search state
   const [searchQuery, setSearchQuery] = useState("");
   const [showUserSuggestions, setShowUserSuggestions] = useState(false);
   const [userSuggestions, setUserSuggestions] = useState<Array<{userId: string, displayName: string, avatar?: string}>>([]);
@@ -66,7 +66,7 @@ export default function FilterBottomSheet({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const allThoughtTypes: any[] = getAllThoughtTypes();
 
-  // ✅ NEW: Handle user suggestion selection
+  // Handle user suggestion selection
   const handleSelectUser = (userId: string, displayName: string) => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -79,7 +79,7 @@ export default function FilterBottomSheet({
     onClose();
   };
 
-  // ✅ NEW: Extract unique users and filter by search query
+  // Extract unique users and filter by search query
   useEffect(() => {
     if (!searchQuery.trim()) {
       setShowUserSuggestions(false);
@@ -92,7 +92,7 @@ export default function FilterBottomSheet({
     // Extract unique users from posts
     const usersMap = new Map<string, {userId: string, displayName: string, avatar?: string}>();
     
-    posts.forEach(post => {
+    posts.forEach((post: any) => {
       if (post.userId && post.displayName && !usersMap.has(post.userId)) {
         usersMap.set(post.userId, {
           userId: post.userId,
@@ -271,7 +271,7 @@ export default function FilterBottomSheet({
     onClose();
   };
 
-  // ✅ NEW: Handle post selection
+  // Handle post selection
   const handleSelectPost = (postId: string) => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -284,9 +284,9 @@ export default function FilterBottomSheet({
     handleClose();
   };
 
-  // ✅ NEW: Filter posts by search query
+  // Filter posts by search query
   const filteredPosts = searchQuery.trim()
-    ? posts.filter((post) => {
+    ? posts.filter((post: any) => {
         const query = searchQuery.toLowerCase();
         const content = (post.content || "").toLowerCase();
         const userName = (post.displayName || "").toLowerCase();
@@ -334,7 +334,7 @@ export default function FilterBottomSheet({
             <View style={styles.closeButton} />
           </View>
 
-          {/* ✅ NEW: SEARCH INPUT */}
+          {/* SEARCH INPUT */}
           <View style={styles.searchInputContainer}>
             <Ionicons name="search" size={20} color="#999" style={styles.searchInputIcon} />
             <TextInput
@@ -358,7 +358,7 @@ export default function FilterBottomSheet({
             )}
           </View>
 
-          {/* ✅ NEW: USER SUGGESTIONS DROPDOWN */}
+          {/* USER SUGGESTIONS DROPDOWN */}
           {showUserSuggestions && userSuggestions.length > 0 && (
             <View style={styles.userSuggestionsContainer}>
               <Text style={styles.suggestionLabel}>Users</Text>
@@ -591,9 +591,9 @@ export default function FilterBottomSheet({
             <FlatList
               data={filteredPosts}
               numColumns={3}
-              keyExtractor={(item) => item.id}
+              keyExtractor={(item: any) => item.id}
               contentContainerStyle={styles.postGrid}
-              renderItem={({ item }) => (
+              renderItem={({ item }: { item: any }) => (
                 <TouchableOpacity
                   style={styles.postTile}
                   onPress={() => handleSelectPost(item.id)}
@@ -716,7 +716,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
 
-  // ✅ NEW: Search Input
+  // Search Input
   searchInputContainer: {
     flexDirection: "row",
     alignItems: "center",
@@ -741,7 +741,7 @@ const styles = StyleSheet.create({
     padding: 4,
   },
 
-  // ✅ NEW: User Suggestions
+  // User Suggestions
   userSuggestionsContainer: {
     backgroundColor: "#FFFFFF",
     marginHorizontal: 16,

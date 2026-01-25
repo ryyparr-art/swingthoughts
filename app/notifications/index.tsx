@@ -1,16 +1,17 @@
 import { auth, db } from "@/constants/firebaseConfig";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
-import { markAllNotificationsAsRead, markNotificationAsRead } from "@/utils/notificationHelpers";
+import { markNotificationAsRead } from "@/utils/notificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { collection, getDocs, onSnapshot, orderBy, query, where } from "firebase/firestore";
+import { collection, doc, getDocs, onSnapshot, orderBy, query, serverTimestamp, where, writeBatch } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
   Image,
+  Modal,
   RefreshControl,
   StyleSheet,
   Text,
@@ -31,6 +32,8 @@ interface Notification {
   userId: string;
   type: string;
   read: boolean;
+  archived?: boolean;
+  archivedAt?: any;
   createdAt: any;
   updatedAt?: any;
   message: string;
@@ -61,7 +64,6 @@ interface GroupedNotifications {
 }
 
 // Icon mapping for notification types
-// Uses either 'icon' for Ionicons or 'image' for custom assets
 type NotificationIconConfig = {
   icon?: string;
   image?: any;
@@ -69,16 +71,16 @@ type NotificationIconConfig = {
 };
 
 const NOTIFICATION_ICONS: Record<string, NotificationIconConfig> = {
- // Post interactions
-like: { image: require("@/assets/icons/Throw Darts.png"), color: "#FF3B30" },
-comment: { image: require("@/assets/icons/Comments.png"), color: "#FFD700" },
-comment_like: { image: require("@/assets/icons/Throw Darts.png"), color: "#FF3B30" },
-reply: { image: require("@/assets/icons/Comments.png"), color: "#FFD700" },
-share: { icon: "share-social", color: "#5856D6" },
+  // Post interactions
+  like: { image: require("@/assets/icons/Throw Darts.png"), color: "#FF3B30" },
+  comment: { image: require("@/assets/icons/Comments.png"), color: "#FFD700" },
+  comment_like: { image: require("@/assets/icons/Throw Darts.png"), color: "#FF3B30" },
+  reply: { image: require("@/assets/icons/Comments.png"), color: "#FFD700" },
+  share: { icon: "share-social", color: "#5856D6" },
 
-// Mentions
-mention_post: { image: require("@/assets/icons/Clubhouse.png"), color: "#5856D6" },
-mention_comment: { image: require("@/assets/icons/Comments.png"), color: "#FFD700" },
+  // Mentions
+  mention_post: { image: require("@/assets/icons/Clubhouse.png"), color: "#5856D6" },
+  mention_comment: { image: require("@/assets/icons/Comments.png"), color: "#FFD700" },
   
   // Messages
   message: { image: require("@/assets/icons/Mail.png"), color: "#0D5C3A" },
@@ -113,10 +115,17 @@ export default function NotificationsScreen() {
   const router = useRouter();
   const { getCache, setCache } = useCache();
   
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [allNotifications, setAllNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [showingCached, setShowingCached] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  
+  // Archive modal state
+  const [showArchivedModal, setShowArchivedModal] = useState(false);
+
+  // Filter to get active (non-archived) notifications
+  const activeNotifications = allNotifications.filter(n => !n.archived);
+  const archivedNotifications = allNotifications.filter(n => n.archived);
 
   useEffect(() => {
     const uid = auth.currentUser?.uid;
@@ -131,7 +140,7 @@ export default function NotificationsScreen() {
         
         if (cached) {
           console.log("⚡ Using cached notifications");
-          setNotifications(cached);
+          setAllNotifications(cached);
           setShowingCached(true);
           setLoading(false);
         }
@@ -155,7 +164,7 @@ export default function NotificationsScreen() {
               } as Notification);
             });
 
-            setNotifications(notificationsList);
+            setAllNotifications(notificationsList);
 
             // Step 3: Update cache
             await setCache(CACHE_KEYS.NOTIFICATIONS(uid), notificationsList);
@@ -212,7 +221,7 @@ export default function NotificationsScreen() {
         } as Notification);
       });
 
-      setNotifications(notificationsList);
+      setAllNotifications(notificationsList);
       await setCache(CACHE_KEYS.NOTIFICATIONS(uid), notificationsList);
     } catch (error) {
       console.error("Error refreshing notifications:", error);
@@ -222,7 +231,8 @@ export default function NotificationsScreen() {
     setRefreshing(false);
   };
 
-  const handleMarkAllAsRead = async () => {
+  // Archive all active notifications (Clear All)
+  const handleClearAll = async () => {
     const uid = auth.currentUser?.uid;
     if (!uid) return;
 
@@ -230,14 +240,61 @@ export default function NotificationsScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     
     try {
-      await markAllNotificationsAsRead(uid);
+      const batch = writeBatch(db);
+      const now = serverTimestamp();
+      
+      // Archive all non-archived notifications
+      activeNotifications.forEach((notification) => {
+        const notifRef = doc(db, "notifications", notification.id);
+        batch.update(notifRef, {
+          archived: true,
+          archivedAt: now,
+          read: true, // Also mark as read
+        });
+      });
+      
+      await batch.commit();
       soundPlayer.play('postThought');
       
-      const updatedNotifications = notifications.map(n => ({ ...n, read: true }));
-      setNotifications(updatedNotifications);
+      // Update local state
+      const updatedNotifications = allNotifications.map(n => 
+        !n.archived ? { ...n, archived: true, read: true } : n
+      );
+      setAllNotifications(updatedNotifications);
+      await setCache(CACHE_KEYS.NOTIFICATIONS(uid), updatedNotifications);
+      
+      console.log("✅ All notifications archived");
+    } catch (error) {
+      console.error("Error archiving notifications:", error);
+      soundPlayer.play('error');
+    }
+  };
+
+  // Restore a single archived notification
+  const handleRestoreNotification = async (notificationId: string) => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    
+    try {
+      const notifRef = doc(db, "notifications", notificationId);
+      const batch = writeBatch(db);
+      batch.update(notifRef, {
+        archived: false,
+        archivedAt: null,
+      });
+      await batch.commit();
+      
+      // Update local state
+      const updatedNotifications = allNotifications.map(n => 
+        n.id === notificationId ? { ...n, archived: false, archivedAt: null } : n
+      );
+      setAllNotifications(updatedNotifications);
       await setCache(CACHE_KEYS.NOTIFICATIONS(uid), updatedNotifications);
     } catch (error) {
-      console.error("Error marking all as read:", error);
+      console.error("Error restoring notification:", error);
       soundPlayer.play('error');
     }
   };
@@ -252,20 +309,21 @@ export default function NotificationsScreen() {
       
       const uid = auth.currentUser?.uid;
       if (uid) {
-        const updatedNotifications = notifications.map(n => 
+        const updatedNotifications = allNotifications.map(n => 
           n.id === notification.id ? { ...n, read: true } : n
         );
-        setNotifications(updatedNotifications);
+        setAllNotifications(updatedNotifications);
         await setCache(CACHE_KEYS.NOTIFICATIONS(uid), updatedNotifications);
       }
     }
 
+    // Close archived modal if open
+    if (showArchivedModal) {
+      setShowArchivedModal(false);
+    }
+
     // Navigate based on type
     switch (notification.type) {
-      // ============================================
-      // POST INTERACTIONS - SCROLL TO POST (with highlight)
-      // These are social interactions on posts
-      // ============================================
       case "like":
       case "comment":
       case "comment_like":
@@ -283,10 +341,6 @@ export default function NotificationsScreen() {
         }
         break;
 
-      // ============================================
-      // SCORE-RELATED - HIGHLIGHT POST
-      // These are score/achievement notifications
-      // ============================================
       case "partner_scored":
       case "partner_holeinone":
       case "holeinone_verified":
@@ -297,7 +351,6 @@ export default function NotificationsScreen() {
             params: { highlightPostId: notification.postId },
           });
         } else if (notification.scoreId) {
-          // Fallback for older notifications without postId
           router.push({
             pathname: "/clubhouse",
             params: { highlightScoreId: notification.scoreId },
@@ -307,9 +360,6 @@ export default function NotificationsScreen() {
         }
         break;
 
-      // ============================================
-      // LOWMAN - HIGHLIGHT ON LEADERBOARD
-      // ============================================
       case "partner_lowman":
         if (notification.courseId && notification.actorId) {
           router.push({
@@ -322,25 +372,16 @@ export default function NotificationsScreen() {
         }
         break;
 
-      // ============================================
-      // HOLE-IN-ONE VERIFICATION REQUEST
-      // ============================================
       case "holeinone_verification_request":
         if (notification.scoreId) {
           router.push(`/verify-holeinone/${notification.scoreId}`);
         }
         break;
 
-      // ============================================
-      // HOLE-IN-ONE DENIED - GO TO OWN LOCKER
-      // ============================================
       case "holeinone_denied":
         router.push(`/locker/${auth.currentUser?.uid}`);
         break;
 
-      // ============================================
-      // PARTNER INTERACTIONS (navigate to profile)
-      // ============================================
       case "partner_request":
       case "partner_accepted":
         const actorId = notification.lastActorId || notification.actorId;
@@ -349,9 +390,6 @@ export default function NotificationsScreen() {
         }
         break;
 
-      // ============================================
-      // MESSAGES (navigate to thread)
-      // ============================================
       case "message":
         const messageActorId = notification.lastActorId || notification.actorId;
         const currentUserId = auth.currentUser?.uid;
@@ -362,9 +400,6 @@ export default function NotificationsScreen() {
         }
         break;
 
-      // ============================================
-      // MEMBERSHIP NOTIFICATIONS (navigate to course locker)
-      // ============================================
       case "membership_submitted":
       case "membership_approved":
       case "membership_rejected":
@@ -379,7 +414,39 @@ export default function NotificationsScreen() {
     }
   };
 
-  const groupNotificationsByDate = (): GroupedNotifications[] => {
+  // Helper to safely convert any timestamp format to a Date
+  const getDateFromTimestamp = (timestamp: any): Date | null => {
+    if (!timestamp) return null;
+    
+    // Firestore Timestamp (has toDate method)
+    if (timestamp?.toDate && typeof timestamp.toDate === 'function') {
+      return timestamp.toDate();
+    }
+    
+    // Already a Date object
+    if (timestamp instanceof Date) {
+      return timestamp;
+    }
+    
+    // Firestore Timestamp from REST/cache (has seconds and nanoseconds)
+    if (timestamp?.seconds !== undefined) {
+      return new Date(timestamp.seconds * 1000);
+    }
+    
+    // Unix timestamp (number)
+    if (typeof timestamp === 'number') {
+      return new Date(timestamp);
+    }
+    
+    // ISO string
+    if (typeof timestamp === 'string') {
+      return new Date(timestamp);
+    }
+    
+    return null;
+  };
+
+  const groupNotificationsByDate = (notifications: Notification[]): GroupedNotifications[] => {
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const yesterday = new Date(today);
@@ -393,8 +460,7 @@ export default function NotificationsScreen() {
     const olderNotifs: Notification[] = [];
 
     notifications.forEach((notif) => {
-      // Use updatedAt if available, fallback to createdAt
-      const date = (notif.updatedAt || notif.createdAt)?.toDate();
+      const date = getDateFromTimestamp(notif.updatedAt || notif.createdAt);
       if (!date) return;
 
       if (date >= today) {
@@ -418,9 +484,9 @@ export default function NotificationsScreen() {
   };
 
   const formatTimeAgo = (timestamp: any): string => {
-    if (!timestamp?.toDate) return "";
+    const date = getDateFromTimestamp(timestamp);
+    if (!date) return "";
     
-    const date = timestamp.toDate();
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
     const diffMins = Math.floor(diffMs / 60000);
@@ -442,9 +508,8 @@ export default function NotificationsScreen() {
     const actors = notification.actors || [];
     const actorCount = notification.actorCount || 1;
     
-    // If we have actors array, show stacked avatars
     if (actors.length > 1) {
-      const displayActors = actors.slice(0, 3); // Show max 3 avatars
+      const displayActors = actors.slice(0, 3);
       
       return (
         <View style={styles.avatarStack}>
@@ -468,7 +533,6 @@ export default function NotificationsScreen() {
             </View>
           ))}
           
-          {/* Show +N if more than 3 */}
           {actorCount > 3 && (
             <View style={[styles.stackedAvatarContainer, styles.moreAvatars, { marginLeft: -12 }]}>
               <Text style={styles.moreAvatarsText}>+{actorCount - 3}</Text>
@@ -478,7 +542,6 @@ export default function NotificationsScreen() {
       );
     }
     
-    // Single avatar (backward compatibility)
     const avatar = actors[0]?.avatar || notification.actorAvatar;
     const displayName = actors[0]?.displayName || notification.actorName || "";
     
@@ -498,40 +561,48 @@ export default function NotificationsScreen() {
   };
 
   const renderNotificationIcon = (type: string) => {
-  const iconConfig = NOTIFICATION_ICONS[type] || NOTIFICATION_ICONS.system;
-  
-  return (
-    <View style={[styles.notificationIcon, { backgroundColor: `${iconConfig.color}E6` }]}>
-      {iconConfig.image ? (
-        <Image 
-          source={iconConfig.image} 
-          style={[styles.notificationIconImage, { tintColor: "#FFFFFF" }]} 
-          resizeMode="contain"
-        />
-      ) : (
-        <Ionicons name={iconConfig.icon as any} size={14} color="#FFFFFF" />
-      )}
-    </View>
-  );
-};
+    const iconConfig = NOTIFICATION_ICONS[type] || NOTIFICATION_ICONS.system;
+    
+    return (
+      <View style={[styles.notificationIcon, { backgroundColor: `${iconConfig.color}E6` }]}>
+        {iconConfig.image ? (
+          <Image 
+            source={iconConfig.image} 
+            style={[styles.notificationIconImage, { tintColor: "#FFFFFF" }]} 
+            resizeMode="contain"
+          />
+        ) : (
+          <Ionicons name={iconConfig.icon as any} size={14} color="#FFFFFF" />
+        )}
+      </View>
+    );
+  };
 
-  const renderNotification = ({ item }: { item: Notification }) => {
+  const renderNotification = ({ item, isArchived = false }: { item: Notification; isArchived?: boolean }) => {
     return (
       <TouchableOpacity
-        style={[styles.notificationCard, !item.read && styles.notificationUnread]}
+        style={[
+          styles.notificationCard, 
+          !item.read && !isArchived && styles.notificationUnread,
+          isArchived && styles.notificationArchived
+        ]}
         onPress={() => handleNotificationTap(item)}
         activeOpacity={0.7}
       >
         {/* Avatar Section */}
         <View style={styles.avatarSection}>
           {renderAvatarStack(item)}
-          {!item.read && <View style={styles.unreadDot} />}
+          {!item.read && !isArchived && <View style={styles.unreadDot} />}
           {renderNotificationIcon(item.type)}
         </View>
 
         {/* Content */}
         <View style={styles.notificationContent}>
-          <Text style={[styles.notificationMessage, !item.read && styles.notificationMessageUnread]}>
+          <Text style={[
+            styles.notificationMessage, 
+            !item.read && !isArchived && styles.notificationMessageUnread,
+            isArchived && styles.notificationMessageArchived
+          ]}>
             {item.message}
           </Text>
           <Text style={styles.notificationTime}>
@@ -539,8 +610,20 @@ export default function NotificationsScreen() {
           </Text>
         </View>
 
-        {/* Chevron */}
-        <Ionicons name="chevron-forward" size={18} color="#CCC" />
+        {/* Restore button for archived OR Chevron for active */}
+        {isArchived ? (
+          <TouchableOpacity
+            style={styles.restoreButton}
+            onPress={(e) => {
+              e.stopPropagation();
+              handleRestoreNotification(item.id);
+            }}
+          >
+            <Ionicons name="refresh" size={18} color="#0D5C3A" />
+          </TouchableOpacity>
+        ) : (
+          <Ionicons name="chevron-forward" size={18} color="#CCC" />
+        )}
       </TouchableOpacity>
     );
   };
@@ -552,7 +635,60 @@ export default function NotificationsScreen() {
     </View>
   );
 
-  const groupedData = groupNotificationsByDate();
+  const renderArchivedModal = () => (
+    <Modal
+      visible={showArchivedModal}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={() => setShowArchivedModal(false)}
+    >
+      <SafeAreaView style={styles.archivedModalContainer} edges={["top"]}>
+        {/* Header */}
+        <View style={styles.archivedHeader}>
+          <TouchableOpacity
+            onPress={() => {
+              soundPlayer.play('click');
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowArchivedModal(false);
+            }}
+            style={styles.archivedCloseButton}
+          >
+            <Ionicons name="close" size={24} color="#FFFFFF" />
+          </TouchableOpacity>
+          
+          <Text style={styles.archivedHeaderTitle}>Previous Notifications</Text>
+          
+          <View style={styles.archivedCloseButton} />
+        </View>
+
+        {/* Archived List */}
+        {archivedNotifications.length === 0 ? (
+          <View style={styles.archivedEmptyContainer}>
+            <Ionicons name="archive-outline" size={64} color="#CCC" />
+            <Text style={styles.archivedEmptyText}>No archived notifications</Text>
+          </View>
+        ) : (
+          <FlatList
+            data={groupNotificationsByDate(archivedNotifications)}
+            renderItem={({ item: section }) => (
+              <>
+                {renderSectionHeader({ section })}
+                {section.data.map((notification) => (
+                  <View key={notification.id}>
+                    {renderNotification({ item: notification, isArchived: true })}
+                  </View>
+                ))}
+              </>
+            )}
+            keyExtractor={(item) => item.title}
+            contentContainerStyle={styles.listContent}
+          />
+        )}
+      </SafeAreaView>
+    </Modal>
+  );
+
+  const groupedData = groupNotificationsByDate(activeNotifications);
 
   if (loading && !showingCached) {
     return (
@@ -562,8 +698,9 @@ export default function NotificationsScreen() {
     );
   }
 
-  const hasUnread = notifications.some((n) => !n.read);
-  const unreadCount = notifications.filter((n) => !n.read).length;
+  const hasActiveNotifications = activeNotifications.length > 0;
+  const hasArchivedNotifications = archivedNotifications.length > 0;
+  const unreadCount = activeNotifications.filter((n) => !n.read).length;
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
@@ -593,12 +730,12 @@ export default function NotificationsScreen() {
           )}
         </View>
 
-        {hasUnread ? (
+        {hasActiveNotifications ? (
           <TouchableOpacity
-            onPress={handleMarkAllAsRead}
-            style={styles.markAllButton}
+            onPress={handleClearAll}
+            style={styles.clearAllButton}
           >
-            <Text style={styles.markAllText}>Mark all</Text>
+            <Text style={styles.clearAllText}>Clear all</Text>
           </TouchableOpacity>
         ) : (
           <View style={styles.backButton} />
@@ -613,42 +750,78 @@ export default function NotificationsScreen() {
         </View>
       )}
 
-      {/* Notifications List */}
-      {notifications.length === 0 ? (
+      {/* Notifications List or Empty State */}
+      {!hasActiveNotifications ? (
         <View style={styles.emptyContainer}>
           <View style={styles.emptyIconContainer}>
-            <Ionicons name="notifications-off-outline" size={64} color="#0D5C3A" />
+            <Ionicons name="checkmark-circle-outline" size={64} color="#0D5C3A" />
           </View>
-          <Text style={styles.emptyText}>No notifications yet</Text>
+          <Text style={styles.emptyText}>No new notifications</Text>
           <Text style={styles.emptySubtext}>
-            We'll notify you when something happens
+            You're all caught up!
           </Text>
+          
+          {hasArchivedNotifications && (
+            <TouchableOpacity
+              style={styles.viewArchivedButton}
+              onPress={() => {
+                soundPlayer.play('click');
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowArchivedModal(true);
+              }}
+            >
+              <Ionicons name="archive-outline" size={20} color="#FFFFFF" />
+              <Text style={styles.viewArchivedText}>See Previous Notifications</Text>
+            </TouchableOpacity>
+          )}
         </View>
       ) : (
-        <FlatList
-          data={groupedData}
-          renderItem={({ item: section }) => (
-            <>
-              {renderSectionHeader({ section })}
-              {section.data.map((notification) => (
-                <View key={notification.id}>
-                  {renderNotification({ item: notification })}
-                </View>
-              ))}
-            </>
+        <>
+          <FlatList
+            data={groupedData}
+            renderItem={({ item: section }) => (
+              <>
+                {renderSectionHeader({ section })}
+                {section.data.map((notification) => (
+                  <View key={notification.id}>
+                    {renderNotification({ item: notification })}
+                  </View>
+                ))}
+              </>
+            )}
+            keyExtractor={(item) => item.title}
+            contentContainerStyle={styles.listContent}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                tintColor="#0D5C3A"
+                colors={["#0D5C3A"]}
+              />
+            }
+          />
+          
+          {/* View Archived Button at bottom when there are active notifications */}
+          {hasArchivedNotifications && (
+            <TouchableOpacity
+              style={styles.bottomArchivedButton}
+              onPress={() => {
+                soundPlayer.play('click');
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowArchivedModal(true);
+              }}
+            >
+              <Ionicons name="archive-outline" size={18} color="#0D5C3A" />
+              <Text style={styles.bottomArchivedText}>
+                View {archivedNotifications.length} archived notification{archivedNotifications.length !== 1 ? 's' : ''}
+              </Text>
+            </TouchableOpacity>
           )}
-          keyExtractor={(item) => item.title}
-          contentContainerStyle={styles.listContent}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              tintColor="#0D5C3A"
-              colors={["#0D5C3A"]}
-            />
-          }
-        />
+        </>
       )}
+
+      {/* Archived Modal */}
+      {renderArchivedModal()}
     </SafeAreaView>
   );
 }
@@ -704,11 +877,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
   },
-  markAllButton: {
+  clearAllButton: {
     width: 60,
     alignItems: "flex-end",
   },
-  markAllText: {
+  clearAllText: {
     color: "#FFD700",
     fontSize: 13,
     fontWeight: "600",
@@ -767,6 +940,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFEF5",
     borderLeftWidth: 3,
     borderLeftColor: "#FFD700",
+  },
+  notificationArchived: {
+    backgroundColor: "#F5F5F5",
+    opacity: 0.85,
   },
   
   // Avatar Section
@@ -890,9 +1067,19 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#000",
   },
+  notificationMessageArchived: {
+    color: "#666",
+  },
   notificationTime: {
     fontSize: 12,
     color: "#999",
+  },
+  
+  // Restore Button (for archived)
+  restoreButton: {
+    padding: 8,
+    backgroundColor: "rgba(13, 92, 58, 0.1)",
+    borderRadius: 20,
   },
   
   // Empty State
@@ -921,5 +1108,75 @@ const styles = StyleSheet.create({
     color: "#999",
     marginTop: 8,
     textAlign: "center",
+  },
+  
+  // View Archived Button (in empty state)
+  viewArchivedButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 24,
+    marginTop: 32,
+  },
+  viewArchivedText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  
+  // Bottom Archived Button (when there are active notifications)
+  bottomArchivedButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 16,
+    borderTopWidth: 1,
+    borderTopColor: "#E0E0E0",
+    backgroundColor: "#FFFFFF",
+  },
+  bottomArchivedText: {
+    color: "#0D5C3A",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  
+  // Archived Modal
+  archivedModalContainer: {
+    flex: 1,
+    backgroundColor: "#F4EED8",
+  },
+  archivedHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  archivedCloseButton: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  archivedHeaderTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  archivedEmptyContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 40,
+  },
+  archivedEmptyText: {
+    fontSize: 16,
+    color: "#999",
+    marginTop: 16,
   },
 });

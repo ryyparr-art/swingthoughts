@@ -83,20 +83,11 @@ export default function SettingsScreen() {
   const [emailVerified, setEmailVerified] = useState(false);
   const [sendingVerification, setSendingVerification] = useState(false);
 
-  // Sound settings
-  const [soundsMuted, setSoundsMuted] = useState(false);
-  const [allowSoundsInSilentMode, setAllowSoundsInSilentMode] = useState(false);
+  // Sound settings - using new API
+  const [soundsEnabled, setSoundsEnabled] = useState(soundPlayer.isEnabled());
 
   useEffect(() => {
     fetchSettings();
-    
-    // Subscribe to sound settings changes
-    const unsubscribe = soundPlayer.addListener((soundSettings) => {
-      setSoundsMuted(soundSettings.isMuted);
-      setAllowSoundsInSilentMode(soundSettings.allowSoundInSilentMode);
-    });
-
-    return () => unsubscribe();
   }, []);
 
   const fetchSettings = async () => {
@@ -467,30 +458,24 @@ export default function SettingsScreen() {
   };
 
   /* ------------------ SOUND SETTINGS ------------------ */
-  const handleToggleMute = () => {
-    const newMutedState = !soundsMuted;
+  const handleToggleSounds = () => {
+    const newEnabledState = !soundsEnabled;
     
-    if (!newMutedState) {
-      // Unmuting - play a sound to confirm
-      soundPlayer.setMuted(false);
+    if (newEnabledState) {
+      // Enabling - set enabled first, then play confirmation sound
+      soundPlayer.setEnabled(true);
+      setSoundsEnabled(true);
       soundPlayer.play('click');
     } else {
-      // Muting - play sound first, then mute
+      // Disabling - play sound first, then disable
       soundPlayer.play('click');
       setTimeout(() => {
-        soundPlayer.setMuted(true);
+        soundPlayer.setEnabled(false);
+        setSoundsEnabled(false);
       }, 200);
     }
     
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  };
-
-  const handleToggleSilentMode = async () => {
-    soundPlayer.play('click');
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    
-    const newState = !allowSoundsInSilentMode;
-    await soundPlayer.setAllowSoundInSilentMode(newState);
   };
 
   /* ------------------ SUPPORT ------------------ */
@@ -816,18 +801,18 @@ export default function SettingsScreen() {
         {/* ==================== SOUND SETTINGS ==================== */}
         <Text style={styles.sectionTitle}>SOUND SETTINGS</Text>
 
-        {/* MUTE SOUNDS */}
+        {/* SOUND EFFECTS TOGGLE */}
         <View style={styles.settingRow}>
           <View style={styles.settingLeft}>
             <Ionicons 
-              name={soundsMuted ? "volume-mute" : "volume-high"} 
+              name={soundsEnabled ? "volume-high" : "volume-mute"} 
               size={20} 
               color="#0D5C3A" 
             />
             <View>
               <Text style={styles.settingLabel}>Sound Effects</Text>
               <Text style={styles.settingSubtext}>
-                {soundsMuted ? "Sounds are muted" : "Sounds are enabled"}
+                {soundsEnabled ? "Sounds are enabled" : "Sounds are muted"}
               </Text>
             </View>
           </View>
@@ -835,14 +820,14 @@ export default function SettingsScreen() {
             <TouchableOpacity
               style={[
                 styles.toggleOption,
-                !soundsMuted && styles.toggleOptionActive,
+                soundsEnabled && styles.toggleOptionActive,
               ]}
-              onPress={handleToggleMute}
+              onPress={handleToggleSounds}
             >
               <Text
                 style={[
                   styles.toggleText,
-                  !soundsMuted && styles.toggleTextActive,
+                  soundsEnabled && styles.toggleTextActive,
                 ]}
               >
                 On
@@ -851,14 +836,14 @@ export default function SettingsScreen() {
             <TouchableOpacity
               style={[
                 styles.toggleOption,
-                soundsMuted && styles.toggleOptionActive,
+                !soundsEnabled && styles.toggleOptionActive,
               ]}
-              onPress={handleToggleMute}
+              onPress={handleToggleSounds}
             >
               <Text
                 style={[
                   styles.toggleText,
-                  soundsMuted && styles.toggleTextActive,
+                  !soundsEnabled && styles.toggleTextActive,
                 ]}
               >
                 Off
@@ -866,64 +851,6 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </View>
         </View>
-
-        {/* PLAY IN SILENT MODE (iOS only) */}
-        {Platform.OS === 'ios' && (
-          <>
-            <View style={styles.settingRow}>
-              <View style={styles.settingLeft}>
-                <Ionicons name="phone-portrait-outline" size={20} color="#0D5C3A" />
-                <View>
-                  <Text style={styles.settingLabel}>Play in Silent Mode</Text>
-                  <Text style={styles.settingSubtext}>
-                    Override device silent switch
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.toggleContainer}>
-                <TouchableOpacity
-                  style={[
-                    styles.toggleOption,
-                    allowSoundsInSilentMode && styles.toggleOptionActive,
-                  ]}
-                  onPress={handleToggleSilentMode}
-                  disabled={soundsMuted}
-                >
-                  <Text
-                    style={[
-                      styles.toggleText,
-                      allowSoundsInSilentMode && styles.toggleTextActive,
-                      soundsMuted && styles.toggleTextDisabled,
-                    ]}
-                  >
-                    On
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.toggleOption,
-                    !allowSoundsInSilentMode && styles.toggleOptionActive,
-                  ]}
-                  onPress={handleToggleSilentMode}
-                  disabled={soundsMuted}
-                >
-                  <Text
-                    style={[
-                      styles.toggleText,
-                      !allowSoundsInSilentMode && styles.toggleTextActive,
-                      soundsMuted && styles.toggleTextDisabled,
-                    ]}
-                  >
-                    Off
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-            <Text style={styles.settingHelperText}>
-              When enabled, sounds will play even when your phone is on silent
-            </Text>
-          </>
-        )}
 
         {/* ==================== LOCATION ==================== */}
         <Text style={styles.sectionTitle}>LOCATION</Text>

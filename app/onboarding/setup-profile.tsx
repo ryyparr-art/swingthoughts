@@ -25,6 +25,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 const BackIcon = require("@/assets/icons/Back.png");
 
+// Invalid characters for display names
+const INVALID_CHARACTERS = [' ', '/', '\\', '@', '#', '$', '%', '^', '&', '*'];
+const INVALID_CHAR_DISPLAY = "spaces, /, \\, or special characters";
+
 export default function SetupProfile() {
   const router = useRouter();
 
@@ -32,9 +36,24 @@ export default function SetupProfile() {
   const [handicap, setHandicap] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [checkingName, setCheckingName] = useState(false);
 
   const [showLocationModal, setShowLocationModal] = useState(false);
   const [location, setLocation] = useState<any>(null);
+
+  /**
+   * Check if display name contains invalid characters
+   */
+  const hasInvalidCharacters = (name: string): boolean => {
+    return INVALID_CHARACTERS.some(char => name.includes(char));
+  };
+
+  /**
+   * Get the invalid characters found in the name
+   */
+  const getInvalidCharactersFound = (name: string): string[] => {
+    return INVALID_CHARACTERS.filter(char => name.includes(char));
+  };
 
   /**
    * BACK → User Type
@@ -69,28 +88,50 @@ export default function SetupProfile() {
     );
   };
 
+  const showDisplayNameInfo = () => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    Alert.alert(
+      "Display Name Rules",
+      "Your display name must be unique and cannot contain:\n\n• Spaces\n• Forward slash (/)\n• Backslash (\\)\n• Special characters (@, #, $, %, etc.)\n\nUse letters, numbers, underscores (_), or hyphens (-) instead.",
+      [{ text: "Got it", style: "default" }]
+    );
+  };
+
   /**
    * CONTINUE → Setup Locker
    */
   const handleContinue = async () => {
     setError("");
 
-    // Validate display name
-    if (!displayName.trim()) {
+    const trimmedName = displayName.trim();
+
+    // Validate display name exists
+    if (!trimmedName) {
       setError("Please enter your display name");
       soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
 
-    if (displayName.trim().length < 2) {
+    // Check for invalid characters FIRST
+    if (hasInvalidCharacters(trimmedName)) {
+      const invalidChars = getInvalidCharactersFound(trimmedName);
+      const charDisplay = invalidChars.map(c => c === ' ' ? 'space' : `"${c}"`).join(', ');
+      setError(`Display name cannot contain ${charDisplay}. Use letters, numbers, underscores, or hyphens.`);
+      soundPlayer.play('error');
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      return;
+    }
+
+    if (trimmedName.length < 2) {
       setError("Display name must be at least 2 characters");
       soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       return;
     }
 
-    if (displayName.trim().length > 30) {
+    if (trimmedName.length > 30) {
       setError("Display name must be 30 characters or less");
       soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -123,15 +164,18 @@ export default function SetupProfile() {
 
     soundPlayer.play('click');
     setLoading(true);
+    setCheckingName(true);
 
     try {
       const user = auth.currentUser;
       if (!user) throw new Error("No user logged in");
 
       // ✅ CHECK DISPLAY NAME UNIQUENESS
-      console.log("🔍 Checking display name availability:", displayName.trim());
-      const isAvailable = await checkDisplayNameAvailability(displayName.trim());
+      console.log("🔍 Checking display name availability:", trimmedName);
+      const isAvailable = await checkDisplayNameAvailability(trimmedName);
       
+      setCheckingName(false);
+
       if (!isAvailable) {
         setError("This display name is already taken. Please choose another one.");
         soundPlayer.play('error');
@@ -146,8 +190,8 @@ export default function SetupProfile() {
       await setDoc(
         doc(db, "users", user.uid),
         {
-          displayName: displayName.trim(),
-          displayNameLower: displayName.trim().toLowerCase(), // For uniqueness checking
+          displayName: trimmedName,
+          displayNameLower: trimmedName.toLowerCase(), // For uniqueness checking
           handicap: handicapNum,
           location: location,
           updatedAt: new Date().toISOString(),
@@ -156,8 +200,8 @@ export default function SetupProfile() {
       );
 
       console.log("✅ Profile saved:", { 
-        displayName: displayName.trim(), 
-        displayNameLower: displayName.trim().toLowerCase(),
+        displayName: trimmedName, 
+        displayNameLower: trimmedName.toLowerCase(),
         handicap: handicapNum,
         location 
       });
@@ -173,6 +217,7 @@ export default function SetupProfile() {
       setError("Failed to continue. Please try again.");
       soundPlayer.play('error');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setCheckingName(false);
       setLoading(false);
     }
   };
@@ -186,6 +231,18 @@ export default function SetupProfile() {
     setLocation(selectedLocation);
     setShowLocationModal(false);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  /**
+   * Handle display name change with real-time validation feedback
+   */
+  const handleDisplayNameChange = (text: string) => {
+    setDisplayName(text);
+    
+    // Clear error when user starts typing again
+    if (error && error.includes("display name")) {
+      setError("");
+    }
   };
 
   return (
@@ -234,30 +291,50 @@ export default function SetupProfile() {
 
             {/* Display Name */}
             <View style={styles.inputGroup}>
-              <Text style={styles.label}>
-                Display Name <Text style={styles.required}>*</Text>
-              </Text>
-              <View style={styles.inputWrapper}>
+              <View style={styles.labelRow}>
+                <Text style={styles.label}>
+                  Display Name <Text style={styles.required}>*</Text>
+                </Text>
+                <TouchableOpacity 
+                  onPress={showDisplayNameInfo}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Ionicons name="information-circle-outline" size={22} color="#0D5C3A" />
+                </TouchableOpacity>
+              </View>
+              <View style={[
+                styles.inputWrapper,
+                hasInvalidCharacters(displayName) && styles.inputWrapperError
+              ]}>
                 <Ionicons 
                   name="person-outline" 
                   size={20} 
-                  color="#666" 
+                  color={hasInvalidCharacters(displayName) ? "#DC2626" : "#666"} 
                   style={styles.inputIcon} 
                 />
                 <TextInput
                   style={styles.input}
-                  placeholder="This will be visible to all users"
+                  placeholder="e.g., JohnDoe123 or Tiger_Woods"
                   placeholderTextColor="#999"
                   value={displayName}
-                  onChangeText={setDisplayName}
-                  autoCapitalize="words"
+                  onChangeText={handleDisplayNameChange}
+                  autoCapitalize="none"
+                  autoCorrect={false}
                   editable={!loading}
                   maxLength={30}
                 />
+                {checkingName && (
+                  <ActivityIndicator size="small" color="#0D5C3A" style={styles.inputSpinner} />
+                )}
               </View>
               <Text style={styles.helperText}>
-                Choose a unique name (2-30 characters)
+                No spaces or special characters. We'll check if it's available.
               </Text>
+              {hasInvalidCharacters(displayName) && (
+                <Text style={styles.warningText}>
+                  ⚠️ Remove {getInvalidCharactersFound(displayName).map(c => c === ' ' ? 'spaces' : `"${c}"`).join(', ')}
+                </Text>
+              )}
             </View>
 
             {/* Handicap */}
@@ -346,12 +423,21 @@ export default function SetupProfile() {
 
             {/* Continue Button */}
             <TouchableOpacity
-              style={[styles.continueButton, loading && styles.buttonDisabled]}
+              style={[
+                styles.continueButton, 
+                loading && styles.buttonDisabled,
+                hasInvalidCharacters(displayName) && styles.buttonDisabled
+              ]}
               onPress={handleContinue}
-              disabled={loading}
+              disabled={loading || hasInvalidCharacters(displayName)}
             >
               {loading ? (
-                <ActivityIndicator color="#FFFFFF" />
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator color="#FFFFFF" />
+                  {checkingName && (
+                    <Text style={styles.loadingText}>Checking availability...</Text>
+                  )}
+                </View>
               ) : (
                 <>
                   <Text style={styles.continueButtonText}>Continue</Text>
@@ -494,8 +580,15 @@ const styles = StyleSheet.create({
     borderColor: "#E0E0E0",
     paddingHorizontal: 16,
   },
+  inputWrapperError: {
+    borderColor: "#DC2626",
+    backgroundColor: "#FEF2F2",
+  },
   inputIcon: {
     marginRight: 12,
+  },
+  inputSpinner: {
+    marginLeft: 8,
   },
   input: {
     flex: 1,
@@ -508,6 +601,13 @@ const styles = StyleSheet.create({
     color: "#999",
     marginTop: 6,
     marginLeft: 4,
+  },
+  warningText: {
+    fontSize: 13,
+    color: "#DC2626",
+    marginTop: 4,
+    marginLeft: 4,
+    fontWeight: "500",
   },
   locationButton: {
     flexDirection: "row",
@@ -555,6 +655,16 @@ const styles = StyleSheet.create({
   continueButtonText: {
     fontSize: 18,
     fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  loadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  loadingText: {
+    fontSize: 16,
+    fontWeight: "600",
     color: "#FFFFFF",
   },
   progressContainer: {
