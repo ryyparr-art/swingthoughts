@@ -11,13 +11,11 @@ import {
   ActivityIndicator,
   Alert,
   Image,
-  Keyboard,
   Platform,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  TouchableWithoutFeedback,
   View
 } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
@@ -258,207 +256,206 @@ export default function SetupProfile() {
         </TouchableOpacity>
       </View>
 
-      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-        <KeyboardAwareScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          enableOnAndroid
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-          extraScrollHeight={Platform.OS === "ios" ? 40 : 80}
-          enableAutomaticScroll
-          enableResetScrollToCoords={false}
-        >
-          {/* Header */}
-          <View style={styles.header}>
-            <View style={styles.iconContainer}>
-              <Ionicons name="person-circle-outline" size={64} color="#0D5C3A" />
+      {/* ✅ FIXED: Removed TouchableWithoutFeedback wrapper that was blocking TextInput on Android */}
+      <KeyboardAwareScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        enableOnAndroid
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        extraScrollHeight={Platform.OS === "ios" ? 40 : 80}
+        enableAutomaticScroll
+        enableResetScrollToCoords={false}
+      >
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={styles.iconContainer}>
+            <Ionicons name="person-circle-outline" size={64} color="#0D5C3A" />
+          </View>
+          <Text style={styles.title}>Set Up Your Profile</Text>
+          <Text style={styles.subtitle}>
+            Tell us about yourself so we can personalize your experience
+          </Text>
+        </View>
+
+        {/* Form */}
+        <View style={styles.form}>
+          {error ? (
+            <View style={styles.errorContainer}>
+              <Ionicons name="alert-circle" size={20} color="#DC2626" />
+              <Text style={styles.errorText}>{error}</Text>
             </View>
-            <Text style={styles.title}>Set Up Your Profile</Text>
-            <Text style={styles.subtitle}>
-              Tell us about yourself so we can personalize your experience
+          ) : null}
+
+          {/* Display Name */}
+          <View style={styles.inputGroup}>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>
+                Display Name <Text style={styles.required}>*</Text>
+              </Text>
+              <TouchableOpacity 
+                onPress={showDisplayNameInfo}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="information-circle-outline" size={22} color="#0D5C3A" />
+              </TouchableOpacity>
+            </View>
+            <View style={[
+              styles.inputWrapper,
+              hasInvalidCharacters(displayName) && styles.inputWrapperError
+            ]}>
+              <Ionicons 
+                name="person-outline" 
+                size={20} 
+                color={hasInvalidCharacters(displayName) ? "#DC2626" : "#666"} 
+                style={styles.inputIcon} 
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., JohnDoe123 or Tiger_Woods"
+                placeholderTextColor="#999"
+                value={displayName}
+                onChangeText={handleDisplayNameChange}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!loading}
+                maxLength={30}
+              />
+              {checkingName && (
+                <ActivityIndicator size="small" color="#0D5C3A" style={styles.inputSpinner} />
+              )}
+            </View>
+            <Text style={styles.helperText}>
+              No spaces or special characters. We'll check if it's available.
+            </Text>
+            {hasInvalidCharacters(displayName) && (
+              <Text style={styles.warningText}>
+                ⚠️ Remove {getInvalidCharactersFound(displayName).map(c => c === ' ' ? 'spaces' : `"${c}"`).join(', ')}
+              </Text>
+            )}
+          </View>
+
+          {/* Handicap */}
+          <View style={styles.inputGroup}>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>
+                Handicap Index <Text style={styles.required}>*</Text>
+              </Text>
+              <TouchableOpacity 
+                onPress={showHandicapInfo}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="information-circle-outline" size={22} color="#0D5C3A" />
+              </TouchableOpacity>
+            </View>
+            <View style={styles.inputWrapper}>
+              <Ionicons 
+                name="golf-outline" 
+                size={20} 
+                color="#666" 
+                style={styles.inputIcon} 
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., 12.5"
+                placeholderTextColor="#999"
+                value={handicap}
+                onChangeText={setHandicap}
+                keyboardType={Platform.OS === "ios" ? "decimal-pad" : "numeric"}
+                editable={!loading}
+              />
+            </View>
+            <Text style={styles.helperText}>
+              Enter a value between -10 and 54
             </Text>
           </View>
 
-          {/* Form */}
-          <View style={styles.form}>
-            {error ? (
-              <View style={styles.errorContainer}>
-                <Ionicons name="alert-circle" size={20} color="#DC2626" />
-                <Text style={styles.errorText}>{error}</Text>
-              </View>
-            ) : null}
-
-            {/* Display Name */}
-            <View style={styles.inputGroup}>
-              <View style={styles.labelRow}>
-                <Text style={styles.label}>
-                  Display Name <Text style={styles.required}>*</Text>
-                </Text>
-                <TouchableOpacity 
-                  onPress={showDisplayNameInfo}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                  <Ionicons name="information-circle-outline" size={22} color="#0D5C3A" />
-                </TouchableOpacity>
-              </View>
-              <View style={[
-                styles.inputWrapper,
-                hasInvalidCharacters(displayName) && styles.inputWrapperError
-              ]}>
-                <Ionicons 
-                  name="person-outline" 
-                  size={20} 
-                  color={hasInvalidCharacters(displayName) ? "#DC2626" : "#666"} 
-                  style={styles.inputIcon} 
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="e.g., JohnDoe123 or Tiger_Woods"
-                  placeholderTextColor="#999"
-                  value={displayName}
-                  onChangeText={handleDisplayNameChange}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  editable={!loading}
-                  maxLength={30}
-                />
-                {checkingName && (
-                  <ActivityIndicator size="small" color="#0D5C3A" style={styles.inputSpinner} />
-                )}
-              </View>
-              <Text style={styles.helperText}>
-                No spaces or special characters. We'll check if it's available.
+          {/* Location (MANDATORY) */}
+          <View style={styles.inputGroup}>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>
+                Location <Text style={styles.required}>*</Text>
               </Text>
-              {hasInvalidCharacters(displayName) && (
-                <Text style={styles.warningText}>
-                  ⚠️ Remove {getInvalidCharactersFound(displayName).map(c => c === ' ' ? 'spaces' : `"${c}"`).join(', ')}
-                </Text>
-              )}
-            </View>
-
-            {/* Handicap */}
-            <View style={styles.inputGroup}>
-              <View style={styles.labelRow}>
-                <Text style={styles.label}>
-                  Handicap Index <Text style={styles.required}>*</Text>
-                </Text>
-                <TouchableOpacity 
-                  onPress={showHandicapInfo}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                  <Ionicons name="information-circle-outline" size={22} color="#0D5C3A" />
-                </TouchableOpacity>
-              </View>
-              <View style={styles.inputWrapper}>
-                <Ionicons 
-                  name="golf-outline" 
-                  size={20} 
-                  color="#666" 
-                  style={styles.inputIcon} 
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="e.g., 12.5"
-                  placeholderTextColor="#999"
-                  value={handicap}
-                  onChangeText={setHandicap}
-                  keyboardType={Platform.OS === "ios" ? "decimal-pad" : "numeric"}
-                  editable={!loading}
-                />
-              </View>
-              <Text style={styles.helperText}>
-                Enter a value between -10 and 54
-              </Text>
-            </View>
-
-            {/* Location (MANDATORY) */}
-            <View style={styles.inputGroup}>
-              <View style={styles.labelRow}>
-                <Text style={styles.label}>
-                  Location <Text style={styles.required}>*</Text>
-                </Text>
-                <TouchableOpacity 
-                  onPress={showLocationInfo}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  style={styles.infoButton}
-                >
-                  <Ionicons name="information-circle-outline" size={18} color="#666" />
-                  <Text style={styles.infoButtonText}>Why do we need this?</Text>
-                </TouchableOpacity>
-              </View>
-              <TouchableOpacity
-                style={[
-                  styles.locationButton,
-                  location && styles.locationButtonSet
-                ]}
-                onPress={() => {
-                  soundPlayer.play('click');
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  setShowLocationModal(true);
-                }}
-                disabled={loading}
+              <TouchableOpacity 
+                onPress={showLocationInfo}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                style={styles.infoButton}
               >
-                <Ionicons 
-                  name={location ? "location" : "location-outline"} 
-                  size={20} 
-                  color={location ? "#0D5C3A" : "#666"} 
-                />
-                <Text style={[
-                  styles.locationButtonText,
-                  location && styles.locationButtonTextSet
-                ]}>
-                  {location 
-                    ? `${location.city}, ${location.state}` 
-                    : "Set Your Location"
-                  }
-                </Text>
-                <Ionicons 
-                  name={location ? "checkmark-circle" : "chevron-forward"} 
-                  size={20} 
-                  color={location ? "#4CAF50" : "#999"} 
-                />
+                <Ionicons name="information-circle-outline" size={18} color="#666" />
+                <Text style={styles.infoButtonText}>Why do we need this?</Text>
               </TouchableOpacity>
             </View>
-
-            {/* Continue Button */}
             <TouchableOpacity
               style={[
-                styles.continueButton, 
-                loading && styles.buttonDisabled,
-                hasInvalidCharacters(displayName) && styles.buttonDisabled
+                styles.locationButton,
+                location && styles.locationButtonSet
               ]}
-              onPress={handleContinue}
-              disabled={loading || hasInvalidCharacters(displayName)}
+              onPress={() => {
+                soundPlayer.play('click');
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowLocationModal(true);
+              }}
+              disabled={loading}
             >
-              {loading ? (
-                <View style={styles.loadingRow}>
-                  <ActivityIndicator color="#FFFFFF" />
-                  {checkingName && (
-                    <Text style={styles.loadingText}>Checking availability...</Text>
-                  )}
-                </View>
-              ) : (
-                <>
-                  <Text style={styles.continueButtonText}>Continue</Text>
-                  <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
-                </>
-              )}
+              <Ionicons 
+                name={location ? "location" : "location-outline"} 
+                size={20} 
+                color={location ? "#0D5C3A" : "#666"} 
+              />
+              <Text style={[
+                styles.locationButtonText,
+                location && styles.locationButtonTextSet
+              ]}>
+                {location 
+                  ? `${location.city}, ${location.state}` 
+                  : "Set Your Location"
+                }
+              </Text>
+              <Ionicons 
+                name={location ? "checkmark-circle" : "chevron-forward"} 
+                size={20} 
+                color={location ? "#4CAF50" : "#999"} 
+              />
             </TouchableOpacity>
           </View>
 
-          {/* Progress Indicator */}
-          <View style={styles.progressContainer}>
-            <View style={styles.progressBar}>
-              <View style={[styles.progressFill, { width: "33%" }]} />
-            </View>
-            <Text style={styles.progressText}>Step 1 of 3</Text>
-          </View>
+          {/* Continue Button */}
+          <TouchableOpacity
+            style={[
+              styles.continueButton, 
+              loading && styles.buttonDisabled,
+              hasInvalidCharacters(displayName) && styles.buttonDisabled
+            ]}
+            onPress={handleContinue}
+            disabled={loading || hasInvalidCharacters(displayName)}
+          >
+            {loading ? (
+              <View style={styles.loadingRow}>
+                <ActivityIndicator color="#FFFFFF" />
+                {checkingName && (
+                  <Text style={styles.loadingText}>Checking availability...</Text>
+                )}
+              </View>
+            ) : (
+              <>
+                <Text style={styles.continueButtonText}>Continue</Text>
+                <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
 
-          {/* Extra spacing for keyboard */}
-          <View style={{ height: 40 }} />
-        </KeyboardAwareScrollView>
-      </TouchableWithoutFeedback>
+        {/* Progress Indicator */}
+        <View style={styles.progressContainer}>
+          <View style={styles.progressBar}>
+            <View style={[styles.progressFill, { width: "33%" }]} />
+          </View>
+          <Text style={styles.progressText}>Step 1 of 3</Text>
+        </View>
+
+        {/* Extra spacing for keyboard */}
+        <View style={{ height: 40 }} />
+      </KeyboardAwareScrollView>
 
       {/* Location Modal */}
       <LocationPickerModal

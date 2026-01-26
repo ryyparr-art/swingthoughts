@@ -31,6 +31,12 @@ service cloud.firestore {
         userDoc(request.auth.uid).data.role == 'admin';
     }
 
+    function isApprovedCommissioner() {
+      return isSignedIn() &&
+        userExists(request.auth.uid) &&
+        userDoc(request.auth.uid).data.isApprovedCommissioner == true;
+    }
+
     function getUserData() {
       return userDoc(request.auth.uid).data;
     }
@@ -638,7 +644,11 @@ service cloud.firestore {
     match /leagues/{leagueId} {
       allow read, list: if true;
 
-      allow create: if isAdmin();
+      // ✅ Approved commissioners can create leagues (they become the host)
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        (isApprovedCommissioner() || isAdmin()) &&
+        request.resource.data.hostUserId == request.auth.uid;
 
       allow update: if isSignedIn() &&
         (request.auth.uid == resource.data.hostUserId || isAdmin());

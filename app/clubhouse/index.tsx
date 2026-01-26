@@ -130,6 +130,12 @@ interface Thought {
   
   // Score reference
   scoreId?: string;
+  
+  // Algorithm fields (for shuffle functions)
+  displayBracket?: number;
+  timeBracket?: number;
+  withinBracketScore?: number;
+  relevanceReason?: string;
 }
 
 /* ==================================================================
@@ -324,7 +330,12 @@ export default function ClubhouseScreen() {
             }
             
             // ✅ WARM START: Top 3 preserved, rest shuffled
-            const shuffledThoughts = warmStartShuffle(thoughtsFromCache);
+            // Ensure displayBracket is set for shuffle (default to 7 for old cached items)
+            const thoughtsWithBracket = thoughtsFromCache.map(t => ({
+              ...t,
+              displayBracket: t.displayBracket ?? 7
+            }));
+            const shuffledThoughts = warmStartShuffle(thoughtsWithBracket);
             console.log("🔀 Warm start shuffle applied");
             
             setThoughts(shuffledThoughts);
@@ -444,12 +455,20 @@ export default function ClubhouseScreen() {
         
         const thoughtsFromFeed = await convertFeedToThoughts(feed);
         
+        // Ensure displayBracket is set for shuffle
+        const thoughtsWithBracket = thoughtsFromFeed.map(t => ({
+          ...t,
+          displayBracket: t.displayBracket ?? 7
+        }));
+        
         // Apply cold start shuffle (algorithm already has randomness, this adds more variety)
-        const shuffledThoughts = coldStartShuffle(thoughtsFromFeed);
+        const shuffledThoughts = coldStartShuffle(thoughtsWithBracket);
         
         if (highlightedThought) {
-          const filteredThoughts = shuffledThoughts.filter(t => t.id !== highlightedThought!.id);
-          setThoughts([highlightedThought, ...filteredThoughts]);
+          // Ensure highlighted thought has displayBracket for type consistency
+          const highlightedWithBracket = { ...highlightedThought, displayBracket: highlightedThought.displayBracket ?? 1 };
+          const filteredThoughts = shuffledThoughts.filter(t => t.id !== highlightedWithBracket.id);
+          setThoughts([highlightedWithBracket, ...filteredThoughts]);
           console.log("✅ Added highlighted post to top of algorithmic feed");
         } else {
           setThoughts(shuffledThoughts);
@@ -647,8 +666,14 @@ export default function ClubhouseScreen() {
           
           hasMedia: postItem.hasMedia,
           mediaType: (postItem.mediaType === "images" || postItem.mediaType === "video") ? postItem.mediaType : null,
-          engagementScore: postItem.relevanceScore,
+          engagementScore: postItem.engagementScore,
           viewCount: postItem.viewCount,
+          
+          // Algorithm fields
+          displayBracket: postItem.displayBracket,
+          timeBracket: postItem.timeBracket,
+          withinBracketScore: postItem.withinBracketScore,
+          relevanceReason: postItem.relevanceReason,
         });
       } else {
         const scoreItem = item as FeedScore;
@@ -673,6 +698,12 @@ export default function ClubhouseScreen() {
             courseId: scoreItem.courseId,
             courseName: scoreItem.courseName
           }],
+          
+          // Algorithm fields
+          displayBracket: scoreItem.displayBracket,
+          timeBracket: scoreItem.timeBracket,
+          withinBracketScore: scoreItem.withinBracketScore,
+          relevanceReason: scoreItem.relevanceReason,
         });
       }
     }

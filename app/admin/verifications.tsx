@@ -36,7 +36,7 @@ interface VerificationRequest {
   userId: string;
   userName?: string;
   userEmail?: string;
-  requestType: "course" | "pga_pro" | "course_membership";
+  requestType: "course" | "pga_pro" | "course_membership" | "league_commissioner";
   status: "pending" | "approved" | "denied" | "rejected";
   proofImageUrl?: string;
   courseId?: number;
@@ -48,6 +48,16 @@ interface VerificationRequest {
   reviewedAt?: any;
   reviewedBy?: string;
   rejectionReason?: string;
+  // League application fields
+  leagueName?: string;
+  leagueType?: "live" | "sim";
+  format?: "stroke" | "2v2";
+  expectedMembers?: number;
+  regionKey?: string;
+  regionName?: string;
+  contactEmail?: string;
+  description?: string;
+  previousExperience?: string;
 }
 
 export default function VerificationsQueueScreen() {
@@ -56,6 +66,7 @@ export default function VerificationsQueueScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<"pending" | "all">("pending");
+  const [typeFilter, setTypeFilter] = useState<"all" | "verifications" | "memberships" | "leagues">("all");
   const [imageModalVisible, setImageModalVisible] = useState(false);
   const [selectedImageUrl, setSelectedImageUrl] = useState<string>("");
   const [rejectionReason, setRejectionReason] = useState("");
@@ -69,7 +80,7 @@ export default function VerificationsQueueScreen() {
   useEffect(() => {
     if (loading) return;
     fetchRequests();
-  }, [filter]);
+  }, [filter, typeFilter]);
 
   const checkAdminAccess = async () => {
     const user = auth.currentUser;
@@ -100,85 +111,141 @@ export default function VerificationsQueueScreen() {
 
   const fetchRequests = async () => {
     try {
-      // Fetch verification requests
-      let verificationQuery;
-      if (filter === "pending") {
-        verificationQuery = query(
-          collection(db, "verification_requests"),
-          where("status", "==", "pending"),
-          orderBy("createdAt", "desc")
-        );
-      } else {
-        verificationQuery = query(
-          collection(db, "verification_requests"),
-          orderBy("createdAt", "desc")
-        );
-      }
-
-      const verificationSnapshot = await getDocs(verificationQuery);
       const requestsData: VerificationRequest[] = [];
 
-      verificationSnapshot.forEach((doc) => {
-        requestsData.push({ id: doc.id, ...doc.data() } as VerificationRequest);
-      });
-
-      // Fetch course membership requests
-      let membershipQuery;
-      if (filter === "pending") {
-        membershipQuery = query(
-          collection(db, "course_memberships"),
-          where("status", "==", "pending"),
-          orderBy("submittedAt", "desc")
-        );
-      } else {
-        membershipQuery = query(
-          collection(db, "course_memberships"),
-          orderBy("submittedAt", "desc")
-        );
-      }
-
-      const membershipSnapshot = await getDocs(membershipQuery);
-
-      // Fetch user data for memberships
-      const userIds = new Set<string>();
-      membershipSnapshot.forEach((doc) => {
-        userIds.add(doc.data().userId);
-      });
-
-      const userProfiles: Record<string, any> = {};
-      if (userIds.size > 0) {
-        const ids = Array.from(userIds);
-        for (let i = 0; i < ids.length; i += 10) {
-          const batch = ids.slice(i, i + 10);
-          const uq = query(collection(db, "users"), where("__name__", "in", batch));
-          const us = await getDocs(uq);
-          us.forEach((u) => {
-            userProfiles[u.id] = u.data();
-          });
+      // ============================================
+      // FETCH VERIFICATION REQUESTS (Course/PGA Pro)
+      // ============================================
+      if (typeFilter === "all" || typeFilter === "verifications") {
+        let verificationQuery;
+        if (filter === "pending") {
+          verificationQuery = query(
+            collection(db, "verification_requests"),
+            where("status", "==", "pending"),
+            orderBy("createdAt", "desc")
+          );
+        } else {
+          verificationQuery = query(
+            collection(db, "verification_requests"),
+            orderBy("createdAt", "desc")
+          );
         }
+
+        const verificationSnapshot = await getDocs(verificationQuery);
+        verificationSnapshot.forEach((doc) => {
+          requestsData.push({ id: doc.id, ...doc.data() } as VerificationRequest);
+        });
       }
 
-      membershipSnapshot.forEach((doc) => {
-        const data = doc.data();
-        const userProfile = userProfiles[data.userId] || {};
-        
-        requestsData.push({
-          id: doc.id,
-          userId: data.userId,
-          userName: userProfile.displayName || "Unknown User",
-          userEmail: auth.currentUser?.email || "",
-          requestType: "course_membership",
-          status: data.status,
-          proofImageUrl: data.proofImageUrl,
-          courseId: data.courseId,
-          courseName: data.courseName,
-          membershipNumber: data.membershipNumber,
-          createdAt: data.submittedAt,
-          reviewedAt: data.reviewedAt,
-          reviewedBy: data.reviewedBy,
-          rejectionReason: data.rejectionReason,
-        } as VerificationRequest);
-      });
+      // ============================================
+      // FETCH COURSE MEMBERSHIP REQUESTS
+      // ============================================
+      if (typeFilter === "all" || typeFilter === "memberships") {
+        let membershipQuery;
+        if (filter === "pending") {
+          membershipQuery = query(
+            collection(db, "course_memberships"),
+            where("status", "==", "pending"),
+            orderBy("submittedAt", "desc")
+          );
+        } else {
+          membershipQuery = query(
+            collection(db, "course_memberships"),
+            orderBy("submittedAt", "desc")
+          );
+        }
+
+        const membershipSnapshot = await getDocs(membershipQuery);
+
+        // Fetch user data for memberships
+        const membershipUserIds = new Set<string>();
+        membershipSnapshot.forEach((doc) => {
+          membershipUserIds.add(doc.data().userId);
+        });
+
+        const membershipUserProfiles: Record<string, any> = {};
+        if (membershipUserIds.size > 0) {
+          const ids = Array.from(membershipUserIds);
+          for (let i = 0; i < ids.length; i += 10) {
+            const batch = ids.slice(i, i + 10);
+            const uq = query(collection(db, "users"), where("__name__", "in", batch));
+            const us = await getDocs(uq);
+            us.forEach((u) => {
+              membershipUserProfiles[u.id] = u.data();
+            });
+          }
+        }
+
+        membershipSnapshot.forEach((doc) => {
+          const data = doc.data();
+          const userProfile = membershipUserProfiles[data.userId] || {};
+          
+          requestsData.push({
+            id: doc.id,
+            userId: data.userId,
+            userName: userProfile.displayName || "Unknown User",
+            userEmail: userProfile.email || "",
+            requestType: "course_membership",
+            status: data.status,
+            proofImageUrl: data.proofImageUrl,
+            courseId: data.courseId,
+            courseName: data.courseName,
+            membershipNumber: data.membershipNumber,
+            createdAt: data.submittedAt,
+            reviewedAt: data.reviewedAt,
+            reviewedBy: data.reviewedBy,
+            rejectionReason: data.rejectionReason,
+          } as VerificationRequest);
+        });
+      }
+
+      // ============================================
+      // FETCH LEAGUE COMMISSIONER APPLICATIONS
+      // ============================================
+      if (typeFilter === "all" || typeFilter === "leagues") {
+        let leagueQuery;
+        if (filter === "pending") {
+          leagueQuery = query(
+            collection(db, "league_applications"),
+            where("status", "==", "pending"),
+            orderBy("createdAt", "desc")
+          );
+        } else {
+          leagueQuery = query(
+            collection(db, "league_applications"),
+            orderBy("createdAt", "desc")
+          );
+        }
+
+        const leagueSnapshot = await getDocs(leagueQuery);
+
+        leagueSnapshot.forEach((doc) => {
+          const data = doc.data();
+          
+          requestsData.push({
+            id: doc.id,
+            userId: data.userId,
+            userName: data.userName || "Unknown User",
+            userEmail: data.userEmail || "",
+            requestType: "league_commissioner",
+            status: data.status,
+            createdAt: data.createdAt,
+            reviewedAt: data.reviewedAt,
+            reviewedBy: data.reviewedBy,
+            rejectionReason: data.rejectionReason,
+            // League-specific fields
+            leagueName: data.leagueName,
+            leagueType: data.leagueType,
+            format: data.format,
+            expectedMembers: data.expectedMembers,
+            regionKey: data.regionKey,
+            regionName: data.regionName,
+            contactEmail: data.contactEmail,
+            description: data.description,
+            previousExperience: data.previousExperience,
+          } as VerificationRequest);
+        });
+      }
 
       // Sort all requests by date
       requestsData.sort((a, b) => {
@@ -208,7 +275,9 @@ export default function VerificationsQueueScreen() {
         ? "Course Account"
         : request.requestType === "pga_pro"
         ? "PGA Professional"
-        : "Course Membership";
+        : request.requestType === "course_membership"
+        ? "Course Membership"
+        : "League Commissioner";
 
     Alert.alert(
       "Approve Request",
@@ -223,23 +292,50 @@ export default function VerificationsQueueScreen() {
 
               if (request.requestType === "course_membership") {
                 // Course membership approval
-                // Update triggers onMembershipUpdated Cloud Function → membership_approved notification
                 await updateDoc(doc(db, "course_memberships", request.id), {
                   status: "approved",
                   reviewedAt: serverTimestamp(),
                   reviewedBy: auth.currentUser?.uid,
                 });
 
-                // Update user document
                 const userRef = doc(db, "users", request.userId);
                 await updateDoc(userRef, {
                   declaredMemberCourses: arrayUnion(request.courseId),
                   pendingMembershipCourses: arrayRemove(request.courseId),
                 });
 
-                // ✅ NO CLIENT-SIDE NOTIFICATION
-                // membership_approved notification is sent by onMembershipUpdated Cloud Function
                 console.log("📬 Membership approved (notification handled by Cloud Function)");
+
+              } else if (request.requestType === "league_commissioner") {
+                // ============================================
+                // LEAGUE COMMISSIONER APPROVAL
+                // ============================================
+                
+                // Update application status
+                await updateDoc(doc(db, "league_applications", request.id), {
+                  status: "approved",
+                  reviewedAt: serverTimestamp(),
+                  reviewedBy: auth.currentUser?.uid,
+                });
+
+                // Grant commissioner privileges to user
+                const userRef = doc(db, "users", request.userId);
+                await updateDoc(userRef, {
+                  isApprovedCommissioner: true,
+                  commissionerApprovedAt: serverTimestamp(),
+                });
+
+                // Create notification for user
+                await addDoc(collection(db, "notifications"), {
+                  userId: request.userId,
+                  type: "commissioner_approved",
+                  message: `Your league host application has been approved! You can now create "${request.leagueName}".`,
+                  read: false,
+                  createdAt: serverTimestamp(),
+                });
+
+                console.log("📬 Commissioner approved:", request.userId);
+
               } else {
                 // User verification approval (PGA Pro or Course account)
                 await updateDoc(doc(db, "users", request.userId), {
@@ -251,15 +347,12 @@ export default function VerificationsQueueScreen() {
                   "verification.reviewedBy": auth.currentUser?.uid,
                 });
 
-                // Update triggers onVerificationRequestUpdated Cloud Function (if exists)
                 await updateDoc(doc(db, "verification_requests", request.id), {
                   status: "approved",
                   reviewedAt: serverTimestamp(),
                   reviewedBy: auth.currentUser?.uid,
                 });
 
-                // For user verification, we still create notification directly
-                // since this is an admin action and we may not have a Cloud Function for it
                 await addDoc(collection(db, "notifications"), {
                   userId: request.userId,
                   type: "verification_approved",
@@ -282,8 +375,8 @@ export default function VerificationsQueueScreen() {
   };
 
   const handleDeny = async (request: VerificationRequest) => {
-    if (request.requestType === "course_membership") {
-      // For memberships, require rejection reason
+    if (request.requestType === "course_membership" || request.requestType === "league_commissioner") {
+      // For memberships and league apps, require rejection reason
       setSelectedRequest(request);
       setRejectionReason("");
       setRejectionModalVisible(true);
@@ -307,7 +400,6 @@ export default function VerificationsQueueScreen() {
                   reviewedBy: auth.currentUser?.uid,
                 });
 
-                // For user verification denial, create notification directly
                 await addDoc(collection(db, "notifications"), {
                   userId: request.userId,
                   type: "verification_denied",
@@ -329,7 +421,7 @@ export default function VerificationsQueueScreen() {
     }
   };
 
-  const handleRejectMembership = async () => {
+  const handleRejectWithReason = async () => {
     if (!selectedRequest || !rejectionReason.trim()) {
       Alert.alert("Missing Reason", "Please provide a reason for rejection");
       return;
@@ -338,33 +430,53 @@ export default function VerificationsQueueScreen() {
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-      // Update membership document
-      // Update triggers onMembershipUpdated Cloud Function → membership_rejected notification
-      await updateDoc(doc(db, "course_memberships", selectedRequest.id), {
-        status: "rejected",
-        rejectionReason: rejectionReason.trim(),
-        reviewedAt: serverTimestamp(),
-        reviewedBy: auth.currentUser?.uid,
-      });
+      if (selectedRequest.requestType === "course_membership") {
+        // Course membership rejection
+        await updateDoc(doc(db, "course_memberships", selectedRequest.id), {
+          status: "rejected",
+          rejectionReason: rejectionReason.trim(),
+          reviewedAt: serverTimestamp(),
+          reviewedBy: auth.currentUser?.uid,
+        });
 
-      // Update user document - remove from pending
-      const userRef = doc(db, "users", selectedRequest.userId);
-      await updateDoc(userRef, {
-        pendingMembershipCourses: arrayRemove(selectedRequest.courseId),
-      });
+        const userRef = doc(db, "users", selectedRequest.userId);
+        await updateDoc(userRef, {
+          pendingMembershipCourses: arrayRemove(selectedRequest.courseId),
+        });
 
-      // ✅ NO CLIENT-SIDE NOTIFICATION
-      // membership_rejected notification is sent by onMembershipUpdated Cloud Function
-      console.log("📬 Membership rejected (notification handled by Cloud Function)");
+        console.log("📬 Membership rejected (notification handled by Cloud Function)");
 
-      Alert.alert("Success", "Membership rejected and user notified");
+      } else if (selectedRequest.requestType === "league_commissioner") {
+        // ============================================
+        // LEAGUE COMMISSIONER REJECTION
+        // ============================================
+        await updateDoc(doc(db, "league_applications", selectedRequest.id), {
+          status: "rejected",
+          rejectionReason: rejectionReason.trim(),
+          reviewedAt: serverTimestamp(),
+          reviewedBy: auth.currentUser?.uid,
+        });
+
+        // Create notification for user
+        await addDoc(collection(db, "notifications"), {
+          userId: selectedRequest.userId,
+          type: "commissioner_rejected",
+          message: `Your league host application was not approved. Reason: ${rejectionReason.trim()}`,
+          read: false,
+          createdAt: serverTimestamp(),
+        });
+
+        console.log("📬 Commissioner application rejected:", selectedRequest.userId);
+      }
+
+      Alert.alert("Success", "Request rejected and user notified");
       setRejectionModalVisible(false);
       setSelectedRequest(null);
       setRejectionReason("");
       fetchRequests();
     } catch (error) {
-      console.error("Error rejecting membership:", error);
-      Alert.alert("Error", "Failed to reject membership");
+      console.error("Error rejecting request:", error);
+      Alert.alert("Error", "Failed to reject request");
     }
   };
 
@@ -399,12 +511,14 @@ export default function VerificationsQueueScreen() {
         return "PGA Professional";
       case "course_membership":
         return "Course Membership";
+      case "league_commissioner":
+        return "League Host";
       default:
         return type;
     }
   };
 
-  const getRequestTypeIcon = (type: string) => {
+  const getRequestTypeIcon = (type: string): any => {
     switch (type) {
       case "course":
         return "golf";
@@ -412,9 +526,26 @@ export default function VerificationsQueueScreen() {
         return "ribbon";
       case "course_membership":
         return "shield-checkmark";
+      case "league_commissioner":
+        return "trophy";
       default:
         return "document";
     }
+  };
+
+  const getPendingCount = (type?: string) => {
+    if (!type) return requests.filter((r) => r.status === "pending").length;
+    return requests.filter((r) => r.status === "pending" && r.requestType === type).length;
+  };
+
+  const getFilteredRequests = () => {
+    let filtered = requests;
+    
+    if (filter === "pending") {
+      filtered = filtered.filter((r) => r.status === "pending");
+    }
+    
+    return filtered;
   };
 
   if (loading) {
@@ -443,7 +574,7 @@ export default function VerificationsQueueScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* FILTER TABS */}
+      {/* STATUS FILTER TABS */}
       <View style={styles.filterContainer}>
         <TouchableOpacity
           style={[styles.filterTab, filter === "pending" && styles.filterTabActive]}
@@ -455,7 +586,7 @@ export default function VerificationsQueueScreen() {
               filter === "pending" && styles.filterTextActive,
             ]}
           >
-            Pending ({requests.filter((r) => r.status === "pending").length})
+            Pending ({getPendingCount()})
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -470,21 +601,54 @@ export default function VerificationsQueueScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* TYPE FILTER CHIPS */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.typeFilterScroll}
+        contentContainerStyle={styles.typeFilterContent}
+      >
+        {[
+          { key: "all", label: "All Types" },
+          { key: "verifications", label: "Verifications" },
+          { key: "memberships", label: "Memberships" },
+          { key: "leagues", label: "League Hosts" },
+        ].map((item) => (
+          <TouchableOpacity
+            key={item.key}
+            style={[
+              styles.typeChip,
+              typeFilter === item.key && styles.typeChipActive,
+            ]}
+            onPress={() => setTypeFilter(item.key as any)}
+          >
+            <Text
+              style={[
+                styles.typeChipText,
+                typeFilter === item.key && styles.typeChipTextActive,
+              ]}
+            >
+              {item.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
         }
       >
-        {requests.length === 0 ? (
+        {getFilteredRequests().length === 0 ? (
           <View style={styles.emptyState}>
             <Ionicons name="checkmark-circle" size={64} color="#0D5C3A" />
-            <Text style={styles.emptyText}>No verification requests</Text>
+            <Text style={styles.emptyText}>No requests to review</Text>
           </View>
         ) : (
-          requests.map((request) => (
+          getFilteredRequests().map((request) => (
             <View
-              key={request.id}
+              key={`${request.requestType}-${request.id}`}
               style={[
                 styles.requestCard,
                 request.status !== "pending" && styles.requestCardResolved,
@@ -524,6 +688,69 @@ export default function VerificationsQueueScreen() {
                   <Text style={styles.userEmail}>{request.userEmail}</Text>
                 )}
 
+                {/* ============================================ */}
+                {/* LEAGUE COMMISSIONER DETAILS */}
+                {/* ============================================ */}
+                {request.requestType === "league_commissioner" && (
+                  <>
+                    <View style={styles.divider} />
+                    
+                    <Text style={styles.label}>League Name:</Text>
+                    <Text style={styles.value}>{request.leagueName}</Text>
+
+                    <View style={styles.detailRow}>
+                      <View style={styles.detailItem}>
+                        <Text style={styles.label}>Type:</Text>
+                        <Text style={styles.value}>
+                          {request.leagueType === "live" ? "🌳 Live Golf" : "🖥️ Simulator"}
+                        </Text>
+                      </View>
+                      <View style={styles.detailItem}>
+                        <Text style={styles.label}>Format:</Text>
+                        <Text style={styles.value}>
+                          {request.format === "stroke" ? "Stroke Play" : "2v2 Teams"}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.detailRow}>
+                      <View style={styles.detailItem}>
+                        <Text style={styles.label}>Expected Members:</Text>
+                        <Text style={styles.value}>{request.expectedMembers}</Text>
+                      </View>
+                      <View style={styles.detailItem}>
+                        <Text style={styles.label}>Region:</Text>
+                        <Text style={styles.value}>{request.regionName || request.regionKey}</Text>
+                      </View>
+                    </View>
+
+                    {request.contactEmail && request.contactEmail !== request.userEmail && (
+                      <>
+                        <Text style={styles.label}>Contact Email:</Text>
+                        <Text style={styles.value}>{request.contactEmail}</Text>
+                      </>
+                    )}
+
+                    {request.previousExperience && (
+                      <>
+                        <Text style={styles.label}>Previous Experience:</Text>
+                        <Text style={styles.value}>{request.previousExperience}</Text>
+                      </>
+                    )}
+
+                    <Text style={styles.label}>About Their League:</Text>
+                    <Text style={styles.valueDescription}>{request.description}</Text>
+
+                    {request.rejectionReason && request.status === "rejected" && (
+                      <>
+                        <Text style={styles.label}>Rejection Reason:</Text>
+                        <Text style={styles.rejectionValue}>{request.rejectionReason}</Text>
+                      </>
+                    )}
+                  </>
+                )}
+
+                {/* COURSE MEMBERSHIP DETAILS */}
                 {request.requestType === "course_membership" && (
                   <>
                     <Text style={styles.label}>Course:</Text>
@@ -545,6 +772,7 @@ export default function VerificationsQueueScreen() {
                   </>
                 )}
 
+                {/* COURSE ACCOUNT DETAILS */}
                 {request.requestType === "course" && request.courseName && (
                   <>
                     <Text style={styles.label}>Course Claimed:</Text>
@@ -552,6 +780,7 @@ export default function VerificationsQueueScreen() {
                   </>
                 )}
 
+                {/* PGA PRO DETAILS */}
                 {request.credentials && (
                   <>
                     <Text style={styles.label}>Credentials:</Text>
@@ -601,7 +830,9 @@ export default function VerificationsQueueScreen() {
                   >
                     <Ionicons name="close-circle" size={20} color="#FFF" />
                     <Text style={styles.denyButtonText}>
-                      {request.requestType === "course_membership" ? "Reject" : "Deny"}
+                      {request.requestType === "course_membership" || request.requestType === "league_commissioner"
+                        ? "Reject"
+                        : "Deny"}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -645,14 +876,24 @@ export default function VerificationsQueueScreen() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.rejectionModal}>
-            <Text style={styles.rejectionModalTitle}>Rejection Reason</Text>
+            <Text style={styles.rejectionModalTitle}>
+              {selectedRequest?.requestType === "league_commissioner"
+                ? "Rejection Reason"
+                : "Rejection Reason"}
+            </Text>
             <Text style={styles.rejectionModalDescription}>
-              Please provide a reason for rejecting this membership request. The user will see this message.
+              {selectedRequest?.requestType === "league_commissioner"
+                ? "Please provide a reason for rejecting this league host application. The user will see this message."
+                : "Please provide a reason for rejecting this membership request. The user will see this message."}
             </Text>
 
             <TextInput
               style={styles.rejectionInput}
-              placeholder="e.g., Proof image is unclear, please resubmit with a clearer photo"
+              placeholder={
+                selectedRequest?.requestType === "league_commissioner"
+                  ? "e.g., Please provide more details about your planned league structure..."
+                  : "e.g., Proof image is unclear, please resubmit with a clearer photo"
+              }
               value={rejectionReason}
               onChangeText={setRejectionReason}
               multiline
@@ -674,7 +915,7 @@ export default function VerificationsQueueScreen() {
 
               <TouchableOpacity
                 style={[styles.modalButton, styles.modalRejectButton]}
-                onPress={handleRejectMembership}
+                onPress={handleRejectWithReason}
                 disabled={!rejectionReason.trim()}
               >
                 <Text style={styles.modalRejectText}>Reject Request</Text>
@@ -745,6 +986,40 @@ const styles = StyleSheet.create({
 
   filterTextActive: {
     color: "#0D5C3A",
+  },
+
+  // Type Filter Chips
+  typeFilterScroll: {
+    backgroundColor: "#FFF",
+    maxHeight: 50,
+  },
+
+  typeFilterContent: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+  },
+
+  typeChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    backgroundColor: "#F0F0F0",
+    borderRadius: 20,
+    marginRight: 8,
+  },
+
+  typeChipActive: {
+    backgroundColor: "#0D5C3A",
+  },
+
+  typeChipText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#666",
+  },
+
+  typeChipTextActive: {
+    color: "#FFF",
   },
 
   scrollContent: {
@@ -833,7 +1108,13 @@ const styles = StyleSheet.create({
   userEmail: {
     fontSize: 14,
     color: "#666",
-    marginBottom: 12,
+    marginBottom: 8,
+  },
+
+  divider: {
+    height: 1,
+    backgroundColor: "#E5E5E5",
+    marginVertical: 12,
   },
 
   label: {
@@ -849,10 +1130,29 @@ const styles = StyleSheet.create({
     color: "#333",
   },
 
+  valueDescription: {
+    fontSize: 14,
+    color: "#333",
+    lineHeight: 20,
+    backgroundColor: "#F7F8FA",
+    padding: 10,
+    borderRadius: 8,
+    marginTop: 4,
+  },
+
   rejectionValue: {
     fontSize: 14,
     color: "#FF3B30",
     fontStyle: "italic",
+  },
+
+  detailRow: {
+    flexDirection: "row",
+    marginTop: 8,
+  },
+
+  detailItem: {
+    flex: 1,
   },
 
   proofImageContainer: {

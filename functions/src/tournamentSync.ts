@@ -289,6 +289,152 @@ function calculateMovement(
 }
 
 // =================================================================
+// CALLABLE: FIX TOURNAMENT DATES (+1 day)
+// =================================================================
+
+/**
+ * One-time fix for tournament dates that are 1 day early.
+ * Adds 1 day to both startDate and endDate for all tournaments.
+ * 
+ * Options:
+ * - dryRun: boolean (default: true) - Preview changes without updating
+ * - year: number (optional) - Only fix tournaments for a specific year
+ */
+export const fixTournamentDates = onCall(
+  { timeoutSeconds: 300, memory: "512MiB" },
+  async (request) => {
+    const { dryRun = true, year } = request.data || {};
+
+    console.log(`\n🏌️ ${dryRun ? "[DRY RUN] " : ""}Starting tournament date fix...`);
+    if (year) console.log(`📅 Filtering by year: ${year}`);
+
+    try {
+      // Build query
+      let tournamentsQuery = db.collection("tournaments");
+      let snapshot;
+      
+      if (year) {
+        snapshot = await tournamentsQuery.where("year", "==", parseInt(year)).get();
+      } else {
+        snapshot = await tournamentsQuery.get();
+      }
+
+      console.log(`📋 Found ${snapshot.size} tournaments to process\n`);
+
+      const results: Array<{
+        id: string;
+        name: string;
+        status: "updated" | "skipped" | "error";
+        oldStartDate?: string;
+        newStartDate?: string;
+        oldEndDate?: string;
+        newEndDate?: string;
+        reason?: string;
+      }> = [];
+
+      let updated = 0;
+      let skipped = 0;
+      let errors = 0;
+
+      for (const doc of snapshot.docs) {
+        const tournamentId = doc.id;
+        const data = doc.data();
+
+        try {
+          const startDate = data.startDate;
+          const endDate = data.endDate;
+          const name = data.name || "Unknown";
+
+          // Skip if no dates
+          if (!startDate || !endDate) {
+            console.log(`⏭️  Skipping ${tournamentId}: Missing date fields`);
+            results.push({ id: tournamentId, name, status: "skipped", reason: "Missing date fields" });
+            skipped++;
+            continue;
+          }
+
+          // Convert Firestore Timestamps to JS Dates
+          const oldStartDate = startDate.toDate();
+          const oldEndDate = endDate.toDate();
+
+          // Add 1 day
+          const newStartDate = new Date(oldStartDate);
+          newStartDate.setDate(newStartDate.getDate() + 1);
+
+          const newEndDate = new Date(oldEndDate);
+          newEndDate.setDate(newEndDate.getDate() + 1);
+
+          const result = {
+            id: tournamentId,
+            name,
+            status: "updated" as const,
+            oldStartDate: oldStartDate.toISOString(),
+            newStartDate: newStartDate.toISOString(),
+            oldEndDate: oldEndDate.toISOString(),
+            newEndDate: newEndDate.toISOString(),
+          };
+
+          if (dryRun) {
+            console.log(
+              `🔍 [DRY RUN] ${tournamentId} (${name}):\n` +
+              `   Start: ${oldStartDate.toDateString()} → ${newStartDate.toDateString()}\n` +
+              `   End:   ${oldEndDate.toDateString()} → ${newEndDate.toDateString()}`
+            );
+          } else {
+            // Actually update the document
+            await db.collection("tournaments").doc(tournamentId).update({
+              startDate: Timestamp.fromDate(newStartDate),
+              endDate: Timestamp.fromDate(newEndDate),
+            });
+
+            console.log(
+              `✅ Updated ${tournamentId} (${name}):\n` +
+              `   Start: ${oldStartDate.toDateString()} → ${newStartDate.toDateString()}\n` +
+              `   End:   ${oldEndDate.toDateString()} → ${newEndDate.toDateString()}`
+            );
+          }
+
+          results.push(result);
+          updated++;
+        } catch (err: any) {
+          console.error(`❌ Error processing ${tournamentId}:`, err.message);
+          results.push({ 
+            id: tournamentId, 
+            name: data.name || "Unknown", 
+            status: "error", 
+            reason: err.message 
+          });
+          errors++;
+        }
+      }
+
+      console.log("\n" + "=".repeat(50));
+      console.log(`📊 ${dryRun ? "[DRY RUN] " : ""}Summary:`);
+      console.log(`   ${dryRun ? "Would update" : "Updated"}: ${updated}`);
+      console.log(`   Skipped: ${skipped}`);
+      console.log(`   Errors:  ${errors}`);
+      console.log("=".repeat(50));
+
+      return {
+        success: true,
+        dryRun,
+        totalProcessed: snapshot.size,
+        updated,
+        skipped,
+        errors,
+        results,
+        message: dryRun 
+          ? `Dry run complete. ${updated} tournaments would be updated. Run with dryRun=false to apply changes.`
+          : `Successfully updated ${updated} tournament dates.`,
+      };
+    } catch (error: any) {
+      console.error("❌ Fatal error:", error);
+      throw new HttpsError("internal", `Failed to fix tournament dates: ${error.message}`);
+    }
+  }
+);
+
+// =================================================================
 // SCHEDULED: SYNC TOURNAMENT SCHEDULE
 // =================================================================
 

@@ -52,6 +52,7 @@ export default function AdminDashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [syncingTournaments, setSyncingTournaments] = useState(false);
+  const [fixingDates, setFixingDates] = useState(false);
 
   useEffect(() => {
     checkAdminAccess();
@@ -215,6 +216,73 @@ export default function AdminDashboardScreen() {
     );
   };
 
+  const handleFixTournamentDates = async () => {
+    Alert.alert(
+      "Fix Tournament Dates",
+      "This will add 1 day to all tournament start and end dates to correct the import error.\n\nRun dry run first?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Dry Run (Preview)",
+          onPress: async () => {
+            try {
+              setFixingDates(true);
+              console.log("🔍 Running date fix dry run...");
+
+              const functions = getFunctions();
+              const fixDates = httpsCallable(functions, "fixTournamentDates");
+
+              const result = await fixDates({ dryRun: true });
+              const data = result.data as any;
+
+              console.log("✅ Dry run complete:", data);
+
+              Alert.alert(
+                "Dry Run Complete",
+                `${data.updated} tournaments would be updated.\n${data.skipped} skipped.\n${data.errors} errors.\n\nRun again and select "Apply Fix" to make changes.`,
+                [{ text: "OK" }]
+              );
+            } catch (error: any) {
+              console.error("❌ Dry run failed:", error);
+              Alert.alert("Dry Run Failed", error.message || "Unknown error occurred");
+            } finally {
+              setFixingDates(false);
+            }
+          },
+        },
+        {
+          text: "Apply Fix",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              setFixingDates(true);
+              console.log("📅 Applying tournament date fix...");
+
+              const functions = getFunctions();
+              const fixDates = httpsCallable(functions, "fixTournamentDates");
+
+              const result = await fixDates({ dryRun: false });
+              const data = result.data as any;
+
+              console.log("✅ Date fix complete:", data);
+
+              Alert.alert(
+                "Dates Fixed!",
+                `Successfully updated ${data.updated} tournament dates.\n${data.skipped} skipped.\n${data.errors} errors.`,
+                [{ text: "OK" }]
+              );
+            } catch (error: any) {
+              console.error("❌ Date fix failed:", error);
+              Alert.alert("Fix Failed", error.message || "Unknown error occurred");
+            } finally {
+              setFixingDates(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   /* ==================== CALCULATED METRICS ==================== */
   const dau_mau_ratio =
     metrics.activeUsersLast30Days > 0
@@ -315,6 +383,17 @@ export default function AdminDashboardScreen() {
             <Ionicons name="refresh-circle" size={24} color="#FF9500" />
             <Text style={styles.actionLabel}>Migration</Text>
           </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.actionCard}
+            onPress={() => router.push("/leagues" as any)}
+          >
+            <Image
+              source={require("@/assets/icons/LowLeaderTrophy.png")}
+              style={{ width: 24, height: 24 }}
+            />
+            <Text style={styles.actionLabel}>Leagues</Text>
+          </TouchableOpacity>
         </View>
 
         {/* TOURNAMENT SYNC */}
@@ -332,7 +411,25 @@ export default function AdminDashboardScreen() {
           ) : (
             <>
               <Ionicons name="golf" size={20} color="#FFF" />
-              <Text style={styles.syncButtonText}>Sync 2025 PGA Tour Schedule</Text>
+              <Text style={styles.syncButtonText}>Sync 2026 PGA Tour Schedule</Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.fixDatesButton, fixingDates && styles.syncButtonDisabled]}
+          onPress={handleFixTournamentDates}
+          disabled={fixingDates}
+        >
+          {fixingDates ? (
+            <>
+              <ActivityIndicator size="small" color="#FFF" />
+              <Text style={styles.syncButtonText}>Processing...</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="calendar" size={20} color="#FFF" />
+              <Text style={styles.syncButtonText}>Fix Tournament Dates (+1 Day)</Text>
             </>
           )}
         </TouchableOpacity>
@@ -534,6 +631,22 @@ const styles = StyleSheet.create({
     color: "#FFF",
     fontSize: 15,
     fontWeight: "700",
+  },
+
+  fixDatesButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "#FF9500",
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
 
   /* METRICS */

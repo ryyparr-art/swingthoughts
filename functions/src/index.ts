@@ -42,6 +42,8 @@ const GROUPABLE_TYPES = {
     "membership_submitted",
     "membership_approved",
     "membership_rejected",
+    "commissioner_approved",
+    "commissioner_rejected",
     "trending",
     "system",
     "group_message",  // ✅ NEW: Group messages are individual (each recipient gets one)
@@ -536,6 +538,12 @@ export const sendPushNotification = onDocumentCreated(
           break;
         case "membership_rejected":
           pushMessage.title = "❌ Membership Update";
+          break;
+        case "commissioner_approved":
+          pushMessage.title = "🏆 You're Approved!";
+          break;
+        case "commissioner_rejected":
+          pushMessage.title = "📋 Application Update";
           break;
         default:
           pushMessage.title = "⛳ Swing Thoughts";
@@ -1903,10 +1911,12 @@ export const onThreadUpdated = onDocumentUpdated(
 
 export {
   cleanupTournamentChats,
-  getActiveTournament, syncLeaderboard,
-  syncLeaderboardManual, syncTournamentSchedule
+  fixTournamentDates, // ← ADD THIS
+  getActiveTournament,
+  syncLeaderboard,
+  syncLeaderboardManual,
+  syncTournamentSchedule
 } from "./tournamentSync";
-
 
 
 
