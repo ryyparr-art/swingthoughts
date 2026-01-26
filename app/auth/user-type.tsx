@@ -3,7 +3,7 @@ import { BlurView } from "expo-blur";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { deleteUser } from "firebase/auth";
-import { deleteDoc, doc, getDoc, setDoc } from "firebase/firestore";
+import { deleteDoc, deleteField, doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -183,17 +183,38 @@ export default function UserTypeScreen() {
       const snap = await getDoc(ref);
 
       if (!snap.exists()) {
+        // ✅ New user - create document
         await setDoc(ref, {
           userId: user.uid,
           email: user.email,
           createdAt: new Date(),
           userType: type,
-          displayName: "",
+          displayName: null,
+          displayNameLower: null,
           handicap: null,
           badges: [],
           avatar: null,
           acceptedTerms: false,
           verified: false,
+          banned: false,
+          // Location fields (will be set in setup-profile)
+          location: null,
+          homeCity: "",
+          homeState: "",
+          homeLocation: null,
+          homeCountry: "",
+          currentCity: "",
+          currentState: "",
+          currentLocation: null,
+          locationMethod: "manual",
+          locationPermission: false,
+          locationHistory: [],
+          // Rate limiting
+          lastPostTime: null,
+          lastCommentTime: null,
+          lastMessageTime: null,
+          lastScoreTime: null,
+          // Only add verification for PGA Pro / Course
           ...(type === "PGA Professional" || type === "Course"
             ? {
                 verification: {
@@ -204,22 +225,30 @@ export default function UserTypeScreen() {
             : {}),
         });
       } else {
-        await setDoc(
-          ref,
-          {
+        // ✅ Existing user - update type
+        if (type === "PGA Professional" || type === "Course") {
+          // Add verification object for pro/course types
+          await setDoc(
+            ref,
+            {
+              userType: type,
+              verified: false,
+              verification: {
+                required: true,
+                status: "pending",
+              },
+            },
+            { merge: true }
+          );
+        } else {
+          // ✅ FIX: Remove verification object for Golfer/Junior
+          // They don't need verification - use deleteField() to actually remove it
+          await updateDoc(ref, {
             userType: type,
             verified: false,
-            ...(type === "PGA Professional" || type === "Course"
-              ? {
-                  verification: {
-                    required: true,
-                    status: "pending",
-                  },
-                }
-              : {}),
-          },
-          { merge: true }
-        );
+            verification: deleteField(),
+          });
+        }
       }
 
       // Play success sound after saving
