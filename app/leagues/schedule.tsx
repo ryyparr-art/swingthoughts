@@ -9,7 +9,7 @@ import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { collection, doc, getDoc, getDocs } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import {
     ActivityIndicator,
@@ -62,6 +62,10 @@ export default function LeagueSchedule() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Commissioner status
+  const [isCommissioner, setIsCommissioner] = useState(false);
+  const [commissionerLeagueId, setCommissionerLeagueId] = useState<string | null>(null);
+
   // User's leagues
   const [myLeagues, setMyLeagues] = useState<LeagueCard[]>([]);
   const [selectedLeagueId, setSelectedLeagueId] = useState<string | null>(null);
@@ -75,6 +79,7 @@ export default function LeagueSchedule() {
   useEffect(() => {
     if (!currentUserId) return;
     loadMyLeagues();
+    checkCommissionerStatus();
   }, [currentUserId]);
 
   useEffect(() => {
@@ -82,6 +87,34 @@ export default function LeagueSchedule() {
       loadLeagueDetails(selectedLeagueId);
     }
   }, [selectedLeagueId]);
+
+  const checkCommissionerStatus = async () => {
+    if (!currentUserId) return;
+
+    try {
+      const userDoc = await getDoc(doc(db, "users", currentUserId));
+      if (!userDoc.exists()) return;
+
+      const userData = userDoc.data();
+      const approved = userData.isApprovedCommissioner === true;
+      setIsCommissioner(approved);
+
+      if (approved) {
+        const leaguesSnap = await getDocs(
+          query(
+            collection(db, "leagues"),
+            where("hostUserId", "==", currentUserId)
+          )
+        );
+
+        if (!leaguesSnap.empty) {
+          setCommissionerLeagueId(leaguesSnap.docs[0].id);
+        }
+      }
+    } catch (error) {
+      console.error("Error checking commissioner status:", error);
+    }
+  };
 
   const loadMyLeagues = async () => {
     if (!currentUserId) return;
@@ -166,6 +199,20 @@ export default function LeagueSchedule() {
     setShowLeagueSelector(false);
   };
 
+  const handleCommissionerSettings = () => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    if (commissionerLeagueId) {
+      router.push({
+        pathname: "/leagues/settings" as any,
+        params: { leagueId: commissionerLeagueId },
+      });
+    } else {
+      router.push("/leagues/create" as any);
+    }
+  };
+
   /* ================================================================ */
   /* RENDER HELPERS                                                  */
   /* ================================================================ */
@@ -186,7 +233,19 @@ export default function LeagueSchedule() {
         />
       </TouchableOpacity>
       <Text style={styles.headerTitle}>League Hub</Text>
-      <View style={styles.headerRight} />
+      {isCommissioner ? (
+        <TouchableOpacity
+          onPress={handleCommissionerSettings}
+          style={styles.headerButton}
+        >
+          <Image
+            source={require("@/assets/icons/Settings.png")}
+            style={styles.headerIcon}
+          />
+        </TouchableOpacity>
+      ) : (
+        <View style={styles.headerRight} />
+      )}
     </View>
   );
 

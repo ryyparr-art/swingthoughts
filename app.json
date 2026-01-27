@@ -85,7 +85,8 @@
       "expo-font",
       "expo-web-browser",
       "expo-video",
-      "expo-audio"
+      "expo-audio",
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": true

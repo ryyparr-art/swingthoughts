@@ -98,6 +98,10 @@ export default function LeagueHome() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Commissioner status
+  const [isCommissioner, setIsCommissioner] = useState(false);
+  const [commissionerLeagueId, setCommissionerLeagueId] = useState<string | null>(null);
+
   // User's leagues
   const [myLeagues, setMyLeagues] = useState<LeagueCard[]>([]);
   const [selectedLeagueId, setSelectedLeagueId] = useState<string | null>(null);
@@ -116,6 +120,7 @@ export default function LeagueHome() {
   useEffect(() => {
     if (!currentUserId) return;
     loadMyLeagues();
+    checkCommissionerStatus();
   }, [currentUserId]);
 
   useEffect(() => {
@@ -123,6 +128,36 @@ export default function LeagueHome() {
       loadLeagueDetails(selectedLeagueId);
     }
   }, [selectedLeagueId]);
+
+  const checkCommissionerStatus = async () => {
+    if (!currentUserId) return;
+
+    try {
+      // Check if user is an approved commissioner
+      const userDoc = await getDoc(doc(db, "users", currentUserId));
+      if (!userDoc.exists()) return;
+
+      const userData = userDoc.data();
+      const approved = userData.isApprovedCommissioner === true;
+      setIsCommissioner(approved);
+
+      if (approved) {
+        // Check if commissioner has already created a league
+        const leaguesSnap = await getDocs(
+          query(
+            collection(db, "leagues"),
+            where("hostUserId", "==", currentUserId)
+          )
+        );
+
+        if (!leaguesSnap.empty) {
+          setCommissionerLeagueId(leaguesSnap.docs[0].id);
+        }
+      }
+    } catch (error) {
+      console.error("Error checking commissioner status:", error);
+    }
+  };
 
   const loadMyLeagues = async () => {
     if (!currentUserId) return;
@@ -283,6 +318,22 @@ export default function LeagueHome() {
     setNotices((prev) => prev.filter((n) => n.id !== noticeId));
   };
 
+  const handleCommissionerSettings = () => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    if (commissionerLeagueId) {
+      // Has created a league - go to settings
+      router.push({
+        pathname: "/leagues/settings" as any,
+        params: { leagueId: commissionerLeagueId },
+      });
+    } else {
+      // Hasn't created a league yet - go to create
+      router.push("/leagues/create" as any);
+    }
+  };
+
   /* ================================================================ */
   /* RENDER HELPERS                                                  */
   /* ================================================================ */
@@ -303,7 +354,19 @@ export default function LeagueHome() {
         />
       </TouchableOpacity>
       <Text style={styles.headerTitle}>League Hub</Text>
-      <View style={styles.headerRight} />
+      {isCommissioner ? (
+        <TouchableOpacity
+          onPress={handleCommissionerSettings}
+          style={styles.headerButton}
+        >
+          <Image
+            source={require("@/assets/icons/Settings.png")}
+            style={styles.headerIcon}
+          />
+        </TouchableOpacity>
+      ) : (
+        <View style={styles.headerRight} />
+      )}
     </View>
   );
 

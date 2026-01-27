@@ -17,6 +17,8 @@ import * as Location from "expo-location";
 import { useRouter } from "expo-router";
 import {
     collection,
+    doc,
+    getDoc,
     getDocs,
     query,
     where,
@@ -25,6 +27,7 @@ import { useEffect, useState } from "react";
 import {
     ActivityIndicator,
     Image,
+    Modal,
     RefreshControl,
     ScrollView,
     StyleSheet,
@@ -43,11 +46,16 @@ interface LeagueListItem {
   id: string;
   name: string;
   regionKey: string;
+  regionName: string;
   memberCount: number;
   format: "stroke" | "2v2";
+  leagueType: "live" | "sim";
+  simPlatform: string | null;
   status: "upcoming" | "active" | "completed";
   currentWeek: number;
   totalWeeks: number;
+  hashtags?: string[];
+  searchKeywords?: string[];
 }
 
 /* ================================================================ */
@@ -144,7 +152,19 @@ export default function ExploreLeagues() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [showSearch, setShowSearch] = useState(false);
+  const [showSearchModal, setShowSearchModal] = useState(false);
+
+  // Search filters
+  const [filterType, setFilterType] = useState<"all" | "live" | "sim">("all");
+  const [filterRegion, setFilterRegion] = useState<string>("all");
+  const [showRegionPicker, setShowRegionPicker] = useState(false);
+  const [searchResults, setSearchResults] = useState<LeagueListItem[]>([]);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [searching, setSearching] = useState(false);
+
+  // Commissioner status
+  const [isCommissioner, setIsCommissioner] = useState(false);
+  const [commissionerLeagueId, setCommissionerLeagueId] = useState<string | null>(null);
 
   // Location
   const [userLocation, setUserLocation] = useState<{ lat: number; lon: number } | null>(null);
@@ -155,7 +175,7 @@ export default function ExploreLeagues() {
   // Leagues
   const [localLeagues, setLocalLeagues] = useState<LeagueListItem[]>([]);
   const [nearbyLeagues, setNearbyLeagues] = useState<LeagueListItem[]>([]);
-  const [searchResults, setSearchResults] = useState<LeagueListItem[]>([]);
+  const [allLeaguesCache, setAllLeaguesCache] = useState<LeagueListItem[]>([]);
   const [myLeagueIds, setMyLeagueIds] = useState<string[]>([]);
 
   /* ================================================================ */
@@ -165,7 +185,36 @@ export default function ExploreLeagues() {
   useEffect(() => {
     initializeLocation();
     loadMyLeagues();
+    checkCommissionerStatus();
   }, []);
+
+  const checkCommissionerStatus = async () => {
+    if (!currentUserId) return;
+
+    try {
+      const userDoc = await getDoc(doc(db, "users", currentUserId));
+      if (!userDoc.exists()) return;
+
+      const userData = userDoc.data();
+      const approved = userData.isApprovedCommissioner === true;
+      setIsCommissioner(approved);
+
+      if (approved) {
+        const leaguesSnap = await getDocs(
+          query(
+            collection(db, "leagues"),
+            where("hostUserId", "==", currentUserId)
+          )
+        );
+
+        if (!leaguesSnap.empty) {
+          setCommissionerLeagueId(leaguesSnap.docs[0].id);
+        }
+      }
+    } catch (error) {
+      console.error("Error checking commissioner status:", error);
+    }
+  };
 
   const initializeLocation = async () => {
     try {
@@ -249,14 +298,22 @@ export default function ExploreLeagues() {
             id: doc.id,
             name: data.name,
             regionKey: data.regionKey,
+            regionName: data.regionName || "",
             memberCount: data.memberCount || 0,
             format: data.format || "stroke",
+            leagueType: data.leagueType || "live",
+            simPlatform: data.simPlatform || null,
             status: data.status,
             currentWeek: data.currentWeek || 0,
             totalWeeks: data.totalWeeks || 0,
+            hashtags: data.hashtags || [],
+            searchKeywords: data.searchKeywords || [],
           };
         })
         .filter((league) => ["upcoming", "active"].includes(league.status));
+
+      // Cache all leagues for search
+      setAllLeaguesCache(allLeagues);
 
       // Filter local leagues (in user's region)
       if (region) {
@@ -286,47 +343,70 @@ export default function ExploreLeagues() {
   /* SEARCH                                                          */
   /* ================================================================ */
 
-  const handleSearch = async (text: string) => {
-    setSearchQuery(text);
+  const handleSearch = () => {
+    setSearching(true);
+    setHasSearched(true);
 
-    if (text.length < 2) {
-      setSearchResults([]);
-      return;
+    const searchLower = searchQuery.toLowerCase().trim();
+
+    let results = [...allLeaguesCache];
+
+    // Filter by league type
+    if (filterType !== "all") {
+      results = results.filter((league) => league.leagueType === filterType);
     }
 
-    try {
-      // Search all public leagues
-      const leaguesSnap = await getDocs(
-        query(
-          collection(db, "leagues"),
-          where("isPublic", "==", true)
-        )
-      );
+    // Filter by region
+    if (filterRegion !== "all") {
+      results = results.filter((league) => league.regionKey === filterRegion);
+    }
 
-      const results = leaguesSnap.docs
-        .map((doc) => {
-          const data = doc.data();
-          return {
-            id: doc.id,
-            name: data.name,
-            regionKey: data.regionKey,
-            memberCount: data.memberCount || 0,
-            format: data.format || "stroke",
-            status: data.status,
-            currentWeek: data.currentWeek || 0,
-            totalWeeks: data.totalWeeks || 0,
-          };
-        })
-        .filter(
-          (league) =>
-            ["upcoming", "active"].includes(league.status) &&
-            league.name.toLowerCase().includes(text.toLowerCase())
+    // Filter by name/hashtag
+    if (searchLower.length >= 2) {
+      const isHashtagSearch = searchLower.startsWith("#");
+      const hashtagSearch = isHashtagSearch ? searchLower : `#${searchLower}`;
+
+      results = results.filter((league) => {
+        // Search by league name
+        const nameMatch = league.name.toLowerCase().includes(searchLower);
+
+        // Search by hashtag
+        const hashtagMatch = league.hashtags?.some(
+          (tag: string) =>
+            tag.toLowerCase().includes(hashtagSearch) ||
+            tag.toLowerCase().includes(searchLower)
         );
 
-      setSearchResults(results);
-    } catch (error) {
-      console.error("Error searching leagues:", error);
+        // Search by keywords
+        const keywordMatch = league.searchKeywords?.some((keyword: string) =>
+          keyword.toLowerCase().includes(searchLower)
+        );
+
+        return nameMatch || hashtagMatch || keywordMatch;
+      });
     }
+
+    setSearchResults(results);
+    setSearching(false);
+  };
+
+  const handleClearSearch = () => {
+    setSearchQuery("");
+    setFilterType("all");
+    setFilterRegion("all");
+    setSearchResults([]);
+    setHasSearched(false);
+  };
+
+  const handleOpenSearchModal = () => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setShowSearchModal(true);
+  };
+
+  const handleCloseSearchModal = () => {
+    soundPlayer.play("click");
+    setShowSearchModal(false);
   };
 
   /* ================================================================ */
@@ -339,19 +419,10 @@ export default function ExploreLeagues() {
     router.push("/leagues/apply" as any);
   };
 
-  const handleToggleSearch = () => {
-    soundPlayer.play("click");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setShowSearch(!showSearch);
-    if (showSearch) {
-      setSearchQuery("");
-      setSearchResults([]);
-    }
-  };
-
   const handleLeaguePress = (leagueId: string) => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setShowSearchModal(false);
     router.push(`/leagues/${leagueId}` as any);
   };
 
@@ -362,6 +433,20 @@ export default function ExploreLeagues() {
     if (tab === "explore") return; // Already here
     
     router.replace(`/leagues/${tab}` as any);
+  };
+
+  const handleCommissionerSettings = () => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    
+    if (commissionerLeagueId) {
+      router.push({
+        pathname: "/leagues/settings" as any,
+        params: { leagueId: commissionerLeagueId },
+      });
+    } else {
+      router.push("/leagues/create" as any);
+    }
   };
 
   /* ================================================================ */
@@ -384,7 +469,19 @@ export default function ExploreLeagues() {
         />
       </TouchableOpacity>
       <Text style={styles.headerTitle}>League Hub</Text>
-      <View style={styles.headerRight} />
+      {isCommissioner ? (
+        <TouchableOpacity
+          onPress={handleCommissionerSettings}
+          style={styles.headerButton}
+        >
+          <Image
+            source={require("@/assets/icons/Settings.png")}
+            style={styles.headerIcon}
+          />
+        </TouchableOpacity>
+      ) : (
+        <View style={styles.headerRight} />
+      )}
     </View>
   );
 
@@ -414,46 +511,278 @@ export default function ExploreLeagues() {
     </View>
   );
 
-  const renderActionBar = () => (
-    <View style={styles.actionBar}>
-      <TouchableOpacity style={styles.applyButton} onPress={handleApplyToHost}>
-        <Text style={styles.applyButtonText}>Apply to Host</Text>
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.searchButton} onPress={handleToggleSearch}>
-        <Ionicons name="search" size={20} color="#0D5C3A" />
-      </TouchableOpacity>
-    </View>
+  const renderSearchTrigger = () => (
+    <TouchableOpacity
+      style={styles.searchTrigger}
+      onPress={handleOpenSearchModal}
+      activeOpacity={0.7}
+    >
+      <Ionicons name="search" size={18} color="#999" />
+      <Text style={styles.searchTriggerText}>Search leagues...</Text>
+      <Ionicons name="chevron-forward" size={18} color="#CCC" />
+    </TouchableOpacity>
   );
 
-  const renderSearchBar = () => {
-    if (!showSearch) return null;
+  const renderSearchModal = () => (
+    <Modal
+      visible={showSearchModal}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={handleCloseSearchModal}
+    >
+      <View style={styles.modalContainer}>
+        {/* Modal Header */}
+        <View style={styles.modalHeader}>
+          <TouchableOpacity onPress={handleCloseSearchModal} style={styles.modalCloseButton}>
+            <Ionicons name="close" size={24} color="#333" />
+          </TouchableOpacity>
+          <Text style={styles.modalTitle}>Search Leagues</Text>
+          <View style={{ width: 40 }} />
+        </View>
 
-    return (
-      <View style={styles.searchBar}>
-        <Ionicons name="search" size={18} color="#999" style={{ marginRight: 8 }} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search leagues..."
-          placeholderTextColor="#999"
-          value={searchQuery}
-          onChangeText={handleSearch}
-          autoFocus
-        />
-        {searchQuery.length > 0 && (
+        <ScrollView 
+          style={styles.modalContent}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Search Input */}
+          <View style={styles.filterSection}>
+            <Text style={styles.filterLabel}>League Name or #Hashtag</Text>
+            <View style={styles.searchInputContainer}>
+              <Ionicons name="search" size={18} color="#999" />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="e.g. Sunday Skins or #charlotte"
+                placeholderTextColor="#999"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {searchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => setSearchQuery("")}>
+                  <Ionicons name="close-circle" size={18} color="#999" />
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+
+          {/* League Type Filter */}
+          <View style={styles.filterSection}>
+            <Text style={styles.filterLabel}>League Type</Text>
+            <View style={styles.typeButtonsRow}>
+              {[
+                { key: "all", label: "All", emoji: null },
+                { key: "live", label: "Live", emoji: "☀️" },
+                { key: "sim", label: "Simulator", emoji: "🖥️" },
+              ].map((type) => (
+                <TouchableOpacity
+                  key={type.key}
+                  style={[
+                    styles.typeButton,
+                    filterType === type.key && styles.typeButtonActive,
+                  ]}
+                  onPress={() => {
+                    soundPlayer.play("click");
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setFilterType(type.key as "all" | "live" | "sim");
+                  }}
+                >
+                  {type.emoji && <Text style={styles.typeEmoji}>{type.emoji}</Text>}
+                  <Text
+                    style={[
+                      styles.typeButtonText,
+                      filterType === type.key && styles.typeButtonTextActive,
+                    ]}
+                  >
+                    {type.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          {/* Region Filter */}
+          <View style={styles.filterSection}>
+            <Text style={styles.filterLabel}>Region</Text>
+            <TouchableOpacity
+              style={styles.regionSelector}
+              onPress={() => setShowRegionPicker(true)}
+            >
+              <Text style={styles.regionSelectorText}>
+                {filterRegion === "all"
+                  ? "All Regions"
+                  : findRegionByKey(filterRegion)?.displayName || filterRegion}
+              </Text>
+              <Ionicons name="chevron-down" size={20} color="#666" />
+            </TouchableOpacity>
+          </View>
+
+          {/* Search Button */}
           <TouchableOpacity
+            style={styles.searchButton}
             onPress={() => {
-              setSearchQuery("");
-              setSearchResults([]);
+              soundPlayer.play("click");
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              handleSearch();
             }}
           >
-            <Ionicons name="close" size={18} color="#999" />
+            {searching ? (
+              <ActivityIndicator color="#FFF" />
+            ) : (
+              <Text style={styles.searchButtonText}>Search Leagues</Text>
+            )}
           </TouchableOpacity>
-        )}
-      </View>
-    );
-  };
 
-  const renderLeagueItem = (league: LeagueListItem) => {
+          {/* Clear Filters */}
+          {(searchQuery || filterType !== "all" || filterRegion !== "all") && (
+            <TouchableOpacity
+              style={styles.clearButton}
+              onPress={() => {
+                soundPlayer.play("click");
+                handleClearSearch();
+              }}
+            >
+              <Text style={styles.clearButtonText}>Clear Filters</Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Results */}
+          {hasSearched && (
+            <View style={styles.resultsSection}>
+              <Text style={styles.resultsTitle}>
+                Results ({searchResults.length})
+              </Text>
+              {searchResults.length === 0 ? (
+                <View style={styles.noResultsContainer}>
+                  <Ionicons name="search-outline" size={48} color="#CCC" />
+                  <Text style={styles.noResultsText}>No leagues found</Text>
+                  <Text style={styles.noResultsSubtext}>
+                    Try adjusting your filters
+                  </Text>
+                </View>
+              ) : (
+                searchResults.map((league) => renderLeagueItem(league, true))
+              )}
+            </View>
+          )}
+
+          <View style={{ height: 40 }} />
+        </ScrollView>
+      </View>
+
+      {/* Region Picker Modal */}
+      <Modal
+        visible={showRegionPicker}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowRegionPicker(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity
+              onPress={() => setShowRegionPicker(false)}
+              style={styles.modalCloseButton}
+            >
+              <Ionicons name="close" size={24} color="#333" />
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Select Region</Text>
+            <View style={{ width: 40 }} />
+          </View>
+
+          <ScrollView style={styles.modalContent}>
+            {/* All Regions Option */}
+            <TouchableOpacity
+              style={[
+                styles.regionOption,
+                filterRegion === "all" && styles.regionOptionActive,
+              ]}
+              onPress={() => {
+                soundPlayer.play("click");
+                setFilterRegion("all");
+                setShowRegionPicker(false);
+              }}
+            >
+              <Text
+                style={[
+                  styles.regionOptionText,
+                  filterRegion === "all" && styles.regionOptionTextActive,
+                ]}
+              >
+                All Regions
+              </Text>
+              {filterRegion === "all" && (
+                <Ionicons name="checkmark" size={20} color="#0D5C3A" />
+              )}
+            </TouchableOpacity>
+
+            {/* User's region first if available */}
+            {userRegion && (
+              <TouchableOpacity
+                style={[
+                  styles.regionOption,
+                  filterRegion === userRegion.key && styles.regionOptionActive,
+                ]}
+                onPress={() => {
+                  soundPlayer.play("click");
+                  setFilterRegion(userRegion.key);
+                  setShowRegionPicker(false);
+                }}
+              >
+                <View>
+                  <Text
+                    style={[
+                      styles.regionOptionText,
+                      filterRegion === userRegion.key && styles.regionOptionTextActive,
+                    ]}
+                  >
+                    {userRegion.displayName}
+                  </Text>
+                  <Text style={styles.regionOptionSubtext}>📍 Your location</Text>
+                </View>
+                {filterRegion === userRegion.key && (
+                  <Ionicons name="checkmark" size={20} color="#0D5C3A" />
+                )}
+              </TouchableOpacity>
+            )}
+
+            {/* All other regions */}
+            {REGIONS.filter((r) => !r.isFallback && r.key !== userRegion?.key).map(
+              (region) => (
+                <TouchableOpacity
+                  key={region.key}
+                  style={[
+                    styles.regionOption,
+                    filterRegion === region.key && styles.regionOptionActive,
+                  ]}
+                  onPress={() => {
+                    soundPlayer.play("click");
+                    setFilterRegion(region.key);
+                    setShowRegionPicker(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.regionOptionText,
+                      filterRegion === region.key && styles.regionOptionTextActive,
+                    ]}
+                  >
+                    {region.displayName}
+                  </Text>
+                  {filterRegion === region.key && (
+                    <Ionicons name="checkmark" size={20} color="#0D5C3A" />
+                  )}
+                </TouchableOpacity>
+              )
+            )}
+
+            <View style={{ height: 40 }} />
+          </ScrollView>
+        </View>
+      </Modal>
+    </Modal>
+  );
+
+  const renderLeagueItem = (league: LeagueListItem, showType: boolean = false) => {
     const isJoined = myLeagueIds.includes(league.id);
     const region = findRegionByKey(league.regionKey);
 
@@ -469,6 +798,14 @@ export default function ExploreLeagues() {
             {league.memberCount} members • {league.format === "stroke" ? "Stroke" : "2v2"}
             {region && ` • ${region.primaryCity}`}
           </Text>
+          {showType && (
+            <View style={styles.leagueTypeBadge}>
+              <Text style={styles.leagueTypeText}>
+                {league.leagueType === "live" ? "☀️ Live" : "🖥️ Sim"}
+                {league.leagueType === "sim" && league.simPlatform && ` • ${league.simPlatform}`}
+              </Text>
+            </View>
+          )}
         </View>
         <View style={styles.leagueRight}>
           {isJoined ? (
@@ -499,24 +836,7 @@ export default function ExploreLeagues() {
     </View>
   );
 
-  const renderSearchResults = () => {
-    if (!showSearch || searchQuery.length < 2) return null;
-
-    return (
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Search Results</Text>
-        {searchResults.length === 0 ? (
-          <Text style={styles.noResults}>No leagues found for "{searchQuery}"</Text>
-        ) : (
-          searchResults.map(renderLeagueItem)
-        )}
-      </View>
-    );
-  };
-
   const renderLocalLeagues = () => {
-    if (showSearch && searchQuery.length >= 2) return null;
-
     const locationName = userRegion?.primaryCity || "You";
 
     return (
@@ -525,20 +845,19 @@ export default function ExploreLeagues() {
         {localLeagues.length === 0 ? (
           renderEmptyState()
         ) : (
-          localLeagues.map(renderLeagueItem)
+          localLeagues.map((league) => renderLeagueItem(league, false))
         )}
       </View>
     );
   };
 
   const renderNearbyLeagues = () => {
-    if (showSearch && searchQuery.length >= 2) return null;
     if (nearbyLeagues.length === 0) return null;
 
     return (
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Leagues Close By</Text>
-        {nearbyLeagues.map(renderLeagueItem)}
+        {nearbyLeagues.map((league) => renderLeagueItem(league, false))}
       </View>
     );
   };
@@ -560,8 +879,7 @@ export default function ExploreLeagues() {
     <View style={styles.container}>
       {renderHeader()}
       {renderTabs()}
-      {renderActionBar()}
-      {renderSearchBar()}
+      {renderSearchTrigger()}
 
       <ScrollView
         style={styles.content}
@@ -582,7 +900,6 @@ export default function ExploreLeagues() {
           </View>
         ) : (
           <>
-            {renderSearchResults()}
             {renderLocalLeagues()}
             {renderNearbyLeagues()}
           </>
@@ -603,6 +920,8 @@ export default function ExploreLeagues() {
 
         <View style={{ height: 40 }} />
       </ScrollView>
+
+      {renderSearchModal()}
     </View>
   );
 }
@@ -680,60 +999,212 @@ const styles = StyleSheet.create({
     color: "#FFF",
   },
 
-  // Action Bar
-  actionBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 12,
-  },
-  applyButton: {
-    flex: 1,
-    backgroundColor: "#0D5C3A",
-    paddingVertical: 12,
-    borderRadius: 20,
-    alignItems: "center",
-  },
-  applyButtonText: {
-    color: "#FFF",
-    fontSize: 15,
-    fontWeight: "700",
-  },
-  searchButton: {
-    width: 44,
-    height: 44,
-    backgroundColor: "#FFF",
-    borderRadius: 22,
-    justifyContent: "center",
-    alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-
-  // Search Bar
-  searchBar: {
+  // Search Trigger
+  searchTrigger: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#FFF",
     marginHorizontal: 16,
-    marginBottom: 12,
-    paddingHorizontal: 12,
+    marginVertical: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     borderRadius: 12,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+    gap: 10,
+  },
+  searchTriggerText: {
+    flex: 1,
+    fontSize: 15,
+    color: "#999",
+  },
+
+  // Modal
+  modalContainer: {
+    flex: 1,
+    backgroundColor: "#F4EED8",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E0E0E0",
+    backgroundColor: "#FFF",
+  },
+  modalCloseButton: {
+    padding: 4,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#333",
+  },
+  modalContent: {
+    flex: 1,
+    padding: 16,
+  },
+
+  // Filter Sections
+  filterSection: {
+    marginBottom: 20,
+  },
+  filterLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#0D5C3A",
+    marginBottom: 10,
+  },
+  searchInputContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+    gap: 10,
   },
   searchInput: {
     flex: 1,
-    paddingVertical: 12,
+    paddingVertical: 14,
     fontSize: 15,
     color: "#333",
+  },
+
+  // Type Buttons
+  typeButtonsRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  typeButton: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#FFF",
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "#E0E0E0",
+    gap: 6,
+  },
+  typeButtonActive: {
+    borderColor: "#0D5C3A",
+    backgroundColor: "#F0F8F0",
+  },
+  typeEmoji: {
+    fontSize: 16,
+  },
+  typeButtonText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#666",
+  },
+  typeButtonTextActive: {
+    color: "#0D5C3A",
+  },
+
+  // Region Selector
+  regionSelector: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#FFF",
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+  },
+  regionSelectorText: {
+    fontSize: 15,
+    color: "#333",
+  },
+
+  // Region Options
+  regionOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#FFF",
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  regionOptionActive: {
+    backgroundColor: "#F0F8F0",
+    borderWidth: 2,
+    borderColor: "#0D5C3A",
+  },
+  regionOptionText: {
+    fontSize: 15,
+    color: "#333",
+  },
+  regionOptionTextActive: {
+    fontWeight: "600",
+    color: "#0D5C3A",
+  },
+  regionOptionSubtext: {
+    fontSize: 12,
+    color: "#666",
+    marginTop: 2,
+  },
+
+  // Search Button
+  searchButton: {
+    backgroundColor: "#0D5C3A",
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: "center",
+    marginTop: 8,
+  },
+  searchButtonText: {
+    color: "#FFF",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  clearButton: {
+    paddingVertical: 12,
+    alignItems: "center",
+    marginTop: 8,
+  },
+  clearButtonText: {
+    color: "#666",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+
+  // Results
+  resultsSection: {
+    marginTop: 24,
+  },
+  resultsTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#0D5C3A",
+    marginBottom: 12,
+  },
+  noResultsContainer: {
+    alignItems: "center",
+    paddingVertical: 40,
+  },
+  noResultsText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#666",
+    marginTop: 12,
+  },
+  noResultsSubtext: {
+    fontSize: 14,
+    color: "#999",
+    marginTop: 4,
   },
 
   // Content
@@ -795,6 +1266,13 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#0D5C3A",
   },
+  leagueTypeBadge: {
+    marginTop: 6,
+  },
+  leagueTypeText: {
+    fontSize: 12,
+    color: "#666",
+  },
 
   // Empty State
   emptyState: {
@@ -835,14 +1313,6 @@ const styles = StyleSheet.create({
     color: "#FFF",
     fontSize: 15,
     fontWeight: "700",
-  },
-
-  // No Results
-  noResults: {
-    fontSize: 14,
-    color: "#999",
-    textAlign: "center",
-    paddingVertical: 20,
   },
 
   // Error

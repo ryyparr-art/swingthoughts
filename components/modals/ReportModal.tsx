@@ -6,13 +6,14 @@ import {
   Alert,
   Image,
   Modal,
-  ScrollView,
+  Platform,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
 
 interface ReportModalProps {
   visible: boolean;
@@ -158,7 +159,15 @@ export default function ReportModal({
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+          <KeyboardAwareScrollView 
+            style={styles.content} 
+            showsVerticalScrollIndicator={false}
+            enableOnAndroid={true}
+            enableAutomaticScroll={true}
+            keyboardShouldPersistTaps="handled"
+            extraScrollHeight={Platform.OS === "ios" ? 120 : 80}
+            extraHeight={Platform.OS === "ios" ? 120 : 80}
+          >
             {/* Categories */}
             <Text style={styles.sectionLabel}>Select a reason:</Text>
             {CATEGORIES.map((category) => (
@@ -211,7 +220,10 @@ export default function ReportModal({
               textAlignVertical="top"
             />
             <Text style={styles.characterCount}>{details.length}/500</Text>
-          </ScrollView>
+
+            {/* Spacer for keyboard */}
+            <View style={{ height: 20 }} />
+          </KeyboardAwareScrollView>
 
           {/* Footer Buttons */}
           <View style={styles.footer}>

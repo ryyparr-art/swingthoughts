@@ -609,16 +609,30 @@ service cloud.firestore {
     }
 
     // ============================================================================
-    // REPORTS
+    // REPORTS (Posts, Comments, Users, Messages)
     // ============================================================================
 
     match /reports/{reportId} {
-      allow read, list: if isAdmin();
+      // Users can read their own reports, admins can read all
+      allow read: if isSignedIn() &&
+        (request.auth.uid == resource.data.reporterId || isAdmin());
 
+      // List: Allow signed-in users (client-side filtering required for own reports)
+      // Admins can list all
+      allow list: if isSignedIn();
+
+      // ✅ Any verified user can report content
+      // Fields: reporterId, reporterName, postId, postAuthorId, postAuthorName, 
+      //         postContent, category, details, status, createdAt
       allow create: if isSignedIn() &&
         isEmailVerified() &&
-        request.resource.data.reporterId == request.auth.uid;
+        request.resource.data.reporterId == request.auth.uid &&
+        request.resource.data.postId is string &&
+        request.resource.data.postAuthorId is string &&
+        request.resource.data.category is string &&
+        request.resource.data.status == "pending";
 
+      // Only admins can update (mark reviewed, take action) or delete
       allow update, delete: if isAdmin();
     }
 
@@ -659,9 +673,13 @@ service cloud.firestore {
       match /members/{memberId} {
         allow read, list: if isSignedIn();
 
+        // ✅ Users can add themselves OR commissioner can add members (when approving join requests)
         allow create: if isSignedIn() &&
           isEmailVerified() &&
-          request.resource.data.userId == request.auth.uid;
+          (
+            request.resource.data.userId == request.auth.uid ||
+            request.auth.uid == get(/databases/$(database)/documents/leagues/$(leagueId)).data.hostUserId
+          );
 
         allow update: if isSignedIn() &&
           (
@@ -696,7 +714,7 @@ service cloud.firestore {
     }
 
     // ============================================================================
-    // LEAGUE APPLICATIONS
+    // LEAGUE APPLICATIONS (COMMISSIONER APPLICATIONS)
     // ============================================================================
 
     match /league_applications/{applicationId} {
@@ -711,6 +729,46 @@ service cloud.firestore {
 
       allow delete: if isSignedIn() &&
         (request.auth.uid == resource.data.userId || isAdmin());
+    }
+
+    // ============================================================================
+    // LEAGUE JOIN REQUESTS (MEMBER JOIN REQUESTS)
+    // ============================================================================
+
+    match /league_join_requests/{requestId} {
+      // User can read their own requests, commissioner can read requests for their league
+      allow read: if isSignedIn() &&
+        (
+          request.auth.uid == resource.data.userId ||
+          request.auth.uid == get(/databases/$(database)/documents/leagues/$(resource.data.leagueId)).data.hostUserId ||
+          isAdmin()
+        );
+
+      // List - user sees their requests, commissioner sees requests for their leagues
+      // Client-side filtering required
+      allow list: if isSignedIn();
+
+      // User can create request to join (must be for themselves)
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.leagueId is string &&
+        request.resource.data.status == "pending";
+
+      // Only commissioner or admin can update (approve/reject)
+      allow update: if isSignedIn() &&
+        (
+          request.auth.uid == get(/databases/$(database)/documents/leagues/$(resource.data.leagueId)).data.hostUserId ||
+          isAdmin()
+        );
+
+      // User can delete their own pending request, commissioner or admin can delete any
+      allow delete: if isSignedIn() &&
+        (
+          (request.auth.uid == resource.data.userId && resource.data.status == "pending") ||
+          request.auth.uid == get(/databases/$(database)/documents/leagues/$(resource.data.leagueId)).data.hostUserId ||
+          isAdmin()
+        );
     }
 
     // ============================================================================

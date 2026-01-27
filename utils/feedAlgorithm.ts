@@ -25,6 +25,7 @@
  * - Partner: +5
  * - Engagement: +5 to +20
  * - Shuffle: 0-5
+ * - Self-post: -20 (penalty for your own posts)
  */
 
 import { db } from "@/constants/firebaseConfig";
@@ -185,6 +186,9 @@ const TRENDING_THRESHOLD = 30;
 // Shuffle range (small - only affects within-bracket order)
 const SHUFFLE_MAX = 5;
 
+// Self-post penalty (your own posts rank lower)
+const SELF_POST_PENALTY = -20;
+
 /* ================================================================ */
 /* SCORING FUNCTIONS                                                */
 /* ================================================================ */
@@ -282,14 +286,16 @@ function calculateWithinBracketScore(
   proximityTier: ProximityTier,
   isPartner: boolean,
   likes: number = 0,
-  comments: number = 0
+  comments: number = 0,
+  isSelfPost: boolean = false
 ): number {
   const proximityBonus = PROXIMITY_BONUS[proximityTier];
   const partnerBonus = isPartner ? PARTNER_BONUS : 0;
   const engagementBonus = getEngagementBonus(likes, comments);
   const shuffleFactor = getShuffleFactor();
+  const selfPenalty = isSelfPost ? SELF_POST_PENALTY : 0;
   
-  return proximityBonus + partnerBonus + engagementBonus + shuffleFactor;
+  return proximityBonus + partnerBonus + engagementBonus + shuffleFactor + selfPenalty;
 }
 
 /**
@@ -300,8 +306,12 @@ function getRelevanceReason(
   isPartner: boolean,
   likes: number = 0,
   comments: number = 0,
-  wasPromoted: boolean = false
+  wasPromoted: boolean = false,
+  isSelfPost: boolean = false
 ): string {
+  // Don't show relevance reason for own posts
+  if (isSelfPost) return "Your post";
+  
   const parts: string[] = [];
   
   if (wasPromoted) parts.push("🔥 Trending");
@@ -350,17 +360,18 @@ export async function generateAlgorithmicFeed(
     seenIds.add(post.id);
     
     const isPartner = context.partnerIds.includes(post.userId);
+    const isSelfPost = post.userId === context.userId;
     const trending = isTrending(post.likes, post.comments);
     const timeBracket = getTimeBracket(post.createdAt);
     const displayBracket = trending ? Math.max(1, timeBracket - 1) : timeBracket;
-    const withinBracketScore = calculateWithinBracketScore("local", isPartner, post.likes, post.comments);
+    const withinBracketScore = calculateWithinBracketScore("local", isPartner, post.likes, post.comments, isSelfPost);
     
     allItems.push({
       ...post,
       timeBracket,
       displayBracket,
       withinBracketScore,
-      relevanceReason: getRelevanceReason("local", isPartner, post.likes, post.comments, trending && timeBracket !== displayBracket),
+      relevanceReason: getRelevanceReason("local", isPartner, post.likes, post.comments, trending && timeBracket !== displayBracket, isSelfPost),
     });
   }
 
@@ -370,17 +381,18 @@ export async function generateAlgorithmicFeed(
     seenIds.add(post.id);
     
     const isPartner = context.partnerIds.includes(post.userId);
+    const isSelfPost = post.userId === context.userId;
     const trending = isTrending(post.likes, post.comments);
     const timeBracket = getTimeBracket(post.createdAt);
     const displayBracket = trending ? Math.max(1, timeBracket - 1) : timeBracket;
-    const withinBracketScore = calculateWithinBracketScore("expanded", isPartner, post.likes, post.comments);
+    const withinBracketScore = calculateWithinBracketScore("expanded", isPartner, post.likes, post.comments, isSelfPost);
     
     allItems.push({
       ...post,
       timeBracket,
       displayBracket,
       withinBracketScore,
-      relevanceReason: getRelevanceReason("expanded", isPartner, post.likes, post.comments, trending && timeBracket !== displayBracket),
+      relevanceReason: getRelevanceReason("expanded", isPartner, post.likes, post.comments, trending && timeBracket !== displayBracket, isSelfPost),
     });
   }
 
@@ -390,17 +402,18 @@ export async function generateAlgorithmicFeed(
     seenIds.add(post.id);
     
     const isPartner = context.partnerIds.includes(post.userId);
+    const isSelfPost = post.userId === context.userId;
     const trending = isTrending(post.likes, post.comments);
     const timeBracket = getTimeBracket(post.createdAt);
     const displayBracket = trending ? Math.max(1, timeBracket - 1) : timeBracket;
-    const withinBracketScore = calculateWithinBracketScore("global", isPartner, post.likes, post.comments);
+    const withinBracketScore = calculateWithinBracketScore("global", isPartner, post.likes, post.comments, isSelfPost);
     
     allItems.push({
       ...post,
       timeBracket,
       displayBracket,
       withinBracketScore,
-      relevanceReason: getRelevanceReason("global", isPartner, post.likes, post.comments, trending && timeBracket !== displayBracket),
+      relevanceReason: getRelevanceReason("global", isPartner, post.likes, post.comments, trending && timeBracket !== displayBracket, isSelfPost),
     });
   }
 
@@ -410,17 +423,18 @@ export async function generateAlgorithmicFeed(
     seenIds.add(score.id);
     
     const isPartner = context.partnerIds.includes(score.userId);
+    const isSelfPost = score.userId === context.userId;
     const trending = isTrending(score.likes, score.comments);
     const timeBracket = getTimeBracket(score.createdAt);
     const displayBracket = trending ? Math.max(1, timeBracket - 1) : timeBracket;
-    const withinBracketScore = calculateWithinBracketScore("local", isPartner, score.likes, score.comments);
+    const withinBracketScore = calculateWithinBracketScore("local", isPartner, score.likes, score.comments, isSelfPost);
     
     allItems.push({
       ...score,
       timeBracket,
       displayBracket,
       withinBracketScore,
-      relevanceReason: score.isLowman ? "🏆 Lowman at your course" : "Score at your course",
+      relevanceReason: isSelfPost ? "Your score" : (score.isLowman ? "🏆 Lowman at your course" : "Score at your course"),
     });
   }
 
