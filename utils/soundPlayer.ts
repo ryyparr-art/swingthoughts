@@ -4,8 +4,11 @@
  * Singleton pattern for playing sound effects throughout the app.
  * Uses createAudioPlayer() instead of hooks since this is used outside React components.
  * 
- * IMPORTANT: Audio mode is only configured ONCE at initialization to prevent
- * conflicts with expo-video's audio session management.
+ * IMPORTANT: Audio mode is carefully managed to prevent conflicts with expo-video.
+ * The key issue is that video playback activates the audio session, which can
+ * cause sounds to start playing when they weren't before (e.g., if device was in silent mode).
+ * 
+ * Solution: We disable sound effects while video is playing and restore after.
  */
 
 import { AudioPlayer, createAudioPlayer, setAudioModeAsync } from 'expo-audio';
@@ -35,6 +38,9 @@ class SoundPlayer {
   private isInitializing = false;
   private enabled = true;
   private audioModeConfigured = false;
+  
+  // Track if video is currently playing - disable sounds during video
+  private videoPlaying = false;
 
   constructor() {
     // Don't initialize in constructor - do it lazily on first play
@@ -49,8 +55,11 @@ class SoundPlayer {
     if (this.audioModeConfigured) return;
     
     try {
+      // Configure audio to:
+      // - playsInSilentMode: false = respect silent switch (default iOS behavior)
+      // - shouldRouteThroughEarpiece: false = use speaker
       await setAudioModeAsync({
-        playsInSilentMode: false, // Respect silent mode by default
+        playsInSilentMode: false,
         shouldRouteThroughEarpiece: false,
       });
       this.audioModeConfigured = true;
@@ -138,11 +147,17 @@ class SoundPlayer {
   /**
    * Play a sound effect
    * 
-   * NOTE: This does NOT call setAudioModeAsync every time to prevent
-   * conflicts with video player audio sessions.
+   * NOTE: Sounds are disabled while video is playing to prevent
+   * the video's audio session from causing unexpected sound playback.
    */
   async play(soundType: SoundType): Promise<void> {
-    if (!this.enabled) return;
+    // Don't play sounds if disabled or video is playing
+    if (!this.enabled || this.videoPlaying) {
+      if (this.videoPlaying) {
+        console.log(`🔇 Sound suppressed during video: ${soundType}`);
+      }
+      return;
+    }
     
     try {
       const player = await this.getPlayer(soundType);
@@ -210,25 +225,36 @@ class SoundPlayer {
   }
 
   /**
-   * Temporarily pause audio mode configuration
-   * Call this before playing videos to prevent conflicts
+   * Call this BEFORE video starts playing
+   * Disables sound effects to prevent audio session conflicts
    */
-  async prepareForVideo(): Promise<void> {
-    // Don't reconfigure audio mode while video is playing
-    // The video player will manage its own audio session
-    console.log('🎬 Preparing for video playback');
+  prepareForVideo(): void {
+    this.videoPlaying = true;
+    console.log('🎬 Video starting - sounds disabled');
   }
 
   /**
-   * Resume audio mode after video playback
-   * Call this after video modal closes
+   * Call this AFTER video stops playing (modal closes)
+   * Re-enables sound effects and reconfigures audio mode
    */
   async resumeAfterVideo(): Promise<void> {
-    // Reconfigure audio mode after video closes
-    // This restores sound effect behavior
+    this.videoPlaying = false;
+    
+    // Small delay to let video's audio session fully release
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Reconfigure audio mode to restore proper settings
     this.audioModeConfigured = false;
     await this.configureAudioMode();
-    console.log('🔊 Resumed after video playback');
+    
+    console.log('🔊 Video ended - sounds re-enabled');
+  }
+
+  /**
+   * Check if video is currently playing
+   */
+  isVideoPlaying(): boolean {
+    return this.videoPlaying;
   }
 }
 

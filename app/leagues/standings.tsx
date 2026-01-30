@@ -1,7 +1,11 @@
 /**
  * League Hub - Standings Tab
- * 
- * Shows season standings/leaderboard for the selected league
+ *
+ * Shows:
+ * - Full leaderboard with position changes
+ * - Stroke: Player standings with avatar, rounds, points, wins
+ * - 2v2: Team standings with W-L record
+ * - User's row flashes with green border on load
  */
 
 import { auth, db } from "@/constants/firebaseConfig";
@@ -9,19 +13,28 @@ import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { collection, doc, getDoc, getDocs, orderBy, query, where } from "firebase/firestore";
-import { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Image,
-    Modal,
-    Pressable,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  orderBy,
+  query
+} from "firebase/firestore";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Animated,
+  Image,
+  Modal,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -29,26 +42,42 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 /* TYPES                                                            */
 /* ================================================================ */
 
+interface League {
+  id: string;
+  name: string;
+  format: "stroke" | "2v2";
+  status: "upcoming" | "active" | "completed";
+  currentWeek: number;
+  totalWeeks: number;
+}
+
 interface LeagueCard {
   id: string;
   name: string;
-  logoUrl?: string;
   currentWeek: number;
   totalWeeks: number;
-  userRank?: number;
-  userPoints?: number;
 }
 
-interface StandingsEntry {
-  rank: number;
-  previousRank?: number;
-  trend: "up" | "down" | "same" | "new";
-  userId: string;
+interface PlayerStanding {
+  odcuserId: string;
   displayName: string;
   avatar?: string;
-  totalPoints: number;
+  rank: number;
+  previousRank?: number;
   roundsPlayed: number;
+  totalPoints: number;
   wins: number;
+}
+
+interface TeamStanding {
+  teamId: string;
+  teamName: string;
+  teamAvatar?: string;
+  rank: number;
+  previousRank?: number;
+  wins: number;
+  losses: number;
+  totalPoints: number;
 }
 
 /* ================================================================ */
@@ -60,21 +89,26 @@ export default function LeagueStandings() {
   const insets = useSafeAreaInsets();
   const currentUserId = auth.currentUser?.uid;
 
-  // State
+  // Loading states
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-
-  // Commissioner status
-  const [isCommissioner, setIsCommissioner] = useState(false);
-  const [commissionerLeagueId, setCommissionerLeagueId] = useState<string | null>(null);
 
   // User's leagues
   const [myLeagues, setMyLeagues] = useState<LeagueCard[]>([]);
   const [selectedLeagueId, setSelectedLeagueId] = useState<string | null>(null);
+  const [selectedLeague, setSelectedLeague] = useState<League | null>(null);
   const [showLeagueSelector, setShowLeagueSelector] = useState(false);
 
-  // Standings
-  const [standings, setStandings] = useState<StandingsEntry[]>([]);
+  // Standings data
+  const [playerStandings, setPlayerStandings] = useState<PlayerStanding[]>([]);
+  const [teamStandings, setTeamStandings] = useState<TeamStanding[]>([]);
+
+  // Commissioner/Manager status
+  const [isCommissionerOrManager, setIsCommissionerOrManager] = useState(false);
+
+  // Flash animation for user's row
+  const flashAnim = useRef(new Animated.Value(0)).current;
+  const [shouldFlash, setShouldFlash] = useState(true);
 
   /* ================================================================ */
   /* DATA LOADING                                                    */
@@ -83,41 +117,67 @@ export default function LeagueStandings() {
   useEffect(() => {
     if (!currentUserId) return;
     loadMyLeagues();
-    checkCommissionerStatus();
   }, [currentUserId]);
 
   useEffect(() => {
-    if (selectedLeagueId) {
-      loadStandings(selectedLeagueId);
-    }
-  }, [selectedLeagueId]);
+    if (selectedLeagueId && currentUserId) {
+      const unsubscribers: (() => void)[] = [];
 
-  const checkCommissionerStatus = async () => {
-    if (!currentUserId) return;
-
-    try {
-      const userDoc = await getDoc(doc(db, "users", currentUserId));
-      if (!userDoc.exists()) return;
-
-      const userData = userDoc.data();
-      const approved = userData.isApprovedCommissioner === true;
-      setIsCommissioner(approved);
-
-      if (approved) {
-        const leaguesSnap = await getDocs(
-          query(
-            collection(db, "leagues"),
-            where("hostUserId", "==", currentUserId)
-          )
-        );
-
-        if (!leaguesSnap.empty) {
-          setCommissionerLeagueId(leaguesSnap.docs[0].id);
+      // Listen to league doc
+      const leagueUnsub = onSnapshot(
+        doc(db, "leagues", selectedLeagueId),
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const leagueData = { id: docSnap.id, ...docSnap.data() } as League;
+            setSelectedLeague(leagueData);
+          }
         }
-      }
-    } catch (error) {
-      console.error("Error checking commissioner status:", error);
+      );
+      unsubscribers.push(leagueUnsub);
+
+      // Check membership role
+      getDoc(doc(db, "leagues", selectedLeagueId, "members", currentUserId)).then(
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const role = docSnap.data().role;
+            setIsCommissionerOrManager(
+              role === "commissioner" || role === "manager"
+            );
+          }
+        }
+      );
+
+      // Load standings
+      loadStandings(selectedLeagueId);
+
+      return () => {
+        unsubscribers.forEach((unsub) => unsub());
+      };
     }
+  }, [selectedLeagueId, currentUserId]);
+
+  // Trigger flash animation
+  useEffect(() => {
+    if (shouldFlash && !loading && (playerStandings.length > 0 || teamStandings.length > 0)) {
+      triggerFlash();
+      setShouldFlash(false);
+    }
+  }, [shouldFlash, loading, playerStandings, teamStandings]);
+
+  const triggerFlash = () => {
+    flashAnim.setValue(0);
+    Animated.sequence([
+      Animated.timing(flashAnim, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: false,
+      }),
+      Animated.timing(flashAnim, {
+        toValue: 0,
+        duration: 500,
+        useNativeDriver: false,
+      }),
+    ]).start();
   };
 
   const loadMyLeagues = async () => {
@@ -136,16 +196,11 @@ export default function LeagueStandings() {
 
         if (memberDoc.exists()) {
           const leagueData = leagueDoc.data();
-          const memberData = memberDoc.data();
-
           userLeagues.push({
             id: leagueDoc.id,
             name: leagueData.name,
-            logoUrl: leagueData.logoUrl,
             currentWeek: leagueData.currentWeek || 0,
             totalWeeks: leagueData.totalWeeks || 0,
-            userRank: memberData.currentRank,
-            userPoints: memberData.totalPoints || 0,
           });
         }
       }
@@ -155,46 +210,79 @@ export default function LeagueStandings() {
       if (userLeagues.length > 0 && !selectedLeagueId) {
         setSelectedLeagueId(userLeagues[0].id);
       }
-
-      setLoading(false);
     } catch (error) {
       console.error("Error loading leagues:", error);
+    } finally {
       setLoading(false);
     }
   };
 
   const loadStandings = async (leagueId: string) => {
     try {
-      const membersSnap = await getDocs(
-        query(
-          collection(db, "leagues", leagueId, "members"),
-          orderBy("totalPoints", "desc")
-        )
-      );
+      // Get league to determine format
+      const leagueDoc = await getDoc(doc(db, "leagues", leagueId));
+      if (!leagueDoc.exists()) return;
 
-      const standingsData: StandingsEntry[] = membersSnap.docs.map((doc, index) => {
-        const data = doc.data();
-        const previousRank = data.previousRank;
-        let trend: "up" | "down" | "same" | "new" = "same";
+      const leagueData = leagueDoc.data();
+      const format = leagueData.format;
 
-        if (!previousRank) trend = "new";
-        else if (index + 1 < previousRank) trend = "up";
-        else if (index + 1 > previousRank) trend = "down";
+      if (format === "2v2") {
+        // Load team standings
+        const teamsSnap = await getDocs(
+          query(
+            collection(db, "leagues", leagueId, "teams"),
+            orderBy("totalPoints", "desc")
+          )
+        );
 
-        return {
-          rank: index + 1,
-          previousRank,
-          trend,
-          userId: data.userId || doc.id,
-          displayName: data.displayName || "Unknown",
-          avatar: data.avatar,
-          totalPoints: data.totalPoints || 0,
-          roundsPlayed: data.roundsPlayed || 0,
-          wins: data.wins || 0,
-        };
-      });
+        const teams: TeamStanding[] = [];
+        let rank = 1;
+        teamsSnap.forEach((docSnap) => {
+          const data = docSnap.data();
+          teams.push({
+            teamId: docSnap.id,
+            teamName: data.name,
+            teamAvatar: data.avatar,
+            rank: rank,
+            previousRank: data.previousRank,
+            wins: data.wins || 0,
+            losses: data.losses || 0,
+            totalPoints: data.totalPoints || 0,
+          });
+          rank++;
+        });
 
-      setStandings(standingsData);
+        setTeamStandings(teams);
+        setPlayerStandings([]);
+      } else {
+        // Load player standings
+        const membersSnap = await getDocs(
+          query(
+            collection(db, "leagues", leagueId, "members"),
+            orderBy("totalPoints", "desc")
+          )
+        );
+
+        const players: PlayerStanding[] = [];
+        let rank = 1;
+        membersSnap.forEach((docSnap) => {
+          const data = docSnap.data();
+          players.push({
+            odcuserId: docSnap.id,
+            displayName: data.displayName,
+            avatar: data.avatar,
+            rank: rank,
+            previousRank: data.previousRank,
+            roundsPlayed: data.roundsPlayed || 0,
+            totalPoints: data.totalPoints || 0,
+            wins: data.wins || 0,
+          });
+          rank++;
+        });
+
+        setPlayerStandings(players);
+        setTeamStandings([]);
+      }
     } catch (error) {
       console.error("Error loading standings:", error);
     }
@@ -202,6 +290,7 @@ export default function LeagueStandings() {
 
   const onRefresh = async () => {
     setRefreshing(true);
+    setShouldFlash(true);
     await loadMyLeagues();
     if (selectedLeagueId) {
       await loadStandings(selectedLeagueId);
@@ -213,71 +302,77 @@ export default function LeagueStandings() {
   /* HANDLERS                                                        */
   /* ================================================================ */
 
-  const handleTabChange = (tab: string) => {
-    soundPlayer.play("click");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-
-    if (tab === "standings") return;
-
-    router.replace(`/leagues/${tab}` as any);
-  };
-
   const handleSelectLeague = (leagueId: string) => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedLeagueId(leagueId);
     setShowLeagueSelector(false);
+    setShouldFlash(true);
   };
 
-  const handleViewProfile = (userId: string) => {
+  const handleSettings = () => {
+    soundPlayer.play("click");
+    router.push(`/leagues/settings?id=${selectedLeagueId}`);
+  };
+
+  const handlePlayerPress = (odcuserId: string) => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push(`/locker/${userId}` as any);
+    router.push(`/profile/${odcuserId}`);
   };
 
-  const handleCommissionerSettings = () => {
+  const handleTeamPress = (teamId: string) => {
     soundPlayer.play("click");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    
-    if (commissionerLeagueId) {
-      router.push({
-        pathname: "/leagues/settings" as any,
-        params: { leagueId: commissionerLeagueId },
-      });
-    } else {
-      router.push("/leagues/create" as any);
-    }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    // Could navigate to team detail page
   };
 
   /* ================================================================ */
-  /* RENDER HELPERS                                                  */
+  /* HELPERS                                                         */
+  /* ================================================================ */
+
+  const getPositionChange = (current: number, previous?: number) => {
+    if (previous === undefined || previous === null) {
+      return { type: "new", change: 0 };
+    }
+    if (current < previous) {
+      return { type: "up", change: previous - current };
+    }
+    if (current > previous) {
+      return { type: "down", change: current - previous };
+    }
+    return { type: "same", change: 0 };
+  };
+
+  const getLeaderPoints = () => {
+    if (selectedLeague?.format === "2v2") {
+      return teamStandings[0]?.totalPoints || 0;
+    }
+    return playerStandings[0]?.totalPoints || 0;
+  };
+
+  const getPointsBehind = (points: number, rank: number) => {
+    if (rank === 1) return "-";
+    const leader = getLeaderPoints();
+    return (leader - points).toString();
+  };
+
+  /* ================================================================ */
+  /* RENDER COMPONENTS                                               */
   /* ================================================================ */
 
   const renderHeader = () => (
-    <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+    <View style={[styles.header, { paddingTop: insets.top }]}>
       <TouchableOpacity
-        onPress={() => {
-          soundPlayer.play("click");
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          router.back();
-        }}
         style={styles.headerButton}
+        onPress={() => router.push("/leaderboard")}
       >
-        <Image
-          source={require("@/assets/icons/Back.png")}
-          style={styles.headerIcon}
-        />
+        <Ionicons name="chevron-back" size={28} color="#F4EED8" />
       </TouchableOpacity>
       <Text style={styles.headerTitle}>League Hub</Text>
-      {isCommissioner ? (
-        <TouchableOpacity
-          onPress={handleCommissionerSettings}
-          style={styles.headerButton}
-        >
-          <Image
-            source={require("@/assets/icons/Settings.png")}
-            style={styles.headerIcon}
-          />
+      {isCommissionerOrManager ? (
+        <TouchableOpacity style={styles.headerButton} onPress={handleSettings}>
+          <Ionicons name="settings-outline" size={24} color="#F4EED8" />
         </TouchableOpacity>
       ) : (
         <View style={styles.headerRight} />
@@ -287,27 +382,27 @@ export default function LeagueStandings() {
 
   const renderTabs = () => (
     <View style={styles.tabBar}>
-      {[
-        { key: "home", label: "Home" },
-        { key: "schedule", label: "Schedule" },
-        { key: "standings", label: "Standings" },
-        { key: "explore", label: "Explore" },
-      ].map((tab) => (
-        <TouchableOpacity
-          key={tab.key}
-          style={[styles.tab, tab.key === "standings" && styles.tabActive]}
-          onPress={() => handleTabChange(tab.key)}
-        >
-          <Text
-            style={[
-              styles.tabText,
-              tab.key === "standings" && styles.tabTextActive,
-            ]}
-          >
-            {tab.label}
-          </Text>
-        </TouchableOpacity>
-      ))}
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => router.push("/leagues/home")}
+      >
+        <Text style={styles.tabText}>Home</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => router.push("/leagues/schedule")}
+      >
+        <Text style={styles.tabText}>Schedule</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={[styles.tab, styles.tabActive]}>
+        <Text style={[styles.tabText, styles.tabTextActive]}>Standings</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => router.push("/leagues/explore")}
+      >
+        <Text style={styles.tabText}>Explore</Text>
+      </TouchableOpacity>
     </View>
   );
 
@@ -329,102 +424,221 @@ export default function LeagueStandings() {
         disabled={myLeagues.length <= 1}
       >
         <View style={styles.leagueSelectorContent}>
-          {selected?.logoUrl ? (
-            <Image source={{ uri: selected.logoUrl }} style={styles.leagueLogo} />
-          ) : (
-            <View style={styles.leagueLogoPlaceholder}>
-              <Text style={styles.leagueLogoText}>
-                {selected?.name?.charAt(0) || "L"}
-              </Text>
-            </View>
-          )}
+          <View style={styles.leagueLogoPlaceholder}>
+            <Text style={styles.leagueLogoText}>
+              {selected?.name?.charAt(0) || "L"}
+            </Text>
+          </View>
           <View style={styles.leagueSelectorText}>
-            <Text style={styles.leagueName}>{selected?.name || "Select League"}</Text>
+            <Text style={styles.leagueName}>
+              {selected?.name || "Select League"}
+            </Text>
             <Text style={styles.leagueSubtitle}>
               Week {selected?.currentWeek || 0} of {selected?.totalWeeks || 0}
             </Text>
           </View>
         </View>
-        {myLeagues.length > 1 && (
+        {myLeagues.length > 1 ? (
           <Ionicons name="chevron-down" size={20} color="#0D5C3A" />
-        )}
+        ) : null}
       </TouchableOpacity>
     );
   };
 
-  const renderStandings = () => {
-    if (myLeagues.length === 0) {
+  const renderPositionIndicator = (current: number, previous?: number) => {
+    const change = getPositionChange(current, previous);
+
+    if (change.type === "new") {
       return (
-        <View style={styles.card}>
-          <Text style={styles.emptyText}>Join a league to see standings</Text>
-          <TouchableOpacity
-            style={styles.primaryButton}
-            onPress={() => handleTabChange("explore")}
-          >
-            <Text style={styles.primaryButtonText}>Find a League</Text>
-          </TouchableOpacity>
+        <View style={styles.positionNew}>
+          <Text style={styles.positionNewText}>NEW</Text>
         </View>
       );
     }
 
-    if (standings.length === 0) {
+    if (change.type === "up") {
       return (
-        <View style={styles.card}>
-          <Text style={styles.cardLabel}>SEASON STANDINGS</Text>
-          <Text style={styles.emptyText}>
-            Standings will appear once scores are posted
-          </Text>
+        <View style={styles.positionChange}>
+          <Ionicons name="caret-up" size={14} color="#4CAF50" />
+          <Text style={styles.positionUpText}>{change.change}</Text>
+        </View>
+      );
+    }
+
+    if (change.type === "down") {
+      return (
+        <View style={styles.positionChange}>
+          <Ionicons name="caret-down" size={14} color="#F44336" />
+          <Text style={styles.positionDownText}>{change.change}</Text>
         </View>
       );
     }
 
     return (
-      <View style={styles.card}>
-        <Text style={styles.cardLabel}>SEASON STANDINGS</Text>
-        {standings.map((entry) => (
-          <TouchableOpacity
-            key={entry.userId}
-            style={styles.standingsRow}
-            onPress={() => handleViewProfile(entry.userId)}
-          >
-            <View style={styles.rankContainer}>
-              <Text style={styles.rank}>{entry.rank}</Text>
-              {entry.trend === "up" && (
-                <Ionicons name="caret-up" size={12} color="#28A745" />
-              )}
-              {entry.trend === "down" && (
-                <Ionicons name="caret-down" size={12} color="#DC3545" />
-              )}
-            </View>
-            <View style={styles.userInfo}>
-              {entry.avatar ? (
-                <Image source={{ uri: entry.avatar }} style={styles.avatar} />
-              ) : (
-                <View style={styles.avatarPlaceholder}>
-                  <Text style={styles.avatarText}>
-                    {entry.displayName?.charAt(0) || "?"}
-                  </Text>
-                </View>
-              )}
-              <View>
-                <Text
-                  style={[
-                    styles.userName,
-                    entry.userId === currentUserId && styles.userNameYou,
-                  ]}
-                >
-                  {entry.userId === currentUserId ? "You" : entry.displayName}
-                </Text>
-                <Text style={styles.userStats}>
-                  {entry.roundsPlayed} rounds • {entry.wins} wins
-                </Text>
-              </View>
-            </View>
-            <Text style={styles.points}>{entry.totalPoints}</Text>
-          </TouchableOpacity>
-        ))}
+      <View style={styles.positionChange}>
+        <Text style={styles.positionSameText}>-</Text>
       </View>
     );
+  };
+
+  const renderStandingsHeader = () => {
+    const is2v2 = selectedLeague?.format === "2v2";
+
+    return (
+      <View style={styles.tableHeader}>
+        <Text style={styles.headerRank}>#</Text>
+        <Text style={styles.headerChange}>+/-</Text>
+        <Text style={styles.headerName}>{is2v2 ? "TEAM" : "PLAYER"}</Text>
+        {is2v2 ? (
+          <Text style={styles.headerWL}>W-L</Text>
+        ) : (
+          <Text style={styles.headerRounds}>RNDS</Text>
+        )}
+        <Text style={styles.headerPoints}>PTS</Text>
+        <Text style={styles.headerBehind}>BEHIND</Text>
+        {!is2v2 ? <Text style={styles.headerWins}>WINS</Text> : null}
+      </View>
+    );
+  };
+
+  const renderPlayerRow = (player: PlayerStanding) => {
+    const isCurrentUser = player.odcuserId === currentUserId;
+    const isLeader = player.rank === 1;
+
+    const borderColor = flashAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: ["transparent", "#0D5C3A"],
+    });
+
+    const RowContent = (
+      <TouchableOpacity
+        style={[
+          styles.tableRow,
+          isLeader && styles.leaderRow,
+        ]}
+        onPress={() => handlePlayerPress(player.odcuserId)}
+        activeOpacity={0.7}
+      >
+        <Text style={[styles.cellRank, isLeader && styles.leaderText]}>
+          {player.rank}
+        </Text>
+        <View style={styles.cellChange}>
+          {renderPositionIndicator(player.rank, player.previousRank)}
+        </View>
+        <View style={styles.cellName}>
+          {player.avatar ? (
+            <Image
+              source={{ uri: player.avatar }}
+              style={[styles.avatar, isLeader && styles.leaderAvatar]}
+            />
+          ) : (
+            <View style={[styles.avatarPlaceholder, isLeader && styles.leaderAvatar]}>
+              <Text style={styles.avatarText}>
+                {player.displayName?.charAt(0) || "?"}
+              </Text>
+            </View>
+          )}
+          <Text
+            style={[styles.nameText, isLeader && styles.leaderText]}
+            numberOfLines={1}
+          >
+            {isCurrentUser ? "You" : player.displayName}
+          </Text>
+        </View>
+        <Text style={styles.cellRounds}>{player.roundsPlayed}</Text>
+        <Text style={[styles.cellPoints, isLeader && styles.leaderText]}>
+          {player.totalPoints}
+        </Text>
+        <Text style={styles.cellBehind}>
+          {getPointsBehind(player.totalPoints, player.rank)}
+        </Text>
+        <Text style={styles.cellWins}>{player.wins || "-"}</Text>
+      </TouchableOpacity>
+    );
+
+    if (isCurrentUser) {
+      return (
+        <Animated.View
+          key={player.odcuserId}
+          style={[styles.userRowWrapper, { borderColor: borderColor }]}
+        >
+          {RowContent}
+        </Animated.View>
+      );
+    }
+
+    return <View key={player.odcuserId}>{RowContent}</View>;
+  };
+
+  const renderTeamRow = (team: TeamStanding) => {
+    const isLeader = team.rank === 1;
+    // Check if current user is on this team - would need additional data
+    const isUserTeam = false; // TODO: Implement based on user's teamId
+
+    const borderColor = flashAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: ["transparent", "#0D5C3A"],
+    });
+
+    const RowContent = (
+      <TouchableOpacity
+        style={[
+          styles.tableRow,
+          isLeader && styles.leaderRow,
+        ]}
+        onPress={() => handleTeamPress(team.teamId)}
+        activeOpacity={0.7}
+      >
+        <Text style={[styles.cellRank, isLeader && styles.leaderText]}>
+          {team.rank}
+        </Text>
+        <View style={styles.cellChange}>
+          {renderPositionIndicator(team.rank, team.previousRank)}
+        </View>
+        <View style={styles.cellName}>
+          {team.teamAvatar ? (
+            <Image
+              source={{ uri: team.teamAvatar }}
+              style={[styles.avatar, isLeader && styles.leaderAvatar]}
+            />
+          ) : (
+            <View style={[styles.avatarPlaceholder, isLeader && styles.leaderAvatar]}>
+              <Text style={styles.avatarText}>
+                {team.teamName?.charAt(0) || "?"}
+              </Text>
+            </View>
+          )}
+          <Text
+            style={[styles.nameText, isLeader && styles.leaderText]}
+            numberOfLines={1}
+          >
+            {team.teamName}
+          </Text>
+        </View>
+        <Text style={styles.cellWL}>
+          {team.wins}-{team.losses}
+        </Text>
+        <Text style={[styles.cellPoints, isLeader && styles.leaderText]}>
+          {team.totalPoints}
+        </Text>
+        <Text style={styles.cellBehind}>
+          {getPointsBehind(team.totalPoints, team.rank)}
+        </Text>
+      </TouchableOpacity>
+    );
+
+    if (isUserTeam) {
+      return (
+        <Animated.View
+          key={team.teamId}
+          style={[styles.userRowWrapper, { borderColor: borderColor }]}
+        >
+          {RowContent}
+        </Animated.View>
+      );
+    }
+
+    return <View key={team.teamId}>{RowContent}</View>;
   };
 
   const renderLeagueSelectorModal = () => (
@@ -438,37 +652,34 @@ export default function LeagueStandings() {
         style={styles.modalBackdrop}
         onPress={() => setShowLeagueSelector(false)}
       >
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>Select League</Text>
+        <View style={styles.selectorModalContent}>
+          <Text style={styles.selectorModalTitle}>Select League</Text>
           {myLeagues.map((league) => (
             <TouchableOpacity
               key={league.id}
-              style={[
-                styles.modalOption,
-                league.id === selectedLeagueId && styles.modalOptionSelected,
-              ]}
+              style={
+                league.id === selectedLeagueId
+                  ? styles.selectorOptionSelected
+                  : styles.selectorOption
+              }
               onPress={() => handleSelectLeague(league.id)}
             >
-              <View style={styles.modalOptionContent}>
-                {league.logoUrl ? (
-                  <Image source={{ uri: league.logoUrl }} style={styles.modalLogo} />
-                ) : (
-                  <View style={styles.modalLogoPlaceholder}>
-                    <Text style={styles.modalLogoText}>
-                      {league.name?.charAt(0) || "L"}
-                    </Text>
-                  </View>
-                )}
+              <View style={styles.selectorOptionContent}>
+                <View style={styles.selectorLogoPlaceholder}>
+                  <Text style={styles.selectorLogoText}>
+                    {league.name?.charAt(0) || "L"}
+                  </Text>
+                </View>
                 <View>
-                  <Text style={styles.modalOptionTitle}>{league.name}</Text>
-                  <Text style={styles.modalOptionSubtitle}>
-                    Rank #{league.userRank || "-"} • {league.userPoints || 0} pts
+                  <Text style={styles.selectorOptionTitle}>{league.name}</Text>
+                  <Text style={styles.selectorOptionSubtitle}>
+                    Week {league.currentWeek} of {league.totalWeeks}
                   </Text>
                 </View>
               </View>
-              {league.id === selectedLeagueId && (
+              {league.id === selectedLeagueId ? (
                 <Ionicons name="checkmark" size={20} color="#0D5C3A" />
-              )}
+              ) : null}
             </TouchableOpacity>
           ))}
         </View>
@@ -488,20 +699,70 @@ export default function LeagueStandings() {
     );
   }
 
+  if (myLeagues.length === 0) {
+    return (
+      <View style={styles.container}>
+        {renderHeader()}
+        {renderTabs()}
+        <View style={styles.emptyStateContainer}>
+          <Text style={styles.emptyStateEmoji}>🏆</Text>
+          <Text style={styles.emptyStateTitle}>No Leagues Yet</Text>
+          <Text style={styles.emptyStateSubtitle}>
+            Join a league to see standings!
+          </Text>
+          <TouchableOpacity
+            style={styles.emptyStateButton}
+            onPress={() => router.push("/leagues/explore")}
+          >
+            <Text style={styles.emptyStateButtonText}>Explore Leagues</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  const is2v2 = selectedLeague?.format === "2v2";
+  const hasStandings = is2v2 ? teamStandings.length > 0 : playerStandings.length > 0;
+
   return (
     <View style={styles.container}>
       {renderHeader()}
-      {myLeagues.length > 0 && renderLeagueSelector()}
       {renderTabs()}
 
       <ScrollView
         style={styles.content}
+        contentContainerStyle={styles.contentContainer}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#0D5C3A"
+          />
         }
       >
-        {renderStandings()}
-        <View style={{ height: 40 }} />
+        {renderLeagueSelector()}
+
+        <View style={styles.standingsCard}>
+          <Text style={styles.standingsTitle}>Standings</Text>
+
+          {hasStandings ? (
+            <>
+              {renderStandingsHeader()}
+              {is2v2
+                ? teamStandings.map(renderTeamRow)
+                : playerStandings.map(renderPlayerRow)}
+            </>
+          ) : (
+            <View style={styles.noStandings}>
+              <Ionicons name="podium-outline" size={48} color="#CCC" />
+              <Text style={styles.noStandingsText}>
+                No standings yet - check back after scores are posted!
+              </Text>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.bottomSpacer} />
       </ScrollView>
 
       {renderLeagueSelectorModal()}
@@ -516,7 +777,7 @@ export default function LeagueStandings() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F0F8F0",
+    backgroundColor: "#F5F5F0",
   },
   loadingContainer: {
     justifyContent: "center",
@@ -535,16 +796,10 @@ const styles = StyleSheet.create({
   headerButton: {
     padding: 8,
   },
-  headerIcon: {
-    width: 24,
-    height: 24,
-    tintColor: "#F4EED8",
-  },
   headerTitle: {
     fontSize: 18,
     fontWeight: "700",
     color: "#F4EED8",
-    fontFamily: "AmericanTypewriter-Bold",
   },
   headerRight: {
     width: 40,
@@ -577,31 +832,29 @@ const styles = StyleSheet.create({
     color: "#FFF",
   },
 
+  // Content
+  content: {
+    flex: 1,
+  },
+  contentContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+
   // League Selector
   leagueSelector: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     backgroundColor: "#FFF",
-    marginHorizontal: 16,
-    marginTop: 12,
     padding: 12,
     borderRadius: 12,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    marginBottom: 16,
   },
   leagueSelectorContent: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-  },
-  leagueLogo: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    flex: 1,
   },
   leagueLogoPlaceholder: {
     width: 44,
@@ -612,15 +865,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   leagueLogoText: {
-    color: "#FFF",
     fontSize: 18,
     fontWeight: "700",
+    color: "#FFF",
   },
-  leagueSelectorText: {},
+  leagueSelectorText: {
+    marginLeft: 12,
+  },
   leagueName: {
     fontSize: 16,
     fontWeight: "700",
-    color: "#0D5C3A",
+    color: "#333",
   },
   leagueSubtitle: {
     fontSize: 13,
@@ -628,180 +883,337 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  // Content
-  content: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-  },
-
-  // Cards
-  card: {
+  // Standings Card
+  standingsCard: {
     backgroundColor: "#FFF",
     borderRadius: 12,
     padding: 16,
-    marginBottom: 12,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
   },
-  cardLabel: {
+  standingsTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#333",
+    marginBottom: 16,
+  },
+
+  // Table Header
+  tableHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderBottomWidth: 2,
+    borderBottomColor: "#E0E0E0",
+    marginBottom: 4,
+  },
+  headerRank: {
+    width: 30,
     fontSize: 11,
     fontWeight: "700",
     color: "#999",
-    letterSpacing: 1,
-    marginBottom: 12,
+  },
+  headerChange: {
+    width: 36,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    textAlign: "center",
+  },
+  headerName: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    marginLeft: 8,
+  },
+  headerRounds: {
+    width: 44,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    textAlign: "center",
+  },
+  headerWL: {
+    width: 44,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    textAlign: "center",
+  },
+  headerPoints: {
+    width: 50,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    textAlign: "center",
+  },
+  headerBehind: {
+    width: 50,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    textAlign: "center",
+  },
+  headerWins: {
+    width: 40,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    textAlign: "center",
   },
 
-  // Standings
-  standingsRow: {
+  // Table Row
+  tableRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 12,
+    paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: "#F0F0F0",
   },
-  rankContainer: {
-    width: 40,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
+  leaderRow: {
+    backgroundColor: "#FFFBEB",
   },
-  rank: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#0D5C3A",
+  userRowWrapper: {
+    borderWidth: 2,
+    borderRadius: 8,
+    marginVertical: 2,
   },
-  userInfo: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  avatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-  },
-  avatarPlaceholder: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "#0D5C3A",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  avatarText: {
-    color: "#FFF",
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  userName: {
+
+  // Cells
+  cellRank: {
+    width: 30,
     fontSize: 14,
     fontWeight: "600",
     color: "#333",
   },
-  userNameYou: {
-    color: "#0D5C3A",
+  cellChange: {
+    width: 36,
+    alignItems: "center",
   },
-  userStats: {
-    fontSize: 12,
+  cellName: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    marginLeft: 8,
+  },
+  cellRounds: {
+    width: 44,
+    fontSize: 14,
     color: "#666",
-    marginTop: 2,
+    textAlign: "center",
   },
-  points: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#0D5C3A",
+  cellWL: {
+    width: 44,
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
   },
-
-  // Empty State
-  emptyText: {
+  cellPoints: {
+    width: 50,
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
+    textAlign: "center",
+  },
+  cellBehind: {
+    width: 50,
     fontSize: 14,
     color: "#999",
     textAlign: "center",
-    paddingVertical: 20,
   },
-  primaryButton: {
+  cellWins: {
+    width: 40,
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
+  },
+
+  // Avatar
+  avatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    marginRight: 8,
+  },
+  avatarPlaceholder: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: "#0D5C3A",
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    borderRadius: 8,
+    justifyContent: "center",
     alignItems: "center",
+    marginRight: 8,
   },
-  primaryButtonText: {
-    color: "#FFF",
-    fontSize: 15,
+  avatarText: {
+    fontSize: 13,
     fontWeight: "700",
+    color: "#FFF",
+  },
+  leaderAvatar: {
+    borderWidth: 2,
+    borderColor: "#C9A227",
+  },
+  nameText: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: "#333",
+    flex: 1,
+  },
+  leaderText: {
+    fontWeight: "700",
+  },
+
+  // Position Indicators
+  positionChange: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  positionUpText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#4CAF50",
+    marginLeft: 1,
+  },
+  positionDownText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#F44336",
+    marginLeft: 1,
+  },
+  positionSameText: {
+    fontSize: 14,
+    color: "#999",
+  },
+  positionNew: {
+    backgroundColor: "#E3F2FD",
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  positionNewText: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#2196F3",
+  },
+
+  // No Standings
+  noStandings: {
+    alignItems: "center",
+    paddingVertical: 40,
+  },
+  noStandingsText: {
+    fontSize: 14,
+    color: "#999",
+    textAlign: "center",
+    marginTop: 12,
   },
 
   // Modal
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 20,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    justifyContent: "flex-end",
   },
-  modalContent: {
+  selectorModalContent: {
     backgroundColor: "#FFF",
-    borderRadius: 16,
-    padding: 20,
-    width: "100%",
-    maxWidth: 400,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 16,
   },
-  modalTitle: {
+  selectorModalTitle: {
     fontSize: 18,
     fontWeight: "700",
-    color: "#0D5C3A",
+    color: "#333",
     marginBottom: 16,
     textAlign: "center",
   },
-  modalOption: {
+  selectorOption: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 8,
+    padding: 12,
+    borderRadius: 12,
     marginBottom: 8,
   },
-  modalOptionSelected: {
-    backgroundColor: "rgba(13, 92, 58, 0.1)",
-  },
-  modalOptionContent: {
+  selectorOptionSelected: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    justifyContent: "space-between",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+    backgroundColor: "#E8F5E9",
   },
-  modalLogo: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  selectorOptionContent: {
+    flexDirection: "row",
+    alignItems: "center",
   },
-  modalLogoPlaceholder: {
+  selectorLogoPlaceholder: {
     width: 40,
     height: 40,
     borderRadius: 20,
     backgroundColor: "#0D5C3A",
     justifyContent: "center",
     alignItems: "center",
+    marginRight: 12,
   },
-  modalLogoText: {
-    color: "#FFF",
+  selectorLogoText: {
     fontSize: 16,
     fontWeight: "700",
+    color: "#FFF",
   },
-  modalOptionTitle: {
+  selectorOptionTitle: {
     fontSize: 15,
     fontWeight: "600",
     color: "#333",
   },
-  modalOptionSubtitle: {
+  selectorOptionSubtitle: {
     fontSize: 13,
     color: "#666",
     marginTop: 2,
+  },
+
+  // Empty State
+  emptyStateContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 32,
+  },
+  emptyStateEmoji: {
+    fontSize: 64,
+    marginBottom: 16,
+  },
+  emptyStateTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#333",
+    marginBottom: 8,
+  },
+  emptyStateSubtitle: {
+    fontSize: 15,
+    color: "#666",
+    textAlign: "center",
+    marginBottom: 24,
+  },
+  emptyStateButton: {
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  emptyStateButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFF",
+  },
+
+  bottomSpacer: {
+    height: 100,
   },
 });

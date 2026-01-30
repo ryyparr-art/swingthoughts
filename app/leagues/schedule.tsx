@@ -1,7 +1,11 @@
 /**
  * League Hub - Schedule Tab
- * 
- * Shows the weekly schedule for the selected league
+ *
+ * Shows:
+ * - Week-by-week schedule grouped by month
+ * - Status badges (complete/current/upcoming)
+ * - Previous winner for completed weeks
+ * - Matchups for 2v2 leagues with teams
  */
 
 import { auth, db } from "@/constants/firebaseConfig";
@@ -9,19 +13,28 @@ import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
-import { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Image,
-    Modal,
-    Pressable,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  orderBy,
+  query,
+  Timestamp,
+} from "firebase/firestore";
+import React, { useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  Image,
+  Modal,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -32,21 +45,69 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 interface League {
   id: string;
   name: string;
-  logoUrl?: string;
-  status: string;
+  format: "stroke" | "2v2";
+  holesPerRound: number;
+  frequency: "weekly" | "biweekly" | "monthly";
+  scoreDeadlineDays: number;
+  status: "upcoming" | "active" | "completed";
   currentWeek: number;
   totalWeeks: number;
-  elevatedWeeks?: number[];
+  startDate: Timestamp;
+  endDate: Timestamp;
+  restrictedCourses?: Array<{ courseId: number; courseName: string }>;
+  elevatedEvents?: {
+    enabled: boolean;
+    weeks: number[];
+    multiplier: number;
+  };
 }
 
 interface LeagueCard {
   id: string;
   name: string;
-  logoUrl?: string;
   currentWeek: number;
   totalWeeks: number;
-  userRank?: number;
-  userPoints?: number;
+}
+
+interface Team {
+  id: string;
+  name: string;
+}
+
+interface WeekResult {
+  odcuserId?: string;
+  displayName?: string;
+  avatar?: string;
+  score?: number;
+  courseName?: string;
+  // 2v2
+  teamId?: string;
+  teamName?: string;
+  matchResult?: string;
+}
+
+interface WeekSchedule {
+  week: number;
+  startDate: Date;
+  endDate: Date;
+  status: "complete" | "current" | "upcoming";
+  isElevated: boolean;
+  multiplier: number;
+  basePoints: number;
+  courseName?: string;
+  winner?: WeekResult;
+  matchups?: Array<{ team1: Team; team2: Team; result?: string }>;
+  userScore?: {
+    score: number;
+    rank: number;
+  };
+  scoresPosted?: number;
+}
+
+interface MonthGroup {
+  month: string;
+  year: number;
+  weeks: WeekSchedule[];
 }
 
 /* ================================================================ */
@@ -58,19 +119,22 @@ export default function LeagueSchedule() {
   const insets = useSafeAreaInsets();
   const currentUserId = auth.currentUser?.uid;
 
-  // State
+  // Loading states
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-
-  // Commissioner status
-  const [isCommissioner, setIsCommissioner] = useState(false);
-  const [commissionerLeagueId, setCommissionerLeagueId] = useState<string | null>(null);
 
   // User's leagues
   const [myLeagues, setMyLeagues] = useState<LeagueCard[]>([]);
   const [selectedLeagueId, setSelectedLeagueId] = useState<string | null>(null);
   const [selectedLeague, setSelectedLeague] = useState<League | null>(null);
   const [showLeagueSelector, setShowLeagueSelector] = useState(false);
+
+  // Schedule data
+  const [schedule, setSchedule] = useState<MonthGroup[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+
+  // Commissioner/Manager status
+  const [isCommissionerOrManager, setIsCommissionerOrManager] = useState(false);
 
   /* ================================================================ */
   /* DATA LOADING                                                    */
@@ -79,42 +143,48 @@ export default function LeagueSchedule() {
   useEffect(() => {
     if (!currentUserId) return;
     loadMyLeagues();
-    checkCommissionerStatus();
   }, [currentUserId]);
 
   useEffect(() => {
-    if (selectedLeagueId) {
-      loadLeagueDetails(selectedLeagueId);
-    }
-  }, [selectedLeagueId]);
+    if (selectedLeagueId && currentUserId) {
+      const unsubscribers: (() => void)[] = [];
 
-  const checkCommissionerStatus = async () => {
-    if (!currentUserId) return;
-
-    try {
-      const userDoc = await getDoc(doc(db, "users", currentUserId));
-      if (!userDoc.exists()) return;
-
-      const userData = userDoc.data();
-      const approved = userData.isApprovedCommissioner === true;
-      setIsCommissioner(approved);
-
-      if (approved) {
-        const leaguesSnap = await getDocs(
-          query(
-            collection(db, "leagues"),
-            where("hostUserId", "==", currentUserId)
-          )
-        );
-
-        if (!leaguesSnap.empty) {
-          setCommissionerLeagueId(leaguesSnap.docs[0].id);
+      // Listen to league doc
+      const leagueUnsub = onSnapshot(
+        doc(db, "leagues", selectedLeagueId),
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const leagueData = { id: docSnap.id, ...docSnap.data() } as League;
+            setSelectedLeague(leagueData);
+            generateSchedule(leagueData);
+          }
         }
-      }
-    } catch (error) {
-      console.error("Error checking commissioner status:", error);
+      );
+      unsubscribers.push(leagueUnsub);
+
+      // Check membership role
+      getDoc(doc(db, "leagues", selectedLeagueId, "members", currentUserId)).then(
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const role = docSnap.data().role;
+            setIsCommissionerOrManager(
+              role === "commissioner" || role === "manager"
+            );
+          }
+        }
+      );
+
+      // Load teams for 2v2
+      loadTeams(selectedLeagueId);
+
+      // Load week results
+      loadWeekResults(selectedLeagueId);
+
+      return () => {
+        unsubscribers.forEach((unsub) => unsub());
+      };
     }
-  };
+  }, [selectedLeagueId, currentUserId]);
 
   const loadMyLeagues = async () => {
     if (!currentUserId) return;
@@ -132,16 +202,11 @@ export default function LeagueSchedule() {
 
         if (memberDoc.exists()) {
           const leagueData = leagueDoc.data();
-          const memberData = memberDoc.data();
-
           userLeagues.push({
             id: leagueDoc.id,
             name: leagueData.name,
-            logoUrl: leagueData.logoUrl,
             currentWeek: leagueData.currentWeek || 0,
             totalWeeks: leagueData.totalWeeks || 0,
-            userRank: memberData.currentRank,
-            userPoints: memberData.totalPoints || 0,
           });
         }
       }
@@ -151,30 +216,158 @@ export default function LeagueSchedule() {
       if (userLeagues.length > 0 && !selectedLeagueId) {
         setSelectedLeagueId(userLeagues[0].id);
       }
-
-      setLoading(false);
     } catch (error) {
       console.error("Error loading leagues:", error);
+    } finally {
       setLoading(false);
     }
   };
 
-  const loadLeagueDetails = async (leagueId: string) => {
+  const loadTeams = async (leagueId: string) => {
     try {
-      const leagueDoc = await getDoc(doc(db, "leagues", leagueId));
-      if (!leagueDoc.exists()) return;
-
-      setSelectedLeague({ id: leagueDoc.id, ...leagueDoc.data() } as League);
+      const teamsSnap = await getDocs(
+        collection(db, "leagues", leagueId, "teams")
+      );
+      const teamsData: Team[] = [];
+      teamsSnap.forEach((docSnap) => {
+        teamsData.push({ id: docSnap.id, name: docSnap.data().name });
+      });
+      setTeams(teamsData);
     } catch (error) {
-      console.error("Error loading league details:", error);
+      console.error("Error loading teams:", error);
     }
+  };
+
+  const loadWeekResults = async (leagueId: string) => {
+    try {
+      const resultsSnap = await getDocs(
+        query(
+          collection(db, "leagues", leagueId, "week_results"),
+          orderBy("week", "asc")
+        )
+      );
+
+      const resultsMap: Record<number, WeekResult> = {};
+      resultsSnap.forEach((docSnap) => {
+        const data = docSnap.data();
+        resultsMap[data.week] = {
+          odcuserId: data.odcuserId,
+          displayName: data.displayName,
+          avatar: data.avatar,
+          score: data.score,
+          courseName: data.courseName,
+          teamId: data.teamId,
+          teamName: data.teamName,
+          matchResult: data.matchResult,
+        };
+      });
+
+      // Update schedule with results
+      setSchedule((prev) =>
+        prev.map((group) => ({
+          ...group,
+          weeks: group.weeks.map((week) => ({
+            ...week,
+            winner: resultsMap[week.week],
+          })),
+        }))
+      );
+    } catch (error) {
+      console.error("Error loading week results:", error);
+    }
+  };
+
+  const generateSchedule = (league: League) => {
+    const weeks: WeekSchedule[] = [];
+    const startDate = league.startDate.toDate();
+    const basePoints = 100; // Base points per week
+
+    // Calculate week duration based on frequency
+    const weekDuration =
+      league.frequency === "weekly"
+        ? 7
+        : league.frequency === "biweekly"
+        ? 14
+        : 30;
+
+    for (let i = 1; i <= league.totalWeeks; i++) {
+      const weekStart = new Date(startDate);
+      weekStart.setDate(startDate.getDate() + (i - 1) * weekDuration);
+
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekStart.getDate() + weekDuration - 1);
+
+      const isElevated =
+        league.elevatedEvents?.enabled &&
+        league.elevatedEvents.weeks?.includes(i);
+      const multiplier = isElevated
+        ? league.elevatedEvents?.multiplier || 2
+        : 1;
+
+      let status: "complete" | "current" | "upcoming" = "upcoming";
+      if (i < league.currentWeek) {
+        status = "complete";
+      } else if (i === league.currentWeek) {
+        status = "current";
+      }
+
+      // Course name for restricted leagues
+      let courseName: string | undefined;
+      if (league.restrictedCourses && league.restrictedCourses.length > 0) {
+        if (league.restrictedCourses.length === 1) {
+          courseName = league.restrictedCourses[0].courseName;
+        } else {
+          // Rotate through courses or use specific assignment
+          const courseIndex = (i - 1) % league.restrictedCourses.length;
+          courseName = league.restrictedCourses[courseIndex].courseName;
+        }
+      }
+
+      weeks.push({
+        week: i,
+        startDate: weekStart,
+        endDate: weekEnd,
+        status,
+        isElevated: isElevated || false,
+        multiplier,
+        basePoints: basePoints * multiplier,
+        courseName,
+      });
+    }
+
+    // Group by month
+    const monthGroups: MonthGroup[] = [];
+    const monthMap = new Map<string, WeekSchedule[]>();
+
+    weeks.forEach((week) => {
+      const monthKey =
+        week.startDate.toLocaleString("en-US", { month: "long" }) +
+        " " +
+        week.startDate.getFullYear();
+      if (!monthMap.has(monthKey)) {
+        monthMap.set(monthKey, []);
+      }
+      monthMap.get(monthKey)!.push(week);
+    });
+
+    monthMap.forEach((weeks, key) => {
+      const [month, yearStr] = key.split(" ");
+      monthGroups.push({
+        month,
+        year: parseInt(yearStr),
+        weeks,
+      });
+    });
+
+    setSchedule(monthGroups);
   };
 
   const onRefresh = async () => {
     setRefreshing(true);
     await loadMyLeagues();
     if (selectedLeagueId) {
-      await loadLeagueDetails(selectedLeagueId);
+      await loadTeams(selectedLeagueId);
+      await loadWeekResults(selectedLeagueId);
     }
     setRefreshing(false);
   };
@@ -183,15 +376,6 @@ export default function LeagueSchedule() {
   /* HANDLERS                                                        */
   /* ================================================================ */
 
-  const handleTabChange = (tab: string) => {
-    soundPlayer.play("click");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-
-    if (tab === "schedule") return;
-
-    router.replace(`/leagues/${tab}` as any);
-  };
-
   const handleSelectLeague = (leagueId: string) => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -199,49 +383,67 @@ export default function LeagueSchedule() {
     setShowLeagueSelector(false);
   };
 
-  const handleCommissionerSettings = () => {
+  const handlePostScore = () => {
     soundPlayer.play("click");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    
-    if (commissionerLeagueId) {
-      router.push({
-        pathname: "/leagues/settings" as any,
-        params: { leagueId: commissionerLeagueId },
-      });
-    } else {
-      router.push("/leagues/create" as any);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push(`/leagues/post-score?leagueId=${selectedLeagueId}`);
+  };
+
+  const handleSettings = () => {
+    soundPlayer.play("click");
+    router.push(`/leagues/settings?id=${selectedLeagueId}`);
+  };
+
+  const handleWeekPress = (week: WeekSchedule) => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    // Navigate to week detail or expand
+    router.push(
+      `/leagues/week-detail?leagueId=${selectedLeagueId}&week=${week.week}`
+    );
+  };
+
+  /* ================================================================ */
+  /* HELPERS                                                         */
+  /* ================================================================ */
+
+  const formatDateRange = (start: Date, end: Date) => {
+    const startMonth = start.toLocaleString("en-US", { month: "short" });
+    const endMonth = end.toLocaleString("en-US", { month: "short" });
+
+    if (startMonth === endMonth) {
+      return startMonth.toUpperCase() + " " + start.getDate() + " - " + end.getDate();
+    }
+    return startMonth.toUpperCase() + " " + start.getDate() + " - " + endMonth.toUpperCase() + " " + end.getDate();
+  };
+
+  const getStatusBadge = (status: "complete" | "current" | "upcoming") => {
+    switch (status) {
+      case "complete":
+        return { text: "COMPLETE", color: "#4CAF50", bg: "#E8F5E9" };
+      case "current":
+        return { text: "CURRENT", color: "#2196F3", bg: "#E3F2FD" };
+      case "upcoming":
+        return { text: "UPCOMING", color: "#9E9E9E", bg: "#F5F5F5" };
     }
   };
 
   /* ================================================================ */
-  /* RENDER HELPERS                                                  */
+  /* RENDER COMPONENTS                                               */
   /* ================================================================ */
 
   const renderHeader = () => (
-    <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+    <View style={[styles.header, { paddingTop: insets.top }]}>
       <TouchableOpacity
-        onPress={() => {
-          soundPlayer.play("click");
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          router.back();
-        }}
         style={styles.headerButton}
+        onPress={() => router.push("/leaderboard")}
       >
-        <Image
-          source={require("@/assets/icons/Back.png")}
-          style={styles.headerIcon}
-        />
+        <Ionicons name="chevron-back" size={28} color="#F4EED8" />
       </TouchableOpacity>
       <Text style={styles.headerTitle}>League Hub</Text>
-      {isCommissioner ? (
-        <TouchableOpacity
-          onPress={handleCommissionerSettings}
-          style={styles.headerButton}
-        >
-          <Image
-            source={require("@/assets/icons/Settings.png")}
-            style={styles.headerIcon}
-          />
+      {isCommissionerOrManager ? (
+        <TouchableOpacity style={styles.headerButton} onPress={handleSettings}>
+          <Ionicons name="settings-outline" size={24} color="#F4EED8" />
         </TouchableOpacity>
       ) : (
         <View style={styles.headerRight} />
@@ -251,27 +453,27 @@ export default function LeagueSchedule() {
 
   const renderTabs = () => (
     <View style={styles.tabBar}>
-      {[
-        { key: "home", label: "Home" },
-        { key: "schedule", label: "Schedule" },
-        { key: "standings", label: "Standings" },
-        { key: "explore", label: "Explore" },
-      ].map((tab) => (
-        <TouchableOpacity
-          key={tab.key}
-          style={[styles.tab, tab.key === "schedule" && styles.tabActive]}
-          onPress={() => handleTabChange(tab.key)}
-        >
-          <Text
-            style={[
-              styles.tabText,
-              tab.key === "schedule" && styles.tabTextActive,
-            ]}
-          >
-            {tab.label}
-          </Text>
-        </TouchableOpacity>
-      ))}
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => router.push("/leagues/home")}
+      >
+        <Text style={styles.tabText}>Home</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={[styles.tab, styles.tabActive]}>
+        <Text style={[styles.tabText, styles.tabTextActive]}>Schedule</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => router.push("/leagues/standings")}
+      >
+        <Text style={styles.tabText}>Standings</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => router.push("/leagues/explore")}
+      >
+        <Text style={styles.tabText}>Explore</Text>
+      </TouchableOpacity>
     </View>
   );
 
@@ -293,83 +495,168 @@ export default function LeagueSchedule() {
         disabled={myLeagues.length <= 1}
       >
         <View style={styles.leagueSelectorContent}>
-          {selected?.logoUrl ? (
-            <Image source={{ uri: selected.logoUrl }} style={styles.leagueLogo} />
-          ) : (
-            <View style={styles.leagueLogoPlaceholder}>
-              <Text style={styles.leagueLogoText}>
-                {selected?.name?.charAt(0) || "L"}
-              </Text>
-            </View>
-          )}
+          <View style={styles.leagueLogoPlaceholder}>
+            <Text style={styles.leagueLogoText}>
+              {selected?.name?.charAt(0) || "L"}
+            </Text>
+          </View>
           <View style={styles.leagueSelectorText}>
-            <Text style={styles.leagueName}>{selected?.name || "Select League"}</Text>
+            <Text style={styles.leagueName}>
+              {selected?.name || "Select League"}
+            </Text>
             <Text style={styles.leagueSubtitle}>
               Week {selected?.currentWeek || 0} of {selected?.totalWeeks || 0}
             </Text>
           </View>
         </View>
-        {myLeagues.length > 1 && (
+        {myLeagues.length > 1 ? (
           <Ionicons name="chevron-down" size={20} color="#0D5C3A" />
-        )}
+        ) : null}
       </TouchableOpacity>
     );
   };
 
-  const renderSchedule = () => {
-    if (!selectedLeague) {
-      return (
-        <View style={styles.card}>
-          <Text style={styles.emptyText}>Join a league to see the schedule</Text>
-          <TouchableOpacity
-            style={styles.primaryButton}
-            onPress={() => handleTabChange("explore")}
-          >
-            <Text style={styles.primaryButtonText}>Find a League</Text>
-          </TouchableOpacity>
-        </View>
-      );
-    }
-
-    const scheduleItems = [];
-    for (let week = 1; week <= selectedLeague.totalWeeks; week++) {
-      const isElevated = selectedLeague.elevatedWeeks?.includes(week);
-      const isCurrent = week === selectedLeague.currentWeek;
-      const isPast = week < selectedLeague.currentWeek;
-
-      scheduleItems.push(
-        <View
-          key={week}
-          style={[
-            styles.scheduleItem,
-            isCurrent && styles.scheduleItemCurrent,
-            isPast && styles.scheduleItemPast,
-          ]}
-        >
-          <View style={styles.scheduleWeek}>
-            <Text style={[styles.scheduleWeekNumber, isPast && styles.scheduleTextPast]}>
-              Week {week}
-            </Text>
-            {isElevated && (
-              <View style={styles.elevatedBadge}>
-                <Text style={styles.elevatedBadgeText}>⚡ Elevated</Text>
-              </View>
-            )}
-          </View>
-          <Text style={[styles.scheduleStatus, isPast && styles.scheduleTextPast]}>
-            {isPast ? "Completed" : isCurrent ? "In Progress" : "Upcoming"}
-          </Text>
-        </View>
-      );
-    }
+  const renderWeekCard = (week: WeekSchedule) => {
+    const badge = getStatusBadge(week.status);
+    const is2v2 = selectedLeague?.format === "2v2";
+    const hasTeams = teams.length > 0;
 
     return (
-      <View style={styles.card}>
-        <Text style={styles.cardLabel}>SEASON SCHEDULE</Text>
-        {scheduleItems}
-      </View>
+      <TouchableOpacity
+        key={week.week}
+        style={styles.weekCard}
+        onPress={() => handleWeekPress(week)}
+        activeOpacity={0.7}
+      >
+        {/* Header Row */}
+        <View style={styles.weekHeader}>
+          <View style={styles.weekDateContainer}>
+            <Text style={styles.weekDate}>
+              {formatDateRange(week.startDate, week.endDate)}
+            </Text>
+            {week.isElevated ? (
+              <View style={styles.elevatedBadge}>
+                <Ionicons name="star" size={12} color="#C9A227" />
+                <Text style={styles.elevatedText}>{week.multiplier}X</Text>
+              </View>
+            ) : null}
+          </View>
+          <View style={[styles.statusBadge, { backgroundColor: badge.bg }]}>
+            <Text style={[styles.statusText, { color: badge.color }]}>
+              {badge.text}
+            </Text>
+          </View>
+        </View>
+
+        {/* Week Info */}
+        <View style={styles.weekInfo}>
+          <Text style={styles.weekNumber}>Week {week.week}</Text>
+          <Text style={styles.weekDivider}>•</Text>
+          <Text style={styles.weekCourse}>
+            {week.courseName || "Any Course"}
+          </Text>
+          <View style={styles.weekPointsContainer}>
+            <Text style={styles.weekPoints}>{week.basePoints} pts</Text>
+          </View>
+        </View>
+
+        {/* 2v2 Matchups */}
+        {is2v2 && hasTeams && week.matchups && week.matchups.length > 0 ? (
+          <View style={styles.matchupsContainer}>
+            <Text style={styles.matchupsLabel}>Matchups:</Text>
+            {week.matchups.map((matchup, idx) => (
+              <View key={idx} style={styles.matchupRow}>
+                <Text style={styles.matchupText}>
+                  • {matchup.team1.name} vs {matchup.team2.name}
+                </Text>
+                {matchup.result ? (
+                  <Text style={styles.matchupResult}>{matchup.result}</Text>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Winner Row (completed weeks) */}
+        {week.status === "complete" && week.winner ? (
+          <View style={styles.winnerRow}>
+            <View style={styles.winnerContent}>
+              <Text style={styles.winnerTrophy}>🏆</Text>
+              {is2v2 ? (
+                <Text style={styles.winnerName}>
+                  {week.winner.teamName}
+                  {week.winner.matchResult
+                    ? " (" + week.winner.matchResult + ")"
+                    : ""}
+                </Text>
+              ) : (
+                <>
+                  {week.winner.avatar ? (
+                    <Image
+                      source={{ uri: week.winner.avatar }}
+                      style={styles.winnerAvatar}
+                    />
+                  ) : (
+                    <View style={styles.winnerAvatarPlaceholder}>
+                      <Text style={styles.winnerAvatarText}>
+                        {week.winner.displayName?.charAt(0) || "?"}
+                      </Text>
+                    </View>
+                  )}
+                  <Text style={styles.winnerName}>
+                    {week.winner.displayName}
+                  </Text>
+                  {week.winner.score !== undefined ? (
+                    <Text style={styles.winnerScore}>
+                      • {week.winner.score} net
+                    </Text>
+                  ) : null}
+                </>
+              )}
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#999" />
+          </View>
+        ) : null}
+
+        {/* Current Week CTA */}
+        {week.status === "current" ? (
+          <View style={styles.currentWeekCta}>
+            <View style={styles.deadlineRow}>
+              <Ionicons name="time-outline" size={16} color="#2196F3" />
+              <Text style={styles.deadlineText}>
+                Scores due in {selectedLeague?.scoreDeadlineDays || 3} days
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.postScoreBtn}
+              onPress={handlePostScore}
+            >
+              <Text style={styles.postScoreBtnText}>Post Score</Text>
+              <Ionicons name="arrow-forward" size={16} color="#FFF" />
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
+        {/* Upcoming Week Lock */}
+        {week.status === "upcoming" ? (
+          <View style={styles.upcomingRow}>
+            <Ionicons name="lock-closed-outline" size={16} color="#999" />
+            <Text style={styles.upcomingText}>Opens when week starts</Text>
+          </View>
+        ) : null}
+      </TouchableOpacity>
     );
   };
+
+  const renderMonthGroup = (group: MonthGroup) => (
+    <View key={group.month + group.year} style={styles.monthGroup}>
+      <View style={styles.monthHeader}>
+        <Text style={styles.monthTitle}>{group.month}</Text>
+        <Text style={styles.monthYear}>{group.year}</Text>
+      </View>
+      {group.weeks.map(renderWeekCard)}
+    </View>
+  );
 
   const renderLeagueSelectorModal = () => (
     <Modal
@@ -382,37 +669,34 @@ export default function LeagueSchedule() {
         style={styles.modalBackdrop}
         onPress={() => setShowLeagueSelector(false)}
       >
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>Select League</Text>
+        <View style={styles.selectorModalContent}>
+          <Text style={styles.selectorModalTitle}>Select League</Text>
           {myLeagues.map((league) => (
             <TouchableOpacity
               key={league.id}
-              style={[
-                styles.modalOption,
-                league.id === selectedLeagueId && styles.modalOptionSelected,
-              ]}
+              style={
+                league.id === selectedLeagueId
+                  ? styles.selectorOptionSelected
+                  : styles.selectorOption
+              }
               onPress={() => handleSelectLeague(league.id)}
             >
-              <View style={styles.modalOptionContent}>
-                {league.logoUrl ? (
-                  <Image source={{ uri: league.logoUrl }} style={styles.modalLogo} />
-                ) : (
-                  <View style={styles.modalLogoPlaceholder}>
-                    <Text style={styles.modalLogoText}>
-                      {league.name?.charAt(0) || "L"}
-                    </Text>
-                  </View>
-                )}
+              <View style={styles.selectorOptionContent}>
+                <View style={styles.selectorLogoPlaceholder}>
+                  <Text style={styles.selectorLogoText}>
+                    {league.name?.charAt(0) || "L"}
+                  </Text>
+                </View>
                 <View>
-                  <Text style={styles.modalOptionTitle}>{league.name}</Text>
-                  <Text style={styles.modalOptionSubtitle}>
-                    Rank #{league.userRank || "-"} • {league.userPoints || 0} pts
+                  <Text style={styles.selectorOptionTitle}>{league.name}</Text>
+                  <Text style={styles.selectorOptionSubtitle}>
+                    Week {league.currentWeek} of {league.totalWeeks}
                   </Text>
                 </View>
               </View>
-              {league.id === selectedLeagueId && (
+              {league.id === selectedLeagueId ? (
                 <Ionicons name="checkmark" size={20} color="#0D5C3A" />
-              )}
+              ) : null}
             </TouchableOpacity>
           ))}
         </View>
@@ -432,20 +716,47 @@ export default function LeagueSchedule() {
     );
   }
 
+  if (myLeagues.length === 0) {
+    return (
+      <View style={styles.container}>
+        {renderHeader()}
+        {renderTabs()}
+        <View style={styles.emptyStateContainer}>
+          <Text style={styles.emptyStateEmoji}>📅</Text>
+          <Text style={styles.emptyStateTitle}>No Leagues Yet</Text>
+          <Text style={styles.emptyStateSubtitle}>
+            Join a league to see the schedule!
+          </Text>
+          <TouchableOpacity
+            style={styles.emptyStateButton}
+            onPress={() => router.push("/leagues/explore")}
+          >
+            <Text style={styles.emptyStateButtonText}>Explore Leagues</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       {renderHeader()}
-      {myLeagues.length > 0 && renderLeagueSelector()}
       {renderTabs()}
 
       <ScrollView
         style={styles.content}
+        contentContainerStyle={styles.contentContainer}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#0D5C3A"
+          />
         }
       >
-        {renderSchedule()}
-        <View style={{ height: 40 }} />
+        {renderLeagueSelector()}
+        {schedule.map(renderMonthGroup)}
+        <View style={styles.bottomSpacer} />
       </ScrollView>
 
       {renderLeagueSelectorModal()}
@@ -460,7 +771,7 @@ export default function LeagueSchedule() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F0F8F0",
+    backgroundColor: "#F5F5F0",
   },
   loadingContainer: {
     justifyContent: "center",
@@ -479,16 +790,10 @@ const styles = StyleSheet.create({
   headerButton: {
     padding: 8,
   },
-  headerIcon: {
-    width: 24,
-    height: 24,
-    tintColor: "#F4EED8",
-  },
   headerTitle: {
     fontSize: 18,
     fontWeight: "700",
     color: "#F4EED8",
-    fontFamily: "AmericanTypewriter-Bold",
   },
   headerRight: {
     width: 40,
@@ -521,31 +826,29 @@ const styles = StyleSheet.create({
     color: "#FFF",
   },
 
+  // Content
+  content: {
+    flex: 1,
+  },
+  contentContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+
   // League Selector
   leagueSelector: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     backgroundColor: "#FFF",
-    marginHorizontal: 16,
-    marginTop: 12,
     padding: 12,
     borderRadius: 12,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    marginBottom: 16,
   },
   leagueSelectorContent: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-  },
-  leagueLogo: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    flex: 1,
   },
   leagueLogoPlaceholder: {
     width: 44,
@@ -556,15 +859,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   leagueLogoText: {
-    color: "#FFF",
     fontSize: 18,
     fontWeight: "700",
+    color: "#FFF",
   },
-  leagueSelectorText: {},
+  leagueSelectorText: {
+    marginLeft: 12,
+  },
   leagueName: {
     fontSize: 16,
     fontWeight: "700",
-    color: "#0D5C3A",
+    color: "#333",
   },
   leagueSubtitle: {
     fontSize: 13,
@@ -572,165 +877,337 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
 
-  // Content
-  content: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 12,
+  // Month Group
+  monthGroup: {
+    marginBottom: 24,
+  },
+  monthHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+    paddingHorizontal: 4,
+  },
+  monthTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#333",
+  },
+  monthYear: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#999",
   },
 
-  // Cards
-  card: {
+  // Week Card
+  weekCard: {
     backgroundColor: "#FFF",
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
   },
-  cardLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#999",
-    letterSpacing: 1,
-    marginBottom: 8,
-  },
-
-  // Schedule
-  scheduleItem: {
+  weekHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#F0F0F0",
+    marginBottom: 8,
   },
-  scheduleItemCurrent: {
-    backgroundColor: "rgba(13, 92, 58, 0.1)",
-    marginHorizontal: -16,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-  },
-  scheduleItemPast: {
-    opacity: 0.6,
-  },
-  scheduleWeek: {
+  weekDateContainer: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
   },
-  scheduleWeekNumber: {
-    fontSize: 15,
+  weekDate: {
+    fontSize: 12,
     fontWeight: "600",
-    color: "#0D5C3A",
-  },
-  scheduleTextPast: {
-    color: "#999",
-  },
-  scheduleStatus: {
-    fontSize: 13,
     color: "#666",
+    letterSpacing: 0.5,
   },
   elevatedBadge: {
-    backgroundColor: "#FFD700",
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF8E1",
     paddingHorizontal: 8,
     paddingVertical: 2,
-    borderRadius: 10,
+    borderRadius: 12,
+    gap: 4,
   },
-  elevatedBadgeText: {
+  elevatedText: {
     fontSize: 11,
+    fontWeight: "700",
+    color: "#C9A227",
+  },
+  statusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  statusText: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  },
+
+  // Week Info
+  weekInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  weekNumber: {
+    fontSize: 16,
     fontWeight: "700",
     color: "#333",
   },
-
-  // Empty State
-  emptyText: {
-    fontSize: 14,
-    color: "#999",
-    textAlign: "center",
-    paddingVertical: 20,
+  weekDivider: {
+    fontSize: 16,
+    color: "#CCC",
+    marginHorizontal: 8,
   },
-  primaryButton: {
-    backgroundColor: "#0D5C3A",
-    paddingVertical: 14,
-    paddingHorizontal: 24,
+  weekCourse: {
+    fontSize: 14,
+    color: "#666",
+    flex: 1,
+  },
+  weekPointsContainer: {
+    backgroundColor: "#E8F5E9",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  weekPoints: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#0D5C3A",
+  },
+
+  // Matchups
+  matchupsContainer: {
+    backgroundColor: "#F9F9F9",
     borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+  },
+  matchupsLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#666",
+    marginBottom: 6,
+  },
+  matchupRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 4,
+  },
+  matchupText: {
+    fontSize: 14,
+    color: "#333",
+  },
+  matchupResult: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#0D5C3A",
+  },
+
+  // Winner Row
+  winnerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#F0F0F0",
+  },
+  winnerContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  winnerTrophy: {
+    fontSize: 16,
+  },
+  winnerAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+  },
+  winnerAvatarPlaceholder: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "#0D5C3A",
+    justifyContent: "center",
     alignItems: "center",
   },
-  primaryButtonText: {
+  winnerAvatarText: {
+    fontSize: 11,
+    fontWeight: "700",
     color: "#FFF",
+  },
+  winnerName: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
+  },
+  winnerScore: {
+    fontSize: 14,
+    color: "#666",
+  },
+
+  // Current Week CTA
+  currentWeekCta: {
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#F0F0F0",
+  },
+  deadlineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 12,
+  },
+  deadlineText: {
+    fontSize: 13,
+    color: "#2196F3",
+    fontWeight: "500",
+  },
+  postScoreBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#0D5C3A",
+    paddingVertical: 12,
+    borderRadius: 8,
+    gap: 8,
+  },
+  postScoreBtnText: {
     fontSize: 15,
     fontWeight: "700",
+    color: "#FFF",
+  },
+
+  // Upcoming Row
+  upcomingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#F0F0F0",
+    gap: 6,
+  },
+  upcomingText: {
+    fontSize: 13,
+    color: "#999",
   },
 
   // Modal
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 20,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    justifyContent: "flex-end",
   },
-  modalContent: {
+  selectorModalContent: {
     backgroundColor: "#FFF",
-    borderRadius: 16,
-    padding: 20,
-    width: "100%",
-    maxWidth: 400,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 16,
   },
-  modalTitle: {
+  selectorModalTitle: {
     fontSize: 18,
     fontWeight: "700",
-    color: "#0D5C3A",
+    color: "#333",
     marginBottom: 16,
     textAlign: "center",
   },
-  modalOption: {
+  selectorOption: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 8,
+    padding: 12,
+    borderRadius: 12,
     marginBottom: 8,
   },
-  modalOptionSelected: {
-    backgroundColor: "rgba(13, 92, 58, 0.1)",
-  },
-  modalOptionContent: {
+  selectorOptionSelected: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    justifyContent: "space-between",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+    backgroundColor: "#E8F5E9",
   },
-  modalLogo: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  selectorOptionContent: {
+    flexDirection: "row",
+    alignItems: "center",
   },
-  modalLogoPlaceholder: {
+  selectorLogoPlaceholder: {
     width: 40,
     height: 40,
     borderRadius: 20,
     backgroundColor: "#0D5C3A",
     justifyContent: "center",
     alignItems: "center",
+    marginRight: 12,
   },
-  modalLogoText: {
-    color: "#FFF",
+  selectorLogoText: {
     fontSize: 16,
     fontWeight: "700",
+    color: "#FFF",
   },
-  modalOptionTitle: {
+  selectorOptionTitle: {
     fontSize: 15,
     fontWeight: "600",
     color: "#333",
   },
-  modalOptionSubtitle: {
+  selectorOptionSubtitle: {
     fontSize: 13,
     color: "#666",
     marginTop: 2,
+  },
+
+  // Empty State
+  emptyStateContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 32,
+  },
+  emptyStateEmoji: {
+    fontSize: 64,
+    marginBottom: 16,
+  },
+  emptyStateTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#333",
+    marginBottom: 8,
+  },
+  emptyStateSubtitle: {
+    fontSize: 15,
+    color: "#666",
+    textAlign: "center",
+    marginBottom: 24,
+  },
+  emptyStateButton: {
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  emptyStateButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFF",
+  },
+
+  bottomSpacer: {
+    height: 100,
   },
 });

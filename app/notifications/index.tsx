@@ -52,7 +52,8 @@ interface Notification {
   commentId?: string;
   courseId?: number;
   scoreId?: string;
-  threadId?: string;        // ✅ NEW: For group message notifications
+  threadId?: string;        // For group message notifications
+  leagueId?: string;        // For league notifications
   
   // Grouping
   groupKey?: string;
@@ -85,7 +86,7 @@ const NOTIFICATION_ICONS: Record<string, NotificationIconConfig> = {
   
   // Messages
   message: { image: require("@/assets/icons/Mail.png"), color: "#0D5C3A" },
-  group_message: { icon: "people", color: "#0D5C3A" },  // ✅ NEW: Group message icon
+  group_message: { icon: "people", color: "#0D5C3A" },
   
   // Partner activities
   partner_request: { icon: "person-add", color: "#FFD700" },
@@ -108,6 +109,45 @@ const NOTIFICATION_ICONS: Record<string, NotificationIconConfig> = {
   membership_submitted: { icon: "document-text", color: "#007AFF" },
   membership_approved: { icon: "checkmark-circle", color: "#34C759" },
   membership_rejected: { icon: "close-circle", color: "#FF3B30" },
+
+  // ==========================================
+  // LEAGUE NOTIFICATIONS
+  // ==========================================
+  
+  // League - Membership & Invites
+  league_invite: { icon: "mail", color: "#0D5C3A" },
+  league_join_request: { icon: "person-add", color: "#2196F3" },
+  league_join_approved: { icon: "checkmark-circle", color: "#4CAF50" },
+  league_join_rejected: { icon: "close-circle", color: "#F44336" },
+  league_removed: { icon: "person-remove", color: "#F44336" },
+  league_manager_invite: { icon: "shield", color: "#9C27B0" },
+
+  // League - Scores & Gameplay
+  league_score_reminder: { icon: "alarm", color: "#FF9800" },
+  league_score_posted: { icon: "golf", color: "#0D5C3A" },
+  league_score_dq: { icon: "ban", color: "#F44336" },
+  league_score_edited: { icon: "create", color: "#2196F3" },
+  league_score_reinstated: { icon: "refresh-circle", color: "#4CAF50" },
+
+  // League - Weekly Cycle
+  league_week_start: { icon: "flag", color: "#0D5C3A" },
+  league_week_complete: { icon: "trophy", color: "#FFD700" },
+
+  // League - Season Events
+  league_season_starting: { icon: "calendar", color: "#2196F3" },
+  league_season_started: { icon: "play-circle", color: "#4CAF50" },
+  league_season_complete: { icon: "ribbon", color: "#FFD700" },
+
+  // League - Teams (2v2)
+  league_team_assigned: { icon: "people", color: "#0D5C3A" },
+  league_team_removed: { icon: "people", color: "#F44336" },
+  league_matchup: { icon: "git-compare", color: "#9C27B0" },
+  league_team_edit_approved: { icon: "checkmark-circle", color: "#4CAF50" },
+  league_team_edit_rejected: { icon: "close-circle", color: "#F44336" },
+  league_team_edit_request: { icon: "create", color: "#FF9800" },
+
+  // League - Announcements
+  league_announcement: { icon: "megaphone", color: "#0D5C3A" },
   
   // System
   system: { icon: "information-circle", color: "#8E8E93" },
@@ -392,7 +432,7 @@ export default function NotificationsScreen() {
         }
         break;
 
-      // ✅ UPDATED: Handle both 1:1 and group messages
+      // Handle both 1:1 and group messages
       case "message":
       case "group_message":
         // If threadId is provided directly (group chats or new 1:1 notifications)
@@ -415,6 +455,119 @@ export default function NotificationsScreen() {
       case "membership_rejected":
         if (notification.courseId) {
           router.push(`/locker/course/${notification.courseId}`);
+        }
+        break;
+
+      // ==========================================
+      // LEAGUE NOTIFICATIONS
+      // ==========================================
+
+      // League invite → League detail page to accept/decline
+      case "league_invite":
+        if (notification.leagueId) {
+          router.push(`/leagues/${notification.leagueId}` as any);
+        }
+        break;
+
+      // Join request → League Settings > Members tab (for commissioners)
+      case "league_join_request":
+        if (notification.leagueId) {
+          router.push({
+            pathname: "/leagues/settings" as any,
+            params: { leagueId: notification.leagueId, tab: "members" },
+          });
+        }
+        break;
+
+      // Approved/Team assigned/Announcements → League Home
+      case "league_join_approved":
+      case "league_team_assigned":
+      case "league_team_removed":
+      case "league_team_edit_approved":
+      case "league_team_edit_rejected":
+      case "league_announcement":
+        if (notification.leagueId) {
+          router.push({
+            pathname: "/leagues/home" as any,
+            params: { leagueId: notification.leagueId },
+          });
+        }
+        break;
+
+      // Rejected → League Explore
+      case "league_join_rejected":
+        router.push("/leagues/explore" as any);
+        break;
+
+      // Removed → Just dismiss (no navigation needed)
+      case "league_removed":
+        // No navigation, just mark as read
+        break;
+
+      // Manager invite → League Settings
+      case "league_manager_invite":
+        if (notification.leagueId) {
+          router.push({
+            pathname: "/leagues/settings" as any,
+            params: { leagueId: notification.leagueId },
+          });
+        }
+        break;
+
+      // Score reminder → Post Score page
+      case "league_score_reminder":
+        if (notification.leagueId) {
+          router.push({
+            pathname: "/leagues/post-score" as any,
+            params: { leagueId: notification.leagueId },
+          });
+        }
+        break;
+
+      // Score/standings related → League Standings
+      case "league_score_posted":
+      case "league_score_dq":
+      case "league_score_edited":
+      case "league_score_reinstated":
+      case "league_week_complete":
+      case "league_season_complete":
+        if (notification.leagueId) {
+          router.push({
+            pathname: "/leagues/standings" as any,
+            params: { leagueId: notification.leagueId },
+          });
+        }
+        break;
+
+      // Week start / Matchup → League Schedule
+      case "league_week_start":
+      case "league_matchup":
+        if (notification.leagueId) {
+          router.push({
+            pathname: "/leagues/schedule" as any,
+            params: { leagueId: notification.leagueId },
+          });
+        }
+        break;
+
+      // Season starting/started → League Home
+      case "league_season_starting":
+      case "league_season_started":
+        if (notification.leagueId) {
+          router.push({
+            pathname: "/leagues/home" as any,
+            params: { leagueId: notification.leagueId },
+          });
+        }
+        break;
+
+      // Team edit request → League Settings > Teams tab (for commissioners)
+      case "league_team_edit_request":
+        if (notification.leagueId) {
+          router.push({
+            pathname: "/leagues/settings" as any,
+            params: { leagueId: notification.leagueId, tab: "teams" },
+          });
         }
         break;
 

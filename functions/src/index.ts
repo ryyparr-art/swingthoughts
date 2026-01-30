@@ -1,7 +1,7 @@
 import { Expo, ExpoPushMessage } from "expo-server-sdk";
 import { initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
-import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
+import { onDocumentCreated, onDocumentDeleted, onDocumentUpdated } from "firebase-functions/v2/firestore";
 
 initializeApp();
 const db = getFirestore();
@@ -46,7 +46,31 @@ const GROUPABLE_TYPES = {
     "commissioner_rejected",
     "trending",
     "system",
-    "group_message",  // ✅ NEW: Group messages are individual (each recipient gets one)
+    "group_message",
+    // League notifications (always individual)
+    "league_invite",
+    "league_join_request",
+    "league_join_approved",
+    "league_join_rejected",
+    "league_removed",
+    "league_manager_invite",
+    "league_score_reminder",
+    "league_score_posted",
+    "league_score_dq",
+    "league_score_edited",
+    "league_score_reinstated",
+    "league_week_start",
+    "league_week_complete",
+    "league_season_starting",
+    "league_season_started",
+    "league_season_complete",
+    "league_team_assigned",
+    "league_team_removed",
+    "league_matchup",
+    "league_team_edit_approved",
+    "league_team_edit_rejected",
+    "league_team_edit_request",
+    "league_announcement",
   ],
 };
 
@@ -112,7 +136,15 @@ function generateGroupedMessage(
   type: string,
   actorName: string,
   actorCount: number,
-  extraData?: { courseName?: string; holeNumber?: number; groupName?: string }
+  extraData?: { 
+    courseName?: string; 
+    holeNumber?: number; 
+    groupName?: string;
+    leagueName?: string;
+    teamName?: string;
+    weekNumber?: number;
+    netScore?: number;
+  }
 ): string {
   const othersCount = actorCount - 1;
   const othersText = othersCount === 1 ? "1 other" : `${othersCount} others`;
@@ -150,7 +182,7 @@ function generateGroupedMessage(
       }
       return `${actorName} left you ${actorCount} notes in your locker`;
     
-    // ✅ NEW: Group messages (not grouped, but included for completeness)
+    // Group messages (not grouped, but included for completeness)
     case "group_message":
       return `${actorName} sent a message in ${extraData?.groupName || "a group chat"}`;
     
@@ -195,6 +227,85 @@ function generateGroupedMessage(
     
     case "holeinone_denied":
       return `❌ ${actorName} did not verify your hole-in-one`;
+
+    // ==========================================
+    // LEAGUE NOTIFICATIONS
+    // ==========================================
+
+    // Membership & Invites
+    case "league_invite":
+      return `You've been invited to join ${extraData?.leagueName || "a league"}`;
+    
+    case "league_join_request":
+      return `${actorName} would like to join ${extraData?.leagueName || "your league"}`;
+    
+    case "league_join_approved":
+      return `Your request to join ${extraData?.leagueName || "the league"} was approved`;
+    
+    case "league_join_rejected":
+      return `Your request to join ${extraData?.leagueName || "the league"} was declined`;
+    
+    case "league_removed":
+      return `You were removed from ${extraData?.leagueName || "the league"}`;
+    
+    case "league_manager_invite":
+      return `You've been invited to manage ${extraData?.leagueName || "a league"}`;
+
+    // Scores & Gameplay
+    case "league_score_reminder":
+      return `Don't forget to post your Week ${extraData?.weekNumber || ""} score!`;
+    
+    case "league_score_posted":
+      return `${actorName} posted ${extraData?.netScore || "a score"} in ${extraData?.leagueName || "the league"}`;
+    
+    case "league_score_dq":
+      return `Your Week ${extraData?.weekNumber || ""} score was disqualified`;
+    
+    case "league_score_edited":
+      return `Your Week ${extraData?.weekNumber || ""} score was edited by the commissioner`;
+    
+    case "league_score_reinstated":
+      return `Your Week ${extraData?.weekNumber || ""} score has been reinstated`;
+
+    // Weekly Cycle
+    case "league_week_start":
+      return `Week ${extraData?.weekNumber || ""} is now open! Get some birdies out there! 🏌️`;
+    
+    case "league_week_complete":
+      return `${actorName} wins Week ${extraData?.weekNumber || ""}${extraData?.netScore ? ` with ${extraData.netScore} net` : ""}!`;
+
+    // Season Events
+    case "league_season_starting":
+      return `${extraData?.leagueName || "Your league"} kicks off tomorrow! Get ready 🏌️`;
+    
+    case "league_season_started":
+      return `Week 1 is live! Post your first score`;
+    
+    case "league_season_complete":
+      return `Congratulations to ${actorName} - Season Champion! 🏆`;
+
+    // Teams (2v2)
+    case "league_team_assigned":
+      return `You've been added to ${extraData?.teamName || "a team"} in ${extraData?.leagueName || "the league"}`;
+    
+    case "league_team_removed":
+      return `You've been removed from ${extraData?.teamName || "your team"}`;
+    
+    case "league_matchup":
+      return `${extraData?.teamName || "Your team"} matchup for Week ${extraData?.weekNumber || ""} is set!`;
+    
+    case "league_team_edit_approved":
+      return `Your team name/avatar change was approved`;
+    
+    case "league_team_edit_rejected":
+      return `Your team edit request was declined`;
+    
+    case "league_team_edit_request":
+      return `${actorName} requested to change their team name`;
+
+    // Announcements
+    case "league_announcement":
+      return `New announcement in ${extraData?.leagueName || "your league"}`;
     
     default:
       return `${actorName} interacted with you`;
@@ -216,7 +327,11 @@ interface CreateNotificationParams {
   courseId?: number;
   courseName?: string;
   scoreId?: string;
-  threadId?: string;  // ✅ NEW: For message notifications
+  threadId?: string;
+  leagueId?: string;      // For league notifications
+  leagueName?: string;    // League name for messages
+  teamName?: string;      // Team name for 2v2 notifications
+  weekNumber?: number;    // Week number for weekly notifications
   message: string;
   regionKey?: string;
 }
@@ -233,7 +348,11 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
     courseId,
     courseName,
     scoreId,
-    threadId,  // ✅ NEW
+    threadId,
+    leagueId,
+    leagueName,
+    teamName,
+    weekNumber,
     message,
     regionKey,
   } = params;
@@ -364,7 +483,11 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
     if (courseId) notificationData.courseId = courseId;
     if (courseName) notificationData.courseName = courseName;
     if (scoreId) notificationData.scoreId = scoreId;
-    if (threadId) notificationData.threadId = threadId;  // ✅ NEW
+    if (threadId) notificationData.threadId = threadId;
+    if (leagueId) notificationData.leagueId = leagueId;
+    if (leagueName) notificationData.leagueName = leagueName;
+    if (teamName) notificationData.teamName = teamName;
+    if (weekNumber) notificationData.weekNumber = weekNumber;
     if (regionKey) notificationData.regionKey = regionKey;
 
     await db.collection("notifications").add(notificationData);
@@ -393,7 +516,11 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
   if (courseId) notificationData.courseId = courseId;
   if (courseName) notificationData.courseName = courseName;
   if (scoreId) notificationData.scoreId = scoreId;
-  if (threadId) notificationData.threadId = threadId;  // ✅ NEW
+  if (threadId) notificationData.threadId = threadId;
+  if (leagueId) notificationData.leagueId = leagueId;
+  if (leagueName) notificationData.leagueName = leagueName;
+  if (teamName) notificationData.teamName = teamName;
+  if (weekNumber) notificationData.weekNumber = weekNumber;
   if (regionKey) notificationData.regionKey = regionKey;
 
   await db.collection("notifications").add(notificationData);
@@ -466,7 +593,8 @@ export const sendPushNotification = onDocumentCreated(
           userId: notification.userId,
           scoreId: notification.scoreId,
           courseId: notification.courseId,
-          threadId: notification.threadId,  // ✅ NEW: Include for deep linking
+          threadId: notification.threadId,
+          leagueId: notification.leagueId,
         },
         badge: unreadCount,
       };
@@ -515,7 +643,7 @@ export const sendPushNotification = onDocumentCreated(
         case "message":
           pushMessage.title = "📬 New Locker Note";
           break;
-        case "group_message":  // ✅ NEW
+        case "group_message":
           pushMessage.title = "👥 Group Message";
           break;
         case "holeinone_pending_poster":
@@ -545,6 +673,78 @@ export const sendPushNotification = onDocumentCreated(
         case "commissioner_rejected":
           pushMessage.title = "📋 Application Update";
           break;
+        
+        // League Notifications
+        case "league_invite":
+          pushMessage.title = "📩 League Invite";
+          break;
+        case "league_join_request":
+          pushMessage.title = "👤 Join Request";
+          break;
+        case "league_join_approved":
+          pushMessage.title = "✅ Welcome to the League!";
+          break;
+        case "league_join_rejected":
+          pushMessage.title = "League Update";
+          break;
+        case "league_removed":
+          pushMessage.title = "League Update";
+          break;
+        case "league_manager_invite":
+          pushMessage.title = "🛡️ Manager Invite";
+          break;
+        case "league_score_reminder":
+          pushMessage.title = "⏰ Score Reminder";
+          break;
+        case "league_score_posted":
+          pushMessage.title = "⛳ League Score Posted";
+          break;
+        case "league_score_dq":
+          pushMessage.title = "🚫 Score Disqualified";
+          break;
+        case "league_score_edited":
+          pushMessage.title = "✏️ Score Updated";
+          break;
+        case "league_score_reinstated":
+          pushMessage.title = "↩️ Score Reinstated";
+          break;
+        case "league_week_start":
+          pushMessage.title = "🏌️ New Week Started!";
+          break;
+        case "league_week_complete":
+          pushMessage.title = "🏆 Week Complete!";
+          break;
+        case "league_season_starting":
+          pushMessage.title = "📅 Season Starting Soon!";
+          break;
+        case "league_season_started":
+          pushMessage.title = "🚀 Season Started!";
+          break;
+        case "league_season_complete":
+          pushMessage.title = "🏆 Season Champion!";
+          break;
+        case "league_team_assigned":
+          pushMessage.title = "👥 Team Assignment";
+          break;
+        case "league_team_removed":
+          pushMessage.title = "👥 Team Update";
+          break;
+        case "league_matchup":
+          pushMessage.title = "⚔️ Matchup Set!";
+          break;
+        case "league_team_edit_approved":
+          pushMessage.title = "✅ Team Edit Approved";
+          break;
+        case "league_team_edit_rejected":
+          pushMessage.title = "Team Edit Update";
+          break;
+        case "league_team_edit_request":
+          pushMessage.title = "✏️ Team Edit Request";
+          break;
+        case "league_announcement":
+          pushMessage.title = "📢 League Announcement";
+          break;
+          
         default:
           pushMessage.title = "⛳ Swing Thoughts";
       }
@@ -1906,17 +2106,871 @@ export const onThreadUpdated = onDocumentUpdated(
 );
 
 // ============================================================================
+// LEAGUE PROCESSOR (Scheduled Functions)
+// ============================================================================
+
+export { processLeaguesDaily } from "./leagueProcessor";
+
+// ============================================================================
 // TOURNAMENT SYNC FUNCTIONS
 // ============================================================================
 
 export {
   cleanupTournamentChats,
-  fixTournamentDates, // ← ADD THIS
+  fixTournamentDates,
   getActiveTournament,
   syncLeaderboard,
   syncLeaderboardManual,
   syncTournamentSchedule
 } from "./tournamentSync";
+
+// ============================================================================
+// LEAGUE NOTIFICATIONS - FIRESTORE TRIGGERS
+// ============================================================================
+
+/**
+ * When a league score is created, notify all league members
+ */
+export const onLeagueScoreCreated = onDocumentCreated(
+  "leagues/{leagueId}/scores/{scoreId}",
+  async (event) => {
+    try {
+      const snap = event.data;
+      if (!snap) return;
+
+      const score = snap.data();
+      if (!score) return;
+
+      const leagueId = event.params.leagueId;
+      const { userId, displayName, netScore, week } = score;
+
+      if (!userId) {
+        console.log("⛔ League score missing userId");
+        return;
+      }
+
+      console.log("⛳ League score created by", userId, "in league", leagueId);
+
+      // Get league info
+      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+      if (!leagueDoc.exists) return;
+      const leagueData = leagueDoc.data();
+      const leagueName = leagueData?.name || "the league";
+
+      // Get all league members (except the scorer)
+      const membersSnap = await db
+        .collection("leagues")
+        .doc(leagueId)
+        .collection("members")
+        .get();
+
+      const memberIds = membersSnap.docs
+        .map((doc) => doc.id)
+        .filter((id) => id !== userId);
+
+      // Notify each member
+      for (const memberId of memberIds) {
+        await createNotificationDocument({
+          userId: memberId,
+          type: "league_score_posted",
+          actorId: userId,
+          actorName: displayName || "Someone",
+          leagueId,
+          leagueName,
+          weekNumber: week,
+          message: generateGroupedMessage("league_score_posted", displayName || "Someone", 1, {
+            leagueName,
+            netScore,
+          }),
+        });
+      }
+
+      console.log(`✅ League score notifications sent to ${memberIds.length} members`);
+    } catch (error) {
+      console.error("🔥 onLeagueScoreCreated failed:", error);
+    }
+  }
+);
+
+/**
+ * When a league member is created (join request or direct add), send notifications
+ */
+export const onLeagueMemberCreated = onDocumentCreated(
+  "leagues/{leagueId}/members/{memberId}",
+  async (event) => {
+    try {
+      const snap = event.data;
+      if (!snap) return;
+
+      const member = snap.data();
+      if (!member) return;
+
+      const leagueId = event.params.leagueId;
+      const memberId = event.params.memberId;
+      const { role, displayName, status } = member;
+
+      console.log("👤 League member created:", memberId, "role:", role, "status:", status);
+
+      // Get league info
+      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+      if (!leagueDoc.exists) return;
+      const leagueData = leagueDoc.data();
+      const leagueName = leagueData?.name || "the league";
+
+      // If this is a pending join request, notify commissioners/managers
+      if (status === "pending") {
+        // Find commissioners and managers
+        const managersSnap = await db
+          .collection("leagues")
+          .doc(leagueId)
+          .collection("members")
+          .where("role", "in", ["commissioner", "manager"])
+          .get();
+
+        for (const managerDoc of managersSnap.docs) {
+          if (managerDoc.id === memberId) continue; // Don't notify self
+
+          await createNotificationDocument({
+            userId: managerDoc.id,
+            type: "league_join_request",
+            actorId: memberId,
+            actorName: displayName || "Someone",
+            leagueId,
+            leagueName,
+            message: generateGroupedMessage("league_join_request", displayName || "Someone", 1, {
+              leagueName,
+            }),
+          });
+        }
+
+        console.log("✅ Join request notifications sent to commissioners/managers");
+      }
+
+      // If member is approved/active and not commissioner (they created it), send welcome
+      if (status === "active" && role === "member") {
+        await createNotificationDocument({
+          userId: memberId,
+          type: "league_join_approved",
+          leagueId,
+          leagueName,
+          message: generateGroupedMessage("league_join_approved", "", 1, { leagueName }),
+        });
+
+        console.log("✅ Welcome notification sent to new member");
+      }
+    } catch (error) {
+      console.error("🔥 onLeagueMemberCreated failed:", error);
+    }
+  }
+);
+
+/**
+ * When a league member is updated (status change, team assignment, etc.)
+ */
+export const onLeagueMemberUpdated = onDocumentUpdated(
+  "leagues/{leagueId}/members/{memberId}",
+  async (event) => {
+    try {
+      const before = event.data?.before.data();
+      const after = event.data?.after.data();
+
+      if (!before || !after) return;
+
+      const leagueId = event.params.leagueId;
+      const memberId = event.params.memberId;
+
+      // Get league info
+      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+      if (!leagueDoc.exists) return;
+      const leagueData = leagueDoc.data();
+      const leagueName = leagueData?.name || "the league";
+
+      // Check if member was approved (status changed from pending to active)
+      if (before.status === "pending" && after.status === "active") {
+        await createNotificationDocument({
+          userId: memberId,
+          type: "league_join_approved",
+          leagueId,
+          leagueName,
+          message: generateGroupedMessage("league_join_approved", "", 1, { leagueName }),
+        });
+        console.log("✅ Member approved notification sent");
+      }
+
+      // Check if member was rejected
+      if (before.status === "pending" && after.status === "rejected") {
+        await createNotificationDocument({
+          userId: memberId,
+          type: "league_join_rejected",
+          leagueId,
+          leagueName,
+          message: generateGroupedMessage("league_join_rejected", "", 1, { leagueName }),
+        });
+        console.log("✅ Member rejected notification sent");
+      }
+
+      // Check if team was assigned
+      if (!before.teamId && after.teamId) {
+        // Get team name
+        const teamDoc = await db
+          .collection("leagues")
+          .doc(leagueId)
+          .collection("teams")
+          .doc(after.teamId)
+          .get();
+        const teamName = teamDoc.exists ? teamDoc.data()?.name : "a team";
+
+        await createNotificationDocument({
+          userId: memberId,
+          type: "league_team_assigned",
+          leagueId,
+          leagueName,
+          teamName,
+          message: generateGroupedMessage("league_team_assigned", "", 1, { leagueName, teamName }),
+        });
+        console.log("✅ Team assigned notification sent");
+      }
+
+      // Check if removed from team
+      if (before.teamId && !after.teamId) {
+        // Get team name from before
+        const teamDoc = await db
+          .collection("leagues")
+          .doc(leagueId)
+          .collection("teams")
+          .doc(before.teamId)
+          .get();
+        const teamName = teamDoc.exists ? teamDoc.data()?.name : "the team";
+
+        await createNotificationDocument({
+          userId: memberId,
+          type: "league_team_removed",
+          leagueId,
+          leagueName,
+          teamName,
+          message: generateGroupedMessage("league_team_removed", "", 1, { teamName }),
+        });
+        console.log("✅ Team removed notification sent");
+      }
+
+      // Check if role changed to manager
+      if (before.role !== "manager" && after.role === "manager") {
+        await createNotificationDocument({
+          userId: memberId,
+          type: "league_manager_invite",
+          leagueId,
+          leagueName,
+          message: generateGroupedMessage("league_manager_invite", "", 1, { leagueName }),
+        });
+        console.log("✅ Manager invite notification sent");
+      }
+    } catch (error) {
+      console.error("🔥 onLeagueMemberUpdated failed:", error);
+    }
+  }
+);
+
+/**
+ * When a league announcement is created, notify all members
+ */
+export const onLeagueAnnouncementCreated = onDocumentCreated(
+  "leagues/{leagueId}/announcements/{announcementId}",
+  async (event) => {
+    try {
+      const snap = event.data;
+      if (!snap) return;
+
+      const announcement = snap.data();
+      if (!announcement) return;
+
+      const leagueId = event.params.leagueId;
+      const { authorId, authorName, type: announcementType } = announcement;
+
+      // Skip system announcements (week results, etc.) - they have their own notifications
+      if (announcementType === "system") {
+        console.log("⏭️ Skipping system announcement notification");
+        return;
+      }
+
+      console.log("📢 League announcement created in", leagueId);
+
+      // Get league info
+      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+      if (!leagueDoc.exists) return;
+      const leagueData = leagueDoc.data();
+      const leagueName = leagueData?.name || "the league";
+
+      // Get all league members (except the author)
+      const membersSnap = await db
+        .collection("leagues")
+        .doc(leagueId)
+        .collection("members")
+        .get();
+
+      const memberIds = membersSnap.docs
+        .map((doc) => doc.id)
+        .filter((id) => id !== authorId);
+
+      // Notify each member
+      for (const memberId of memberIds) {
+        await createNotificationDocument({
+          userId: memberId,
+          type: "league_announcement",
+          actorId: authorId,
+          actorName: authorName || "The Commissioner",
+          leagueId,
+          leagueName,
+          message: generateGroupedMessage("league_announcement", "", 1, { leagueName }),
+        });
+      }
+
+      console.log(`✅ Announcement notifications sent to ${memberIds.length} members`);
+    } catch (error) {
+      console.error("🔥 onLeagueAnnouncementCreated failed:", error);
+    }
+  }
+);
+
+/**
+ * When a league score is updated (DQ, edited, reinstated)
+ */
+export const onLeagueScoreUpdated = onDocumentUpdated(
+  "leagues/{leagueId}/scores/{scoreId}",
+  async (event) => {
+    try {
+      const before = event.data?.before.data();
+      const after = event.data?.after.data();
+
+      if (!before || !after) return;
+
+      const leagueId = event.params.leagueId;
+      const { userId, week } = after;
+
+      // Get league info
+      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+      if (!leagueDoc.exists) return;
+      const leagueData = leagueDoc.data();
+      const leagueName = leagueData?.name || "the league";
+
+      // Check if score was disqualified
+      if (before.status !== "disqualified" && after.status === "disqualified") {
+        await createNotificationDocument({
+          userId,
+          type: "league_score_dq",
+          leagueId,
+          leagueName,
+          weekNumber: week,
+          message: generateGroupedMessage("league_score_dq", "", 1, { weekNumber: week }),
+        });
+        console.log("✅ Score DQ notification sent");
+      }
+
+      // Check if score was reinstated
+      if (before.status === "disqualified" && after.status === "approved") {
+        await createNotificationDocument({
+          userId,
+          type: "league_score_reinstated",
+          leagueId,
+          leagueName,
+          weekNumber: week,
+          message: generateGroupedMessage("league_score_reinstated", "", 1, { weekNumber: week }),
+        });
+        console.log("✅ Score reinstated notification sent");
+      }
+
+      // Check if score was edited (editHistory grew)
+      const beforeEditCount = before.editHistory?.length || 0;
+      const afterEditCount = after.editHistory?.length || 0;
+      if (afterEditCount > beforeEditCount) {
+        await createNotificationDocument({
+          userId,
+          type: "league_score_edited",
+          leagueId,
+          leagueName,
+          weekNumber: week,
+          message: generateGroupedMessage("league_score_edited", "", 1, { weekNumber: week }),
+        });
+        console.log("✅ Score edited notification sent");
+      }
+    } catch (error) {
+      console.error("🔥 onLeagueScoreUpdated failed:", error);
+    }
+  }
+);
+
+/**
+ * When a league member is deleted (removed from league)
+ */
+export const onLeagueMemberDeleted = onDocumentDeleted(
+  "leagues/{leagueId}/members/{memberId}",
+  async (event) => {
+    try {
+      const snap = event.data;
+      if (!snap) return;
+
+      const member = snap.data();
+      if (!member) return;
+
+      const leagueId = event.params.leagueId;
+      const memberId = event.params.memberId;
+
+      console.log("👤 League member deleted:", memberId, "from league", leagueId);
+
+      // Get league info
+      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+      if (!leagueDoc.exists) return;
+      const leagueData = leagueDoc.data();
+      const leagueName = leagueData?.name || "the league";
+
+      // Don't notify if they were the commissioner (they deleted the league or left voluntarily)
+      if (member.role === "commissioner") return;
+
+      await createNotificationDocument({
+        userId: memberId,
+        type: "league_removed",
+        leagueId,
+        leagueName,
+        message: generateGroupedMessage("league_removed", "", 1, { leagueName }),
+      });
+
+      console.log("✅ Member removed notification sent");
+    } catch (error) {
+      console.error("🔥 onLeagueMemberDeleted failed:", error);
+    }
+  }
+);
+
+/**
+ * When a week result is created (week complete, winner determined)
+ */
+export const onWeekResultCreated = onDocumentCreated(
+  "leagues/{leagueId}/week_results/{resultId}",
+  async (event) => {
+    try {
+      const snap = event.data;
+      if (!snap) return;
+
+      const result = snap.data();
+      if (!result) return;
+
+      const leagueId = event.params.leagueId;
+      const { userId, displayName, week, score, teamName } = result;
+
+      console.log("🏆 Week result created for week", week, "in league", leagueId);
+
+      // Get league info
+      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+      if (!leagueDoc.exists) return;
+      const leagueData = leagueDoc.data();
+      const leagueName = leagueData?.name || "the league";
+
+      // Get all league members
+      const membersSnap = await db
+        .collection("leagues")
+        .doc(leagueId)
+        .collection("members")
+        .get();
+
+      // Notify all members about week completion
+      for (const memberDoc of membersSnap.docs) {
+        await createNotificationDocument({
+          userId: memberDoc.id,
+          type: "league_week_complete",
+          actorId: userId,
+          actorName: displayName || teamName || "Someone",
+          leagueId,
+          leagueName,
+          weekNumber: week,
+          message: generateGroupedMessage("league_week_complete", displayName || teamName || "Someone", 1, {
+            weekNumber: week,
+            netScore: score,
+          }),
+        });
+      }
+
+      console.log(`✅ Week complete notifications sent to ${membersSnap.size} members`);
+    } catch (error) {
+      console.error("🔥 onWeekResultCreated failed:", error);
+    }
+  }
+);
+
+/**
+ * When a league is updated (status change, week change)
+ */
+export const onLeagueUpdated = onDocumentUpdated(
+  "leagues/{leagueId}",
+  async (event) => {
+    try {
+      const before = event.data?.before.data();
+      const after = event.data?.after.data();
+
+      if (!before || !after) return;
+
+      const leagueId = event.params.leagueId;
+      const leagueName = after.name || "the league";
+
+      // Get all league members
+      const getMemberIds = async () => {
+        const membersSnap = await db
+          .collection("leagues")
+          .doc(leagueId)
+          .collection("members")
+          .get();
+        return membersSnap.docs.map((doc) => doc.id);
+      };
+
+      // Check if season started (status changed to active)
+      if (before.status !== "active" && after.status === "active") {
+        console.log("🚀 League season started:", leagueName);
+
+        const memberIds = await getMemberIds();
+        for (const memberId of memberIds) {
+          await createNotificationDocument({
+            userId: memberId,
+            type: "league_season_started",
+            leagueId,
+            leagueName,
+            message: generateGroupedMessage("league_season_started", "", 1, { leagueName }),
+          });
+        }
+        console.log(`✅ Season started notifications sent to ${memberIds.length} members`);
+      }
+
+      // Check if season completed (status changed to completed)
+      if (before.status !== "completed" && after.status === "completed") {
+        console.log("🏆 League season completed:", leagueName);
+
+        // Get the season champion from the final standings or week_results
+        const championName = after.championName || after.seasonWinner?.displayName || "the champion";
+        const championId = after.championId || after.seasonWinner?.userId;
+
+        const memberIds = await getMemberIds();
+        for (const memberId of memberIds) {
+          await createNotificationDocument({
+            userId: memberId,
+            type: "league_season_complete",
+            actorId: championId,
+            actorName: championName,
+            leagueId,
+            leagueName,
+            message: generateGroupedMessage("league_season_complete", championName, 1, { leagueName }),
+          });
+        }
+        console.log(`✅ Season complete notifications sent to ${memberIds.length} members`);
+      }
+
+      // Check if week advanced (currentWeek changed)
+      if (before.currentWeek !== after.currentWeek && after.currentWeek > (before.currentWeek || 0)) {
+        console.log("📅 New week started:", after.currentWeek, "in", leagueName);
+
+        const memberIds = await getMemberIds();
+        for (const memberId of memberIds) {
+          await createNotificationDocument({
+            userId: memberId,
+            type: "league_week_start",
+            leagueId,
+            leagueName,
+            weekNumber: after.currentWeek,
+            message: generateGroupedMessage("league_week_start", "", 1, { weekNumber: after.currentWeek }),
+          });
+        }
+        console.log(`✅ Week start notifications sent to ${memberIds.length} members`);
+
+        // If 2v2 format, also send matchup notifications
+        if (after.format === "2v2" && after.weeklyMatchups) {
+          const currentMatchups = after.weeklyMatchups[after.currentWeek];
+          if (currentMatchups && Array.isArray(currentMatchups)) {
+            // Get teams to find member IDs
+            const teamsSnap = await db
+              .collection("leagues")
+              .doc(leagueId)
+              .collection("teams")
+              .get();
+
+            const teamsMap: Record<string, { name: string; memberIds: string[] }> = {};
+            teamsSnap.docs.forEach((doc) => {
+              const data = doc.data();
+              teamsMap[doc.id] = {
+                name: data.name,
+                memberIds: data.memberIds || [],
+              };
+            });
+
+            // Notify each team's members about their matchup
+            for (const matchup of currentMatchups) {
+              const team1 = teamsMap[matchup.team1Id];
+              const team2 = teamsMap[matchup.team2Id];
+
+              if (team1 && team2) {
+                // Notify team1 members
+                for (const memberId of team1.memberIds) {
+                  await createNotificationDocument({
+                    userId: memberId,
+                    type: "league_matchup",
+                    leagueId,
+                    leagueName,
+                    teamName: team1.name,
+                    weekNumber: after.currentWeek,
+                    message: generateGroupedMessage("league_matchup", "", 1, {
+                      teamName: team1.name,
+                      weekNumber: after.currentWeek,
+                    }),
+                  });
+                }
+
+                // Notify team2 members
+                for (const memberId of team2.memberIds) {
+                  await createNotificationDocument({
+                    userId: memberId,
+                    type: "league_matchup",
+                    leagueId,
+                    leagueName,
+                    teamName: team2.name,
+                    weekNumber: after.currentWeek,
+                    message: generateGroupedMessage("league_matchup", "", 1, {
+                      teamName: team2.name,
+                      weekNumber: after.currentWeek,
+                    }),
+                  });
+                }
+              }
+            }
+            console.log("✅ Matchup notifications sent");
+          }
+        }
+      }
+    } catch (error) {
+      console.error("🔥 onLeagueUpdated failed:", error);
+    }
+  }
+);
+
+/**
+ * When a team edit request is created
+ */
+export const onTeamEditRequestCreated = onDocumentCreated(
+  "leagues/{leagueId}/team_edit_requests/{requestId}",
+  async (event) => {
+    try {
+      const snap = event.data;
+      if (!snap) return;
+
+      const request = snap.data();
+      if (!request) return;
+
+      const leagueId = event.params.leagueId;
+      const { requesterId, requesterName, teamName } = request;
+
+      console.log("✏️ Team edit request from", requesterName, "for team", teamName);
+
+      // Get league info
+      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+      if (!leagueDoc.exists) return;
+      const leagueData = leagueDoc.data();
+      const leagueName = leagueData?.name || "the league";
+
+      // Notify commissioners and managers
+      const managersSnap = await db
+        .collection("leagues")
+        .doc(leagueId)
+        .collection("members")
+        .where("role", "in", ["commissioner", "manager"])
+        .get();
+
+      for (const managerDoc of managersSnap.docs) {
+        if (managerDoc.id === requesterId) continue; // Don't notify self
+
+        await createNotificationDocument({
+          userId: managerDoc.id,
+          type: "league_team_edit_request",
+          actorId: requesterId,
+          actorName: requesterName || "Someone",
+          leagueId,
+          leagueName,
+          teamName,
+          message: generateGroupedMessage("league_team_edit_request", requesterName || "Someone", 1, {
+            leagueName,
+            teamName,
+          }),
+        });
+      }
+
+      console.log(`✅ Team edit request notifications sent to ${managersSnap.size} managers`);
+    } catch (error) {
+      console.error("🔥 onTeamEditRequestCreated failed:", error);
+    }
+  }
+);
+
+/**
+ * When a team edit request is updated (approved/rejected)
+ */
+export const onTeamEditRequestUpdated = onDocumentUpdated(
+  "leagues/{leagueId}/team_edit_requests/{requestId}",
+  async (event) => {
+    try {
+      const before = event.data?.before.data();
+      const after = event.data?.after.data();
+
+      if (!before || !after) return;
+
+      const leagueId = event.params.leagueId;
+      const { requesterId, teamId, teamName } = after;
+
+      // Get league info
+      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+      if (!leagueDoc.exists) return;
+      const leagueData = leagueDoc.data();
+      const leagueName = leagueData?.name || "the league";
+
+      // Check if request was approved
+      if (before.status !== "approved" && after.status === "approved") {
+        // Notify all team members
+        const teamDoc = await db
+          .collection("leagues")
+          .doc(leagueId)
+          .collection("teams")
+          .doc(teamId)
+          .get();
+
+        const teamMemberIds = teamDoc.exists ? teamDoc.data()?.memberIds || [] : [requesterId];
+
+        for (const memberId of teamMemberIds) {
+          await createNotificationDocument({
+            userId: memberId,
+            type: "league_team_edit_approved",
+            leagueId,
+            leagueName,
+            teamName,
+            message: generateGroupedMessage("league_team_edit_approved", "", 1, { teamName }),
+          });
+        }
+        console.log("✅ Team edit approved notifications sent");
+      }
+
+      // Check if request was rejected
+      if (before.status !== "rejected" && after.status === "rejected") {
+        await createNotificationDocument({
+          userId: requesterId,
+          type: "league_team_edit_rejected",
+          leagueId,
+          leagueName,
+          teamName,
+          message: generateGroupedMessage("league_team_edit_rejected", "", 1, { teamName }),
+        });
+        console.log("✅ Team edit rejected notification sent");
+      }
+    } catch (error) {
+      console.error("🔥 onTeamEditRequestUpdated failed:", error);
+    }
+  }
+);
+
+/**
+ * When a league invite is created (invite to join league)
+ * Collection: leagues/{leagueId}/invites/{inviteId}
+ * Document structure:
+ * {
+ *   inviteeId: string,       // User being invited
+ *   inviterId: string,       // Commissioner/manager who sent invite
+ *   inviterName: string,
+ *   inviterAvatar?: string,
+ *   status: "pending" | "accepted" | "declined",
+ *   createdAt: Timestamp,
+ *   expiresAt?: Timestamp
+ * }
+ */
+export const onLeagueInviteCreated = onDocumentCreated(
+  "leagues/{leagueId}/invites/{inviteId}",
+  async (event) => {
+    try {
+      const snap = event.data;
+      if (!snap) return;
+
+      const invite = snap.data();
+      if (!invite) return;
+
+      const leagueId = event.params.leagueId;
+      const { inviteeId, inviterId, inviterName, inviterAvatar } = invite;
+
+      if (!inviteeId) {
+        console.log("⛔ League invite missing inviteeId");
+        return;
+      }
+
+      console.log("📩 League invite created for", inviteeId, "in league", leagueId);
+
+      // Get league info
+      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+      if (!leagueDoc.exists) return;
+      const leagueData = leagueDoc.data();
+      const leagueName = leagueData?.name || "a league";
+
+      await createNotificationDocument({
+        userId: inviteeId,
+        type: "league_invite",
+        actorId: inviterId,
+        actorName: inviterName || "Someone",
+        actorAvatar: inviterAvatar,
+        leagueId,
+        leagueName,
+        message: generateGroupedMessage("league_invite", "", 1, { leagueName }),
+      });
+
+      console.log("✅ League invite notification sent to", inviteeId);
+    } catch (error) {
+      console.error("🔥 onLeagueInviteCreated failed:", error);
+    }
+  }
+);
+
+/**
+ * When a manager invite is created
+ * Uses existing collection: leagues/{leagueId}/manager_invites/{inviteId}
+ */
+export const onManagerInviteCreated = onDocumentCreated(
+  "leagues/{leagueId}/manager_invites/{inviteId}",
+  async (event) => {
+    try {
+      const snap = event.data;
+      if (!snap) return;
+
+      const invite = snap.data();
+      if (!invite) return;
+
+      const leagueId = event.params.leagueId;
+      const { inviteeId, inviterId, inviterName } = invite;
+
+      if (!inviteeId) {
+        console.log("⛔ Manager invite missing inviteeId");
+        return;
+      }
+
+      console.log("🛡️ Manager invite created for", inviteeId, "in league", leagueId);
+
+      // Get league info
+      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+      if (!leagueDoc.exists) return;
+      const leagueData = leagueDoc.data();
+      const leagueName = leagueData?.name || "a league";
+
+      await createNotificationDocument({
+        userId: inviteeId,
+        type: "league_manager_invite",
+        actorId: inviterId,
+        actorName: inviterName || "The Commissioner",
+        leagueId,
+        leagueName,
+        message: generateGroupedMessage("league_manager_invite", "", 1, { leagueName }),
+      });
+
+      console.log("✅ Manager invite notification sent to", inviteeId);
+    } catch (error) {
+      console.error("🔥 onManagerInviteCreated failed:", error);
+    }
+  }
+);
 
 
 

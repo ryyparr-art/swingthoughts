@@ -1,31 +1,24 @@
 /**
- * Feed Algorithm v3 — Time Bracket System
+ * Feed Algorithm v4 — Strict Time Bracket System
  * 
- * Core Principle: Recency is king, with trending as the only exception
+ * Core Principle: RECENCY IS KING. Period.
  * 
  * How it works:
  * 1. Posts are assigned to TIME BRACKETS based on age
- * 2. Brackets are STRICT - posts never cross brackets (except trending)
- * 3. TRENDING posts (30+ engagement) get promoted ONE bracket up
- * 4. Within each bracket, posts are sorted by bonuses + shuffle
- * 5. On refresh, cards shuffle WITHIN brackets only - feed stays chronological
+ * 2. Brackets are STRICT - posts NEVER cross brackets (no exceptions)
+ * 3. Within each bracket: chronological order (newest first)
+ * 4. Partner/Local posts get a small boost WITHIN their bracket only
+ * 5. Self-posts are pushed to bottom of their bracket
  * 
  * Time Brackets:
- * - Bracket 1: 0-1hr
- * - Bracket 2: 1-6hr
- * - Bracket 3: 6-24hr
- * - Bracket 4: 1-3 days
- * - Bracket 5: 3-7 days
- * - Bracket 6: 7-14 days
- * - Bracket 7: 14+ days
+ * - Bracket 1: 0-6hr (fresh content)
+ * - Bracket 2: 6-24hr (today)
+ * - Bracket 3: 1-3 days (recent)
+ * - Bracket 4: 3-7 days (this week)
+ * - Bracket 5: 7-14 days (last week)
+ * - Bracket 6: 14+ days (archive)
  * 
- * Within-Bracket Bonuses:
- * - Local: +15
- * - Expanded: +8
- * - Partner: +5
- * - Engagement: +5 to +20
- * - Shuffle: 0-5
- * - Self-post: -20 (penalty for your own posts)
+ * NO SHUFFLE during generation. Shuffle happens in clubhouse WITHIN brackets.
  */
 
 import { db } from "@/constants/firebaseConfig";
@@ -102,7 +95,7 @@ export interface FeedPost {
   
   // Algorithm fields
   timeBracket: number;
-  displayBracket: number;  // After trending promotion
+  displayBracket: number;
   withinBracketScore: number;
   relevanceReason: string;
 }
@@ -151,106 +144,53 @@ const lowmanCache = new Map<number, any>();
 /* CONSTANTS                                                        */
 /* ================================================================ */
 
-// Time brackets
+// Simplified time brackets (6 brackets instead of 7)
 const TIME_BRACKETS = {
-  BRACKET_1: { max: 1 * 60 * 60 * 1000, label: "0-1hr" },           // 0-1 hour
-  BRACKET_2: { max: 6 * 60 * 60 * 1000, label: "1-6hr" },           // 1-6 hours
-  BRACKET_3: { max: 24 * 60 * 60 * 1000, label: "6-24hr" },         // 6-24 hours
-  BRACKET_4: { max: 3 * 24 * 60 * 60 * 1000, label: "1-3d" },       // 1-3 days
-  BRACKET_5: { max: 7 * 24 * 60 * 60 * 1000, label: "3-7d" },       // 3-7 days
-  BRACKET_6: { max: 14 * 24 * 60 * 60 * 1000, label: "7-14d" },     // 7-14 days
-  BRACKET_7: { max: Infinity, label: "14d+" },                       // 14+ days
+  BRACKET_1: { max: 6 * 60 * 60 * 1000, label: "0-6hr" },            // 0-6 hours (fresh)
+  BRACKET_2: { max: 24 * 60 * 60 * 1000, label: "6-24hr" },          // 6-24 hours (today)
+  BRACKET_3: { max: 3 * 24 * 60 * 60 * 1000, label: "1-3d" },        // 1-3 days
+  BRACKET_4: { max: 7 * 24 * 60 * 60 * 1000, label: "3-7d" },        // 3-7 days
+  BRACKET_5: { max: 14 * 24 * 60 * 60 * 1000, label: "7-14d" },      // 7-14 days
+  BRACKET_6: { max: Infinity, label: "14d+" },                        // 14+ days
 };
 
-// Within-bracket bonuses
-const PROXIMITY_BONUS = {
-  local: 15,
-  expanded: 8,
-  global: 0,
+// Within-bracket priority bonuses (used for sorting within same bracket)
+const PRIORITY_BONUS = {
+  partner: 100,        // Partner posts at top of bracket
+  local: 50,           // Local posts next
+  expanded: 25,        // Nearby posts
+  global: 0,           // Everyone else
 };
 
-const PARTNER_BONUS = 5;
-
-// Engagement bonus thresholds (darts + comments×2)
-const ENGAGEMENT_THRESHOLDS = [
-  { min: 30, bonus: 20 },
-  { min: 16, bonus: 15 },
-  { min: 6, bonus: 10 },
-  { min: 1, bonus: 5 },
-  { min: 0, bonus: 0 },
-];
-
-// Trending threshold for bracket promotion
-const TRENDING_THRESHOLD = 30;
-
-// Shuffle range (small - only affects within-bracket order)
-const SHUFFLE_MAX = 5;
-
-// Self-post penalty (your own posts rank lower)
-const SELF_POST_PENALTY = -20;
+// Self-post penalty (pushes your posts to bottom of bracket)
+const SELF_POST_PENALTY = -200;
 
 /* ================================================================ */
 /* SCORING FUNCTIONS                                                */
 /* ================================================================ */
 
 /**
- * Get time bracket (1-7) based on post age
+ * Get time bracket (1-6) based on post age
  */
 function getTimeBracket(createdAt: Timestamp): number {
   const now = Date.now();
   const postTime = createdAt.toMillis();
   const ageMs = now - postTime;
   
-  if (ageMs < TIME_BRACKETS.BRACKET_1.max) return 1;
-  if (ageMs < TIME_BRACKETS.BRACKET_2.max) return 2;
-  if (ageMs < TIME_BRACKETS.BRACKET_3.max) return 3;
-  if (ageMs < TIME_BRACKETS.BRACKET_4.max) return 4;
-  if (ageMs < TIME_BRACKETS.BRACKET_5.max) return 5;
-  if (ageMs < TIME_BRACKETS.BRACKET_6.max) return 6;
-  return 7;
+  if (ageMs < TIME_BRACKETS.BRACKET_1.max) return 1;  // 0-6hr
+  if (ageMs < TIME_BRACKETS.BRACKET_2.max) return 2;  // 6-24hr
+  if (ageMs < TIME_BRACKETS.BRACKET_3.max) return 3;  // 1-3d
+  if (ageMs < TIME_BRACKETS.BRACKET_4.max) return 4;  // 3-7d
+  if (ageMs < TIME_BRACKETS.BRACKET_5.max) return 5;  // 7-14d
+  return 6;  // 14d+
 }
 
 /**
  * Get bracket label for debugging
  */
 function getBracketLabel(bracket: number): string {
-  const labels = ["", "0-1hr", "1-6hr", "6-24hr", "1-3d", "3-7d", "7-14d", "14d+"];
+  const labels = ["", "0-6hr", "6-24hr", "1-3d", "3-7d", "7-14d", "14d+"];
   return labels[bracket] || "unknown";
-}
-
-/**
- * Calculate engagement points (darts + comments×2)
- */
-function getEngagementPoints(likes: number = 0, comments: number = 0): number {
-  return likes + (comments * 2);
-}
-
-/**
- * Check if post is trending (30+ engagement)
- */
-function isTrending(likes: number = 0, comments: number = 0): boolean {
-  return getEngagementPoints(likes, comments) >= TRENDING_THRESHOLD;
-}
-
-/**
- * Get engagement bonus for within-bracket scoring
- */
-function getEngagementBonus(likes: number = 0, comments: number = 0): number {
-  const points = getEngagementPoints(likes, comments);
-  
-  for (const threshold of ENGAGEMENT_THRESHOLDS) {
-    if (points >= threshold.min) {
-      return threshold.bonus;
-    }
-  }
-  return 0;
-}
-
-/**
- * Generate shuffle factor (0 to SHUFFLE_MAX)
- */
-function getShuffleFactor(): number {
-  return Math.floor(Math.random() * (SHUFFLE_MAX + 1));
 }
 
 /**
@@ -280,22 +220,37 @@ function getProximityTier(
 }
 
 /**
- * Calculate within-bracket score (determines order within same bracket)
+ * Calculate within-bracket score
+ * Higher = shown earlier within the same bracket
+ * Primary: partner/local bonus
+ * Secondary: recency (newer = higher timestamp = higher score)
  */
 function calculateWithinBracketScore(
   proximityTier: ProximityTier,
   isPartner: boolean,
-  likes: number = 0,
-  comments: number = 0,
-  isSelfPost: boolean = false
+  isSelfPost: boolean,
+  createdAtMs: number
 ): number {
-  const proximityBonus = PROXIMITY_BONUS[proximityTier];
-  const partnerBonus = isPartner ? PARTNER_BONUS : 0;
-  const engagementBonus = getEngagementBonus(likes, comments);
-  const shuffleFactor = getShuffleFactor();
-  const selfPenalty = isSelfPost ? SELF_POST_PENALTY : 0;
+  let score = 0;
   
-  return proximityBonus + partnerBonus + engagementBonus + shuffleFactor + selfPenalty;
+  // Partner bonus (biggest boost)
+  if (isPartner) {
+    score += PRIORITY_BONUS.partner;
+  }
+  
+  // Proximity bonus
+  score += PRIORITY_BONUS[proximityTier];
+  
+  // Self-post penalty (pushes to bottom of bracket)
+  if (isSelfPost) {
+    score += SELF_POST_PENALTY;
+  }
+  
+  // Add timestamp as tiebreaker (newer = higher)
+  // Divide by 1000000 to keep it as a secondary factor
+  score += createdAtMs / 1000000;
+  
+  return score;
 }
 
 /**
@@ -304,25 +259,15 @@ function calculateWithinBracketScore(
 function getRelevanceReason(
   proximityTier: ProximityTier,
   isPartner: boolean,
-  likes: number = 0,
-  comments: number = 0,
-  wasPromoted: boolean = false,
-  isSelfPost: boolean = false
+  isSelfPost: boolean
 ): string {
-  // Don't show relevance reason for own posts
   if (isSelfPost) return "Your post";
   
   const parts: string[] = [];
   
-  if (wasPromoted) parts.push("🔥 Trending");
   if (isPartner) parts.push("Partner");
-  
   if (proximityTier === "local") parts.push("Local");
   else if (proximityTier === "expanded") parts.push("Nearby");
-  
-  const engagementPoints = getEngagementPoints(likes, comments);
-  if (!wasPromoted && engagementPoints >= 16) parts.push("Popular");
-  else if (!wasPromoted && engagementPoints >= 6) parts.push("Engaging");
   
   return parts.length > 0 ? parts.join(" · ") : "";
 }
@@ -334,9 +279,9 @@ function getRelevanceReason(
 export async function generateAlgorithmicFeed(
   userId: string,
   regionKey: string,
-  maxItems: number = 20
+  maxItems: number = 30
 ): Promise<FeedItem[]> {
-  console.log("🚀 Feed v3 — Time Bracket System");
+  console.log("🚀 Feed v4 — Strict Time Bracket System");
   console.log("📍 Region:", regionKey);
 
   // Step 1: Build user context
@@ -354,68 +299,35 @@ export async function generateAlgorithmicFeed(
   const allItems: FeedItem[] = [];
   const seenIds = new Set<string>();
 
-  // Process local posts
-  for (const post of localPosts) {
-    if (seenIds.has(post.id)) continue;
+  // Helper to process a post
+  const processPost = (post: FeedPost, proximityTier: ProximityTier) => {
+    if (seenIds.has(post.id)) return;
     seenIds.add(post.id);
     
     const isPartner = context.partnerIds.includes(post.userId);
     const isSelfPost = post.userId === context.userId;
-    const trending = isTrending(post.likes, post.comments);
     const timeBracket = getTimeBracket(post.createdAt);
-    const displayBracket = trending ? Math.max(1, timeBracket - 1) : timeBracket;
-    const withinBracketScore = calculateWithinBracketScore("local", isPartner, post.likes, post.comments, isSelfPost);
+    const displayBracket = timeBracket; // No promotion - strict brackets
+    const withinBracketScore = calculateWithinBracketScore(
+      proximityTier, 
+      isPartner, 
+      isSelfPost,
+      post.createdAt.toMillis()
+    );
     
     allItems.push({
       ...post,
       timeBracket,
       displayBracket,
       withinBracketScore,
-      relevanceReason: getRelevanceReason("local", isPartner, post.likes, post.comments, trending && timeBracket !== displayBracket, isSelfPost),
+      relevanceReason: getRelevanceReason(proximityTier, isPartner, isSelfPost),
     });
-  }
+  };
 
-  // Process expanded posts
-  for (const post of expandedPosts) {
-    if (seenIds.has(post.id)) continue;
-    seenIds.add(post.id);
-    
-    const isPartner = context.partnerIds.includes(post.userId);
-    const isSelfPost = post.userId === context.userId;
-    const trending = isTrending(post.likes, post.comments);
-    const timeBracket = getTimeBracket(post.createdAt);
-    const displayBracket = trending ? Math.max(1, timeBracket - 1) : timeBracket;
-    const withinBracketScore = calculateWithinBracketScore("expanded", isPartner, post.likes, post.comments, isSelfPost);
-    
-    allItems.push({
-      ...post,
-      timeBracket,
-      displayBracket,
-      withinBracketScore,
-      relevanceReason: getRelevanceReason("expanded", isPartner, post.likes, post.comments, trending && timeBracket !== displayBracket, isSelfPost),
-    });
-  }
-
-  // Process global posts
-  for (const post of globalPosts) {
-    if (seenIds.has(post.id)) continue;
-    seenIds.add(post.id);
-    
-    const isPartner = context.partnerIds.includes(post.userId);
-    const isSelfPost = post.userId === context.userId;
-    const trending = isTrending(post.likes, post.comments);
-    const timeBracket = getTimeBracket(post.createdAt);
-    const displayBracket = trending ? Math.max(1, timeBracket - 1) : timeBracket;
-    const withinBracketScore = calculateWithinBracketScore("global", isPartner, post.likes, post.comments, isSelfPost);
-    
-    allItems.push({
-      ...post,
-      timeBracket,
-      displayBracket,
-      withinBracketScore,
-      relevanceReason: getRelevanceReason("global", isPartner, post.likes, post.comments, trending && timeBracket !== displayBracket, isSelfPost),
-    });
-  }
+  // Process all posts
+  localPosts.forEach(post => processPost(post, "local"));
+  expandedPosts.forEach(post => processPost(post, "expanded"));
+  globalPosts.forEach(post => processPost(post, "global"));
 
   // Process course scores
   for (const score of coursePosts) {
@@ -424,34 +336,33 @@ export async function generateAlgorithmicFeed(
     
     const isPartner = context.partnerIds.includes(score.userId);
     const isSelfPost = score.userId === context.userId;
-    const trending = isTrending(score.likes, score.comments);
     const timeBracket = getTimeBracket(score.createdAt);
-    const displayBracket = trending ? Math.max(1, timeBracket - 1) : timeBracket;
-    const withinBracketScore = calculateWithinBracketScore("local", isPartner, score.likes, score.comments, isSelfPost);
+    const displayBracket = timeBracket;
+    const withinBracketScore = calculateWithinBracketScore(
+      "local", 
+      isPartner, 
+      isSelfPost,
+      score.createdAt.toMillis()
+    );
     
     allItems.push({
       ...score,
       timeBracket,
       displayBracket,
       withinBracketScore,
-      relevanceReason: isSelfPost ? "Your score" : (score.isLowman ? "🏆 Lowman at your course" : "Score at your course"),
+      relevanceReason: isSelfPost ? "Your score" : (score.isLowman ? "🏆 Lowman" : ""),
     });
   }
 
   // Step 4: Sort by display bracket (primary), then within-bracket score (secondary)
   const sorted = allItems.sort((a, b) => {
-    // Primary: lower display bracket = higher priority
+    // Primary: lower display bracket = higher priority (newer brackets first)
     if (a.displayBracket !== b.displayBracket) {
       return a.displayBracket - b.displayBracket;
     }
     
     // Secondary: higher within-bracket score = higher priority
-    if (a.withinBracketScore !== b.withinBracketScore) {
-      return b.withinBracketScore - a.withinBracketScore;
-    }
-    
-    // Tiebreaker: more recent first
-    return b.createdAt.toMillis() - a.createdAt.toMillis();
+    return b.withinBracketScore - a.withinBracketScore;
   });
 
   // Step 5: Return top items
@@ -463,13 +374,19 @@ export async function generateAlgorithmicFeed(
     bracketCounts[item.displayBracket] = (bracketCounts[item.displayBracket] || 0) + 1;
   });
   
-  console.log("✅ Feed generated:", {
+  console.log("✅ Feed v4 generated:", {
     total: finalFeed.length,
-    brackets: Object.entries(bracketCounts).map(([b, c]) => `${getBracketLabel(Number(b))}: ${c}`).join(", "),
-    local: localPosts.length,
-    expanded: expandedPosts.length,
-    global: globalPosts.length,
-    courses: coursePosts.length,
+    brackets: Object.entries(bracketCounts)
+      .sort(([a], [b]) => Number(a) - Number(b))
+      .map(([b, c]) => `${getBracketLabel(Number(b))}: ${c}`)
+      .join(", "),
+  });
+
+  // Debug: Log first 10 items with their brackets
+  console.log("📋 Top 10 feed items:");
+  finalFeed.slice(0, 10).forEach((item, i) => {
+    const ageHours = (Date.now() - item.createdAt.toMillis()) / (1000 * 60 * 60);
+    console.log(`  ${i + 1}. [B${item.displayBracket}] ${item.relevanceReason || 'global'} - ${ageHours.toFixed(1)}h old - score: ${item.withinBracketScore.toFixed(0)}`);
   });
 
   return finalFeed;
@@ -498,12 +415,13 @@ async function buildUserContext(
     userType: userData.userType || "Golfer",
     partnerIds,
     playerCourses: userData.playerCourses || [],
-    memberCourses: userData.declaredMemberCourses || [],
+    memberCourses: userData.memberCourses || [],
   };
 
-  console.log("👤 Context:", {
-    regionKey: context.regionKey,
-    partners: context.partnerIds.length,
+  console.log("👤 User context:", {
+    userId,
+    regionKey,
+    partners: partnerIds.length,
     courses: context.playerCourses.length + context.memberCourses.length,
   });
 
@@ -511,25 +429,29 @@ async function buildUserContext(
 }
 
 async function getPartnerIds(userId: string): Promise<string[]> {
-  const [snap1, snap2] = await Promise.all([
-    getDocs(query(collection(db, "partners"), where("user1Id", "==", userId))),
-    getDocs(query(collection(db, "partners"), where("user2Id", "==", userId))),
-  ]);
+  const partnersSnap = await getDocs(
+    query(
+      collection(db, "partners"),
+      where("users", "array-contains", userId),
+      where("status", "==", "accepted")
+    )
+  );
 
-  const partnerIds = new Set<string>();
-  snap1.forEach((doc) => partnerIds.add(doc.data().user2Id));
-  snap2.forEach((doc) => partnerIds.add(doc.data().user1Id));
+  const partnerIds: string[] = [];
+  partnersSnap.forEach((doc) => {
+    const users = doc.data().users || [];
+    users.forEach((id: string) => {
+      if (id !== userId) partnerIds.push(id);
+    });
+  });
 
-  return Array.from(partnerIds);
+  return partnerIds;
 }
 
 /* ================================================================ */
-/* DATA FETCHERS                                                    */
+/* FETCH FUNCTIONS                                                  */
 /* ================================================================ */
 
-/**
- * Fetch posts from user's region
- */
 async function fetchLocalPosts(context: UserContext): Promise<FeedPost[]> {
   if (!context.regionKey) return [];
 
@@ -538,54 +460,72 @@ async function fetchLocalPosts(context: UserContext): Promise<FeedPost[]> {
       collection(db, "thoughts"),
       where("regionKey", "==", context.regionKey),
       orderBy("createdAt", "desc"),
+      limit(50)
+    )
+  );
+
+  return processPosts(postsSnap, context);
+}
+
+async function fetchExpandedPosts(context: UserContext): Promise<FeedPost[]> {
+  if (!context.geohash) return [];
+
+  const geoPrefix = context.geohash.substring(0, 3);
+  
+  const postsSnap = await getDocs(
+    query(
+      collection(db, "thoughts"),
+      where("geohash", ">=", geoPrefix),
+      where("geohash", "<=", geoPrefix + "\uf8ff"),
+      orderBy("geohash"),
+      orderBy("createdAt", "desc"),
       limit(30)
     )
   );
 
-  return await processPosts(postsSnap, context);
+  return processPosts(postsSnap, context);
 }
 
-/**
- * Fetch posts from expanded region (geohash prefix)
- */
-async function fetchExpandedPosts(context: UserContext): Promise<FeedPost[]> {
-  if (!context.geohash) return [];
+async function fetchGlobalPosts(context: UserContext): Promise<FeedPost[]> {
+  // Fetch partner posts (global reach for partners)
+  const partnerPosts: FeedPost[] = [];
+  
+  if (context.partnerIds.length > 0) {
+    // Firestore "in" queries limited to 30 items
+    const partnerBatches = [];
+    for (let i = 0; i < context.partnerIds.length; i += 30) {
+      partnerBatches.push(context.partnerIds.slice(i, i + 30));
+    }
 
-  const geohashPrefix = context.geohash.substring(0, 3);
-  const geohashEnd = geohashPrefix + "~";
+    for (const batch of partnerBatches) {
+      const postsSnap = await getDocs(
+        query(
+          collection(db, "thoughts"),
+          where("userId", "in", batch),
+          orderBy("createdAt", "desc"),
+          limit(20)
+        )
+      );
+      
+      const posts = await processPosts(postsSnap, context);
+      partnerPosts.push(...posts);
+    }
+  }
 
-  const postsSnap = await getDocs(
+  // Fetch some recent global posts for discovery
+  const globalSnap = await getDocs(
     query(
       collection(db, "thoughts"),
-      where("geohash", ">=", geohashPrefix),
-      where("geohash", "<=", geohashEnd),
-      orderBy("geohash"),
       orderBy("createdAt", "desc"),
       limit(20)
     )
   );
+  
+  const globalPosts = await processPosts(globalSnap, context);
 
-  return await processPosts(postsSnap, context);
+  return [...partnerPosts, ...globalPosts];
 }
 
-/**
- * Fetch global posts (fallback)
- */
-async function fetchGlobalPosts(context: UserContext): Promise<FeedPost[]> {
-  const postsSnap = await getDocs(
-    query(
-      collection(db, "thoughts"),
-      orderBy("createdAt", "desc"),
-      limit(15)
-    )
-  );
-
-  return await processPosts(postsSnap, context);
-}
-
-/**
- * Fetch scores from user's courses
- */
 async function fetchCoursePosts(context: UserContext): Promise<FeedScore[]> {
   const allCourses = [
     ...context.playerCourses,
@@ -594,30 +534,30 @@ async function fetchCoursePosts(context: UserContext): Promise<FeedScore[]> {
 
   if (allCourses.length === 0) return [];
 
-  const uniqueCourses = Array.from(new Set(allCourses)).slice(0, 10);
+  // Limit to first 10 courses
+  const coursesToFetch = allCourses.slice(0, 10);
 
   const scoresSnap = await getDocs(
     query(
       collection(db, "scores"),
-      where("courseId", "in", uniqueCourses),
+      where("courseId", "in", coursesToFetch),
       orderBy("createdAt", "desc"),
-      limit(15)
+      limit(20)
     )
   );
 
-  // Collect user IDs that need profile fetching
+  // Collect unique user IDs and course IDs for batch fetching
   const userIdsNeedingProfiles = new Set<string>();
   const courseIds = new Set<number>();
 
-  scoresSnap.forEach((doc) => {
-    const data = doc.data();
+  scoresSnap.forEach((docSnap) => {
+    const data = docSnap.data();
     if (!data.displayName) {
       userIdsNeedingProfiles.add(data.userId);
     }
     courseIds.add(data.courseId);
   });
 
-  // Batch fetch missing profiles and lowman data
   const [profiles, lowmanData] = await Promise.all([
     userIdsNeedingProfiles.size > 0 
       ? batchGetUserProfiles(Array.from(userIdsNeedingProfiles))
@@ -863,7 +803,7 @@ export function shuffleWithinBrackets<T extends { displayBracket: number }>(item
     buckets.get(bracket)!.push(item);
   }
   
-  // Sort bracket keys and shuffle within each
+  // Sort bracket keys (1, 2, 3...) and shuffle within each
   const sortedBrackets = Array.from(buckets.keys()).sort((a, b) => a - b);
   const result: T[] = [];
   

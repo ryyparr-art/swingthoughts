@@ -570,46 +570,58 @@ export default function ClubhouseScreen() {
   };
 
   const convertFeedToThoughts = async (feedItems: FeedItem[]): Promise<Thought[]> => {
-    const thoughts: Thought[] = [];
-    
-    for (const item of feedItems) {
-      if (item.type === "post") {
-        const postItem = item as FeedPost;
+  const thoughts: Thought[] = [];
+  
+  for (const item of feedItems) {
+    if (item.type === "post") {
+      const postItem = item as FeedPost;
+      
+      const postDoc = await getDoc(doc(db, "thoughts", postItem.id));
+      if (postDoc.exists()) {
+        const data = postDoc.data();
+        const thought = convertPostDataToThought(postDoc.id, data);
         
-        const postDoc = await getDoc(doc(db, "thoughts", postItem.id));
-        if (postDoc.exists()) {
-          const data = postDoc.data();
-          const thought = convertPostDataToThought(postDoc.id, data);
-          
-          if (!thought.displayName) thought.displayName = postItem.displayName;
-          if (!thought.avatarUrl) thought.avatarUrl = postItem.avatar;
-          
-          thoughts.push(thought);
-        }
-      } else {
-        const scoreItem = item as FeedScore;
+        if (!thought.displayName) thought.displayName = postItem.displayName;
+        if (!thought.avatarUrl) thought.avatarUrl = postItem.avatar;
         
-        thoughts.push({
-          id: scoreItem.id,
-          thoughtId: scoreItem.id,
-          userId: scoreItem.userId,
-          userType: "Golfer",
-          content: `Posted ${scoreItem.netScore} (${scoreItem.netScore - scoreItem.par > 0 ? '+' : ''}${scoreItem.netScore - scoreItem.par}) at ${scoreItem.courseName}${scoreItem.isLowman ? ' 🏆 NEW LOWMAN!' : ''}`,
-          postType: scoreItem.isLowman ? "low-leader" : "score",
-          createdAt: scoreItem.createdAt,
-          likes: scoreItem.likes || 0,
-          likedBy: [],
-          comments: scoreItem.comments || 0,
-          displayName: scoreItem.displayName,
-          avatarUrl: scoreItem.avatar,
-          courseName: scoreItem.courseName,
-          taggedCourses: [{ courseId: scoreItem.courseId, courseName: scoreItem.courseName }],
-        });
+        // ✅ FIX: Preserve algorithm fields from feed item
+        thought.displayBracket = postItem.displayBracket;
+        thought.timeBracket = postItem.timeBracket;
+        thought.withinBracketScore = postItem.withinBracketScore;
+        thought.relevanceReason = postItem.relevanceReason;
+        
+        thoughts.push(thought);
       }
+    } else {
+      const scoreItem = item as FeedScore;
+      
+      thoughts.push({
+        id: scoreItem.id,
+        thoughtId: scoreItem.id,
+        userId: scoreItem.userId,
+        userType: "Golfer",
+        content: `Posted ${scoreItem.netScore} (${scoreItem.netScore - scoreItem.par > 0 ? '+' : ''}${scoreItem.netScore - scoreItem.par}) at ${scoreItem.courseName}${scoreItem.isLowman ? ' 🏆 NEW LOWMAN!' : ''}`,
+        postType: scoreItem.isLowman ? "low-leader" : "score",
+        createdAt: scoreItem.createdAt,
+        likes: scoreItem.likes || 0,
+        likedBy: [],
+        comments: scoreItem.comments || 0,
+        displayName: scoreItem.displayName,
+        avatarUrl: scoreItem.avatar,
+        courseName: scoreItem.courseName,
+        taggedCourses: [{ courseId: scoreItem.courseId, courseName: scoreItem.courseName }],
+        
+        // ✅ FIX: Preserve algorithm fields for scores too
+        displayBracket: scoreItem.displayBracket,
+        timeBracket: scoreItem.timeBracket,
+        withinBracketScore: scoreItem.withinBracketScore,
+        relevanceReason: scoreItem.relevanceReason,
+      });
     }
-    
-    return thoughts;
-  };
+  }
+  
+  return thoughts;
+};
 
   const convertCachedFeedToThoughts = (feedItems: FeedItem[]): Thought[] => {
     const thoughts: Thought[] = [];

@@ -241,6 +241,17 @@ export default function BottomActionBar({
                 Filter
               </Text>
             </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => handleNavigation("/leagues")}
+              style={styles.action}
+            >
+              <Image
+                source={require("@/assets/icons/LowLeaderTrophy.png")}
+                style={styles.icon}
+              />
+              <Text style={styles.label}>Leagues</Text>
+            </TouchableOpacity>
           </>
         );
 
@@ -318,19 +329,18 @@ const styles = StyleSheet.create({
   container: {
     height: 50,
     flexDirection: "row",
-    justifyContent: "space-between",
+    justifyContent: "space-around",
     alignItems: "center",
     backgroundColor: "#0D5C3A",
     borderTopWidth: 1,
     borderColor: "rgba(0,0,0,0.15)",
     paddingBottom: 8,
-    paddingLeft: 56,
-    paddingRight: 34,
+    paddingHorizontal: 16,
   },
-  action: { alignItems: "center" },
-  actionLeft: { alignItems: "center" },
-  actionCenter: { alignItems: "center", marginLeft: 24 },
-  actionRight: { alignItems: "center", marginLeft: 12 },
+  action: { flex: 1, alignItems: "center" },
+  actionLeft: { flex: 1, alignItems: "center" },
+  actionCenter: { flex: 1, alignItems: "center" },
+  actionRight: { flex: 1, alignItems: "center" },
   actionDisabled: { opacity: 0.3 },
   iconContainer: { position: "relative" },
   icon: { width: 24, height: 24, tintColor: "#FFFFFF" },

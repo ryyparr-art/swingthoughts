@@ -19,31 +19,31 @@ import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/dat
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import {
-    addDoc,
-    collection,
-    doc,
-    getDoc,
-    getDocs,
-    query,
-    serverTimestamp,
-    setDoc,
-    where,
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  serverTimestamp,
+  setDoc,
+  where,
 } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    FlatList,
-    Image,
-    KeyboardAvoidingView,
-    Modal,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -73,6 +73,21 @@ const SIM_PLATFORMS = [
   { key: "other", label: "Other" },
   { key: "notsure", label: "Not Sure" },
 ];
+
+// Helper functions for tee time
+const formatTeeTime = (time: string): string => {
+  const [hours, minutes] = time.split(":").map(Number);
+  const period = hours >= 12 ? "PM" : "AM";
+  const displayHours = hours % 12 || 12;
+  return `${displayHours}:${minutes.toString().padStart(2, "0")} ${period}`;
+};
+
+const parseTimeToDate = (time: string): Date => {
+  const [hours, minutes] = time.split(":").map(Number);
+  const date = new Date();
+  date.setHours(hours, minutes, 0, 0);
+  return date;
+};
 
 const STEP_TITLES = [
   "Name Your League",
@@ -110,6 +125,8 @@ interface LeagueFormData {
   frequency: "weekly" | "biweekly";
   scoreDeadline: string;
   numberOfWeeks: number;
+  playDay: string | null;
+  teeTime: string | null;
   // Step 6
   hasElevatedEvents: boolean;
   elevatedWeeks: number[];
@@ -134,6 +151,7 @@ export default function CreateLeague() {
 
   // Date picker
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
 
   // Course picker modal
   const [showCoursePicker, setShowCoursePicker] = useState(false);
@@ -159,6 +177,8 @@ export default function CreateLeague() {
     frequency: "weekly",
     scoreDeadline: "sunday",
     numberOfWeeks: 10,
+    playDay: null,
+    teeTime: null,
     hasElevatedEvents: false,
     elevatedWeeks: [],
     elevatedMultiplier: 2,
@@ -367,6 +387,8 @@ export default function CreateLeague() {
         endDate,
         frequency: formData.frequency,
         scoreDeadline: formData.scoreDeadline,
+        playDay: formData.playDay,
+        teeTime: formData.teeTime,
         totalWeeks: formData.numberOfWeeks,
         currentWeek: 0,
         hasElevatedEvents: formData.hasElevatedEvents,
@@ -961,6 +983,107 @@ export default function CreateLeague() {
           </View>
           <Text style={styles.helperText}>Auto-calculated</Text>
         </View>
+
+        {/* Divider */}
+        <View style={styles.divider} />
+
+        {/* Play Day (Optional) */}
+        <View style={styles.inputGroup}>
+          <Text style={styles.label}>League Play Day <Text style={styles.optionalTag}>(optional)</Text></Text>
+          <Text style={styles.helperText}>The day your league typically plays</Text>
+          <View style={styles.chipContainer}>
+            {DAYS_OF_WEEK.map((d) => (
+              <TouchableOpacity
+                key={d.key}
+                style={[styles.chip, formData.playDay === d.key && styles.chipSelected]}
+                onPress={() => {
+                  soundPlayer.play("click");
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  updateFormData({ playDay: formData.playDay === d.key ? null : d.key });
+                }}
+              >
+                <Text style={[styles.chipText, formData.playDay === d.key && styles.chipTextSelected]}>
+                  {d.label.substring(0, 3)}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        {/* Tee Time (Optional) */}
+        <View style={styles.inputGroup}>
+          <Text style={styles.label}>Tee Time <Text style={styles.optionalTag}>(optional)</Text></Text>
+          <Text style={styles.helperText}>Used for score reminders</Text>
+          <TouchableOpacity
+            style={styles.pickerButton}
+            onPress={() => {
+              soundPlayer.play("click");
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowTimePicker(true);
+            }}
+          >
+            <Ionicons name="time-outline" size={20} color="#0D5C3A" />
+            <Text style={[styles.pickerText, formData.teeTime && { color: "#333" }]}>
+              {formData.teeTime
+                ? formatTeeTime(formData.teeTime)
+                : "Select tee time..."}
+            </Text>
+            {formData.teeTime ? (
+              <TouchableOpacity
+                onPress={(e) => {
+                  e.stopPropagation();
+                  soundPlayer.play("click");
+                  updateFormData({ teeTime: null });
+                }}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="close-circle" size={20} color="#999" />
+              </TouchableOpacity>
+            ) : (
+              <Ionicons name="chevron-forward" size={20} color="#999" />
+            )}
+          </TouchableOpacity>
+
+          {showTimePicker && (
+            <DateTimePicker
+              value={formData.teeTime ? parseTimeToDate(formData.teeTime) : new Date(new Date().setHours(14, 0, 0, 0))}
+              mode="time"
+              display={Platform.OS === "ios" ? "spinner" : "default"}
+              minuteInterval={15}
+              onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
+                if (Platform.OS === "android") {
+                  setShowTimePicker(false);
+                }
+                if (event.type === "set" && selectedDate) {
+                  const hours = selectedDate.getHours().toString().padStart(2, "0");
+                  const minutes = selectedDate.getMinutes().toString().padStart(2, "0");
+                  updateFormData({ teeTime: `${hours}:${minutes}` });
+                }
+                if (Platform.OS === "ios" && selectedDate) {
+                  const hours = selectedDate.getHours().toString().padStart(2, "0");
+                  const minutes = selectedDate.getMinutes().toString().padStart(2, "0");
+                  updateFormData({ teeTime: `${hours}:${minutes}` });
+                }
+              }}
+            />
+          )}
+
+          {Platform.OS === "ios" && showTimePicker && (
+            <TouchableOpacity
+              style={styles.datePickerDone}
+              onPress={() => setShowTimePicker(false)}
+            >
+              <Text style={styles.datePickerDoneText}>Done</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <View style={styles.infoBox}>
+          <Ionicons name="information-circle-outline" size={18} color="#666" />
+          <Text style={styles.infoBoxText}>
+            Play day & tee time are used for score reminders and weekly results. Can be set later in Settings.
+          </Text>
+        </View>
       </View>
     );
   };
@@ -1448,4 +1571,8 @@ const styles = StyleSheet.create({
   modalFooterText: { fontSize: 15, color: "#666" },
   modalDoneBtn: { backgroundColor: "#0D5C3A", borderRadius: 20, paddingHorizontal: 24, paddingVertical: 10 },
   modalDoneBtnText: { fontSize: 16, fontWeight: "600", color: "#FFF" },
+  divider: { height: 1, backgroundColor: "#E0E0E0", marginVertical: 16 },
+  optionalTag: { fontSize: 13, fontWeight: "400", color: "#999" },
+  infoBox: { flexDirection: "row", alignItems: "flex-start", backgroundColor: "#F5F5F5", borderRadius: 10, padding: 12, gap: 10, marginTop: 8 },
+  infoBoxText: { flex: 1, fontSize: 13, color: "#666", lineHeight: 18 },
 });

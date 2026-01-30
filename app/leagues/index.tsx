@@ -1,14 +1,22 @@
 /**
  * League Hub - Entry point / Router
- * 
+ *
  * Checks if user has leagues and redirects:
  * - Has leagues → /leagues/home
  * - No leagues → /leagues/explore
+ *
+ * Uses collection group query for efficient membership check
  */
 
 import { auth, db } from "@/constants/firebaseConfig";
 import { Redirect } from "expo-router";
-import { collection, doc, getDoc, getDocs } from "firebase/firestore";
+import {
+  collectionGroup,
+  getDocs,
+  limit,
+  query,
+  where,
+} from "firebase/firestore";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 
@@ -28,24 +36,22 @@ export default function LeagueHubRouter() {
     }
 
     try {
-      // Check if user is a member of any league
-      const leaguesSnap = await getDocs(collection(db, "leagues"));
-      
-      for (const leagueDoc of leaguesSnap.docs) {
-        // Check if user document exists in members subcollection
-        const memberDoc = await getDoc(
-          doc(db, "leagues", leagueDoc.id, "members", currentUserId)
-        );
-        
-        if (memberDoc.exists()) {
-          setHasLeagues(true);
-          break;
-        }
-      }
-      
-      setLoading(false);
+      // Collection group query - finds user in ANY league's members subcollection
+      // Much more efficient than querying each league individually
+      // NOTE: Requires Firestore rule: match /{path=**}/members/{memberId} { allow read, list: if isSignedIn(); }
+      const membersQuery = query(
+        collectionGroup(db, "members"),
+        where("userId", "==", currentUserId),
+        limit(1)
+      );
+
+      const snap = await getDocs(membersQuery);
+      setHasLeagues(!snap.empty);
     } catch (error) {
       console.error("Error checking leagues:", error);
+      // On error, default to explore page
+      setHasLeagues(false);
+    } finally {
       setLoading(false);
     }
   };

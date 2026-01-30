@@ -41,6 +41,24 @@ service cloud.firestore {
       return userDoc(request.auth.uid).data;
     }
 
+    // Check if user is host of a league
+    function isLeagueHost(leagueId) {
+      let league = get(/databases/$(database)/documents/leagues/$(leagueId)).data;
+      return request.auth.uid == league.hostUserId;
+    }
+
+    // Check if user is host or manager of a league
+    function isLeagueManager(leagueId) {
+      let league = get(/databases/$(database)/documents/leagues/$(leagueId)).data;
+      return request.auth.uid == league.hostUserId ||
+        (league.managerIds != null && request.auth.uid in league.managerIds);
+    }
+
+    // Check if user is a member of a league
+    function isLeagueMember(leagueId) {
+      return exists(/databases/$(database)/documents/leagues/$(leagueId)/members/$(request.auth.uid));
+    }
+
     // ============================================================================
     // RATE LIMIT HELPERS
     // ============================================================================
@@ -71,6 +89,16 @@ service cloud.firestore {
       return !('lastScoreTime' in u) ||
         u.lastScoreTime == null ||
         u.lastScoreTime < request.time - duration.value(60, 's');
+    }
+
+    // ============================================================================
+    // COLLECTION GROUP QUERIES
+    // ============================================================================
+
+    // Allows collection group queries on 'members' subcollection across all leagues
+    // Used by: leagues/index.tsx to check if user is member of ANY league
+    match /{path=**}/members/{memberId} {
+      allow read, list: if isSignedIn();
     }
 
     // ============================================================================
@@ -664,39 +692,110 @@ service cloud.firestore {
         (isApprovedCommissioner() || isAdmin()) &&
         request.resource.data.hostUserId == request.auth.uid;
 
+      // ✅ Host, managers, or admin can update league settings
       allow update: if isSignedIn() &&
-        (request.auth.uid == resource.data.hostUserId || isAdmin());
+        (isLeagueManager(leagueId) || isAdmin());
 
       allow delete: if isAdmin();
 
+      // ========================================================================
       // LEAGUE MEMBERS SUBCOLLECTION
+      // ========================================================================
       match /members/{memberId} {
         allow read, list: if isSignedIn();
 
-        // ✅ Users can add themselves OR commissioner can add members (when approving join requests)
+        // ✅ Users can add themselves OR host/manager can add members
         allow create: if isSignedIn() &&
           isEmailVerified() &&
           (
-            request.resource.data.userId == request.auth.uid ||
-            request.auth.uid == get(/databases/$(database)/documents/leagues/$(leagueId)).data.hostUserId
+            memberId == request.auth.uid ||
+            isLeagueManager(leagueId)
           );
 
+        // ✅ Member can update own data, host/manager can update any member
         allow update: if isSignedIn() &&
           (
-            request.auth.uid == resource.data.userId ||
-            request.auth.uid == get(/databases/$(database)/documents/leagues/$(leagueId)).data.hostUserId ||
+            memberId == request.auth.uid ||
+            isLeagueManager(leagueId) ||
             isAdmin()
           );
 
+        // ✅ Member can leave, host/manager can remove members
         allow delete: if isSignedIn() &&
           (
-            request.auth.uid == resource.data.userId ||
-            request.auth.uid == get(/databases/$(database)/documents/leagues/$(leagueId)).data.hostUserId ||
+            memberId == request.auth.uid ||
+            isLeagueManager(leagueId) ||
             isAdmin()
           );
       }
 
+      // ========================================================================
+      // LEAGUE INVITES SUBCOLLECTION (invite users to join)
+      // ========================================================================
+      match /invites/{inviteId} {
+        allow read, list: if isSignedIn();
+
+        // ✅ Host/manager can create invites
+        allow create: if isSignedIn() &&
+          isLeagueManager(leagueId) &&
+          request.resource.data.inviterId == request.auth.uid &&
+          request.resource.data.status == "pending";
+
+        // ✅ Invited user can accept/decline, host/manager can update
+        allow update: if isSignedIn() &&
+          (
+            request.auth.uid == resource.data.inviteeId ||
+            isLeagueManager(leagueId)
+          );
+
+        // ✅ Host/manager can delete invites, invited user can delete their own
+        allow delete: if isSignedIn() &&
+          (
+            request.auth.uid == resource.data.inviteeId ||
+            isLeagueManager(leagueId) ||
+            isAdmin()
+          );
+      }
+
+      // ========================================================================
+      // LEAGUE TEAMS SUBCOLLECTION (for 2v2 format)
+      // ========================================================================
+      match /teams/{teamId} {
+        allow read, list: if isSignedIn();
+
+        // Only host/manager can create/update/delete teams
+        allow create, update, delete: if isSignedIn() &&
+          (isLeagueManager(leagueId) || isAdmin());
+      }
+
+      // ========================================================================
+      // LEAGUE TEAM EDIT REQUESTS SUBCOLLECTION
+      // ========================================================================
+      match /team_edit_requests/{requestId} {
+        allow read, list: if isSignedIn();
+
+        // Team members can create requests for their team
+        allow create: if isSignedIn() &&
+          isEmailVerified() &&
+          request.resource.data.requesterId == request.auth.uid &&
+          request.resource.data.status == "pending";
+
+        // Only host/manager can approve/reject
+        allow update: if isSignedIn() &&
+          (isLeagueManager(leagueId) || isAdmin());
+
+        // Requester can delete pending, host/manager can delete any
+        allow delete: if isSignedIn() &&
+          (
+            (request.auth.uid == resource.data.requesterId && resource.data.status == "pending") ||
+            isLeagueManager(leagueId) ||
+            isAdmin()
+          );
+      }
+
+      // ========================================================================
       // LEAGUE SCORES SUBCOLLECTION
+      // ========================================================================
       match /scores/{scoreId} {
         allow read, list: if isSignedIn();
 
@@ -707,9 +806,62 @@ service cloud.firestore {
         allow update, delete: if isSignedIn() &&
           (
             request.auth.uid == resource.data.userId ||
-            request.auth.uid == get(/databases/$(database)/documents/leagues/$(leagueId)).data.hostUserId ||
+            isLeagueManager(leagueId) ||
             isAdmin()
           );
+      }
+
+      // ========================================================================
+      // LEAGUE ANNOUNCEMENTS SUBCOLLECTION
+      // ========================================================================
+      match /announcements/{announcementId} {
+        allow read, list: if isSignedIn();
+
+        // ✅ Only host/manager can create announcements
+        allow create: if isSignedIn() &&
+          isLeagueManager(leagueId) &&
+          request.resource.data.authorId == request.auth.uid;
+
+        // ✅ Only host/manager can update/delete announcements
+        allow update, delete: if isSignedIn() &&
+          (isLeagueManager(leagueId) || isAdmin());
+      }
+
+      // ========================================================================
+      // LEAGUE WEEK RESULTS SUBCOLLECTION
+      // ========================================================================
+      match /week_results/{resultId} {
+        // ✅ League members can read week results
+        allow read, list: if isSignedIn();
+
+        // ✅ Only Cloud Functions write these (via Admin SDK)
+        // Host/manager can manually create/update if needed
+        allow create, update: if isSignedIn() &&
+          (isLeagueManager(leagueId) || isAdmin());
+
+        allow delete: if isAdmin();
+      }
+
+      // ========================================================================
+      // LEAGUE MANAGER INVITES SUBCOLLECTION
+      // ========================================================================
+      match /manager_invites/{inviteId} {
+        allow read, list: if isSignedIn();
+
+        // Only host can invite managers
+        allow create: if isSignedIn() &&
+          isLeagueHost(leagueId);
+
+        // Invited user can accept/decline, host can cancel
+        allow update: if isSignedIn() &&
+          (
+            request.auth.uid == resource.data.inviteeId ||
+            isLeagueHost(leagueId)
+          );
+
+        // Host can delete invites
+        allow delete: if isSignedIn() &&
+          (isLeagueHost(leagueId) || isAdmin());
       }
     }
 
@@ -736,16 +888,15 @@ service cloud.firestore {
     // ============================================================================
 
     match /league_join_requests/{requestId} {
-      // User can read their own requests, commissioner can read requests for their league
+      // User can read their own requests, host/manager can read requests for their league
       allow read: if isSignedIn() &&
         (
           request.auth.uid == resource.data.userId ||
-          request.auth.uid == get(/databases/$(database)/documents/leagues/$(resource.data.leagueId)).data.hostUserId ||
+          isLeagueManager(resource.data.leagueId) ||
           isAdmin()
         );
 
-      // List - user sees their requests, commissioner sees requests for their leagues
-      // Client-side filtering required
+      // List - client-side filtering required
       allow list: if isSignedIn();
 
       // User can create request to join (must be for themselves)
@@ -755,18 +906,18 @@ service cloud.firestore {
         request.resource.data.leagueId is string &&
         request.resource.data.status == "pending";
 
-      // Only commissioner or admin can update (approve/reject)
+      // Host, manager, or admin can update (approve/reject)
       allow update: if isSignedIn() &&
         (
-          request.auth.uid == get(/databases/$(database)/documents/leagues/$(resource.data.leagueId)).data.hostUserId ||
+          isLeagueManager(resource.data.leagueId) ||
           isAdmin()
         );
 
-      // User can delete their own pending request, commissioner or admin can delete any
+      // User can delete their own pending request, host/manager/admin can delete any
       allow delete: if isSignedIn() &&
         (
           (request.auth.uid == resource.data.userId && resource.data.status == "pending") ||
-          request.auth.uid == get(/databases/$(database)/documents/leagues/$(resource.data.leagueId)).data.hostUserId ||
+          isLeagueManager(resource.data.leagueId) ||
           isAdmin()
         );
     }

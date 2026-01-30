@@ -7,6 +7,9 @@
  * - Speed controls (0.25x, 0.5x, 1x)
  * - Frame stepping for swing breakdown
  * - Real-time scrub preview
+ * 
+ * AUDIO FIX: The FullscreenVideoPlayer now properly manages audio sessions
+ * to prevent sounds from bugging out when video starts/stops playing.
  */
 
 import { Ionicons } from "@expo/vector-icons";
@@ -15,14 +18,14 @@ import * as Haptics from "expo-haptics";
 import { useVideoPlayer, VideoView } from "expo-video";
 import React, { useEffect, useRef, useState } from "react";
 import {
-    Dimensions,
-    Image,
-    Modal,
-    Platform,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  Dimensions,
+  Image,
+  Modal,
+  Platform,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -47,7 +50,8 @@ export const VideoThumbnail = ({
   onPress,
 }: VideoThumbnailProps) => {
   const handlePress = () => {
-    soundPlayer.play("click");
+    // NOTE: Don't play click sound here - we're about to open video
+    // The soundPlayer will be disabled once video starts
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     onPress();
   };
@@ -130,6 +134,22 @@ export const FullscreenVideoPlayer = ({
   const positionRef = useRef(0);
   const playerRef = useRef<any>(null);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ============================================
+  // AUDIO SESSION MANAGEMENT
+  // Disable sounds while video is playing to prevent audio conflicts
+  // ============================================
+  useEffect(() => {
+    // Tell soundPlayer that video is starting
+    soundPlayer.prepareForVideo();
+    console.log("🎬 Video modal opened - sounds disabled");
+
+    return () => {
+      // Tell soundPlayer that video has stopped
+      soundPlayer.resumeAfterVideo();
+      console.log("🎬 Video modal closed - sounds re-enabled");
+    };
+  }, []);
 
   // Create video player
   const player = useVideoPlayer(videoUrl, (p) => {
@@ -323,6 +343,8 @@ export const FullscreenVideoPlayer = ({
     try {
       player.pause();
     } catch (e) {}
+    
+    // onClose will trigger the useEffect cleanup which calls resumeAfterVideo()
     onClose();
   };
 
