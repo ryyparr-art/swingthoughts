@@ -204,16 +204,15 @@ export default function VerificationsQueueScreen() {
       // ============================================
       if (typeFilter === "all" || typeFilter === "leagues") {
         let leagueQuery;
+        // Query without orderBy to avoid index requirement - we'll sort in JS
         if (filter === "pending") {
           leagueQuery = query(
             collection(db, "league_applications"),
-            where("status", "==", "pending"),
-            orderBy("createdAt", "desc")
+            where("status", "==", "pending")
           );
         } else {
           leagueQuery = query(
-            collection(db, "league_applications"),
-            orderBy("createdAt", "desc")
+            collection(db, "league_applications")
           );
         }
 
@@ -247,10 +246,10 @@ export default function VerificationsQueueScreen() {
         });
       }
 
-      // Sort all requests by date
+      // Sort all requests by date (handles missing orderBy for league_applications)
       requestsData.sort((a, b) => {
-        const aTime = a.createdAt?.toMillis?.() || 0;
-        const bTime = b.createdAt?.toMillis?.() || 0;
+        const aTime = a.createdAt?.toMillis?.() || a.createdAt?.seconds * 1000 || 0;
+        const bTime = b.createdAt?.toMillis?.() || b.createdAt?.seconds * 1000 || 0;
         return bTime - aTime;
       });
 
@@ -325,13 +324,14 @@ export default function VerificationsQueueScreen() {
                   commissionerApprovedAt: serverTimestamp(),
                 });
 
-                // Create notification for user
+                // Create notification for user (with updatedAt!)
                 await addDoc(collection(db, "notifications"), {
                   userId: request.userId,
                   type: "commissioner_approved",
-                  message: `Your league host application has been approved! You can now create "${request.leagueName}".`,
+                  message: `Your league host application has been approved! You can now create your league.`,
                   read: false,
                   createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(), // IMPORTANT: Required for notification query
                 });
 
                 console.log("📬 Commissioner approved:", request.userId);
@@ -359,6 +359,7 @@ export default function VerificationsQueueScreen() {
                   message: `Your ${request.requestType === "course" ? "course" : "PGA Professional"} account has been verified! You can now post and message.`,
                   read: false,
                   createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
                 });
               }
 
@@ -406,6 +407,7 @@ export default function VerificationsQueueScreen() {
                   message: "Your verification request was not approved. Please contact support if you have questions.",
                   read: false,
                   createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
                 });
 
                 Alert.alert("Success", "Verification denied and user notified");
@@ -457,13 +459,14 @@ export default function VerificationsQueueScreen() {
           reviewedBy: auth.currentUser?.uid,
         });
 
-        // Create notification for user
+        // Create notification for user (with updatedAt!)
         await addDoc(collection(db, "notifications"), {
           userId: selectedRequest.userId,
           type: "commissioner_rejected",
           message: `Your league host application was not approved. Reason: ${rejectionReason.trim()}`,
           read: false,
           createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(), // IMPORTANT: Required for notification query
         });
 
         console.log("📬 Commissioner application rejected:", selectedRequest.userId);
@@ -490,7 +493,7 @@ export default function VerificationsQueueScreen() {
   const formatDate = (timestamp: any) => {
     if (!timestamp) return "";
     try {
-      const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+      const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp.seconds * 1000);
       return date.toLocaleDateString("en-US", {
         month: "short",
         day: "numeric",
@@ -930,409 +933,69 @@ export default function VerificationsQueueScreen() {
 
 /* ==================== STYLES ==================== */
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F4EED8",
-  },
-
-  safeTop: {
-    backgroundColor: "#0D5C3A",
-  },
-
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 16,
-    backgroundColor: "#0D5C3A",
-  },
-
-  backIcon: {
-    width: 24,
-    height: 24,
-    tintColor: "#FFF",
-  },
-
-  headerTitle: {
-    color: "#FFF",
-    fontSize: 18,
-    fontWeight: "700",
-  },
-
-  filterContainer: {
-    flexDirection: "row",
-    backgroundColor: "#FFF",
-    borderBottomWidth: 1,
-    borderBottomColor: "#E5E5E5",
-  },
-
-  filterTab: {
-    flex: 1,
-    paddingVertical: 12,
-    alignItems: "center",
-    borderBottomWidth: 2,
-    borderBottomColor: "transparent",
-  },
-
-  filterTabActive: {
-    borderBottomColor: "#0D5C3A",
-  },
-
-  filterText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#666",
-  },
-
-  filterTextActive: {
-    color: "#0D5C3A",
-  },
-
-  // Type Filter Chips
-  typeFilterScroll: {
-    backgroundColor: "#FFF",
-    maxHeight: 50,
-  },
-
-  typeFilterContent: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 8,
-  },
-
-  typeChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    backgroundColor: "#F0F0F0",
-    borderRadius: 20,
-    marginRight: 8,
-  },
-
-  typeChipActive: {
-    backgroundColor: "#0D5C3A",
-  },
-
-  typeChipText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#666",
-  },
-
-  typeChipTextActive: {
-    color: "#FFF",
-  },
-
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-
-  requestCard: {
-    backgroundColor: "#FFF",
-    borderRadius: 12,
-    marginBottom: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-    overflow: "hidden",
-  },
-
-  requestCardResolved: {
-    opacity: 0.7,
-  },
-
-  requestHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 12,
-    backgroundColor: "#F7F8FA",
-    borderBottomWidth: 1,
-    borderBottomColor: "#E5E5E5",
-  },
-
-  requestHeaderText: {
-    flex: 1,
-    marginLeft: 12,
-  },
-
-  requestType: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#333",
-  },
-
-  requestDate: {
-    fontSize: 11,
-    color: "#666",
-    marginTop: 2,
-  },
-
-  statusBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-
-  statusBadgePending: {
-    backgroundColor: "#FF9500",
-  },
-
-  statusBadgeApproved: {
-    backgroundColor: "#0D5C3A",
-  },
-
-  statusBadgeDenied: {
-    backgroundColor: "#FF3B30",
-  },
-
-  statusText: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#FFF",
-    textTransform: "uppercase",
-  },
-
-  requestContent: {
-    padding: 12,
-  },
-
-  userName: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#0D5C3A",
-    marginBottom: 2,
-  },
-
-  userEmail: {
-    fontSize: 14,
-    color: "#666",
-    marginBottom: 8,
-  },
-
-  divider: {
-    height: 1,
-    backgroundColor: "#E5E5E5",
-    marginVertical: 12,
-  },
-
-  label: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#666",
-    marginTop: 8,
-    marginBottom: 4,
-  },
-
-  value: {
-    fontSize: 14,
-    color: "#333",
-  },
-
-  valueDescription: {
-    fontSize: 14,
-    color: "#333",
-    lineHeight: 20,
-    backgroundColor: "#F7F8FA",
-    padding: 10,
-    borderRadius: 8,
-    marginTop: 4,
-  },
-
-  rejectionValue: {
-    fontSize: 14,
-    color: "#FF3B30",
-    fontStyle: "italic",
-  },
-
-  detailRow: {
-    flexDirection: "row",
-    marginTop: 8,
-  },
-
-  detailItem: {
-    flex: 1,
-  },
-
-  proofImageContainer: {
-    marginTop: 12,
-    borderRadius: 12,
-    overflow: "hidden",
-    position: "relative",
-  },
-
-  proofImageThumb: {
-    width: "100%",
-    height: 200,
-    backgroundColor: "#F0F0F0",
-  },
-
-  viewImageOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  viewImageText: {
-    color: "#FFF",
-    fontSize: 14,
-    fontWeight: "600",
-    marginTop: 4,
-  },
-
-  actionsContainer: {
-    flexDirection: "row",
-    padding: 8,
-    gap: 8,
-    borderTopWidth: 1,
-    borderTopColor: "#E5E5E5",
-  },
-
-  actionButton: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    paddingVertical: 12,
-    borderRadius: 8,
-  },
-
-  approveButton: {
-    backgroundColor: "#0D5C3A",
-  },
-
-  approveButtonText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#FFF",
-  },
-
-  denyButton: {
-    backgroundColor: "#FF3B30",
-  },
-
-  denyButtonText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#FFF",
-  },
-
-  emptyState: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 60,
-  },
-
-  emptyText: {
-    fontSize: 16,
-    color: "#666",
-    marginTop: 16,
-  },
-
-  loadingContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#F4EED8",
-  },
-
-  /* IMAGE MODAL */
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.9)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  modalClose: {
-    position: "absolute",
-    top: 50,
-    right: 20,
-    zIndex: 10,
-    padding: 8,
-  },
-
-  closeIcon: {
-    width: 32,
-    height: 32,
-    tintColor: "#FFF",
-  },
-
-  fullImage: {
-    width: "90%",
-    height: "80%",
-  },
-
-  /* REJECTION MODAL */
-  rejectionModal: {
-    backgroundColor: "#FFF",
-    borderRadius: 16,
-    padding: 20,
-    width: "85%",
-    maxWidth: 400,
-  },
-
-  rejectionModalTitle: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#0D5C3A",
-    marginBottom: 8,
-  },
-
-  rejectionModalDescription: {
-    fontSize: 14,
-    color: "#666",
-    marginBottom: 16,
-    lineHeight: 20,
-  },
-
-  rejectionInput: {
-    backgroundColor: "#F5F5F5",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-    padding: 12,
-    fontSize: 14,
-    minHeight: 100,
-    marginBottom: 16,
-  },
-
-  rejectionModalActions: {
-    flexDirection: "row",
-    gap: 8,
-  },
-
-  modalButton: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: "center",
-  },
-
-  modalCancelButton: {
-    backgroundColor: "#E0E0E0",
-  },
-
-  modalCancelText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#666",
-  },
-
-  modalRejectButton: {
-    backgroundColor: "#FF3B30",
-  },
-
-  modalRejectText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#FFF",
-  },
+  container: { flex: 1, backgroundColor: "#F4EED8" },
+  safeTop: { backgroundColor: "#0D5C3A" },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, backgroundColor: "#0D5C3A" },
+  backIcon: { width: 24, height: 24, tintColor: "#FFF" },
+  headerTitle: { color: "#FFF", fontSize: 18, fontWeight: "700" },
+  filterContainer: { flexDirection: "row", backgroundColor: "#FFF", borderBottomWidth: 1, borderBottomColor: "#E5E5E5" },
+  filterTab: { flex: 1, paddingVertical: 12, alignItems: "center", borderBottomWidth: 2, borderBottomColor: "transparent" },
+  filterTabActive: { borderBottomColor: "#0D5C3A" },
+  filterText: { fontSize: 14, fontWeight: "600", color: "#666" },
+  filterTextActive: { color: "#0D5C3A" },
+  typeFilterScroll: { backgroundColor: "#FFF", maxHeight: 50 },
+  typeFilterContent: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
+  typeChip: { paddingHorizontal: 14, paddingVertical: 6, backgroundColor: "#F0F0F0", borderRadius: 20, marginRight: 8 },
+  typeChipActive: { backgroundColor: "#0D5C3A" },
+  typeChipText: { fontSize: 13, fontWeight: "600", color: "#666" },
+  typeChipTextActive: { color: "#FFF" },
+  scrollContent: { padding: 16, paddingBottom: 40 },
+  requestCard: { backgroundColor: "#FFF", borderRadius: 12, marginBottom: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3, overflow: "hidden" },
+  requestCardResolved: { opacity: 0.7 },
+  requestHeader: { flexDirection: "row", alignItems: "center", padding: 12, backgroundColor: "#F7F8FA", borderBottomWidth: 1, borderBottomColor: "#E5E5E5" },
+  requestHeaderText: { flex: 1, marginLeft: 12 },
+  requestType: { fontSize: 14, fontWeight: "700", color: "#333" },
+  requestDate: { fontSize: 11, color: "#666", marginTop: 2 },
+  statusBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  statusBadgePending: { backgroundColor: "#FF9500" },
+  statusBadgeApproved: { backgroundColor: "#0D5C3A" },
+  statusBadgeDenied: { backgroundColor: "#FF3B30" },
+  statusText: { fontSize: 11, fontWeight: "700", color: "#FFF", textTransform: "uppercase" },
+  requestContent: { padding: 12 },
+  userName: { fontSize: 18, fontWeight: "700", color: "#0D5C3A", marginBottom: 2 },
+  userEmail: { fontSize: 14, color: "#666", marginBottom: 8 },
+  divider: { height: 1, backgroundColor: "#E5E5E5", marginVertical: 12 },
+  label: { fontSize: 12, fontWeight: "600", color: "#666", marginTop: 8, marginBottom: 4 },
+  value: { fontSize: 14, color: "#333" },
+  valueDescription: { fontSize: 14, color: "#333", lineHeight: 20, backgroundColor: "#F7F8FA", padding: 10, borderRadius: 8, marginTop: 4 },
+  rejectionValue: { fontSize: 14, color: "#FF3B30", fontStyle: "italic" },
+  detailRow: { flexDirection: "row", marginTop: 8 },
+  detailItem: { flex: 1 },
+  proofImageContainer: { marginTop: 12, borderRadius: 12, overflow: "hidden", position: "relative" },
+  proofImageThumb: { width: "100%", height: 200, backgroundColor: "#F0F0F0" },
+  viewImageOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0, 0, 0, 0.5)", justifyContent: "center", alignItems: "center" },
+  viewImageText: { color: "#FFF", fontSize: 14, fontWeight: "600", marginTop: 4 },
+  actionsContainer: { flexDirection: "row", padding: 8, gap: 8, borderTopWidth: 1, borderTopColor: "#E5E5E5" },
+  actionButton: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 8 },
+  approveButton: { backgroundColor: "#0D5C3A" },
+  approveButtonText: { fontSize: 14, fontWeight: "700", color: "#FFF" },
+  denyButton: { backgroundColor: "#FF3B30" },
+  denyButtonText: { fontSize: 14, fontWeight: "700", color: "#FFF" },
+  emptyState: { alignItems: "center", justifyContent: "center", paddingVertical: 60 },
+  emptyText: { fontSize: 16, color: "#666", marginTop: 16 },
+  loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#F4EED8" },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0, 0, 0, 0.9)", justifyContent: "center", alignItems: "center" },
+  modalClose: { position: "absolute", top: 50, right: 20, zIndex: 10, padding: 8 },
+  closeIcon: { width: 32, height: 32, tintColor: "#FFF" },
+  fullImage: { width: "90%", height: "80%" },
+  rejectionModal: { backgroundColor: "#FFF", borderRadius: 16, padding: 20, width: "85%", maxWidth: 400 },
+  rejectionModalTitle: { fontSize: 20, fontWeight: "700", color: "#0D5C3A", marginBottom: 8 },
+  rejectionModalDescription: { fontSize: 14, color: "#666", marginBottom: 16, lineHeight: 20 },
+  rejectionInput: { backgroundColor: "#F5F5F5", borderRadius: 8, borderWidth: 1, borderColor: "#E0E0E0", padding: 12, fontSize: 14, minHeight: 100, marginBottom: 16 },
+  rejectionModalActions: { flexDirection: "row", gap: 8 },
+  modalButton: { flex: 1, paddingVertical: 12, borderRadius: 8, alignItems: "center" },
+  modalCancelButton: { backgroundColor: "#E0E0E0" },
+  modalCancelText: { fontSize: 14, fontWeight: "700", color: "#666" },
+  modalRejectButton: { backgroundColor: "#FF3B30" },
+  modalRejectText: { fontSize: 14, fontWeight: "700", color: "#FFF" },
 });

@@ -111,6 +111,12 @@ const NOTIFICATION_ICONS: Record<string, NotificationIconConfig> = {
   membership_rejected: { icon: "close-circle", color: "#FF3B30" },
 
   // ==========================================
+  // COMMISSIONER APPLICATIONS
+  // ==========================================
+  commissioner_approved: { icon: "trophy", color: "#4CAF50" },
+  commissioner_rejected: { icon: "close-circle", color: "#F44336" },
+
+  // ==========================================
   // LEAGUE NOTIFICATIONS
   // ==========================================
   
@@ -456,6 +462,19 @@ export default function NotificationsScreen() {
         if (notification.courseId) {
           router.push(`/locker/course/${notification.courseId}`);
         }
+        break;
+
+      // ==========================================
+      // COMMISSIONER APPLICATION NOTIFICATIONS
+      // ==========================================
+      case "commissioner_approved":
+        // Navigate to create league page
+        router.push("/leagues/create" as any);
+        break;
+
+      case "commissioner_rejected":
+        // Navigate to explore leagues (can re-apply)
+        router.push("/leagues/explore" as any);
         break;
 
       // ==========================================
@@ -990,356 +1009,59 @@ export default function NotificationsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F4EED8",
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#F4EED8",
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#0D5C3A",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  backButton: {
-    width: 60,
-    alignItems: "flex-start",
-  },
-  closeIcon: {
-    width: 28,
-    height: 28,
-    tintColor: "#FFFFFF",
-  },
-  headerTitleContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
-  unreadBadge: {
-    backgroundColor: "#FF3B30",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
-    minWidth: 20,
-    alignItems: "center",
-  },
-  unreadBadgeText: {
-    color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  clearAllButton: {
-    width: 60,
-    alignItems: "flex-end",
-  },
-  clearAllText: {
-    color: "#FFD700",
-    fontSize: 13,
-    fontWeight: "600",
-  },
-  cacheIndicator: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 8,
-    backgroundColor: "#FFF3CD",
-    borderBottomWidth: 1,
-    borderBottomColor: "#FFECB5",
-  },
-  cacheText: {
-    fontSize: 12,
-    color: "#664D03",
-    fontWeight: "600",
-  },
-  listContent: {
-    paddingBottom: 20,
-  },
-  sectionHeader: {
-    paddingHorizontal: 16,
-    paddingTop: 20,
-    paddingBottom: 8,
-  },
-  sectionTitle: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#0D5C3A",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    marginBottom: 8,
-  },
-  sectionDivider: {
-    height: 1,
-    backgroundColor: "#E0E0E0",
-  },
-  notificationCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    marginHorizontal: 16,
-    marginVertical: 4,
-    padding: 14,
-    borderRadius: 12,
-    gap: 12,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  notificationUnread: {
-    backgroundColor: "#FFFEF5",
-    borderLeftWidth: 3,
-    borderLeftColor: "#FFD700",
-  },
-  notificationArchived: {
-    backgroundColor: "#F5F5F5",
-    opacity: 0.85,
-  },
-  
-  // Avatar Section
-  avatarSection: {
-    position: "relative",
-  },
-  
-  // Single Avatar
-  singleAvatarContainer: {
-    width: 48,
-    height: 48,
-  },
-  avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "#E0E0E0",
-  },
-  avatarPlaceholder: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "#0D5C3A",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarInitial: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
-  
-  // Stacked Avatars
-  avatarStack: {
-    flexDirection: "row",
-    alignItems: "center",
-    width: 72,
-    height: 48,
-  },
-  stackedAvatarContainer: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 2,
-    borderColor: "#FFFFFF",
-    backgroundColor: "#FFFFFF",
-    overflow: "hidden",
-  },
-  stackedAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-  },
-  stackedAvatarPlaceholder: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "#0D5C3A",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  stackedAvatarInitial: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
-  moreAvatars: {
-    backgroundColor: "#0D5C3A",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  moreAvatarsText: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
-  
-  // Unread Dot
-  unreadDot: {
-    position: "absolute",
-    top: -2,
-    right: -2,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: "#FFD700",
-    borderWidth: 2,
-    borderColor: "#FFFFFF",
-  },
-  
-  // Notification Icon Badge
-  notificationIcon: {
-    position: "absolute",
-    bottom: -4,
-    right: -4,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#FFFFFF",
-  },
-  notificationIconImage: {
-    width: 12,
-    height: 12,
-  },
-  
-  // Content
-  notificationContent: {
-    flex: 1,
-  },
-  notificationMessage: {
-    fontSize: 14,
-    fontWeight: "500",
-    color: "#333",
-    marginBottom: 4,
-    lineHeight: 20,
-  },
-  notificationMessageUnread: {
-    fontWeight: "600",
-    color: "#000",
-  },
-  notificationMessageArchived: {
-    color: "#666",
-  },
-  notificationTime: {
-    fontSize: 12,
-    color: "#999",
-  },
-  
-  // Restore Button (for archived)
-  restoreButton: {
-    padding: 8,
-    backgroundColor: "rgba(13, 92, 58, 0.1)",
-    borderRadius: 20,
-  },
-  
-  // Empty State
-  emptyContainer: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 40,
-  },
-  emptyIconContainer: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: "rgba(13, 92, 58, 0.1)",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 20,
-  },
-  emptyText: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#333",
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: "#999",
-    marginTop: 8,
-    textAlign: "center",
-  },
-  
-  // View Archived Button (in empty state)
-  viewArchivedButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "#0D5C3A",
-    paddingHorizontal: 24,
-    paddingVertical: 14,
-    borderRadius: 24,
-    marginTop: 32,
-  },
-  viewArchivedText: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    fontWeight: "600",
-  },
-  
-  // Bottom Archived Button (when there are active notifications)
-  bottomArchivedButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 16,
-    borderTopWidth: 1,
-    borderTopColor: "#E0E0E0",
-    backgroundColor: "#FFFFFF",
-  },
-  bottomArchivedText: {
-    color: "#0D5C3A",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  
-  // Archived Modal
-  archivedModalContainer: {
-    flex: 1,
-    backgroundColor: "#F4EED8",
-  },
-  archivedHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#0D5C3A",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  archivedCloseButton: {
-    width: 40,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  archivedHeaderTitle: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#FFFFFF",
-  },
-  archivedEmptyContainer: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 40,
-  },
-  archivedEmptyText: {
-    fontSize: 16,
-    color: "#999",
-    marginTop: 16,
-  },
+  container: { flex: 1, backgroundColor: "#F4EED8" },
+  loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#F4EED8" },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: "#0D5C3A", paddingHorizontal: 16, paddingVertical: 12 },
+  backButton: { width: 60, alignItems: "flex-start" },
+  closeIcon: { width: 28, height: 28, tintColor: "#FFFFFF" },
+  headerTitleContainer: { flexDirection: "row", alignItems: "center", gap: 8 },
+  headerTitle: { fontSize: 18, fontWeight: "700", color: "#FFFFFF" },
+  unreadBadge: { backgroundColor: "#FF3B30", paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10, minWidth: 20, alignItems: "center" },
+  unreadBadgeText: { color: "#FFFFFF", fontSize: 12, fontWeight: "700" },
+  clearAllButton: { width: 60, alignItems: "flex-end" },
+  clearAllText: { color: "#FFD700", fontSize: 13, fontWeight: "600" },
+  cacheIndicator: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 8, backgroundColor: "#FFF3CD", borderBottomWidth: 1, borderBottomColor: "#FFECB5" },
+  cacheText: { fontSize: 12, color: "#664D03", fontWeight: "600" },
+  listContent: { paddingBottom: 20 },
+  sectionHeader: { paddingHorizontal: 16, paddingTop: 20, paddingBottom: 8 },
+  sectionTitle: { fontSize: 13, fontWeight: "700", color: "#0D5C3A", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 },
+  sectionDivider: { height: 1, backgroundColor: "#E0E0E0" },
+  notificationCard: { flexDirection: "row", alignItems: "center", backgroundColor: "#FFFFFF", marginHorizontal: 16, marginVertical: 4, padding: 14, borderRadius: 12, gap: 12, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
+  notificationUnread: { backgroundColor: "#FFFEF5", borderLeftWidth: 3, borderLeftColor: "#FFD700" },
+  notificationArchived: { backgroundColor: "#F5F5F5", opacity: 0.85 },
+  avatarSection: { position: "relative" },
+  singleAvatarContainer: { width: 48, height: 48 },
+  avatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: "#E0E0E0" },
+  avatarPlaceholder: { width: 48, height: 48, borderRadius: 24, backgroundColor: "#0D5C3A", alignItems: "center", justifyContent: "center" },
+  avatarInitial: { fontSize: 18, fontWeight: "700", color: "#FFFFFF" },
+  avatarStack: { flexDirection: "row", alignItems: "center", width: 72, height: 48 },
+  stackedAvatarContainer: { width: 36, height: 36, borderRadius: 18, borderWidth: 2, borderColor: "#FFFFFF", backgroundColor: "#FFFFFF", overflow: "hidden" },
+  stackedAvatar: { width: 32, height: 32, borderRadius: 16 },
+  stackedAvatarPlaceholder: { width: 32, height: 32, borderRadius: 16, backgroundColor: "#0D5C3A", alignItems: "center", justifyContent: "center" },
+  stackedAvatarInitial: { fontSize: 12, fontWeight: "700", color: "#FFFFFF" },
+  moreAvatars: { backgroundColor: "#0D5C3A", alignItems: "center", justifyContent: "center" },
+  moreAvatarsText: { fontSize: 11, fontWeight: "700", color: "#FFFFFF" },
+  unreadDot: { position: "absolute", top: -2, right: -2, width: 12, height: 12, borderRadius: 6, backgroundColor: "#FFD700", borderWidth: 2, borderColor: "#FFFFFF" },
+  notificationIcon: { position: "absolute", bottom: -4, right: -4, width: 22, height: 22, borderRadius: 11, alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: "#FFFFFF" },
+  notificationIconImage: { width: 12, height: 12 },
+  notificationContent: { flex: 1 },
+  notificationMessage: { fontSize: 14, fontWeight: "500", color: "#333", marginBottom: 4, lineHeight: 20 },
+  notificationMessageUnread: { fontWeight: "600", color: "#000" },
+  notificationMessageArchived: { color: "#666" },
+  notificationTime: { fontSize: 12, color: "#999" },
+  restoreButton: { padding: 8, backgroundColor: "rgba(13, 92, 58, 0.1)", borderRadius: 20 },
+  emptyContainer: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 40 },
+  emptyIconContainer: { width: 120, height: 120, borderRadius: 60, backgroundColor: "rgba(13, 92, 58, 0.1)", alignItems: "center", justifyContent: "center", marginBottom: 20 },
+  emptyText: { fontSize: 20, fontWeight: "700", color: "#333" },
+  emptySubtext: { fontSize: 14, color: "#999", marginTop: 8, textAlign: "center" },
+  viewArchivedButton: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "#0D5C3A", paddingHorizontal: 24, paddingVertical: 14, borderRadius: 24, marginTop: 32 },
+  viewArchivedText: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" },
+  bottomArchivedButton: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 16, borderTopWidth: 1, borderTopColor: "#E0E0E0", backgroundColor: "#FFFFFF" },
+  bottomArchivedText: { color: "#0D5C3A", fontSize: 14, fontWeight: "600" },
+  archivedModalContainer: { flex: 1, backgroundColor: "#F4EED8" },
+  archivedHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: "#0D5C3A", paddingHorizontal: 16, paddingVertical: 12 },
+  archivedCloseButton: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
+  archivedHeaderTitle: { fontSize: 18, fontWeight: "700", color: "#FFFFFF" },
+  archivedEmptyContainer: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 40 },
+  archivedEmptyText: { fontSize: 16, color: "#999", marginTop: 16 },
 });
