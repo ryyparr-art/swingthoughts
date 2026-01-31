@@ -216,42 +216,55 @@ export default function LeagueDetail() {
   /* ================================================================ */
 
   const handleRequestToJoin = async () => {
-    if (!currentUserId || !league) return;
+  if (!currentUserId || !league) return;
 
-    setRequesting(true);
-    try {
-      // Get user data
-      const userDoc = await getDoc(doc(db, "users", currentUserId));
-      const userData = userDoc.data();
+  setRequesting(true);
+  try {
+    // Get user data
+    const userDoc = await getDoc(doc(db, "users", currentUserId));
+    const userData = userDoc.data();
 
-      // Create join request
-      await addDoc(collection(db, "league_join_requests"), {
-        leagueId: league.id,
-        leagueName: league.name,
-        userId: currentUserId,
-        displayName: userData?.displayName || "Unknown",
-        avatar: userData?.avatar || null,
-        status: "pending",
-        createdAt: serverTimestamp(),
-      });
+    // Create join request
+    await addDoc(collection(db, "league_join_requests"), {
+      leagueId: league.id,
+      leagueName: league.name,
+      userId: currentUserId,
+      displayName: userData?.displayName || "Unknown",
+      avatar: userData?.avatar || null,
+      status: "pending",
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
 
-      // TODO: Send notification to commissioner
+    // Send notification to commissioner
+    await addDoc(collection(db, "notifications"), {
+      userId: league.hostUserId,
+      type: "league_join_request",
+      message: `${userData?.displayName || "Someone"} wants to join ${league.name}`,
+      actorId: currentUserId,
+      actorName: userData?.displayName || "Unknown",
+      actorAvatar: userData?.avatar || null,
+      leagueId: league.id,
+      read: false,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
 
-      soundPlayer.play("postThought");
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setIsPending(true);
+    soundPlayer.play("postThought");
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setIsPending(true);
 
-      Alert.alert(
-        "Request Sent! ⛳",
-        "The league commissioner will review your request."
-      );
-    } catch (error) {
-      console.error("Error requesting to join:", error);
-      soundPlayer.play("error");
-      Alert.alert("Error", "Failed to send request. Please try again.");
-    }
-    setRequesting(false);
-  };
+    Alert.alert(
+      "Request Sent! ⛳",
+      "The league commissioner will review your request."
+    );
+  } catch (error) {
+    console.error("Error requesting to join:", error);
+    soundPlayer.play("error");
+    Alert.alert("Error", "Failed to send request. Please try again.");
+  }
+  setRequesting(false);
+};
 
   const handleGoToLeague = () => {
     soundPlayer.play("click");

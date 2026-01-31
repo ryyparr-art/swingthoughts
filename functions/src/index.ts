@@ -2129,6 +2129,120 @@ export {
 // ============================================================================
 
 /**
+ * When a join request is created (user requests to join a league)
+ * Collection: league_join_requests/{requestId} (ROOT-LEVEL)
+ * 
+ * Sends: league_join_request to commissioners/managers
+ */
+export const onJoinRequestCreated = onDocumentCreated(
+  "league_join_requests/{requestId}",
+  async (event) => {
+    try {
+      const snap = event.data;
+      if (!snap) return;
+
+      const request = snap.data();
+      if (!request) return;
+
+      const { leagueId, leagueName, userId, displayName, avatar } = request;
+
+      if (!leagueId || !userId) {
+        console.log("⛔ Join request missing required fields");
+        return;
+      }
+
+      console.log("📩 Join request created by", userId, "for league", leagueId);
+
+      // Get user data if not provided
+      let actorName = displayName;
+      let actorAvatar = avatar;
+      
+      if (!actorName) {
+        const userData = await getUserData(userId);
+        actorName = userData?.displayName || "Someone";
+        actorAvatar = actorAvatar || userData?.avatar;
+      }
+
+      // Notify commissioners and managers
+      const managersSnap = await db
+        .collection("leagues")
+        .doc(leagueId)
+        .collection("members")
+        .where("role", "in", ["commissioner", "manager"])
+        .get();
+
+      for (const managerDoc of managersSnap.docs) {
+        if (managerDoc.id === userId) continue; // Don't notify self
+
+        await createNotificationDocument({
+          userId: managerDoc.id,
+          type: "league_join_request",
+          actorId: userId,
+          actorName: actorName || "Someone",
+          actorAvatar: actorAvatar,
+          leagueId,
+          leagueName: leagueName || "the league",
+          message: generateGroupedMessage("league_join_request", actorName || "Someone", 1, {
+            leagueName: leagueName || "the league",
+          }),
+        });
+      }
+
+      console.log(`✅ Join request notifications sent to ${managersSnap.size} commissioners/managers`);
+    } catch (error) {
+      console.error("🔥 onJoinRequestCreated failed:", error);
+    }
+  }
+);
+
+/**
+ * When a join request is updated (approved/rejected)
+ * Collection: league_join_requests/{requestId} (ROOT-LEVEL)
+ * 
+ * Sends: league_join_rejected when status changes to "rejected"
+ * Note: Approval is handled by onLeagueMemberCreated when the member doc is created
+ */
+export const onJoinRequestUpdated = onDocumentUpdated(
+  "league_join_requests/{requestId}",
+  async (event) => {
+    try {
+      const before = event.data?.before.data();
+      const after = event.data?.after.data();
+
+      if (!before || !after) return;
+
+      const { leagueId, leagueName, userId } = after;
+
+      if (!userId || !leagueId) {
+        console.log("⛔ Join request missing required fields");
+        return;
+      }
+
+      // Check if request was rejected
+      if (before.status !== "rejected" && after.status === "rejected") {
+        console.log("❌ Join request rejected for", userId, "in league", leagueId);
+
+        await createNotificationDocument({
+          userId,
+          type: "league_join_rejected",
+          leagueId,
+          leagueName: leagueName || "the league",
+          message: generateGroupedMessage("league_join_rejected", "", 1, {
+            leagueName: leagueName || "the league",
+          }),
+        });
+
+        console.log("✅ Join rejected notification sent to", userId);
+      }
+
+      // Note: Approval is handled by onLeagueMemberCreated when the member doc is created with status="active"
+    } catch (error) {
+      console.error("🔥 onJoinRequestUpdated failed:", error);
+    }
+  }
+);
+
+/**
  * When a league score is created, notify all league members
  */
 export const onLeagueScoreCreated = onDocumentCreated(

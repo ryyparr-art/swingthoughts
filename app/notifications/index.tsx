@@ -5,7 +5,7 @@ import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import { collection, doc, getDocs, onSnapshot, orderBy, query, serverTimestamp, where, writeBatch } from "firebase/firestore";
+import { collection, doc, getDocs, onSnapshot, query, serverTimestamp, where, writeBatch } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -159,6 +159,47 @@ const NOTIFICATION_ICONS: Record<string, NotificationIconConfig> = {
   system: { icon: "information-circle", color: "#8E8E93" },
 };
 
+// Helper to get timestamp in milliseconds for sorting
+const getTimestampMs = (timestamp: any): number => {
+  if (!timestamp) return 0;
+  
+  // Firestore Timestamp (has toMillis method)
+  if (timestamp?.toMillis && typeof timestamp.toMillis === 'function') {
+    return timestamp.toMillis();
+  }
+  
+  // Firestore Timestamp from REST/cache (has seconds)
+  if (timestamp?.seconds !== undefined) {
+    return timestamp.seconds * 1000;
+  }
+  
+  // Unix timestamp (number)
+  if (typeof timestamp === 'number') {
+    return timestamp;
+  }
+  
+  // Date object
+  if (timestamp instanceof Date) {
+    return timestamp.getTime();
+  }
+  
+  // ISO string
+  if (typeof timestamp === 'string') {
+    return new Date(timestamp).getTime();
+  }
+  
+  return 0;
+};
+
+// Sort notifications by updatedAt (if exists) or createdAt, descending
+const sortNotifications = (notifications: Notification[]): Notification[] => {
+  return notifications.sort((a, b) => {
+    const aTime = getTimestampMs(a.updatedAt) || getTimestampMs(a.createdAt);
+    const bTime = getTimestampMs(b.updatedAt) || getTimestampMs(b.createdAt);
+    return bTime - aTime; // Descending (newest first)
+  });
+};
+
 export default function NotificationsScreen() {
   const router = useRouter();
   const { getCache, setCache } = useCache();
@@ -194,10 +235,10 @@ export default function NotificationsScreen() {
         }
 
         // Step 2: Set up real-time listener (always)
+        // ✅ FIX: Removed orderBy("updatedAt") - sort in JS to include docs with only createdAt
         const notificationsQuery = query(
           collection(db, "notifications"),
-          where("userId", "==", uid),
-          orderBy("updatedAt", "desc")
+          where("userId", "==", uid)
         );
 
         unsubscribe = onSnapshot(
@@ -212,11 +253,14 @@ export default function NotificationsScreen() {
               } as Notification);
             });
 
-            setAllNotifications(notificationsList);
+            // ✅ FIX: Sort in JS using updatedAt || createdAt
+            const sortedNotifications = sortNotifications(notificationsList);
+
+            setAllNotifications(sortedNotifications);
 
             // Step 3: Update cache
-            await setCache(CACHE_KEYS.NOTIFICATIONS(uid), notificationsList);
-            console.log("✅ Notifications cached");
+            await setCache(CACHE_KEYS.NOTIFICATIONS(uid), sortedNotifications);
+            console.log("✅ Notifications cached:", sortedNotifications.length);
 
             setShowingCached(false);
             setLoading(false);
@@ -253,10 +297,10 @@ export default function NotificationsScreen() {
     setShowingCached(false);
 
     try {
+      // ✅ FIX: Removed orderBy("updatedAt") - sort in JS to include docs with only createdAt
       const notificationsQuery = query(
         collection(db, "notifications"),
-        where("userId", "==", uid),
-        orderBy("updatedAt", "desc")
+        where("userId", "==", uid)
       );
 
       const snapshot = await getDocs(notificationsQuery);
@@ -269,8 +313,11 @@ export default function NotificationsScreen() {
         } as Notification);
       });
 
-      setAllNotifications(notificationsList);
-      await setCache(CACHE_KEYS.NOTIFICATIONS(uid), notificationsList);
+      // ✅ FIX: Sort in JS using updatedAt || createdAt
+      const sortedNotifications = sortNotifications(notificationsList);
+
+      setAllNotifications(sortedNotifications);
+      await setCache(CACHE_KEYS.NOTIFICATIONS(uid), sortedNotifications);
     } catch (error) {
       console.error("Error refreshing notifications:", error);
       soundPlayer.play('error');

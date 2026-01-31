@@ -358,6 +358,7 @@ service cloud.firestore {
         (
           request.auth.uid == resource.data.user1Id ||
           request.auth.uid == resource.data.user2Id ||
+          request.auth.uid in resource.data.users ||
           isAdmin()
         );
 

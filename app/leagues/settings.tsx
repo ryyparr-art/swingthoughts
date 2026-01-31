@@ -15,6 +15,22 @@
  * - Team management (create, edit, add/remove members)
  * - Team edit requests (members can request name/avatar changes)
  * - Edit league settings (respects lock rules)
+ * 
+ * ============================================================
+ * NOTIFICATION ARCHITECTURE
+ * ============================================================
+ * All league notifications are handled server-side via Cloud Functions.
+ * This ensures reliability, consistency, and proper security.
+ * 
+ * Cloud Function Triggers:
+ * - onJoinRequestCreated → sends league_join_request to commissioners
+ * - onJoinRequestUpdated → sends league_join_rejected when status="rejected"
+ * - onLeagueMemberCreated → sends league_join_approved when status="active"
+ * - onLeagueMemberUpdated → sends league_team_assigned/league_team_removed
+ * - onLeagueMemberDeleted → sends league_removed
+ * - onTeamEditRequestCreated → sends league_team_edit_request to commissioners
+ * - onTeamEditRequestUpdated → sends league_team_edit_approved/rejected
+ * ============================================================
  */
 
 import { Ionicons } from "@expo/vector-icons";
@@ -290,17 +306,19 @@ export default function LeagueSettingsScreen() {
   /* ================================================================ */
 
   const handleApproveRequest = async (request: JoinRequest) => {
-    if (!league) return;
+    if (!league || !currentUserId) return;
     try {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       soundPlayer.play("postThought");
       const batch = writeBatch(db);
+      
       const memberRef = doc(db, "leagues", leagueId, "members", request.userId);
       batch.set(memberRef, {
         userId: request.userId,
         displayName: request.displayName,
         avatar: request.avatar || null,
         role: "member",
+        status: "active", // REQUIRED: Triggers onLeagueMemberCreated Cloud Function for league_join_approved notification
         swingThoughtsHandicap: request.handicap || null,
         leagueHandicap: null,
         teamId: null,
@@ -309,11 +327,20 @@ export default function LeagueSettingsScreen() {
         wins: 0,
         joinedAt: serverTimestamp(),
       });
+      
       const requestRef = doc(db, "league_join_requests", request.id);
-      batch.update(requestRef, { status: "approved" });
+      batch.update(requestRef, { 
+        status: "approved",
+        reviewedAt: serverTimestamp(),
+        reviewedBy: currentUserId,
+      });
+      
       const leagueRef = doc(db, "leagues", leagueId);
       batch.update(leagueRef, { memberCount: (league.memberCount || 0) + 1 });
+      
       await batch.commit();
+      // Notification handled by Cloud Function: onLeagueMemberCreated
+
       Alert.alert("Approved! ⛳", `${request.displayName} has been added to the league.`);
     } catch (error) {
       console.error("Error approving request:", error);
@@ -323,6 +350,7 @@ export default function LeagueSettingsScreen() {
   };
 
   const handleRejectRequest = async (request: JoinRequest) => {
+    if (!league || !currentUserId) return;
     Alert.alert("Reject Request", `Are you sure you want to reject ${request.displayName}'s request?`, [
       { text: "Cancel", style: "cancel" },
       {
@@ -331,8 +359,14 @@ export default function LeagueSettingsScreen() {
         onPress: async () => {
           try {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            
             const requestRef = doc(db, "league_join_requests", request.id);
-            await updateDoc(requestRef, { status: "rejected" });
+            await updateDoc(requestRef, { 
+              status: "rejected",
+              reviewedAt: serverTimestamp(),
+              reviewedBy: currentUserId,
+            });
+            // Notification handled by Cloud Function: onJoinRequestUpdated
           } catch (error) {
             console.error("Error rejecting request:", error);
             Alert.alert("Error", "Failed to reject request.");
@@ -353,7 +387,7 @@ export default function LeagueSettingsScreen() {
   };
 
   const handleRemoveMember = async () => {
-    if (!selectedMember || !league) return;
+    if (!selectedMember || !league || !currentUserId) return;
     if (selectedMember.role === "commissioner") {
       Alert.alert("Cannot Remove", "The commissioner cannot be removed from the league.");
       return;
@@ -367,6 +401,7 @@ export default function LeagueSettingsScreen() {
           try {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
             const batch = writeBatch(db);
+            
             if (selectedMember.teamId) {
               const teamRef = doc(db, "leagues", leagueId, "teams", selectedMember.teamId);
               const teamDoc = await getDoc(teamRef);
@@ -376,11 +411,16 @@ export default function LeagueSettingsScreen() {
                 batch.update(teamRef, { memberIds: updatedMemberIds });
               }
             }
+            
             const memberRef = doc(db, "leagues", leagueId, "members", selectedMember.id);
             batch.delete(memberRef);
+            
             const leagueRef = doc(db, "leagues", leagueId);
             batch.update(leagueRef, { memberCount: Math.max(0, (league.memberCount || 1) - 1) });
+            
             await batch.commit();
+            // Notification handled by Cloud Function: onLeagueMemberDeleted
+
             setShowMemberActions(false);
             setSelectedMember(null);
           } catch (error) {
@@ -423,11 +463,12 @@ export default function LeagueSettingsScreen() {
   };
 
   const handleAssignToTeam = async (teamId: string | null) => {
-    if (!selectedMember) return;
+    if (!selectedMember || !league || !currentUserId) return;
     try {
       setSaving(true);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       const batch = writeBatch(db);
+      
       if (selectedMember.teamId) {
         const oldTeamRef = doc(db, "leagues", leagueId, "teams", selectedMember.teamId);
         const oldTeamDoc = await getDoc(oldTeamRef);
@@ -437,6 +478,7 @@ export default function LeagueSettingsScreen() {
           batch.update(oldTeamRef, { memberIds: updatedMemberIds });
         }
       }
+      
       if (teamId) {
         const newTeamRef = doc(db, "leagues", leagueId, "teams", teamId);
         const newTeamDoc = await getDoc(newTeamRef);
@@ -446,9 +488,13 @@ export default function LeagueSettingsScreen() {
           batch.update(newTeamRef, { memberIds: updatedMemberIds });
         }
       }
+      
       const memberRef = doc(db, "leagues", leagueId, "members", selectedMember.id);
       batch.update(memberRef, { teamId: teamId || null });
+      
       await batch.commit();
+      // Notification handled by Cloud Function: onLeagueMemberUpdated (detects teamId changes)
+
       soundPlayer.play("click");
       setShowAssignTeam(false);
       setShowMemberActions(false);
@@ -593,7 +639,7 @@ export default function LeagueSettingsScreen() {
   };
 
   const handleRemoveMemberFromTeam = async (memberId: string) => {
-    if (!selectedTeam) return;
+    if (!selectedTeam || !league || !currentUserId) return;
     Alert.alert("Remove from Team", "Remove this member from the team?", [
       { text: "Cancel", style: "cancel" },
       {
@@ -603,12 +649,17 @@ export default function LeagueSettingsScreen() {
           try {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
             const batch = writeBatch(db);
+            
             const teamRef = doc(db, "leagues", leagueId, "teams", selectedTeam.id);
             const updatedMemberIds = selectedTeam.memberIds.filter((id) => id !== memberId);
             batch.update(teamRef, { memberIds: updatedMemberIds });
+            
             const memberRef = doc(db, "leagues", leagueId, "members", memberId);
             batch.update(memberRef, { teamId: null });
+            
             await batch.commit();
+            // Notification handled by Cloud Function: onLeagueMemberUpdated (detects teamId removal)
+
             soundPlayer.play("click");
           } catch (error) {
             console.error("Error removing member from team:", error);
@@ -654,7 +705,7 @@ export default function LeagueSettingsScreen() {
   /* ================================================================ */
 
   const handleSubmitTeamEditRequest = async () => {
-    if (!selectedTeam || !requestNewValue.trim()) {
+    if (!selectedTeam || !requestNewValue.trim() || !league || !currentUserId) {
       Alert.alert("Error", "Please enter a value.");
       return;
     }
@@ -670,6 +721,7 @@ export default function LeagueSettingsScreen() {
     try {
       setSaving(true);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      
       const requestsRef = collection(db, "leagues", leagueId, "team_edit_requests");
       await addDoc(requestsRef, {
         teamId: selectedTeam.id,
@@ -682,7 +734,10 @@ export default function LeagueSettingsScreen() {
         newValue: requestNewValue.trim(),
         status: "pending",
         createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       });
+      // Notification handled by Cloud Function: onTeamEditRequestCreated
+
       soundPlayer.play("postThought");
       setShowRequestTeamEdit(false);
       setRequestNewValue("");
@@ -696,19 +751,31 @@ export default function LeagueSettingsScreen() {
   };
 
   const handleApproveEditRequest = async (request: TeamEditRequest) => {
+    if (!league || !currentUserId) return;
     try {
       setSaving(true);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      
       const batch = writeBatch(db);
+      
       const requestRef = doc(db, "leagues", leagueId, "team_edit_requests", request.id);
-      batch.update(requestRef, { status: "approved", reviewedAt: serverTimestamp(), reviewedBy: currentUserId });
+      batch.update(requestRef, { 
+        status: "approved", 
+        reviewedAt: serverTimestamp(), 
+        reviewedBy: currentUserId,
+        updatedAt: serverTimestamp(),
+      });
+      
       const teamRef = doc(db, "leagues", leagueId, "teams", request.teamId);
       if (request.type === "name") {
         batch.update(teamRef, { name: request.newValue, nameLower: request.newValue.toLowerCase(), nameChangeUsed: true });
       } else {
         batch.update(teamRef, { avatar: request.newValue });
       }
+      
       await batch.commit();
+      // Notification handled by Cloud Function: onTeamEditRequestUpdated
+
       soundPlayer.play("postThought");
       setShowTeamEditRequestActions(false);
       setSelectedEditRequest(null);
@@ -721,11 +788,21 @@ export default function LeagueSettingsScreen() {
   };
 
   const handleRejectEditRequest = async (request: TeamEditRequest, reason?: string) => {
+    if (!league || !currentUserId) return;
     try {
       setSaving(true);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      
       const requestRef = doc(db, "leagues", leagueId, "team_edit_requests", request.id);
-      await updateDoc(requestRef, { status: "rejected", rejectionReason: reason || null, reviewedAt: serverTimestamp(), reviewedBy: currentUserId });
+      await updateDoc(requestRef, { 
+        status: "rejected", 
+        rejectionReason: reason || null, 
+        reviewedAt: serverTimestamp(), 
+        reviewedBy: currentUserId,
+        updatedAt: serverTimestamp(),
+      });
+      // Notification handled by Cloud Function: onTeamEditRequestUpdated
+
       soundPlayer.play("click");
       setShowTeamEditRequestActions(false);
       setSelectedEditRequest(null);
@@ -1409,7 +1486,7 @@ export default function LeagueSettingsScreen() {
             ) : (
               unassignedMembers.map((member) => (
                 <TouchableOpacity key={member.id} style={styles.actionItem} onPress={async () => {
-                  if (!selectedTeam) return;
+                  if (!selectedTeam || !league || !currentUserId) return;
                   try {
                     const batch = writeBatch(db);
                     const teamRef = doc(db, "leagues", leagueId, "teams", selectedTeam.id);
@@ -1418,6 +1495,8 @@ export default function LeagueSettingsScreen() {
                     const memberRef = doc(db, "leagues", leagueId, "members", member.id);
                     batch.update(memberRef, { teamId: selectedTeam.id });
                     await batch.commit();
+                    // Notification handled by Cloud Function: onLeagueMemberUpdated
+                    
                     soundPlayer.play("click");
                   } catch (error) { console.error("Error adding member:", error); Alert.alert("Error", "Failed to add member."); }
                 }}>
