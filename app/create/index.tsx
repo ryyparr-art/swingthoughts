@@ -1,3 +1,10 @@
+/**
+ * Create Thought Screen
+ * 
+ * Refactored to use modular components while preserving all functionality
+ * and data schema. Key fix: Tournaments and Leagues are now tracked separately.
+ */
+
 import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
 import { auth, db, storage } from "@/constants/firebaseConfig";
 import { POST_TYPES } from "@/constants/postTypes";
@@ -6,162 +13,89 @@ import {
   EMAIL_VERIFICATION_MESSAGE,
   getRateLimitMessage,
   isEmailVerified,
-  updateRateLimitTimestamp
+  updateRateLimitTimestamp,
 } from "@/utils/rateLimitHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 
-import { Ionicons } from "@expo/vector-icons";
-import Slider from "@react-native-community/slider";
-import { ResizeMode, Video } from "expo-av";
+import { Video } from "expo-av";
 import * as Haptics from "expo-haptics";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import * as VideoThumbnails from "expo-video-thumbnails";
-import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, serverTimestamp, updateDoc, where } from "firebase/firestore";
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+} from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import React, { useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
   Dimensions,
-  FlatList,
   Image,
-  Modal,
   Platform,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 import { Video as VideoCompressor } from "react-native-compressor";
 import { KeyboardAwareScrollView } from "react-native-keyboard-aware-scroll-view";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-/* -------------------------------- UTILS -------------------------------- */
+// Import modular components
+import ContentInput from "@/components/create-thought/ContentInput";
+import CropModal from "@/components/create-thought/CropModal";
+import MediaSection from "@/components/create-thought/MediaSection";
+import TypeSelector from "@/components/create-thought/TypeSelector";
+import {
+  AutocompleteItem,
+  canWrite,
+  Course,
+  encodeGeohash,
+  extractHashtags,
+  GolfCourse,
+  IMAGE_QUALITY,
+  MAX_CHARACTERS,
+  MAX_IMAGE_WIDTH,
+  MAX_IMAGES,
+  MAX_VIDEO_DURATION,
+  Partner,
+  PendingImage,
+  TaggedLeague,
+  TaggedTournament,
+} from "@/components/create-thought/types";
 
-function canWrite(userData: any): boolean {
-  if (!userData) return false;
-  
-  if (userData.userType === "Golfer" || userData.userType === "Junior") {
-    return userData.acceptedTerms === true;
-  }
-  
-  if (userData.userType === "Course" || userData.userType === "PGA Professional") {
-    return userData.verified === true || userData.verification?.status === "approved";
-  }
-  
-  return false;
-}
+const SCREEN_WIDTH = Dimensions.get("window").width;
 
-function encodeGeohash(latitude: number, longitude: number, precision: number = 5): string {
-  const BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz";
-  let idx = 0;
-  let bit = 0;
-  let evenBit = true;
-  let geohash = "";
-
-  let latMin = -90;
-  let latMax = 90;
-  let lonMin = -180;
-  let lonMax = 180;
-
-  while (geohash.length < precision) {
-    if (evenBit) {
-      const lonMid = (lonMin + lonMax) / 2;
-      if (longitude > lonMid) {
-        idx |= (1 << (4 - bit));
-        lonMin = lonMid;
-      } else {
-        lonMax = lonMid;
-      }
-    } else {
-      const latMid = (latMin + latMax) / 2;
-      if (latitude > latMid) {
-        idx |= (1 << (4 - bit));
-        latMin = latMid;
-      } else {
-        latMax = latMid;
-      }
-    }
-    evenBit = !evenBit;
-
-    if (bit < 4) {
-      bit++;
-    } else {
-      geohash += BASE32[idx];
-      bit = 0;
-      idx = 0;
-    }
-  }
-
-  return geohash;
-}
-
-function extractHashtags(content: string): string[] {
-  const hashtagRegex = /#(\w+)/g;
-  const matches = content.match(hashtagRegex) || [];
-  return matches.map(tag => tag.toLowerCase());
-}
-
-/* -------------------------------- CONFIG -------------------------------- */
-
-const MAX_CHARACTERS = 280;
-const MAX_VIDEO_DURATION = 30;
-const MAX_IMAGE_WIDTH = 1080;
-const IMAGE_QUALITY = 0.7;
-const MAX_IMAGES = 3;
-
-const SCREEN_WIDTH = Dimensions.get('window').width;
-const SCREEN_HEIGHT = Dimensions.get('window').height;
-
-/* -------------------------------- TYPES -------------------------------- */
-
-interface Partner {
-  userId: string;
-  displayName: string;
-}
-
-interface Course {
-  courseId: number;
-  courseName: string;
-}
-
-interface Tournament {
-  tournamentId: string;
-  name: string;
-  type: "tournament" | "league";
-}
-
-interface GolfCourse {
-  id: number;
-  club_name: string;
-  course_name: string;
-  location: {
-    city: string;
-    state: string;
-  };
-}
-
-interface PendingImage {
-  uri: string;
-  width: number;
-  height: number;
-}
-
+/* ======================================================================== */
+/* MAIN COMPONENT                                                           */
 /* ======================================================================== */
 
 export default function CreateScreen() {
   console.log("🎨 CREATE SCREEN MOUNTED");
-  
+
   const router = useRouter();
   const { editId } = useLocalSearchParams();
 
+  /* ---------------------------------------------------------------- */
+  /* STATE                                                            */
+  /* ---------------------------------------------------------------- */
+
+  // Post content
   const [selectedType, setSelectedType] = useState("swing-thought");
   const [content, setContent] = useState("");
-  
+
+  // Media
   const [mediaType, setMediaType] = useState<"images" | "video" | null>(null);
   const [imageUris, setImageUris] = useState<string[]>([]);
   const [videoUri, setVideoUri] = useState<string | null>(null);
@@ -169,44 +103,55 @@ export default function CreateScreen() {
   const [isPosting, setIsPosting] = useState(false);
   const [isProcessingMedia, setIsProcessingMedia] = useState(false);
 
+  // Image cropping
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [currentCropIndex, setCurrentCropIndex] = useState(0);
   const [showCropModal, setShowCropModal] = useState(false);
   const [cropOffset, setCropOffset] = useState({ x: 0, y: 0 });
   const [cropScale, setCropScale] = useState(1);
 
+  // Video trimming
   const [videoDuration, setVideoDuration] = useState(0);
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(30);
   const [showVideoTrimmer, setShowVideoTrimmer] = useState(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
 
+  // Refs
   const videoRef = useRef<Video>(null);
   const textInputRef = useRef<TextInput>(null);
 
+  // User data
   const [userData, setUserData] = useState<any>(null);
   const writable = canWrite(userData);
 
+  // Autocomplete
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [autocompleteType, setAutocompleteType] = useState<"mention" | "hashtag" | null>(null);
-  const [autocompleteResults, setAutocompleteResults] = useState<any[]>([]);
+  const [autocompleteResults, setAutocompleteResults] = useState<AutocompleteItem[]>([]);
   const [currentSearchText, setCurrentSearchText] = useState("");
-  const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
-  const [selectedHashtags, setSelectedHashtags] = useState<string[]>([]);
 
+  // Tagged items - FIXED: Separate tournaments and leagues
+  const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
+  const [selectedTournaments, setSelectedTournaments] = useState<string[]>([]);
+  const [selectedLeagues, setSelectedLeagues] = useState<string[]>([]);
+
+  // Partners list
   const [allPartners, setAllPartners] = useState<Partner[]>([]);
 
+  // Edit mode
   const [isEditMode, setIsEditMode] = useState(false);
   const [editingPostId, setEditingPostId] = useState<string | null>(null);
 
+  // Debounce
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Image carousel
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
 
-  /* --------------------------- KEYBOARD HANDLING --------------------------- */
-  // KeyboardAwareScrollView handles keyboard automatically - no manual handling needed
-
-  /* --------------------------- LOAD USER DATA --------------------------- */
+  /* ---------------------------------------------------------------- */
+  /* LOAD USER DATA                                                   */
+  /* ---------------------------------------------------------------- */
 
   useEffect(() => {
     const loadUser = async () => {
@@ -216,21 +161,21 @@ export default function CreateScreen() {
       const snap = await getDoc(doc(db, "users", uid));
       if (snap.exists()) {
         setUserData(snap.data());
-        
+
         const partners = snap.data()?.partners || [];
-        
+
         if (Array.isArray(partners) && partners.length > 0) {
           const partnerDocs = await Promise.all(
             partners.map((partnerId: string) => getDoc(doc(db, "users", partnerId)))
           );
-          
+
           const partnerList = partnerDocs
             .filter((d) => d.exists())
             .map((d) => ({
               userId: d.id,
               displayName: d.data()?.displayName || "Unknown",
             }));
-          
+
           setAllPartners(partnerList);
         } else {
           setAllPartners([]);
@@ -241,24 +186,26 @@ export default function CreateScreen() {
     loadUser();
   }, []);
 
-  /* --------------------------- LOAD POST FOR EDITING --------------------------- */
+  /* ---------------------------------------------------------------- */
+  /* LOAD POST FOR EDITING                                            */
+  /* ---------------------------------------------------------------- */
 
   useEffect(() => {
     const loadPostForEdit = async () => {
-      if (!editId || typeof editId !== 'string') return;
+      if (!editId || typeof editId !== "string") return;
 
       try {
         const postDoc = await getDoc(doc(db, "thoughts", editId));
         if (!postDoc.exists()) {
-          soundPlayer.play('error');
+          soundPlayer.play("error");
           Alert.alert("Error", "Post not found");
           return;
         }
 
         const postData = postDoc.data();
-        
+
         if (postData.userId !== auth.currentUser?.uid) {
-          soundPlayer.play('error');
+          soundPlayer.play("error");
           Alert.alert("Error", "You can only edit your own posts");
           router.back();
           return;
@@ -268,7 +215,8 @@ export default function CreateScreen() {
         setEditingPostId(editId);
         setContent(postData.content || "");
         setSelectedType(postData.postType || "swing-thought");
-        
+
+        // Load media
         if (postData.imageUrls && postData.imageUrls.length > 0) {
           setImageUris(postData.imageUrls);
           setMediaType("images");
@@ -286,7 +234,8 @@ export default function CreateScreen() {
             setShowVideoTrimmer(true);
           }
         }
-        
+
+        // Load mentions (partners + courses)
         const existingMentions: string[] = [];
         if (postData.taggedPartners) {
           postData.taggedPartners.forEach((p: any) => {
@@ -299,23 +248,27 @@ export default function CreateScreen() {
           });
         }
         setSelectedMentions(existingMentions);
-        
-        const existingHashtags: string[] = [];
+
+        // Load tournaments - FIXED: Separate from leagues
+        const existingTournaments: string[] = [];
         if (postData.taggedTournaments) {
           postData.taggedTournaments.forEach((t: any) => {
-            existingHashtags.push(`#${t.name}`);
+            existingTournaments.push(`#${t.name}`);
           });
         }
+        setSelectedTournaments(existingTournaments);
+
+        // Load leagues - FIXED: Separate from tournaments
+        const existingLeagues: string[] = [];
         if (postData.taggedLeagues) {
           postData.taggedLeagues.forEach((l: any) => {
-            existingHashtags.push(`#${l.name}`);
+            existingLeagues.push(`#${l.name}`);
           });
         }
-        setSelectedHashtags(existingHashtags);
-        
+        setSelectedLeagues(existingLeagues);
       } catch (error) {
         console.error("Error loading post:", error);
-        soundPlayer.play('error');
+        soundPlayer.play("error");
         Alert.alert("Error", "Failed to load post");
       }
     };
@@ -323,7 +276,9 @@ export default function CreateScreen() {
     loadPostForEdit();
   }, [editId]);
 
-  /* --------------------------- POST TYPES BY USER --------------------------- */
+  /* ---------------------------------------------------------------- */
+  /* POST TYPES BY USER                                               */
+  /* ---------------------------------------------------------------- */
 
   const availableTypes = (() => {
     if (!userData?.userType) return POST_TYPES.golfer;
@@ -333,7 +288,9 @@ export default function CreateScreen() {
     return POST_TYPES.golfer;
   })();
 
-  /* --------------------------- IMAGE COMPRESSION --------------------------- */
+  /* ---------------------------------------------------------------- */
+  /* IMAGE/VIDEO COMPRESSION                                          */
+  /* ---------------------------------------------------------------- */
 
   const compressImage = async (uri: string): Promise<string> => {
     try {
@@ -347,12 +304,10 @@ export default function CreateScreen() {
       return manipResult.uri;
     } catch (error) {
       console.error("Image compression error:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       return uri;
     }
   };
-
-  /* --------------------------- VIDEO COMPRESSION --------------------------- */
 
   const compressVideo = async (uri: string): Promise<string> => {
     try {
@@ -360,7 +315,7 @@ export default function CreateScreen() {
       const compressedUri = await VideoCompressor.compress(
         uri,
         {
-          compressionMethod: 'auto',
+          compressionMethod: "auto",
           maxSize: 1080,
           bitrate: 2000000,
         },
@@ -372,12 +327,10 @@ export default function CreateScreen() {
       return compressedUri;
     } catch (error) {
       console.error("Video compression error:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       return uri;
     }
   };
-
-  /* --------------------------- VIDEO THUMBNAIL --------------------------- */
 
   const generateVideoThumbnail = async (videoUri: string): Promise<string> => {
     try {
@@ -390,55 +343,48 @@ export default function CreateScreen() {
       return uri;
     } catch (error) {
       console.error("❌ Thumbnail generation error:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       return videoUri;
     }
   };
 
-  /* --------------------------- MEDIA PICKER WITH ALERT --------------------------- */
+  /* ---------------------------------------------------------------- */
+  /* MEDIA PICKER HANDLERS                                            */
+  /* ---------------------------------------------------------------- */
 
   const handleAddMedia = () => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-    Alert.alert(
-      "Add Media",
-      "Choose what to add",
-      [
-        {
-          text: `📷 Photos (up to ${MAX_IMAGES})`,
-          onPress: () => pickImages(),
-        },
-        {
-          text: `🎥 Video (${MAX_VIDEO_DURATION}s max)`,
-          onPress: () => pickVideo(),
-        },
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-      ]
-    );
+    Alert.alert("Add Media", "Choose what to add", [
+      {
+        text: `📷 Photos (up to ${MAX_IMAGES})`,
+        onPress: () => pickImages(),
+      },
+      {
+        text: `🎥 Video (${MAX_VIDEO_DURATION}s max)`,
+        onPress: () => pickVideo(),
+      },
+      {
+        text: "Cancel",
+        style: "cancel",
+      },
+    ]);
   };
-
-  /* --------------------------- IMAGE PICKER --------------------------- */
 
   const pickImages = async () => {
     try {
-      soundPlayer.play('click');
+      soundPlayer.play("click");
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      
-      if (status !== 'granted') {
-        soundPlayer.play('error');
+
+      if (status !== "granted") {
+        soundPlayer.play("error");
         Alert.alert(
-          'Permission Required',
-          'Please allow photo library access in your device settings to upload media.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Open Settings' }
-          ]
+          "Permission Required",
+          "Please allow photo library access in your device settings to upload media.",
+          [{ text: "Cancel", style: "cancel" }, { text: "Open Settings" }]
         );
         return;
       }
@@ -452,46 +398,41 @@ export default function CreateScreen() {
 
       if (!result.canceled && result.assets.length > 0) {
         const selectedImages = result.assets.slice(0, MAX_IMAGES);
-        
-        const pending: PendingImage[] = selectedImages.map(asset => ({
+
+        const pending: PendingImage[] = selectedImages.map((asset) => ({
           uri: asset.uri,
           width: asset.width || 1080,
           height: asset.height || 1080,
         }));
-        
+
         setPendingImages(pending);
         setCurrentCropIndex(0);
         setCropOffset({ x: 0, y: 0 });
         setCropScale(1);
         setShowCropModal(true);
-        
-        soundPlayer.play('click');
+
+        soundPlayer.play("click");
       }
     } catch (error) {
       console.error("Image picker error:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       Alert.alert("Error", "Failed to select images. Please try again.");
     }
   };
 
-  /* --------------------------- VIDEO PICKER --------------------------- */
-
   const pickVideo = async () => {
     try {
-      soundPlayer.play('click');
+      soundPlayer.play("click");
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      
-      if (status !== 'granted') {
-        soundPlayer.play('error');
+
+      if (status !== "granted") {
+        soundPlayer.play("error");
         Alert.alert(
-          'Permission Required',
-          'Please allow photo library access in your device settings to upload media.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Open Settings' }
-          ]
+          "Permission Required",
+          "Please allow photo library access in your device settings to upload media.",
+          [{ text: "Cancel", style: "cancel" }, { text: "Open Settings" }]
         );
         return;
       }
@@ -508,21 +449,19 @@ export default function CreateScreen() {
       if (!result.canceled && result.assets.length > 0) {
         const asset = result.assets[0];
         const duration = asset.duration || 0;
-        
+
         if (duration / 1000 > 120) {
-          soundPlayer.play('error');
-          Alert.alert(
-            "Video Too Long",
-            "Please select a video shorter than 2 minutes.",
-            [{ text: "OK" }]
-          );
+          soundPlayer.play("error");
+          Alert.alert("Video Too Long", "Please select a video shorter than 2 minutes.", [
+            { text: "OK" },
+          ]);
           setIsProcessingMedia(false);
           return;
         }
-        
+
         const compressedUri = await compressVideo(asset.uri);
         const thumbnailUri = await generateVideoThumbnail(compressedUri);
-        
+
         const durationSeconds = duration / 1000;
         setVideoDuration(durationSeconds);
         setVideoUri(compressedUri);
@@ -534,42 +473,93 @@ export default function CreateScreen() {
         setTrimStart(0);
         setTrimEnd(Math.min(durationSeconds, MAX_VIDEO_DURATION));
         setShowVideoTrimmer(true);
-        
+
         if (durationSeconds > MAX_VIDEO_DURATION) {
-          soundPlayer.play('click');
+          soundPlayer.play("click");
           Alert.alert(
             "Trim Your Video",
             `Your video is ${durationSeconds.toFixed(0)} seconds. Use the sliders below to select the best ${MAX_VIDEO_DURATION}-second clip.`,
             [{ text: "Got it" }]
           );
         }
-        
+
         setIsProcessingMedia(false);
       } else {
         setIsProcessingMedia(false);
       }
     } catch (error) {
       console.error("Video picker error:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       Alert.alert("Error", "Failed to select video. Please try again.");
       setIsProcessingMedia(false);
     }
   };
 
-  /* --------------------------- CROP IMAGE --------------------------- */
+  const addMoreImages = async () => {
+    if (imageUris.length >= MAX_IMAGES) {
+      soundPlayer.play("error");
+      Alert.alert("Maximum Reached", `You can only add up to ${MAX_IMAGES} images.`);
+      return;
+    }
+
+    try {
+      soundPlayer.play("click");
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== "granted") return;
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsMultipleSelection: true,
+        quality: 1,
+        allowsEditing: false,
+      });
+
+      if (!result.canceled && result.assets.length > 0) {
+        const remainingSlots = MAX_IMAGES - imageUris.length;
+        const selectedImages = result.assets.slice(0, remainingSlots);
+
+        const pending: PendingImage[] = selectedImages.map((asset) => ({
+          uri: asset.uri,
+          width: asset.width || 1080,
+          height: asset.height || 1080,
+        }));
+
+        setPendingImages(pending);
+        setCurrentCropIndex(0);
+        setCropOffset({ x: 0, y: 0 });
+        setCropScale(1);
+        setShowCropModal(true);
+      }
+    } catch (error) {
+      console.error("Add images error:", error);
+      soundPlayer.play("error");
+    }
+  };
+
+  /* ---------------------------------------------------------------- */
+  /* CROP HANDLERS                                                    */
+  /* ---------------------------------------------------------------- */
 
   const handleCropComplete = async () => {
     if (currentCropIndex >= pendingImages.length) return;
-    
+
     const currentImage = pendingImages[currentCropIndex];
-    
+
     try {
       setIsProcessingMedia(true);
-      
+
       const cropSize = Math.min(currentImage.width, currentImage.height) / cropScale;
-      const originX = Math.max(0, (currentImage.width - cropSize) / 2 - cropOffset.x * (currentImage.width / SCREEN_WIDTH));
-      const originY = Math.max(0, (currentImage.height - cropSize) / 2 - cropOffset.y * (currentImage.height / SCREEN_WIDTH));
-      
+      const originX = Math.max(
+        0,
+        (currentImage.width - cropSize) / 2 - cropOffset.x * (currentImage.width / SCREEN_WIDTH)
+      );
+      const originY = Math.max(
+        0,
+        (currentImage.height - cropSize) / 2 - cropOffset.y * (currentImage.height / SCREEN_WIDTH)
+      );
+
       const manipResult = await ImageManipulator.manipulateAsync(
         currentImage.uri,
         [
@@ -585,10 +575,10 @@ export default function CreateScreen() {
         ],
         { compress: IMAGE_QUALITY, format: ImageManipulator.SaveFormat.JPEG }
       );
-      
+
       const newImageUris = [...imageUris, manipResult.uri];
       setImageUris(newImageUris);
-      
+
       if (currentCropIndex < pendingImages.length - 1) {
         setCurrentCropIndex(currentCropIndex + 1);
         setCropOffset({ x: 0, y: 0 });
@@ -600,11 +590,11 @@ export default function CreateScreen() {
         setCurrentCropIndex(0);
         setMediaType("images");
         setIsProcessingMedia(false);
-        soundPlayer.play('postThought');
+        soundPlayer.play("postThought");
       }
     } catch (error) {
       console.error("Crop error:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       Alert.alert("Error", "Failed to crop image. Please try again.");
       setIsProcessingMedia(false);
     }
@@ -612,17 +602,17 @@ export default function CreateScreen() {
 
   const handleSkipCrop = async () => {
     if (currentCropIndex >= pendingImages.length) return;
-    
+
     const currentImage = pendingImages[currentCropIndex];
-    
+
     try {
       setIsProcessingMedia(true);
-      
+
       const compressed = await compressImage(currentImage.uri);
-      
+
       const newImageUris = [...imageUris, compressed];
       setImageUris(newImageUris);
-      
+
       if (currentCropIndex < pendingImages.length - 1) {
         setCurrentCropIndex(currentCropIndex + 1);
         setCropOffset({ x: 0, y: 0 });
@@ -634,7 +624,7 @@ export default function CreateScreen() {
         setCurrentCropIndex(0);
         setMediaType("images");
         setIsProcessingMedia(false);
-        soundPlayer.play('postThought');
+        soundPlayer.play("postThought");
       }
     } catch (error) {
       console.error("Skip crop error:", error);
@@ -643,7 +633,7 @@ export default function CreateScreen() {
   };
 
   const handleCancelCrop = () => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setShowCropModal(false);
     setPendingImages([]);
@@ -652,106 +642,111 @@ export default function CreateScreen() {
     setCropScale(1);
   };
 
-  /* --------------------------- ADD MORE IMAGES --------------------------- */
-
-  const addMoreImages = async () => {
-    if (imageUris.length >= MAX_IMAGES) {
-      soundPlayer.play('error');
-      Alert.alert("Maximum Reached", `You can only add up to ${MAX_IMAGES} images.`);
-      return;
-    }
-
-    try {
-      soundPlayer.play('click');
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') return;
-
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images"],
-        allowsMultipleSelection: true,
-        quality: 1,
-        allowsEditing: false,
-      });
-
-      if (!result.canceled && result.assets.length > 0) {
-        const remainingSlots = MAX_IMAGES - imageUris.length;
-        const selectedImages = result.assets.slice(0, remainingSlots);
-        
-        const pending: PendingImage[] = selectedImages.map(asset => ({
-          uri: asset.uri,
-          width: asset.width || 1080,
-          height: asset.height || 1080,
-        }));
-        
-        setPendingImages(pending);
-        setCurrentCropIndex(0);
-        setCropOffset({ x: 0, y: 0 });
-        setCropScale(1);
-        setShowCropModal(true);
-      }
-    } catch (error) {
-      console.error("Add images error:", error);
-      soundPlayer.play('error');
-    }
-  };
-
-  /* --------------------------- REMOVE IMAGE --------------------------- */
+  /* ---------------------------------------------------------------- */
+  /* MEDIA REMOVAL HANDLERS                                           */
+  /* ---------------------------------------------------------------- */
 
   const removeImage = (index: number) => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    
+
     const newUris = imageUris.filter((_, i) => i !== index);
     setImageUris(newUris);
-    
+
     if (newUris.length === 0) {
       setMediaType(null);
     }
-    
+
     if (currentImageIndex >= newUris.length) {
       setCurrentImageIndex(Math.max(0, newUris.length - 1));
     }
   };
 
-  /* --------------------------- AUTOCOMPLETE LOGIC --------------------------- */
+  const removeVideo = () => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setVideoUri(null);
+    setVideoThumbnailUri(null);
+    setMediaType(null);
+    setShowVideoTrimmer(false);
+    setIsVideoPlaying(false);
+  };
+
+  /* ---------------------------------------------------------------- */
+  /* VIDEO PLAYBACK                                                   */
+  /* ---------------------------------------------------------------- */
+
+  const toggleVideoPlayback = async () => {
+    if (!videoRef.current) return;
+
+    if (isVideoPlaying) {
+      await videoRef.current.pauseAsync();
+      setIsVideoPlaying(false);
+    } else {
+      await videoRef.current.playAsync();
+      setIsVideoPlaying(true);
+    }
+  };
+
+  const seekToTrimStart = async () => {
+    if (videoRef.current) {
+      await videoRef.current.setPositionAsync(trimStart * 1000);
+    }
+  };
+
+  const handleTrimStartChange = (value: number) => {
+    setTrimStart(value);
+    if (trimEnd - value > MAX_VIDEO_DURATION) {
+      setTrimEnd(value + MAX_VIDEO_DURATION);
+    }
+    if (trimEnd <= value) {
+      setTrimEnd(Math.min(value + 1, videoDuration));
+    }
+  };
+
+  /* ---------------------------------------------------------------- */
+  /* AUTOCOMPLETE LOGIC                                               */
+  /* ---------------------------------------------------------------- */
 
   const handleContentChange = (text: string) => {
     setContent(text);
 
-    const cleanedMentions = selectedMentions.filter((mention) => 
-      text.includes(mention)
-    );
+    // Clean up removed mentions
+    const cleanedMentions = selectedMentions.filter((mention) => text.includes(mention));
     if (cleanedMentions.length !== selectedMentions.length) {
       setSelectedMentions(cleanedMentions);
     }
 
-    const cleanedHashtags = selectedHashtags.filter((hashtag) => 
-      text.includes(hashtag)
-    );
-    if (cleanedHashtags.length !== selectedHashtags.length) {
-      setSelectedHashtags(cleanedHashtags);
+    // Clean up removed tournaments - FIXED
+    const cleanedTournaments = selectedTournaments.filter((t) => text.includes(t));
+    if (cleanedTournaments.length !== selectedTournaments.length) {
+      setSelectedTournaments(cleanedTournaments);
+    }
+
+    // Clean up removed leagues - FIXED
+    const cleanedLeagues = selectedLeagues.filter((l) => text.includes(l));
+    if (cleanedLeagues.length !== selectedLeagues.length) {
+      setSelectedLeagues(cleanedLeagues);
     }
 
     const lastAtIndex = text.lastIndexOf("@");
     const lastHashIndex = text.lastIndexOf("#");
-    
+
     const triggerIndex = Math.max(lastAtIndex, lastHashIndex);
     const triggerChar = lastAtIndex > lastHashIndex ? "@" : "#";
-    
+
     if (triggerIndex === -1) {
       setShowAutocomplete(false);
       return;
     }
 
     const afterTrigger = text.slice(triggerIndex + 1);
-    
+
     if (afterTrigger.includes("  ") || afterTrigger.includes("\n")) {
       setShowAutocomplete(false);
       return;
     }
-    
+
     const searchText = afterTrigger.split(" ")[0];
     setCurrentSearchText(searchText);
 
@@ -772,27 +767,25 @@ export default function CreateScreen() {
     }, 300);
   };
 
-  /* --------------------------- SEARCH MENTIONS --------------------------- */
-
   const searchMentions = async (searchText: string) => {
     try {
       const searchLower = searchText.toLowerCase();
-      
+
       const partnerResults = allPartners.filter((p) =>
         p.displayName.toLowerCase().includes(searchLower)
       );
 
       const coursesSnap = await getDocs(collection(db, "courses"));
-      
-      const courseResults: any[] = [];
+
+      const courseResults: AutocompleteItem[] = [];
       coursesSnap.forEach((docSnap) => {
         const data = docSnap.data();
         const courseName = data.course_name || data.courseName || "";
         const clubName = data.club_name || data.clubName || "";
-        
+
         const matchesCourseName = courseName.toLowerCase().includes(searchLower);
         const matchesClubName = clubName.toLowerCase().includes(searchLower);
-        
+
         if (matchesCourseName || matchesClubName) {
           let displayName = "";
           if (clubName && courseName && clubName !== courseName) {
@@ -802,21 +795,19 @@ export default function CreateScreen() {
           } else {
             displayName = courseName;
           }
-          
+
           courseResults.push({
             courseId: data.id,
             courseName: displayName,
-            location: data.location 
-              ? `${data.location.city}, ${data.location.state}`
-              : "",
+            location: data.location ? `${data.location.city}, ${data.location.state}` : "",
             type: "course",
           });
         }
       });
 
       if (partnerResults.length > 0 || courseResults.length > 0) {
-        const combined = [
-          ...partnerResults.map((p) => ({ ...p, type: "partner" })),
+        const combined: AutocompleteItem[] = [
+          ...partnerResults.map((p) => ({ ...p, type: "partner" as const })),
           ...courseResults,
         ];
         setAutocompleteResults(combined);
@@ -829,51 +820,47 @@ export default function CreateScreen() {
       }
     } catch (err) {
       console.error("Search mentions error:", err);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
     }
   };
-
-  /* --------------------------- SEARCH HASHTAGS --------------------------- */
 
   const searchHashtags = async (searchText: string) => {
     try {
       const searchLower = searchText.toLowerCase();
-      const results: any[] = [];
-      
+      const results: AutocompleteItem[] = [];
+
+      // Search tournaments
       const tournamentsSnap = await getDocs(collection(db, "tournaments"));
       tournamentsSnap.forEach((docSnap) => {
         const data = docSnap.data();
         const name = data.name || "";
-        
+
         if (name.toLowerCase().includes(searchLower)) {
           results.push({
             id: docSnap.id,
             tournamentId: data.tournId || docSnap.id,
             name: name,
             type: "tournament",
-            location: data.location 
-              ? `${data.location.city}, ${data.location.state}`
-              : "",
+            location: data.location ? `${data.location.city}, ${data.location.state}` : "",
             startDate: data.startDate,
           });
         }
       });
-      
+
+      // Search leagues
       try {
         const leaguesSnap = await getDocs(collection(db, "leagues"));
         leaguesSnap.forEach((docSnap) => {
           const data = docSnap.data();
           const name = data.name || "";
-          
+
           if (name.toLowerCase().includes(searchLower)) {
             results.push({
               id: docSnap.id,
-              leagueId: data.leagueId || docSnap.id,
+              leagueId: docSnap.id,
               name: name,
               type: "league",
-              location: data.location 
-                ? `${data.location.city}, ${data.location.state}`
-                : "",
+              location: data.regionName || "",
             });
           }
         });
@@ -889,11 +876,9 @@ export default function CreateScreen() {
       }
     } catch (err) {
       console.error("Search hashtags error:", err);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
     }
   };
-
-  /* --------------------------- SEARCH COURSES API --------------------------- */
 
   const searchCoursesAPI = async (searchText: string) => {
     try {
@@ -924,12 +909,12 @@ export default function CreateScreen() {
             } else {
               displayName = c.course_name;
             }
-            
+
             return {
               courseId: c.id,
               courseName: displayName,
               location: `${c.location.city}, ${c.location.state}`,
-              type: "course",
+              type: "course" as const,
             };
           })
         );
@@ -937,43 +922,41 @@ export default function CreateScreen() {
       }
     } catch (err) {
       console.error("Course API search error:", err);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
     }
   };
 
-  /* --------------------------- HANDLE SELECT AUTOCOMPLETE --------------------------- */
-
-  const handleSelectAutocomplete = async (item: any) => {
-    soundPlayer.play('click');
+  const handleSelectAutocomplete = async (item: AutocompleteItem) => {
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     if (autocompleteType === "mention") {
       const lastAtIndex = content.lastIndexOf("@");
       const beforeAt = content.slice(0, lastAtIndex);
       const afterSearch = content.slice(lastAtIndex + 1 + currentSearchText.length);
-      
+
       let mentionText = "";
-      
+
       if (item.type === "partner") {
         mentionText = `@${item.displayName}`;
       } else if (item.type === "course") {
         mentionText = `@${item.courseName}`;
-        
+
+        // Cache course to Firestore
         try {
-          const courseQuery = query(
-            collection(db, "courses"),
-            where("id", "==", item.courseId)
-          );
+          const courseQuery = query(collection(db, "courses"), where("id", "==", item.courseId));
           const courseSnap = await getDocs(courseQuery);
-          
+
           if (courseSnap.empty) {
             await addDoc(collection(db, "courses"), {
               id: item.courseId,
               course_name: item.courseName,
-              location: item.location ? {
-                city: item.location.split(", ")[0],
-                state: item.location.split(", ")[1]
-              } : null,
+              location: item.location
+                ? {
+                    city: item.location.split(", ")[0],
+                    state: item.location.split(", ")[1],
+                  }
+                : null,
             });
           }
         } catch (err) {
@@ -982,32 +965,40 @@ export default function CreateScreen() {
       }
 
       setContent(`${beforeAt}${mentionText} ${afterSearch}`);
-      
+
       if (mentionText && !selectedMentions.includes(mentionText)) {
         setSelectedMentions([...selectedMentions, mentionText]);
       }
-      
     } else if (autocompleteType === "hashtag") {
       const lastHashIndex = content.lastIndexOf("#");
       const beforeHash = content.slice(0, lastHashIndex);
       const afterSearch = content.slice(lastHashIndex + 1 + currentSearchText.length);
-      
+
       const hashtagText = `#${item.name}`;
-      
+
       setContent(`${beforeHash}${hashtagText} ${afterSearch}`);
-      
-      if (hashtagText && !selectedHashtags.includes(hashtagText)) {
-        setSelectedHashtags([...selectedHashtags, hashtagText]);
+
+      // FIXED: Add to correct list based on type
+      if (item.type === "tournament") {
+        if (hashtagText && !selectedTournaments.includes(hashtagText)) {
+          setSelectedTournaments([...selectedTournaments, hashtagText]);
+        }
+      } else if (item.type === "league") {
+        if (hashtagText && !selectedLeagues.includes(hashtagText)) {
+          setSelectedLeagues([...selectedLeagues, hashtagText]);
+        }
       }
     }
 
     setShowAutocomplete(false);
   };
 
-  /* --------------------------- HANDLE CLOSE --------------------------- */
+  /* ---------------------------------------------------------------- */
+  /* NAVIGATION HANDLERS                                              */
+  /* ---------------------------------------------------------------- */
 
   const handleClose = async () => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     if (content.trim() || imageUris.length > 0 || videoUri) {
@@ -1020,7 +1011,7 @@ export default function CreateScreen() {
               text: "Keep Editing",
               style: "cancel",
               onPress: () => {
-                soundPlayer.play('click');
+                soundPlayer.play("click");
                 resolve(false);
               },
             },
@@ -1028,7 +1019,7 @@ export default function CreateScreen() {
               text: "Discard",
               style: "destructive",
               onPress: () => {
-                soundPlayer.play('error');
+                soundPlayer.play("error");
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                 resolve(true);
               },
@@ -1045,12 +1036,10 @@ export default function CreateScreen() {
     }
   };
 
-  /* --------------------------- DELETE POST ---------------------------- */
-
   const handleDelete = async () => {
     if (!editingPostId) return;
 
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     const confirmDelete = async () => {
@@ -1062,22 +1051,22 @@ export default function CreateScreen() {
             "Delete Post",
             "Are you sure you want to delete this post? This cannot be undone.",
             [
-              { 
-                text: "Cancel", 
-                style: "cancel", 
+              {
+                text: "Cancel",
+                style: "cancel",
                 onPress: () => {
-                  soundPlayer.play('click');
+                  soundPlayer.play("click");
                   resolve(false);
-                }
+                },
               },
-              { 
-                text: "Delete", 
-                style: "destructive", 
+              {
+                text: "Delete",
+                style: "destructive",
                 onPress: () => {
-                  soundPlayer.play('error');
+                  soundPlayer.play("error");
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                   resolve(true);
-                }
+                },
               },
             ]
           );
@@ -1091,26 +1080,28 @@ export default function CreateScreen() {
     try {
       setIsPosting(true);
       await deleteDoc(doc(db, "thoughts", editingPostId));
-      soundPlayer.play('dart');
+      soundPlayer.play("dart");
       Alert.alert("Deleted 🗑️", "Your thought has been deleted.");
       router.back();
     } catch (err) {
       console.error("Delete error:", err);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       Alert.alert("Error", "Failed to delete post. Please try again.");
       setIsPosting(false);
     }
   };
 
-  /* --------------------------- POST HANDLING ---------------------------- */
+  /* ---------------------------------------------------------------- */
+  /* POST HANDLING                                                    */
+  /* ---------------------------------------------------------------- */
 
   const handlePost = async () => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     const emailVerified = await isEmailVerified();
     if (!emailVerified) {
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       Alert.alert("Email Not Verified", EMAIL_VERIFICATION_MESSAGE);
       return;
     }
@@ -1118,23 +1109,20 @@ export default function CreateScreen() {
     if (!isEditMode) {
       const { allowed, remainingSeconds } = await checkRateLimit("post");
       if (!allowed) {
-        soundPlayer.play('error');
+        soundPlayer.play("error");
         Alert.alert("Please Wait", getRateLimitMessage("post", remainingSeconds));
         return;
       }
     }
 
     if (!writable) {
-      soundPlayer.play('error');
-      Alert.alert(
-        "Verification Pending",
-        "Posting unlocks once your account is verified."
-      );
+      soundPlayer.play("error");
+      Alert.alert("Verification Pending", "Posting unlocks once your account is verified.");
       return;
     }
 
     if (!content.trim()) {
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       Alert.alert("Empty Post", "Please add some content.");
       return;
     }
@@ -1147,7 +1135,7 @@ export default function CreateScreen() {
 
       const userDoc = await getDoc(doc(db, "users", uid));
       const currentUserData = userDoc.data();
-      
+
       if (!currentUserData) throw new Error("No user data");
 
       const userLat = currentUserData.currentLatitude || currentUserData.latitude;
@@ -1162,14 +1150,14 @@ export default function CreateScreen() {
       if (mediaType === "images" && imageUris.length > 0) {
         for (let i = 0; i < imageUris.length; i++) {
           const uri = imageUris[i];
-          
-          if (uri.startsWith('file://')) {
+
+          if (uri.startsWith("file://")) {
             const response = await fetch(uri);
             const blob = await response.blob();
-            
+
             const path = `posts/${uid}/${Date.now()}_${i}.jpg`;
             const storageRef = ref(storage, path);
-            
+
             await uploadBytes(storageRef, blob);
             const url = await getDownloadURL(storageRef);
             uploadedImageUrls.push(url);
@@ -1184,13 +1172,13 @@ export default function CreateScreen() {
       let uploadedThumbnailUrl: string | null = null;
 
       if (mediaType === "video" && videoUri) {
-        if (videoUri.startsWith('file://')) {
+        if (videoUri.startsWith("file://")) {
           const response = await fetch(videoUri);
           const blob = await response.blob();
-          
+
           const path = `posts/${uid}/${Date.now()}.mp4`;
           const storageRef = ref(storage, path);
-          
+
           await uploadBytes(storageRef, blob);
           uploadedVideoUrl = await getDownloadURL(storageRef);
 
@@ -1200,7 +1188,7 @@ export default function CreateScreen() {
               const thumbnailBlob = await thumbnailResponse.blob();
               const thumbnailPath = `posts/${uid}/${Date.now()}_thumb.jpg`;
               const thumbnailRef = ref(storage, thumbnailPath);
-              
+
               await uploadBytes(thumbnailRef, thumbnailBlob);
               uploadedThumbnailUrl = await getDownloadURL(thumbnailRef);
             } catch (thumbError) {
@@ -1213,38 +1201,38 @@ export default function CreateScreen() {
         }
       }
 
-      // Extract @ mentions
+      // Extract @ mentions from content
       const mentionRegex = /@([^@#\n]+?)(?=\s{2,}|$|@|#|\n)/g;
       const mentions = content.match(mentionRegex) || [];
-      
+
       const extractedPartners: Partner[] = [];
       const extractedCourses: Course[] = [];
-      
+
       for (const mention of mentions) {
         const mentionText = mention.substring(1).trim();
-        
+
         const matchedPartner = allPartners.find(
           (p) => p.displayName.toLowerCase() === mentionText.toLowerCase()
         );
-        
+
         if (matchedPartner && !extractedPartners.find((p) => p.userId === matchedPartner.userId)) {
           extractedPartners.push(matchedPartner);
           console.log("✅ Matched partner:", matchedPartner.displayName);
           continue;
         }
-        
+
         try {
           const coursesSnap = await getDocs(collection(db, "courses"));
-          
+
           let foundCourse = false;
           coursesSnap.forEach((docSnap) => {
             if (foundCourse) return;
-            
+
             const data = docSnap.data();
             const courseName = data.course_name || data.courseName || "";
             const clubName = data.club_name || data.clubName || "";
             const courseId = data.id || parseInt(docSnap.id) || docSnap.id;
-            
+
             let displayName = "";
             if (clubName && courseName && clubName !== courseName) {
               displayName = `${clubName} - ${courseName}`;
@@ -1253,14 +1241,15 @@ export default function CreateScreen() {
             } else {
               displayName = courseName;
             }
-            
+
             const mentionLower = mentionText.toLowerCase();
-            
-            if ((displayName.toLowerCase() === mentionLower ||
-                 clubName.toLowerCase() === mentionLower ||
-                 courseName.toLowerCase() === mentionLower) &&
-                !extractedCourses.find((c) => c.courseId === courseId)) {
-              
+
+            if (
+              (displayName.toLowerCase() === mentionLower ||
+                clubName.toLowerCase() === mentionLower ||
+                courseName.toLowerCase() === mentionLower) &&
+              !extractedCourses.find((c) => c.courseId === courseId)
+            ) {
               extractedCourses.push({
                 courseId: courseId,
                 courseName: displayName,
@@ -1269,7 +1258,7 @@ export default function CreateScreen() {
               console.log("✅ Matched course:", displayName, "ID:", courseId);
             }
           });
-          
+
           if (!foundCourse) {
             console.log("⚠️ No course match found for:", mentionText);
           }
@@ -1278,29 +1267,31 @@ export default function CreateScreen() {
         }
       }
 
-      // Extract # hashtags
+      // Extract # hashtags from content
       const hashtagRegex = /#([^@#\n]+?)(?=\s{2,}|$|@|#|\n)/g;
       const hashtags = content.match(hashtagRegex) || [];
-      
-      const extractedTournaments: Tournament[] = [];
-      const extractedLeagues: Tournament[] = [];
-      
+
+      const extractedTournaments: TaggedTournament[] = [];
+      const extractedLeagues: TaggedLeague[] = [];
+
       for (const hashtag of hashtags) {
         const hashtagText = hashtag.substring(1).trim();
-        
+
+        // Check tournaments
         try {
           const tournamentsSnap = await getDocs(collection(db, "tournaments"));
-          
+
           let foundTournament = false;
           tournamentsSnap.forEach((docSnap) => {
             if (foundTournament) return;
-            
+
             const data = docSnap.data();
             const name = data.name || "";
-            
-            if (name.toLowerCase() === hashtagText.toLowerCase() &&
-                !extractedTournaments.find((t) => t.tournamentId === docSnap.id)) {
-              
+
+            if (
+              name.toLowerCase() === hashtagText.toLowerCase() &&
+              !extractedTournaments.find((t) => t.tournamentId === docSnap.id)
+            ) {
               extractedTournaments.push({
                 tournamentId: data.tournId || docSnap.id,
                 name: name,
@@ -1313,22 +1304,24 @@ export default function CreateScreen() {
         } catch (err) {
           console.error("Error matching tournament:", err);
         }
-        
+
+        // Check leagues
         try {
           const leaguesSnap = await getDocs(collection(db, "leagues"));
-          
+
           let foundLeague = false;
           leaguesSnap.forEach((docSnap) => {
             if (foundLeague) return;
-            
+
             const data = docSnap.data();
             const name = data.name || "";
-            
-            if (name.toLowerCase() === hashtagText.toLowerCase() &&
-                !extractedLeagues.find((l) => l.tournamentId === docSnap.id)) {
-              
+
+            if (
+              name.toLowerCase() === hashtagText.toLowerCase() &&
+              !extractedLeagues.find((l) => l.leagueId === docSnap.id)
+            ) {
               extractedLeagues.push({
-                tournamentId: data.leagueId || docSnap.id,
+                leagueId: docSnap.id,
                 name: name,
                 type: "league",
               });
@@ -1346,10 +1339,11 @@ export default function CreateScreen() {
       console.log("📝 Extracted tournaments:", extractedTournaments);
       console.log("📝 Extracted leagues:", extractedLeagues);
 
+      // Build post data - SAME SCHEMA AS BEFORE
       const postData: any = {
         content: content.trim(),
         postType: selectedType,
-        
+
         regionKey: currentUserData.regionKey || "",
         geohash: geohash,
         location: {
@@ -1358,15 +1352,17 @@ export default function CreateScreen() {
           latitude: userLat || null,
           longitude: userLon || null,
         },
-        
+
         userName: currentUserData.displayName || "Unknown",
         displayName: currentUserData.displayName || "Unknown",
         userAvatar: currentUserData.avatar || null,
         avatar: currentUserData.avatar || null,
         handicap: currentUserData.handicap || null,
         userType: currentUserData.userType || "Golfer",
-        verified: currentUserData.verified === true || currentUserData.verification?.status === "approved",
-        
+        verified:
+          currentUserData.verified === true ||
+          currentUserData.verification?.status === "approved",
+
         hasMedia: uploadedImageUrls.length > 0 || uploadedVideoUrl !== null,
         mediaType: uploadedImageUrls.length > 0 ? "images" : uploadedVideoUrl ? "video" : null,
         imageUrls: uploadedImageUrls,
@@ -1377,17 +1373,17 @@ export default function CreateScreen() {
         videoDuration: uploadedVideoUrl ? videoDuration : null,
         videoTrimStart: uploadedVideoUrl ? trimStart : null,
         videoTrimEnd: uploadedVideoUrl ? trimEnd : null,
-        
+
         likes: 0,
         likedBy: [],
         comments: 0,
         engagementScore: 0,
         lastActivityAt: serverTimestamp(),
         viewCount: 0,
-        
+
         contentLowercase: content.trim().toLowerCase(),
         hashtags: extractHashtags(content),
-        
+
         taggedPartners: extractedPartners.map((p) => ({
           userId: p.userId,
           displayName: p.displayName,
@@ -1401,22 +1397,22 @@ export default function CreateScreen() {
           name: t.name,
         })),
         taggedLeagues: extractedLeagues.map((l) => ({
-          leagueId: l.tournamentId,
+          leagueId: l.leagueId,
           name: l.name,
         })),
-        
+
         isReported: false,
         reportCount: 0,
         isHidden: false,
         moderatedAt: null,
         moderatedBy: null,
-        
+
         createdAtTimestamp: Date.now(),
       };
 
       if (isEditMode && editingPostId) {
         await updateDoc(doc(db, "thoughts", editingPostId), postData);
-        soundPlayer.play('postThought');
+        soundPlayer.play("postThought");
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         Alert.alert("Updated ✏️", "Your thought has been updated.");
       } else {
@@ -1429,7 +1425,7 @@ export default function CreateScreen() {
 
         await updateRateLimitTimestamp("post");
 
-        soundPlayer.play('postThought');
+        soundPlayer.play("postThought");
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         Alert.alert("Tee'd Up ⛳️", "Your thought has been published.");
       }
@@ -1437,191 +1433,21 @@ export default function CreateScreen() {
       router.back();
     } catch (err) {
       console.error("Post error:", err);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       Alert.alert("Error", "Failed to post. Please try again.");
       setIsPosting(false);
     }
   };
 
-  /* --------------------------- TOGGLE VIDEO PLAYBACK --------------------------- */
-
-  const toggleVideoPlayback = async () => {
-    if (!videoRef.current) return;
-    
-    if (isVideoPlaying) {
-      await videoRef.current.pauseAsync();
-      setIsVideoPlaying(false);
-    } else {
-      await videoRef.current.playAsync();
-      setIsVideoPlaying(true);
-    }
-  };
-
-  const seekToTrimStart = async () => {
-    if (videoRef.current) {
-      await videoRef.current.setPositionAsync(trimStart * 1000);
-    }
-  };
-
-  /* --------------------------- CROP MODAL UI --------------------------- */
-
-  const renderCropModal = () => {
-    if (!showCropModal || pendingImages.length === 0) return null;
-    
-    const currentImage = pendingImages[currentCropIndex];
-    if (!currentImage) return null;
-    
-    const imageAspect = currentImage.width / currentImage.height;
-    const containerSize = SCREEN_WIDTH - 48;
-    
-    return (
-      <Modal
-        visible={showCropModal}
-        animationType="slide"
-        presentationStyle="fullScreen"
-      >
-        <SafeAreaView style={styles.cropModalContainer}>
-          <View style={styles.cropModalHeader}>
-            <TouchableOpacity onPress={handleCancelCrop} style={styles.cropHeaderButton}>
-              <Ionicons name="close" size={28} color="#FFF" />
-            </TouchableOpacity>
-            
-            <Text style={styles.cropModalTitle}>
-              Crop Image {currentCropIndex + 1} of {pendingImages.length}
-            </Text>
-            
-            <TouchableOpacity 
-              onPress={handleCropComplete} 
-              style={styles.cropHeaderButton}
-              disabled={isProcessingMedia}
-            >
-              {isProcessingMedia ? (
-                <ActivityIndicator size="small" color="#FFD700" />
-              ) : (
-                <Ionicons name="checkmark" size={28} color="#FFD700" />
-              )}
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.cropAreaContainer}>
-            <View style={[styles.cropArea, { width: containerSize, height: containerSize }]}>
-              <Image
-                source={{ uri: currentImage.uri }}
-                style={[
-                  styles.cropImage,
-                  {
-                    width: imageAspect >= 1 ? containerSize * cropScale : containerSize * imageAspect * cropScale,
-                    height: imageAspect >= 1 ? containerSize / imageAspect * cropScale : containerSize * cropScale,
-                    transform: [
-                      { translateX: cropOffset.x },
-                      { translateY: cropOffset.y },
-                    ],
-                  },
-                ]}
-                resizeMode="contain"
-              />
-              
-              <View style={styles.cropGridOverlay} pointerEvents="none">
-                <View style={styles.cropGridRow}>
-                  <View style={styles.cropGridCell} />
-                  <View style={[styles.cropGridCell, styles.cropGridCellBorder]} />
-                  <View style={styles.cropGridCell} />
-                </View>
-                <View style={[styles.cropGridRow, styles.cropGridRowBorder]}>
-                  <View style={styles.cropGridCell} />
-                  <View style={[styles.cropGridCell, styles.cropGridCellBorder]} />
-                  <View style={styles.cropGridCell} />
-                </View>
-                <View style={styles.cropGridRow}>
-                  <View style={styles.cropGridCell} />
-                  <View style={[styles.cropGridCell, styles.cropGridCellBorder]} />
-                  <View style={styles.cropGridCell} />
-                </View>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.cropControls}>
-            <Text style={styles.cropControlLabel}>Zoom</Text>
-            <Slider
-              style={styles.cropSlider}
-              minimumValue={1}
-              maximumValue={3}
-              value={cropScale}
-              onValueChange={setCropScale}
-              minimumTrackTintColor="#FFD700"
-              maximumTrackTintColor="#444"
-              thumbTintColor="#FFD700"
-            />
-            
-            <View style={styles.cropOffsetControls}>
-              <View style={styles.cropOffsetRow}>
-                <Text style={styles.cropControlLabel}>Horizontal</Text>
-                <Slider
-                  style={styles.cropSlider}
-                  minimumValue={-100}
-                  maximumValue={100}
-                  value={cropOffset.x}
-                  onValueChange={(x) => setCropOffset({ ...cropOffset, x })}
-                  minimumTrackTintColor="#FFD700"
-                  maximumTrackTintColor="#444"
-                  thumbTintColor="#FFD700"
-                />
-              </View>
-              
-              <View style={styles.cropOffsetRow}>
-                <Text style={styles.cropControlLabel}>Vertical</Text>
-                <Slider
-                  style={styles.cropSlider}
-                  minimumValue={-100}
-                  maximumValue={100}
-                  value={cropOffset.y}
-                  onValueChange={(y) => setCropOffset({ ...cropOffset, y })}
-                  minimumTrackTintColor="#FFD700"
-                  maximumTrackTintColor="#444"
-                  thumbTintColor="#FFD700"
-                />
-              </View>
-            </View>
-
-            <View style={styles.cropActionButtons}>
-              <TouchableOpacity 
-                style={styles.cropSkipButton}
-                onPress={handleSkipCrop}
-                disabled={isProcessingMedia}
-              >
-                <Text style={styles.cropSkipButtonText}>Skip Crop</Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity 
-                style={styles.cropConfirmButton}
-                onPress={handleCropComplete}
-                disabled={isProcessingMedia}
-              >
-                {isProcessingMedia ? (
-                  <ActivityIndicator size="small" color="#0D5C3A" />
-                ) : (
-                  <Text style={styles.cropConfirmButtonText}>
-                    {currentCropIndex < pendingImages.length - 1 ? "Next Image" : "Done"}
-                  </Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </SafeAreaView>
-      </Modal>
-    );
-  };
-
-  /* --------------------------- UI ---------------------------- */
+  /* ---------------------------------------------------------------- */
+  /* RENDER                                                           */
+  /* ---------------------------------------------------------------- */
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
+      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity 
-          onPress={handleClose}
-          style={styles.closeButton}
-        >
+        <TouchableOpacity onPress={handleClose} style={styles.closeButton}>
           <Image
             source={require("@/assets/icons/Close.png")}
             style={styles.closeIcon}
@@ -1629,17 +1455,11 @@ export default function CreateScreen() {
           />
         </TouchableOpacity>
 
-        <Text style={styles.headerTitle}>
-          {isEditMode ? "Edit Thought" : "Create Thought"}
-        </Text>
+        <Text style={styles.headerTitle}>{isEditMode ? "Edit Thought" : "Create Thought"}</Text>
 
         <View style={styles.headerRightButtons}>
           {isEditMode && (
-            <TouchableOpacity
-              onPress={handleDelete}
-              disabled={isPosting}
-              style={styles.deleteButton}
-            >
+            <TouchableOpacity onPress={handleDelete} disabled={isPosting} style={styles.deleteButton}>
               <Text style={styles.deleteIcon}>🗑️</Text>
             </TouchableOpacity>
           )}
@@ -1647,24 +1467,21 @@ export default function CreateScreen() {
           <TouchableOpacity
             onPress={handlePost}
             disabled={!writable || isPosting}
-            style={[
-              styles.postButton,
-              (!writable || isPosting) && styles.postButtonDisabled,
-            ]}
+            style={[styles.postButton, (!writable || isPosting) && styles.postButtonDisabled]}
           >
             <Text style={styles.flagIcon}>{isEditMode ? "✏️" : "⛳"}</Text>
           </TouchableOpacity>
         </View>
       </View>
 
+      {/* Lock Banner */}
       {!writable && (
         <View style={styles.lockBanner}>
-          <Text style={styles.lockText}>
-            Posting unlocks once verification is approved.
-          </Text>
+          <Text style={styles.lockText}>Posting unlocks once verification is approved.</Text>
         </View>
       )}
 
+      {/* Content */}
       <KeyboardAwareScrollView
         style={styles.content}
         keyboardShouldPersistTaps="handled"
@@ -1674,366 +1491,80 @@ export default function CreateScreen() {
         enableAutomaticScroll={true}
         contentContainerStyle={{ paddingBottom: 100 }}
       >
-          {/* MEDIA SECTION */}
-          <View style={styles.section}>
-            {isProcessingMedia && !showCropModal ? (
-              <View style={styles.mediaPreviewBox}>
-                <ActivityIndicator size="large" color="#0D5C3A" />
-                <Text style={styles.processingText}>Processing media...</Text>
-              </View>
-            ) : (imageUris.length > 0 || videoUri) ? (
-              <View>
-                {imageUris.length > 0 && (
-                  <View>
-                    <FlatList
-                      data={imageUris}
-                      horizontal
-                      pagingEnabled
-                      showsHorizontalScrollIndicator={false}
-                      onMomentumScrollEnd={(event) => {
-                        const index = Math.round(
-                          event.nativeEvent.contentOffset.x / (SCREEN_WIDTH - 32)
-                        );
-                        setCurrentImageIndex(index);
-                      }}
-                      renderItem={({ item, index }) => (
-                        <View style={[styles.imageCarouselItem, { width: SCREEN_WIDTH - 32 }]}>
-                          <Image source={{ uri: item }} style={styles.carouselImage} />
-                          <TouchableOpacity
-                            style={styles.removeImageButton}
-                            onPress={() => removeImage(index)}
-                          >
-                            <Text style={styles.removeImageText}>✕</Text>
-                          </TouchableOpacity>
-                        </View>
-                      )}
-                      keyExtractor={(item, index) => `image-${index}`}
-                    />
-                    
-                    {imageUris.length > 1 && (
-                      <View style={styles.paginationDots}>
-                        {imageUris.map((_, index) => (
-                          <View
-                            key={index}
-                            style={[
-                              styles.dot,
-                              currentImageIndex === index && styles.dotActive,
-                            ]}
-                          />
-                        ))}
-                      </View>
-                    )}
-                    
-                    {imageUris.length < MAX_IMAGES && (
-                      <TouchableOpacity
-                        style={styles.addMoreButton}
-                        onPress={addMoreImages}
-                      >
-                        <Ionicons name="add-circle-outline" size={20} color="#FFF" />
-                        <Text style={styles.addMoreText}>
-                          Add More ({imageUris.length}/{MAX_IMAGES})
-                        </Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                )}
+        {/* Media Section */}
+        <MediaSection
+          mediaType={mediaType}
+          imageUris={imageUris}
+          videoUri={videoUri}
+          isProcessingMedia={isProcessingMedia}
+          showCropModal={showCropModal}
+          writable={writable}
+          videoRef={videoRef}
+          videoDuration={videoDuration}
+          trimStart={trimStart}
+          trimEnd={trimEnd}
+          showVideoTrimmer={showVideoTrimmer}
+          isVideoPlaying={isVideoPlaying}
+          currentImageIndex={currentImageIndex}
+          setCurrentImageIndex={setCurrentImageIndex}
+          onAddMedia={handleAddMedia}
+          onAddMoreImages={addMoreImages}
+          onRemoveImage={removeImage}
+          onRemoveVideo={removeVideo}
+          onToggleVideoPlayback={toggleVideoPlayback}
+          onTrimStartChange={handleTrimStartChange}
+          onTrimEndChange={setTrimEnd}
+          onSeekToTrimStart={seekToTrimStart}
+        />
 
-                {videoUri && (
-                  <View>
-                    <View style={styles.mediaPreviewBox}>
-                      <Video
-                        ref={videoRef}
-                        source={{ uri: videoUri }}
-                        style={styles.mediaPreview}
-                        resizeMode={ResizeMode.COVER}
-                        isLooping
-                        isMuted
-                        shouldPlay={false}
-                      />
-                      
-                      {!isVideoPlaying && (
-                        <TouchableOpacity
-                          style={styles.videoPlayOverlay}
-                          onPress={toggleVideoPlayback}
-                        >
-                          <View style={styles.playButton}>
-                            <Ionicons name="play" size={32} color="#0D5C3A" />
-                          </View>
-                        </TouchableOpacity>
-                      )}
-                      
-                      {isVideoPlaying && (
-                        <TouchableOpacity
-                          style={styles.videoPauseOverlay}
-                          onPress={toggleVideoPlayback}
-                        >
-                          <View style={styles.pauseButton}>
-                            <Ionicons name="pause" size={28} color="#0D5C3A" />
-                          </View>
-                        </TouchableOpacity>
-                      )}
-                    </View>
+        {/* Type Selector */}
+        <TypeSelector
+          availableTypes={availableTypes}
+          selectedType={selectedType}
+          onSelectType={setSelectedType}
+        />
 
-                    {showVideoTrimmer && (
-                      <View style={styles.videoTrimmer}>
-                        <View style={styles.trimmerHeader}>
-                          <Ionicons name="cut-outline" size={20} color="#0D5C3A" />
-                          <Text style={styles.trimmerLabel}>
-                            Select Clip: {trimStart.toFixed(1)}s - {trimEnd.toFixed(1)}s 
-                          </Text>
-                          <Text style={styles.trimmerDuration}>
-                            ({(trimEnd - trimStart).toFixed(1)}s)
-                          </Text>
-                        </View>
-                        
-                        <View style={styles.timelineContainer}>
-                          <View style={styles.timeline}>
-                            <View 
-                              style={[
-                                styles.timelineSelected,
-                                {
-                                  left: `${(trimStart / videoDuration) * 100}%`,
-                                  width: `${((trimEnd - trimStart) / videoDuration) * 100}%`,
-                                }
-                              ]} 
-                            />
-                          </View>
-                          <View style={styles.timelineLabels}>
-                            <Text style={styles.timelineLabel}>0s</Text>
-                            <Text style={styles.timelineLabel}>{videoDuration.toFixed(0)}s</Text>
-                          </View>
-                        </View>
-                        
-                        <View style={styles.sliderContainer}>
-                          <Text style={styles.sliderLabel}>Start Time</Text>
-                          <View style={styles.sliderRow}>
-                            <Slider
-                              style={styles.slider}
-                              minimumValue={0}
-                              maximumValue={Math.max(0, videoDuration - 1)}
-                              value={trimStart}
-                              onValueChange={(value) => {
-                                setTrimStart(value);
-                                if (trimEnd - value > MAX_VIDEO_DURATION) {
-                                  setTrimEnd(value + MAX_VIDEO_DURATION);
-                                }
-                                if (trimEnd <= value) {
-                                  setTrimEnd(Math.min(value + 1, videoDuration));
-                                }
-                              }}
-                              onSlidingComplete={seekToTrimStart}
-                              minimumTrackTintColor="#0D5C3A"
-                              maximumTrackTintColor="#E0E0E0"
-                              thumbTintColor="#0D5C3A"
-                            />
-                            <Text style={styles.sliderValue}>{trimStart.toFixed(1)}s</Text>
-                          </View>
-                        </View>
+        {/* Content Input */}
+        <ContentInput
+          content={content}
+          onContentChange={handleContentChange}
+          writable={writable}
+          textInputRef={textInputRef}
+          showAutocomplete={showAutocomplete}
+          autocompleteResults={autocompleteResults}
+          onSelectAutocomplete={handleSelectAutocomplete}
+          selectedMentions={selectedMentions}
+          selectedTournaments={selectedTournaments}
+          selectedLeagues={selectedLeagues}
+        />
+      </KeyboardAwareScrollView>
 
-                        <View style={styles.sliderContainer}>
-                          <Text style={styles.sliderLabel}>End Time</Text>
-                          <View style={styles.sliderRow}>
-                            <Slider
-                              style={styles.slider}
-                              minimumValue={Math.max(trimStart + 0.5, 0.5)}
-                              maximumValue={Math.min(videoDuration, trimStart + MAX_VIDEO_DURATION)}
-                              value={trimEnd}
-                              onValueChange={setTrimEnd}
-                              minimumTrackTintColor="#0D5C3A"
-                              maximumTrackTintColor="#E0E0E0"
-                              thumbTintColor="#0D5C3A"
-                            />
-                            <Text style={styles.sliderValue}>{trimEnd.toFixed(1)}s</Text>
-                          </View>
-                        </View>
-
-                        {videoDuration > MAX_VIDEO_DURATION && (
-                          <View style={styles.trimmerWarning}>
-                            <Ionicons name="information-circle-outline" size={16} color="#664D03" />
-                            <Text style={styles.trimmerWarningText}>
-                              Maximum clip length is {MAX_VIDEO_DURATION} seconds
-                            </Text>
-                          </View>
-                        )}
-                      </View>
-                    )}
-
-                    <TouchableOpacity
-                      style={styles.removeVideoButton}
-                      onPress={() => {
-                        soundPlayer.play('click');
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        setVideoUri(null);
-                        setVideoThumbnailUri(null);
-                        setMediaType(null);
-                        setShowVideoTrimmer(false);
-                        setIsVideoPlaying(false);
-                      }}
-                    >
-                      <Ionicons name="trash-outline" size={18} color="#FFF" />
-                      <Text style={styles.removeMediaText}>Remove Video</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-              </View>
-            ) : (
-              <TouchableOpacity
-                style={styles.addMediaButton}
-                onPress={handleAddMedia}
-                disabled={!writable}
-              >
-                <Ionicons name="camera-outline" size={48} color="#0D5C3A" />
-                <Text style={styles.addMediaText}>Add Media</Text>
-                <Text style={styles.addMediaHint}>Up to {MAX_IMAGES} photos or 1 video</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {/* THOUGHT TYPE SELECTOR */}
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Thought Type</Text>
-            <View style={styles.typeGrid}>
-              {availableTypes.map((type) => (
-                <TouchableOpacity
-                  key={type.id}
-                  style={[
-                    styles.typeCard,
-                    selectedType === type.id && styles.typeCardActive,
-                  ]}
-                  onPress={() => {
-                    soundPlayer.play('click');
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    setSelectedType(type.id);
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.typeCardText,
-                      selectedType === type.id && styles.typeCardTextActive,
-                    ]}
-                  >
-                    {type.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          {/* CONTENT INPUT */}
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>
-              Use @ for partners/courses, # for tournaments/leagues
-            </Text>
-            <TextInput
-              ref={textInputRef}
-              style={styles.textInput}
-              placeholder="What clicked for you today?"
-              placeholderTextColor="#999"
-              multiline
-              maxLength={MAX_CHARACTERS}
-              value={content}
-              onChangeText={handleContentChange}
-              editable={writable}
-              autoCorrect={true}
-              autoCapitalize="sentences"
-              spellCheck={true}
-              textAlignVertical="top"
-            />
-            
-            {selectedMentions.length > 0 && (
-              <View style={styles.mentionsPreview}>
-                <Text style={styles.mentionsLabel}>Tagged:</Text>
-                <View style={styles.mentionChips}>
-                  {selectedMentions.map((mention, idx) => (
-                    <View key={idx} style={styles.mentionChip}>
-                      <Text style={styles.mentionChipText}>{mention}</Text>
-                    </View>
-                  ))}
-                </View>
-              </View>
-            )}
-            
-            {selectedHashtags.length > 0 && (
-              <View style={styles.hashtagsPreview}>
-                <Text style={styles.mentionsLabel}>Events:</Text>
-                <View style={styles.mentionChips}>
-                  {selectedHashtags.map((hashtag, idx) => (
-                    <View key={idx} style={styles.hashtagChip}>
-                      <Text style={styles.hashtagChipText}>{hashtag}</Text>
-                    </View>
-                  ))}
-                </View>
-              </View>
-            )}
-            
-            <Text style={styles.charCount}>{content.length}/{MAX_CHARACTERS}</Text>
-
-            {showAutocomplete && autocompleteResults.length > 0 && (
-              <View style={styles.autocompleteContainer}>
-                <ScrollView 
-                  style={styles.autocompleteScrollView}
-                  nestedScrollEnabled
-                  keyboardShouldPersistTaps="handled"
-                >
-                  {autocompleteResults.map((item, idx) => (
-                    <TouchableOpacity
-                      key={`${item.userId || item.courseId || item.id}-${idx}`}
-                      style={styles.autocompleteItem}
-                      onPress={() => handleSelectAutocomplete(item)}
-                    >
-                      <View style={styles.autocompleteItemContent}>
-                        <View style={[
-                          styles.autocompleteIcon,
-                          item.type === "tournament" && styles.tournamentIcon,
-                          item.type === "league" && styles.leagueIcon,
-                        ]}>
-                          <Ionicons 
-                            name={
-                              item.type === "partner" ? "person" :
-                              item.type === "course" ? "golf" :
-                              item.type === "tournament" ? "trophy" :
-                              "ribbon"
-                            } 
-                            size={16} 
-                            color="#FFF" 
-                          />
-                        </View>
-                        
-                        <View style={styles.autocompleteTextContainer}>
-                          <Text style={styles.autocompleteName}>
-                            {item.type === "partner" && `@${item.displayName}`}
-                            {item.type === "course" && `@${item.courseName}`}
-                            {(item.type === "tournament" || item.type === "league") && `#${item.name}`}
-                          </Text>
-                          {item.location && (
-                            <Text style={styles.autocompleteLocation}>{item.location}</Text>
-                          )}
-                          <Text style={styles.autocompleteType}>
-                            {item.type === "partner" ? "Partner" :
-                             item.type === "course" ? "Course" :
-                             item.type === "tournament" ? "Tournament" :
-                             "League"}
-                          </Text>
-                        </View>
-                      </View>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
-            )}
-          </View>
-        </KeyboardAwareScrollView>
-
-      {renderCropModal()}
+      {/* Crop Modal */}
+      <CropModal
+        visible={showCropModal}
+        pendingImages={pendingImages}
+        currentCropIndex={currentCropIndex}
+        cropOffset={cropOffset}
+        cropScale={cropScale}
+        isProcessingMedia={isProcessingMedia}
+        onCropOffsetChange={setCropOffset}
+        onCropScaleChange={setCropScale}
+        onCropComplete={handleCropComplete}
+        onSkipCrop={handleSkipCrop}
+        onCancel={handleCancelCrop}
+      />
     </SafeAreaView>
   );
 }
 
-/* --------------------------- STYLES ---------------------------- */
+/* ================================================================ */
+/* STYLES                                                           */
+/* ================================================================ */
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F4EED8" },
-  flex1: { flex: 1 },
+  
+  // Header
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -2044,101 +1575,38 @@ const styles = StyleSheet.create({
   },
   closeButton: { width: 40, alignItems: "flex-start" },
   closeIcon: { width: 28, height: 28, tintColor: "#FFFFFF" },
-  headerTitle: { color: "#FFFFFF", fontWeight: "700", fontSize: 18, flex: 1, textAlign: "center" },
+  headerTitle: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 18,
+    flex: 1,
+    textAlign: "center",
+  },
   headerRightButtons: { flexDirection: "row", alignItems: "center", gap: 8 },
   deleteButton: { width: 40, height: 40, alignItems: "center", justifyContent: "center" },
   deleteIcon: { fontSize: 22 },
-  postButton: { width: 44, height: 44, backgroundColor: "#FFD700", borderRadius: 22, alignItems: "center", justifyContent: "center" },
+  postButton: {
+    width: 44,
+    height: 44,
+    backgroundColor: "#FFD700",
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   postButtonDisabled: { opacity: 0.4 },
   flagIcon: { fontSize: 24 },
-  lockBanner: { backgroundColor: "#FFF3CD", borderColor: "#FFECB5", borderWidth: 1, padding: 12, margin: 12, borderRadius: 10 },
+
+  // Lock Banner
+  lockBanner: {
+    backgroundColor: "#FFF3CD",
+    borderColor: "#FFECB5",
+    borderWidth: 1,
+    padding: 12,
+    margin: 12,
+    borderRadius: 10,
+  },
   lockText: { color: "#664D03", textAlign: "center", fontWeight: "600" },
+
+  // Content
   content: { flex: 1, padding: 16 },
-  section: { marginBottom: 24 },
-  sectionLabel: { fontSize: 14, fontWeight: "700", color: "#0D5C3A", marginBottom: 12 },
-  addMediaButton: { height: 180, borderRadius: 12, backgroundColor: "#FFF", borderWidth: 2, borderColor: "#0D5C3A", borderStyle: "dashed", alignItems: "center", justifyContent: "center", padding: 16 },
-  addMediaText: { fontSize: 17, fontWeight: "700", color: "#0D5C3A", marginTop: 12 },
-  addMediaHint: { fontSize: 13, color: "#666", textAlign: "center", marginTop: 6 },
-  imageCarouselItem: { height: 280, borderRadius: 12, overflow: "hidden", position: "relative" },
-  carouselImage: { width: "100%", height: "100%" },
-  removeImageButton: { position: "absolute", top: 8, right: 8, width: 32, height: 32, borderRadius: 16, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center" },
-  removeImageText: { color: "#FFF", fontSize: 18, fontWeight: "700" },
-  paginationDots: { flexDirection: "row", justifyContent: "center", alignItems: "center", marginTop: 12, gap: 6 },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#CCC" },
-  dotActive: { backgroundColor: "#0D5C3A", width: 24 },
-  addMoreButton: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 12, paddingVertical: 12, borderRadius: 8, backgroundColor: "#0D5C3A" },
-  addMoreText: { color: "#FFF", fontWeight: "600", fontSize: 14 },
-  mediaPreviewBox: { width: "100%", height: 280, borderRadius: 12, overflow: "hidden", backgroundColor: "#000", alignItems: "center", justifyContent: "center", position: "relative" },
-  mediaPreview: { width: "100%", height: "100%" },
-  processingText: { color: "#0D5C3A", marginTop: 12, fontSize: 14, fontWeight: "600" },
-  videoPlayOverlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.3)" },
-  videoPauseOverlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
-  playButton: { width: 64, height: 64, borderRadius: 32, backgroundColor: "rgba(255,255,255,0.95)", alignItems: "center", justifyContent: "center", paddingLeft: 4 },
-  pauseButton: { width: 64, height: 64, borderRadius: 32, backgroundColor: "rgba(255,255,255,0.95)", alignItems: "center", justifyContent: "center" },
-  removeVideoButton: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 12, paddingVertical: 12, borderRadius: 8, backgroundColor: "#FF3B30" },
-  removeMediaText: { color: "#FFF", fontWeight: "600", fontSize: 14 },
-  videoTrimmer: { backgroundColor: "#FFF", borderRadius: 12, padding: 16, marginTop: 12, borderWidth: 1, borderColor: "#E0E0E0" },
-  trimmerHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 16 },
-  trimmerLabel: { fontSize: 14, fontWeight: "700", color: "#0D5C3A", flex: 1 },
-  trimmerDuration: { fontSize: 14, fontWeight: "700", color: "#FFD700", backgroundColor: "#0D5C3A", paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  timelineContainer: { marginBottom: 16 },
-  timeline: { height: 8, backgroundColor: "#E0E0E0", borderRadius: 4, overflow: "hidden", position: "relative" },
-  timelineSelected: { position: "absolute", top: 0, bottom: 0, backgroundColor: "#0D5C3A", borderRadius: 4 },
-  timelineLabels: { flexDirection: "row", justifyContent: "space-between", marginTop: 4 },
-  timelineLabel: { fontSize: 10, color: "#999" },
-  sliderContainer: { marginBottom: 12 },
-  sliderLabel: { fontSize: 12, fontWeight: "600", color: "#666", marginBottom: 4 },
-  sliderRow: { flexDirection: "row", alignItems: "center" },
-  slider: { flex: 1, height: 40 },
-  sliderValue: { fontSize: 13, color: "#0D5C3A", fontWeight: "700", width: 45, textAlign: "right" },
-  trimmerWarning: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "#FFF3CD", padding: 10, borderRadius: 8, marginTop: 8 },
-  trimmerWarningText: { fontSize: 12, color: "#664D03", flex: 1 },
-  typeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
-  typeCard: { flex: 1, minWidth: "45%", paddingVertical: 16, paddingHorizontal: 12, borderRadius: 12, backgroundColor: "#FFF", borderWidth: 2, borderColor: "#E0E0E0", alignItems: "center" },
-  typeCardActive: { backgroundColor: "#0D5C3A", borderColor: "#0D5C3A" },
-  typeCardText: { fontSize: 14, fontWeight: "600", color: "#666" },
-  typeCardTextActive: { color: "#FFF" },
-  textInput: { backgroundColor: "#FFF", borderRadius: 12, padding: 16, fontSize: 16, minHeight: 120, textAlignVertical: "top", borderWidth: 1, borderColor: "#E0E0E0" },
-  mentionsPreview: { marginTop: 8, padding: 12, backgroundColor: "rgba(13, 92, 58, 0.05)", borderRadius: 8, borderWidth: 1, borderColor: "rgba(13, 92, 58, 0.2)" },
-  hashtagsPreview: { marginTop: 8, padding: 12, backgroundColor: "rgba(255, 215, 0, 0.1)", borderRadius: 8, borderWidth: 1, borderColor: "rgba(255, 215, 0, 0.3)" },
-  mentionsLabel: { fontSize: 12, fontWeight: "600", color: "#0D5C3A", marginBottom: 6 },
-  mentionChips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  mentionChip: { backgroundColor: "#0D5C3A", paddingVertical: 4, paddingHorizontal: 10, borderRadius: 12 },
-  mentionChipText: { color: "#FFF", fontSize: 12, fontWeight: "600" },
-  hashtagChip: { backgroundColor: "#FFD700", paddingVertical: 4, paddingHorizontal: 10, borderRadius: 12 },
-  hashtagChipText: { color: "#0D5C3A", fontSize: 12, fontWeight: "700" },
-  charCount: { fontSize: 12, color: "#999", textAlign: "right", marginTop: 4 },
-  autocompleteContainer: { backgroundColor: "#FFF", borderRadius: 8, marginTop: 8, borderWidth: 1, borderColor: "#E0E0E0", maxHeight: 250, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 3 },
-  autocompleteScrollView: { maxHeight: 250 },
-  autocompleteItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" },
-  autocompleteItemContent: { flexDirection: "row", alignItems: "center", gap: 12 },
-  autocompleteIcon: { width: 32, height: 32, borderRadius: 16, backgroundColor: "#0D5C3A", alignItems: "center", justifyContent: "center" },
-  tournamentIcon: { backgroundColor: "#FFD700" },
-  leagueIcon: { backgroundColor: "#FF6B35" },
-  autocompleteTextContainer: { flex: 1 },
-  autocompleteName: { fontSize: 14, fontWeight: "600", color: "#0D5C3A" },
-  autocompleteLocation: { fontSize: 12, color: "#666", marginTop: 2 },
-  autocompleteType: { fontSize: 10, color: "#999", marginTop: 2, textTransform: "uppercase", letterSpacing: 0.5 },
-  cropModalContainer: { flex: 1, backgroundColor: "#1a1a1a" },
-  cropModalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 12, backgroundColor: "#0D5C3A" },
-  cropHeaderButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
-  cropModalTitle: { fontSize: 16, fontWeight: "700", color: "#FFF" },
-  cropAreaContainer: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
-  cropArea: { backgroundColor: "#000", overflow: "hidden", borderRadius: 8, borderWidth: 2, borderColor: "#FFD700", position: "relative" },
-  cropImage: { position: "absolute" },
-  cropGridOverlay: { ...StyleSheet.absoluteFillObject },
-  cropGridRow: { flex: 1, flexDirection: "row" },
-  cropGridRowBorder: { borderTopWidth: 1, borderBottomWidth: 1, borderColor: "rgba(255, 215, 0, 0.3)" },
-  cropGridCell: { flex: 1 },
-  cropGridCellBorder: { borderLeftWidth: 1, borderRightWidth: 1, borderColor: "rgba(255, 215, 0, 0.3)" },
-  cropControls: { backgroundColor: "#2a2a2a", padding: 20, borderTopLeftRadius: 20, borderTopRightRadius: 20 },
-  cropControlLabel: { fontSize: 12, fontWeight: "600", color: "#999", marginBottom: 8 },
-  cropSlider: { width: "100%", height: 40 },
-  cropOffsetControls: { marginTop: 16 },
-  cropOffsetRow: { marginBottom: 12 },
-  cropActionButtons: { flexDirection: "row", gap: 12, marginTop: 20 },
-  cropSkipButton: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: "#444", alignItems: "center" },
-  cropSkipButtonText: { color: "#FFF", fontWeight: "600", fontSize: 15 },
-  cropConfirmButton: { flex: 2, paddingVertical: 14, borderRadius: 10, backgroundColor: "#FFD700", alignItems: "center" },
-  cropConfirmButtonText: { color: "#0D5C3A", fontWeight: "700", fontSize: 15 },
 });
