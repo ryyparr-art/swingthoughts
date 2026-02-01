@@ -71,6 +71,9 @@ const GROUPABLE_TYPES = {
     "league_team_edit_rejected",
     "league_team_edit_request",
     "league_announcement",
+    "league_invite_sent",
+    "league_invite_accepted", 
+    "league_invite_declined",
   ],
 };
 
@@ -144,6 +147,7 @@ function generateGroupedMessage(
     teamName?: string;
     weekNumber?: number;
     netScore?: number;
+    invitedUserName?: string;  // ADD THIS
   }
 ): string {
   const othersCount = actorCount - 1;
@@ -235,6 +239,15 @@ function generateGroupedMessage(
     // Membership & Invites
     case "league_invite":
       return `You've been invited to join ${extraData?.leagueName || "a league"}`;
+    
+    case "league_invite_sent":
+      return `${actorName} invited ${extraData?.invitedUserName || "someone"} to join ${extraData?.leagueName || "the league"}`;
+    
+    case "league_invite_accepted":
+      return `${actorName} accepted your invite to join ${extraData?.leagueName || "the league"}`;
+    
+    case "league_invite_declined":
+      return `${actorName} declined your invite to join ${extraData?.leagueName || "the league"}`;
     
     case "league_join_request":
       return `${actorName} would like to join ${extraData?.leagueName || "your league"}`;
@@ -332,6 +345,7 @@ interface CreateNotificationParams {
   leagueName?: string;    // League name for messages
   teamName?: string;      // Team name for 2v2 notifications
   weekNumber?: number;    // Week number for weekly notifications
+  inviteId?: string;
   message: string;
   regionKey?: string;
 }
@@ -353,6 +367,7 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
     leagueName,
     teamName,
     weekNumber,
+    inviteId,
     message,
     regionKey,
   } = params;
@@ -489,6 +504,7 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
     if (teamName) notificationData.teamName = teamName;
     if (weekNumber) notificationData.weekNumber = weekNumber;
     if (regionKey) notificationData.regionKey = regionKey;
+    if (inviteId) notificationData.inviteId = inviteId;
 
     await db.collection("notifications").add(notificationData);
     console.log("✅ Created new grouped notification");
@@ -522,6 +538,7 @@ async function createNotificationDocument(params: CreateNotificationParams): Pro
   if (teamName) notificationData.teamName = teamName;
   if (weekNumber) notificationData.weekNumber = weekNumber;
   if (regionKey) notificationData.regionKey = regionKey;
+  if (inviteId) notificationData.inviteId = inviteId;
 
   await db.collection("notifications").add(notificationData);
   console.log("✅ Created notification");
@@ -674,9 +691,18 @@ export const sendPushNotification = onDocumentCreated(
           pushMessage.title = "📋 Application Update";
           break;
         
-        // League Notifications
+       // League Notifications
         case "league_invite":
           pushMessage.title = "📩 League Invite";
+          break;
+        case "league_invite_sent":
+          pushMessage.title = "📤 Invite Sent";
+          break;
+        case "league_invite_accepted":
+          pushMessage.title = "✅ Invite Accepted!";
+          break;
+        case "league_invite_declined":
+          pushMessage.title = "Invite Declined";
           break;
         case "league_join_request":
           pushMessage.title = "👤 Join Request";
@@ -3082,6 +3108,185 @@ export const onManagerInviteCreated = onDocumentCreated(
       console.log("✅ Manager invite notification sent to", inviteeId);
     } catch (error) {
       console.error("🔥 onManagerInviteCreated failed:", error);
+    }
+  });
+
+// ============================================================================
+// LEAGUE INVITES (MEMBER-TO-MEMBER) - ROOT LEVEL COLLECTION
+// ============================================================================
+
+/**
+ * When a league invite is created (any member invites a non-member)
+ * Collection: league_invites/{inviteId} (ROOT-LEVEL)
+ */
+export const onLeagueInviteCreatedRoot = onDocumentCreated(
+  "league_invites/{inviteId}",
+  async (event) => {
+    try {
+      const snap = event.data;
+      if (!snap) return;
+
+      const invite = snap.data();
+      if (!invite) return;
+
+      const inviteId = event.params.inviteId;
+      const {
+        leagueId,
+        leagueName,
+        invitedUserId,
+        invitedUserName,
+        invitedByUserId,
+        invitedByUserName,
+        invitedByUserAvatar,
+      } = invite;
+
+      if (!leagueId || !invitedUserId || !invitedByUserId) {
+        console.log("⛔ League invite missing required fields");
+        return;
+      }
+
+      console.log("📩 League invite created:", invitedByUserName, "invited", invitedUserName, "to", leagueName);
+
+      // 1. Notify the invitee
+      await createNotificationDocument({
+        userId: invitedUserId,
+        type: "league_invite",
+        actorId: invitedByUserId,
+        actorName: invitedByUserName || "Someone",
+        actorAvatar: invitedByUserAvatar,
+        leagueId,
+        leagueName: leagueName || "a league",
+        inviteId,
+        message: `${invitedByUserName || "Someone"} invited you to join ${leagueName || "a league"}`,
+      });
+
+      console.log("✅ League invite notification sent to", invitedUserId);
+
+      // 2. Notify commissioners/managers (except the inviter)
+      const managersSnap = await db
+        .collection("leagues")
+        .doc(leagueId)
+        .collection("members")
+        .where("role", "in", ["commissioner", "manager"])
+        .get();
+
+      for (const managerDoc of managersSnap.docs) {
+        if (managerDoc.id === invitedByUserId) continue;
+
+        await createNotificationDocument({
+          userId: managerDoc.id,
+          type: "league_invite_sent",
+          actorId: invitedByUserId,
+          actorName: invitedByUserName || "Someone",
+          actorAvatar: invitedByUserAvatar,
+          leagueId,
+          leagueName: leagueName || "the league",
+          inviteId,
+          message: `${invitedByUserName || "Someone"} invited ${invitedUserName || "a user"} to join ${leagueName || "the league"}`,
+        });
+      }
+
+      console.log(`✅ Invite sent notifications sent to ${managersSnap.size - 1} commissioners/managers`);
+    } catch (error) {
+      console.error("🔥 onLeagueInviteCreatedRoot failed:", error);
+    }
+  }
+);
+
+/**
+ * When a league invite is updated (accepted/declined)
+ * Collection: league_invites/{inviteId} (ROOT-LEVEL)
+ */
+export const onLeagueInviteUpdatedRoot = onDocumentUpdated(
+  "league_invites/{inviteId}",
+  async (event) => {
+    try {
+      const before = event.data?.before.data();
+      const after = event.data?.after.data();
+
+      if (!before || !after) return;
+
+      const {
+        leagueId,
+        leagueName,
+        invitedUserId,
+        invitedUserName,
+        invitedUserAvatar,
+        invitedByUserId,
+      } = after;
+
+      if (!leagueId || !invitedUserId || !invitedByUserId) {
+        console.log("⛔ League invite missing required fields");
+        return;
+      }
+
+      // INVITE ACCEPTED
+      if (before.status === "pending" && after.status === "accepted") {
+        console.log("✅ League invite accepted by", invitedUserName);
+
+        // 1. Create member document
+        const memberRef = db
+          .collection("leagues")
+          .doc(leagueId)
+          .collection("members")
+          .doc(invitedUserId);
+
+        const inviteeData = await getUserData(invitedUserId);
+
+        await memberRef.set({
+          displayName: invitedUserName || inviteeData?.displayName || "Unknown",
+          avatar: invitedUserAvatar || inviteeData?.avatar || null,
+          handicap: inviteeData?.handicap || 0,
+          role: "member",
+          status: "active",
+          joinedAt: Timestamp.now(),
+          updatedAt: Timestamp.now(),
+        });
+
+        console.log("✅ Member document created for", invitedUserId);
+
+        // 2. Increment league memberCount
+        await db.collection("leagues").doc(leagueId).update({
+          memberCount: FieldValue.increment(1),
+          updatedAt: Timestamp.now(),
+        });
+
+        console.log("✅ League memberCount incremented");
+
+        // 3. Notify the inviter
+        await createNotificationDocument({
+          userId: invitedByUserId,
+          type: "league_invite_accepted",
+          actorId: invitedUserId,
+          actorName: invitedUserName || "Someone",
+          actorAvatar: invitedUserAvatar,
+          leagueId,
+          leagueName: leagueName || "the league",
+          message: `${invitedUserName || "Someone"} accepted your invite to join ${leagueName || "the league"}`,
+        });
+
+        console.log("✅ Invite accepted notification sent to inviter");
+      }
+
+      // INVITE DECLINED
+      if (before.status === "pending" && after.status === "declined") {
+        console.log("❌ League invite declined by", invitedUserName);
+
+        await createNotificationDocument({
+          userId: invitedByUserId,
+          type: "league_invite_declined",
+          actorId: invitedUserId,
+          actorName: invitedUserName || "Someone",
+          actorAvatar: invitedUserAvatar,
+          leagueId,
+          leagueName: leagueName || "the league",
+          message: `${invitedUserName || "Someone"} declined your invite to join ${leagueName || "the league"}`,
+        });
+
+        console.log("✅ Invite declined notification sent to inviter");
+      }
+    } catch (error) {
+      console.error("🔥 onLeagueInviteUpdatedRoot failed:", error);
     }
   }
 );

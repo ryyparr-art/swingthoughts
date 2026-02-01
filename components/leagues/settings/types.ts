@@ -9,6 +9,7 @@ export interface League {
   name: string;
   nameLower?: string;
   description?: string;
+  avatar?: string;
   customRules?: string;
   leagueType: "live" | "sim";
   simPlatform?: string;
@@ -101,20 +102,7 @@ export interface JoinRequest {
   createdAt: Timestamp;
 }
 
-export interface ManagerInvite {
-  id: string;
-  leagueId: string;
-  userId: string;
-  displayName: string;
-  avatar?: string;
-  status: "pending" | "accepted" | "declined";
-  invitedBy: string;
-  invitedByName: string;
-  createdAt: Timestamp;
-  respondedAt?: Timestamp;
-}
-
-export type TabType = "members" | "teams" | "managers" | "rules" | "settings";
+export type TabType = "members" | "teams" | "rules" | "scores" | "settings";
 
 // Helper functions
 export const formatDate = (timestamp: Timestamp): string => {

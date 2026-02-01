@@ -11,6 +11,7 @@ import React, { useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -31,8 +32,10 @@ interface SettingsTabProps {
   isCommissioner: boolean;
   isHost: boolean;
   refreshing: boolean;
+  uploadingAvatar: boolean;
   onRefresh: () => void;
   onSaveSetting: (field: string, value: any) => Promise<void>;
+  onUploadLeagueAvatar: () => Promise<void>;
   onArchiveLeague: () => void;
   onDeleteLeague: () => void;
   onStartNewSeason: () => void;
@@ -44,8 +47,10 @@ export default function SettingsTab({
   isCommissioner,
   isHost,
   refreshing,
+  uploadingAvatar,
   onRefresh,
   onSaveSetting,
+  onUploadLeagueAvatar,
   onArchiveLeague,
   onDeleteLeague,
   onStartNewSeason,
@@ -302,6 +307,30 @@ export default function SettingsTab({
         {/* Basic Info */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Basic Info</Text>
+
+          {/* League Avatar */}
+          {isCommissioner && (
+            <TouchableOpacity
+              style={styles.leagueAvatarRow}
+              onPress={onUploadLeagueAvatar}
+              disabled={uploadingAvatar}
+            >
+              {league.avatar ? (
+                <Image source={{ uri: league.avatar }} style={styles.leagueAvatarPreview} />
+              ) : (
+                <View style={[styles.leagueAvatarPreview, styles.leagueAvatarPlaceholder]}>
+                  <Ionicons name="trophy-outline" size={32} color="#FFF" />
+                </View>
+              )}
+              <View style={styles.leagueAvatarInfo}>
+                <Text style={styles.settingLabel}>League Avatar</Text>
+                <Text style={styles.settingValue}>
+                  {uploadingAvatar ? "Uploading..." : league.avatar ? "Tap to change" : "Tap to add"}
+                </Text>
+              </View>
+              <Ionicons name="camera-outline" size={22} color="#0D5C3A" />
+            </TouchableOpacity>
+          )}
 
           <SettingRow
             label="League Name"

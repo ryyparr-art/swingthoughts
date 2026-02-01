@@ -508,6 +508,31 @@ export const styles = StyleSheet.create({
     lineHeight: 20,
   },
 
+  // League Avatar
+  leagueAvatarRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF",
+    padding: 14,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  leagueAvatarPreview: {
+    width: 64,
+    height: 64,
+    borderRadius: 12,
+    backgroundColor: "#E5E5E5",
+  },
+  leagueAvatarPlaceholder: {
+    backgroundColor: "#0D5C3A",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  leagueAvatarInfo: {
+    flex: 1,
+    marginLeft: 14,
+  },
+
   // Danger Section
   dangerSection: {
     marginTop: 32,

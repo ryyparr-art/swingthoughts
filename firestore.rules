@@ -922,7 +922,54 @@ service cloud.firestore {
           isAdmin()
         );
     }
+// ============================================================================
+    // LEAGUE INVITES (MEMBER-TO-MEMBER INVITES)
+    // ============================================================================
 
+    match /league_invites/{inviteId} {
+      // Read: Inviter, invitee, league managers, or admin
+      allow read: if isSignedIn() &&
+        (
+          request.auth.uid == resource.data.invitedByUserId ||
+          request.auth.uid == resource.data.invitedUserId ||
+          isLeagueManager(resource.data.leagueId) ||
+          isAdmin()
+        );
+
+      // List: Signed-in users (client-side filtering required)
+      allow list: if isSignedIn();
+
+      // Create: Any league member can invite any user
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        isLeagueMember(request.resource.data.leagueId) &&
+        request.resource.data.invitedByUserId == request.auth.uid &&
+        request.resource.data.invitedUserId is string &&
+        request.resource.data.leagueId is string &&
+        request.resource.data.status == "pending";
+
+      // Update: Invitee can accept/decline, league managers can update
+      allow update: if isSignedIn() &&
+        (
+          // Invitee can only change status
+          (
+            request.auth.uid == resource.data.invitedUserId &&
+            request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['status', 'updatedAt'])
+          ) ||
+          isLeagueManager(resource.data.leagueId) ||
+          isAdmin()
+        );
+
+      // Delete: Inviter can cancel, invitee can delete, managers can delete
+      allow delete: if isSignedIn() &&
+        (
+          request.auth.uid == resource.data.invitedByUserId ||
+          request.auth.uid == resource.data.invitedUserId ||
+          isLeagueManager(resource.data.leagueId) ||
+          isAdmin()
+        );
+    }
     // ============================================================================
     // DEFAULT DENY
     // ============================================================================

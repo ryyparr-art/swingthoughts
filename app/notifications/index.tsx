@@ -54,7 +54,8 @@ interface Notification {
   scoreId?: string;
   threadId?: string;        // For group message notifications
   leagueId?: string;        // For league notifications
-  
+  inviteId?: string;        // For league invite notifications
+
   // Grouping
   groupKey?: string;
   lastActorId?: string;
@@ -127,6 +128,9 @@ const NOTIFICATION_ICONS: Record<string, NotificationIconConfig> = {
   league_join_rejected: { icon: "close-circle", color: "#F44336" },
   league_removed: { icon: "person-remove", color: "#F44336" },
   league_manager_invite: { icon: "shield", color: "#9C27B0" },
+  league_invite_sent: { icon: "paper-plane", color: "#2196F3" },
+  league_invite_accepted: { icon: "checkmark-circle", color: "#4CAF50" },
+  league_invite_declined: { icon: "close-circle", color: "#F44336" },
 
   // League - Scores & Gameplay
   league_score_reminder: { icon: "alarm", color: "#FF9800" },
@@ -528,11 +532,36 @@ export default function NotificationsScreen() {
       // LEAGUE NOTIFICATIONS
       // ==========================================
 
-      // League invite → League detail page to accept/decline
+      // League invite (invitee receives) → League detail page to accept/decline
       case "league_invite":
         if (notification.leagueId) {
           router.push(`/leagues/${notification.leagueId}` as any);
         }
+        break;
+
+      // League invite sent (commissioner sees someone invited a user) → League Home
+      case "league_invite_sent":
+        if (notification.leagueId) {
+          router.push({
+            pathname: "/leagues/home" as any,
+            params: { leagueId: notification.leagueId },
+          });
+        }
+        break;
+
+      // League invite accepted (inviter sees their invite was accepted) → League Home
+      case "league_invite_accepted":
+        if (notification.leagueId) {
+          router.push({
+            pathname: "/leagues/home" as any,
+            params: { leagueId: notification.leagueId },
+          });
+        }
+        break;
+
+      // League invite declined (inviter sees their invite was declined) → League Explore
+      case "league_invite_declined":
+        router.push("/leagues/explore" as any);
         break;
 
       // Join request → League Settings > Members tab (for commissioners)

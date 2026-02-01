@@ -474,10 +474,8 @@ export default function ExploreLeagues() {
           onPress={handleCommissionerSettings}
           style={styles.headerButton}
         >
-          <Image
-            source={require("@/assets/icons/Settings.png")}
-            style={styles.headerIcon}
-          />
+          <Ionicons name="settings-outline" size={24} color="#F4EED8" />
+
         </TouchableOpacity>
       ) : (
         <View style={styles.headerRight} />
@@ -933,7 +931,7 @@ export default function ExploreLeagues() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F0F8F0",
+    backgroundColor: "#F5F5F0",
   },
   loadingContainer: {
     justifyContent: "center",

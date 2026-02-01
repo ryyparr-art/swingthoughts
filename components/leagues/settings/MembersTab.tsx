@@ -9,29 +9,29 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Image,
-    KeyboardAvoidingView,
-    Modal,
-    Platform,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 import { styles } from "./styles";
 import {
-    JoinRequest,
-    League,
-    Member,
-    Team,
-    getRoleBadge,
-    getTimeAgo,
+  JoinRequest,
+  League,
+  Member,
+  Team,
+  getRoleBadge,
+  getTimeAgo,
 } from "./types";
 
 interface MembersTabProps {
@@ -40,6 +40,8 @@ interface MembersTabProps {
   teams: Team[];
   pendingRequests: JoinRequest[];
   isCommissioner: boolean;
+  isHost: boolean;
+  currentUserId: string;
   refreshing: boolean;
   saving: boolean;
   onRefresh: () => void;
@@ -48,6 +50,8 @@ interface MembersTabProps {
   onRemoveMember: (member: Member) => void;
   onEditHandicap: (member: Member, handicap: number) => Promise<void>;
   onAssignToTeam: (member: Member, teamId: string | null) => Promise<void>;
+  onPromoteToManager: (member: Member) => Promise<void>;
+  onDemoteManager: (member: Member) => Promise<void>;
 }
 
 export default function MembersTab({
@@ -56,6 +60,8 @@ export default function MembersTab({
   teams,
   pendingRequests,
   isCommissioner,
+  isHost,
+  currentUserId,
   refreshing,
   saving,
   onRefresh,
@@ -64,6 +70,8 @@ export default function MembersTab({
   onRemoveMember,
   onEditHandicap,
   onAssignToTeam,
+  onPromoteToManager,
+  onDemoteManager,
 }: MembersTabProps) {
   const router = useRouter();
   const is2v2 = league.format === "2v2";
@@ -213,15 +221,58 @@ export default function MembersTab({
                 </TouchableOpacity>
               )}
 
-              {selectedMember.role === "member" && (
+              {selectedMember.role === "member" && isHost && (
                 <TouchableOpacity
                   style={styles.actionItem}
                   onPress={() => {
-                    Alert.alert("Coming Soon", "Manager promotion will be available in Phase 3.");
+                    Alert.alert(
+                      "Promote to Manager",
+                      `Make ${selectedMember.displayName} a league manager?\n\nThey'll be able to:\n• Approve/reject join requests\n• Manage member handicaps\n• Post announcements`,
+                      [
+                        { text: "Cancel", style: "cancel" },
+                        {
+                          text: "Promote",
+                          onPress: async () => {
+                            setShowMemberActions(false);
+                            await onPromoteToManager(selectedMember);
+                            setSelectedMember(null);
+                          },
+                        },
+                      ]
+                    );
                   }}
                 >
                   <Ionicons name="shield-outline" size={22} color="#0D5C3A" />
                   <Text style={styles.actionItemText}>Promote to Manager</Text>
+                </TouchableOpacity>
+              )}
+
+              {selectedMember.role === "manager" && isHost && (
+                <TouchableOpacity
+                  style={styles.actionItem}
+                  onPress={() => {
+                    Alert.alert(
+                      "Remove Manager Role",
+                      `Remove ${selectedMember.displayName}'s manager privileges?\n\nThey'll return to regular member status.`,
+                      [
+                        { text: "Cancel", style: "cancel" },
+                        {
+                          text: "Remove",
+                          style: "destructive",
+                          onPress: async () => {
+                            setShowMemberActions(false);
+                            await onDemoteManager(selectedMember);
+                            setSelectedMember(null);
+                          },
+                        },
+                      ]
+                    );
+                  }}
+                >
+                  <Ionicons name="shield-half-outline" size={22} color="#F59E0B" />
+                  <Text style={[styles.actionItemText, { color: "#F59E0B" }]}>
+                    Remove Manager Role
+                  </Text>
                 </TouchableOpacity>
               )}
 

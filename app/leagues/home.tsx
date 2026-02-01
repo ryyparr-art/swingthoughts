@@ -10,6 +10,9 @@
  * - Rules FAB
  */
 
+import CreateAnnouncementModal from "@/components/leagues/CreateAnnouncementModal";
+import InviteToLeagueModal from "@/components/leagues/InviteToLeagueModal";
+import { LeagueInfoCard } from "@/components/leagues/settings";
 import { auth, db } from "@/constants/firebaseConfig";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
@@ -164,6 +167,8 @@ export default function LeagueHome() {
 
   // Modals
   const [showRulesModal, setShowRulesModal] = useState(false);
+  const [showAnnouncementModal, setShowAnnouncementModal] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
 
   /* ================================================================ */
   /* DATA LOADING                                                    */
@@ -444,21 +449,6 @@ export default function LeagueHome() {
     });
   };
 
-  const getFrequencyDisplay = () => {
-    if (!selectedLeague) return "";
-    if (selectedLeague.frequency === "weekly") return "Weekly";
-    if (selectedLeague.frequency === "biweekly") return "Every 2 Weeks";
-    return "Monthly";
-  };
-
-  const getCourseDisplay = () => {
-    if (!selectedLeague) return "";
-    if (!selectedLeague.restrictedCourses || selectedLeague.restrictedCourses.length === 0) {
-      return "Any Course";
-    }
-    return selectedLeague.restrictedCourses.length + " Specific Courses";
-  };
-
   /* ================================================================ */
   /* RENDER COMPONENTS                                               */
   /* ================================================================ */
@@ -509,13 +499,14 @@ export default function LeagueHome() {
   );
 
   const renderLeagueSelector = () => {
-    if (myLeagues.length === 0) return null;
+  if (myLeagues.length === 0) return null;
 
-    const selected = myLeagues.find((l) => l.id === selectedLeagueId);
+  const selected = myLeagues.find((l) => l.id === selectedLeagueId);
 
-    return (
+  return (
+    <View style={styles.leagueSelector}>
       <TouchableOpacity
-        style={styles.leagueSelector}
+        style={styles.leagueSelectorContent}
         onPress={() => {
           if (myLeagues.length > 1) {
             soundPlayer.play("click");
@@ -525,27 +516,37 @@ export default function LeagueHome() {
         }}
         disabled={myLeagues.length <= 1}
       >
-        <View style={styles.leagueSelectorContent}>
-          <View style={styles.leagueLogoPlaceholder}>
-            <Text style={styles.leagueLogoText}>
-              {selected?.name?.charAt(0) || "L"}
-            </Text>
-          </View>
-          <View style={styles.leagueSelectorText}>
-            <Text style={styles.leagueName}>
-              {selected?.name || "Select League"}
-            </Text>
-            <Text style={styles.leagueSubtitle}>
-              Week {selected?.currentWeek || 0} of {selected?.totalWeeks || 0}
-            </Text>
-          </View>
+        <View style={styles.leagueLogoPlaceholder}>
+          <Text style={styles.leagueLogoText}>
+            {selected?.name?.charAt(0) || "L"}
+          </Text>
         </View>
-        {myLeagues.length > 1 ? (
+        <View style={styles.leagueSelectorText}>
+          <Text style={styles.leagueName}>
+            {selected?.name || "Select League"}
+          </Text>
+          <Text style={styles.leagueSubtitle}>
+            Week {selected?.currentWeek || 0} of {selected?.totalWeeks || 0}
+          </Text>
+        </View>
+        {myLeagues.length > 1 && (
           <Ionicons name="chevron-down" size={20} color="#0D5C3A" />
-        ) : null}
+        )}
       </TouchableOpacity>
-    );
-  };
+      
+      <TouchableOpacity
+        style={styles.inviteIconButton}
+        onPress={() => {
+          soundPlayer.play("click");
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          setShowInviteModal(true);
+        }}
+      >
+        <Ionicons name="paper-plane-outline" size={20} color="#0D5C3A" />
+      </TouchableOpacity>
+    </View>
+  );
+};
 
   const renderSeasonStatus = () => {
     if (!selectedLeague) return null;
@@ -658,7 +659,21 @@ export default function LeagueHome() {
     if (announcements.length === 0) {
       return (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Announcements</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Announcements</Text>
+            {isCommissionerOrManager && (
+              <TouchableOpacity
+                style={styles.createAnnouncementButton}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setShowAnnouncementModal(true);
+                }}
+              >
+                <Ionicons name="add-circle" size={20} color="#0D5C3A" />
+                <Text style={styles.createAnnouncementText}>Create</Text>
+              </TouchableOpacity>
+            )}
+          </View>
           <View style={styles.emptyCard}>
             <Ionicons name="megaphone-outline" size={32} color="#CCC" />
             <Text style={styles.emptyText}>No announcements yet</Text>
@@ -669,7 +684,21 @@ export default function LeagueHome() {
 
     return (
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Announcements</Text>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Announcements</Text>
+          {isCommissionerOrManager && (
+            <TouchableOpacity
+              style={styles.createAnnouncementButton}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowAnnouncementModal(true);
+              }}
+            >
+              <Ionicons name="add-circle" size={20} color="#0D5C3A" />
+              <Text style={styles.createAnnouncementText}>Create</Text>
+            </TouchableOpacity>
+          )}
+        </View>
         {announcements.map((item) => (
           <View
             key={item.id}
@@ -797,101 +826,11 @@ export default function LeagueHome() {
             </View>
 
             <ScrollView style={styles.rulesModalScroll}>
-              {/* League Info */}
-              <View style={styles.infoCard}>
-                <View style={styles.infoRow}>
-                  <View style={styles.infoLabel}>
-                    <Ionicons name="trophy-outline" size={18} color="#0D5C3A" />
-                    <Text style={styles.infoLabelText}>Format</Text>
-                  </View>
-                  <Text style={styles.infoValue}>
-                    {selectedLeague.format === "stroke" ? "Stroke Play" : "2v2 Match Play"}
-                  </Text>
-                </View>
-
-                <View style={styles.infoRow}>
-                  <View style={styles.infoLabel}>
-                    <Ionicons name="golf-outline" size={18} color="#0D5C3A" />
-                    <Text style={styles.infoLabelText}>Type</Text>
-                  </View>
-                  <Text style={styles.infoValue}>
-                    {selectedLeague.leagueType === "live"
-                      ? "Live Golf"
-                      : "Simulator" + (selectedLeague.simPlatform ? " (" + selectedLeague.simPlatform + ")" : "")}
-                  </Text>
-                </View>
-
-                <View style={styles.infoRow}>
-                  <View style={styles.infoLabel}>
-                    <Ionicons name="flag-outline" size={18} color="#0D5C3A" />
-                    <Text style={styles.infoLabelText}>Holes</Text>
-                  </View>
-                  <Text style={styles.infoValue}>
-                    {selectedLeague.holesPerRound} per round
-                  </Text>
-                </View>
-
-                <View style={styles.infoRow}>
-                  <View style={styles.infoLabel}>
-                    <Ionicons name="calculator-outline" size={18} color="#0D5C3A" />
-                    <Text style={styles.infoLabelText}>Handicaps</Text>
-                  </View>
-                  <Text style={styles.infoValue}>
-                    {selectedLeague.handicapSystem === "swingthoughts"
-                      ? "SwingThoughts"
-                      : "League Managed"}
-                  </Text>
-                </View>
-
-                <View style={styles.infoRow}>
-                  <View style={styles.infoLabel}>
-                    <Ionicons name="calendar-outline" size={18} color="#0D5C3A" />
-                    <Text style={styles.infoLabelText}>Frequency</Text>
-                  </View>
-                  <Text style={styles.infoValue}>{getFrequencyDisplay()}</Text>
-                </View>
-
-                <View style={styles.infoRow}>
-                  <View style={styles.infoLabel}>
-                    <Ionicons name="time-outline" size={18} color="#0D5C3A" />
-                    <Text style={styles.infoLabelText}>Deadline</Text>
-                  </View>
-                  <Text style={styles.infoValue}>
-                    {selectedLeague.scoreDeadlineDays} days after round
-                  </Text>
-                </View>
-
-                <View style={styles.infoRow}>
-                  <View style={styles.infoLabel}>
-                    <Ionicons name="location-outline" size={18} color="#0D5C3A" />
-                    <Text style={styles.infoLabelText}>Courses</Text>
-                  </View>
-                  <Text style={styles.infoValue}>{getCourseDisplay()}</Text>
-                </View>
-
-                <View style={styles.infoRowLast}>
-                  <View style={styles.infoLabel}>
-                    <Ionicons name="calendar-number-outline" size={18} color="#0D5C3A" />
-                    <Text style={styles.infoLabelText}>Season</Text>
-                  </View>
-                  <Text style={styles.infoValue}>
-                    {formatDateShort(selectedLeague.startDate)} - {formatDateShort(selectedLeague.endDate)}
-                  </Text>
-                </View>
-              </View>
-
-              {/* Custom Rules */}
-              {selectedLeague.customRules ? (
-                <View style={styles.rulesSection}>
-                  <Text style={styles.rulesSectionTitle}>League Rules</Text>
-                  <View style={styles.rulesContent}>
-                    <Text style={styles.rulesText}>
-                      {selectedLeague.customRules}
-                    </Text>
-                  </View>
-                </View>
-              ) : null}
-
+              <LeagueInfoCard
+                league={selectedLeague}
+                editable={false}
+                showHeader={false}
+              />
               <View style={styles.modalBottomSpacer} />
             </ScrollView>
           </Pressable>
@@ -1007,6 +946,17 @@ export default function LeagueHome() {
       {renderRulesFAB()}
       {renderRulesModal()}
       {renderLeagueSelectorModal()}
+      <CreateAnnouncementModal
+        visible={showAnnouncementModal}
+        onClose={() => setShowAnnouncementModal(false)}
+        leagueId={selectedLeagueId}
+      />
+      <InviteToLeagueModal
+        visible={showInviteModal}
+        onClose={() => setShowInviteModal(false)}
+        leagueId={selectedLeagueId}
+        leagueName={selectedLeague?.name || ""}
+      />
     </View>
   );
 }
@@ -1080,22 +1030,6 @@ const styles = StyleSheet.create({
   contentContainer: {
     paddingHorizontal: 16,
     paddingTop: 12,
-  },
-
-  // League Selector
-  leagueSelector: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#FFF",
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 12,
-  },
-  leagueSelectorContent: {
-    flexDirection: "row",
-    alignItems: "center",
-    flex: 1,
   },
   leagueLogoPlaceholder: {
     width: 44,
@@ -1455,60 +1389,6 @@ const styles = StyleSheet.create({
   rulesModalScroll: {
     padding: 16,
   },
-  infoCard: {
-    backgroundColor: "#F9F9F9",
-    borderRadius: 12,
-    overflow: "hidden",
-  },
-  infoRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#E8E8E8",
-  },
-  infoRowLast: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  infoLabel: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  infoLabelText: {
-    fontSize: 14,
-    color: "#666",
-  },
-  infoValue: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#333",
-  },
-  rulesSection: {
-    marginTop: 16,
-  },
-  rulesSectionTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#333",
-    marginBottom: 8,
-  },
-  rulesContent: {
-    backgroundColor: "#F9F9F9",
-    borderRadius: 12,
-    padding: 16,
-  },
-  rulesText: {
-    fontSize: 14,
-    color: "#444",
-    lineHeight: 22,
-  },
   modalBottomSpacer: {
     height: 32,
   },
@@ -1611,4 +1491,48 @@ const styles = StyleSheet.create({
   bottomSpacer: {
     height: 100,
   },
+
+  sectionHeader: {
+  flexDirection: "row",
+  justifyContent: "space-between",
+  alignItems: "center",
+  marginBottom: 12,
+},
+createAnnouncementButton: {
+  flexDirection: "row",
+  alignItems: "center",
+  gap: 4,
+  paddingHorizontal: 12,
+  paddingVertical: 6,
+  backgroundColor: "rgba(13, 92, 58, 0.1)",
+  borderRadius: 16,
+},
+createAnnouncementText: {
+  fontSize: 14,
+  fontWeight: "600",
+  color: "#0D5C3A",
+},
+leagueSelector: {
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+  backgroundColor: "#FFF",
+  padding: 12,
+  borderRadius: 12,
+  marginBottom: 12,
+},
+leagueSelectorContent: {
+  flexDirection: "row",
+  alignItems: "center",
+  flex: 1,
+},
+inviteIconButton: {
+  width: 40,
+  height: 40,
+  borderRadius: 20,
+  backgroundColor: "rgba(13, 92, 58, 0.1)",
+  alignItems: "center",
+  justifyContent: "center",
+  marginLeft: 12,
+},
 });
