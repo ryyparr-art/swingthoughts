@@ -5,9 +5,9 @@
  * 1. Basic Info (name, description, region)
  * 2. Type & Format (live/sim, stroke/2v2)
  * 3. Round Settings (holes, courses)
- * 4. Handicap & Scoring (handicap system, points per week)
+ * 4. Handicap & Scoring (handicap system, points per week, purse)
  * 5. Schedule (dates, frequency, deadline)
- * 6. Elevated Events & Purse
+ * 6. Elevated Events
  * 7. Review & Create
  * 
  * Refactored to use modular step components from @/components/leagues/create
@@ -278,6 +278,20 @@ export default function CreateLeague() {
         .split(/\s+/)
         .filter((word) => word.length >= 2);
 
+      // Build PGA-style purse object
+      const hasPurse = formData.purseEnabled && (
+        formData.purseAmount > 0 || 
+        formData.weeklyPurse > 0 || 
+        formData.elevatedPurse > 0
+      );
+
+      const purseData = hasPurse ? {
+        seasonPurse: formData.purseAmount,      // Championship purse
+        weeklyPurse: formData.weeklyPurse,      // Per-week prize
+        elevatedPurse: formData.elevatedPurse,  // Bonus for elevated events
+        currency: formData.purseCurrency,
+      } : null;
+
       // Build league data using ORIGINAL field names for compatibility
       const leagueData = {
         name: formData.name.trim(),
@@ -294,7 +308,7 @@ export default function CreateLeague() {
         allowedCourses: formData.allowedCourses,
         nineHoleOption: formData.holes === 9 ? formData.nineHoleOption : null,
         handicapSystem: formData.format === "stroke" ? formData.handicapSystem : "league_managed",
-        // NEW field - additive, non-breaking
+        // Points per week
         pointsPerWeek: formData.pointsPerWeek,
         startDate,
         endDate,
@@ -309,13 +323,8 @@ export default function CreateLeague() {
         hasElevatedEvents: formData.hasElevatedEvents,
         elevatedWeeks: formData.elevatedWeeks,
         elevatedMultiplier: formData.elevatedMultiplier,
-        // NEW field - additive, non-breaking
-        purse: formData.purseEnabled && formData.purseAmount > 0
-          ? {
-              amount: formData.purseAmount,
-              currency: formData.purseCurrency,
-            }
-          : null,
+        // PGA-style purse with season, weekly, and elevated purses
+        purse: purseData,
         hostUserId: currentUserId,
         status: "upcoming",
         isPublic: true,

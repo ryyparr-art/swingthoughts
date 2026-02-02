@@ -9,6 +9,7 @@ import { Text, View } from "react-native";
 import { styles } from "./styles";
 import {
   calculateEndDate,
+  calculateTotalPurse,
   DAYS_OF_WEEK,
   formatCurrency,
   LeagueFormData,
@@ -20,6 +21,9 @@ interface Step7Props {
 }
 
 export default function Step7Review({ formData }: Step7Props) {
+  const totalPurse = calculateTotalPurse(formData);
+  const hasPurse = formData.purseEnabled && totalPurse > 0;
+
   return (
     <View style={styles.stepContent}>
       {/* Header */}
@@ -132,16 +136,58 @@ export default function Step7Review({ formData }: Step7Props) {
         </View>
       )}
 
-      {/* Purse */}
-      {formData.purseEnabled && formData.purseAmount > 0 && (
+      {/* Prize Purse - PGA Style Breakdown */}
+      {hasPurse && (
         <View style={styles.reviewSection}>
-          <Text style={styles.reviewSectionTitle}>PRIZE PURSE</Text>
+          <Text style={styles.reviewSectionTitle}>PRIZE PURSE 💰</Text>
+          
+          {/* Total */}
           <View style={styles.reviewRow}>
-            <Text style={styles.reviewLabel}>Total Purse</Text>
-            <Text style={styles.reviewValue}>
-              {formatCurrency(formData.purseAmount, formData.purseCurrency)}
+            <Text style={[styles.reviewLabel, { fontWeight: "700" }]}>Total Purse</Text>
+            <Text style={[styles.reviewValue, { fontWeight: "700", color: "#0D5C3A" }]}>
+              {formatCurrency(totalPurse, formData.purseCurrency)}
             </Text>
           </View>
+
+          {/* Season Championship */}
+          {formData.purseAmount > 0 && (
+            <View style={styles.reviewRow}>
+              <Text style={styles.reviewLabel}>🏆 Season Championship</Text>
+              <Text style={styles.reviewValue}>
+                {formatCurrency(formData.purseAmount, formData.purseCurrency)}
+              </Text>
+            </View>
+          )}
+
+          {/* Weekly Prizes */}
+          {formData.weeklyPurse > 0 && (
+            <View style={styles.reviewRow}>
+              <Text style={styles.reviewLabel}>📅 Weekly Prizes</Text>
+              <Text style={styles.reviewValue}>
+                {formatCurrency(formData.weeklyPurse, formData.purseCurrency)}/wk × {formData.numberOfWeeks}
+              </Text>
+            </View>
+          )}
+
+          {/* Elevated Event Bonuses */}
+          {formData.elevatedPurse > 0 && formData.elevatedWeeks.length > 0 && (
+            <View style={styles.reviewRow}>
+              <Text style={styles.reviewLabel}>⭐ Elevated Bonuses</Text>
+              <Text style={styles.reviewValue}>
+                {formatCurrency(formData.elevatedPurse, formData.purseCurrency)}/event × {formData.elevatedWeeks.length}
+              </Text>
+            </View>
+          )}
+
+          {/* Elevated purse configured but no weeks selected yet */}
+          {formData.elevatedPurse > 0 && formData.elevatedWeeks.length === 0 && (
+            <View style={styles.reviewRow}>
+              <Text style={[styles.reviewLabel, { color: "#999" }]}>⭐ Elevated Bonuses</Text>
+              <Text style={[styles.reviewValue, { color: "#999" }]}>
+                {formatCurrency(formData.elevatedPurse, formData.purseCurrency)}/event (no weeks selected)
+              </Text>
+            </View>
+          )}
         </View>
       )}
 

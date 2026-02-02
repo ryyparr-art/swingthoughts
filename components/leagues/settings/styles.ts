@@ -608,10 +608,11 @@ export const styles = StyleSheet.create({
     textAlign: "center",
   },
   modalSubtitle: {
-    fontSize: 16,
+    fontSize: 14,
     color: "#666",
     textAlign: "center",
-    lineHeight: 24,
+    marginBottom: 20,
+    lineHeight: 20,
   },
   modalDate: {
     fontWeight: "700",
@@ -950,5 +951,163 @@ export const styles = StyleSheet.create({
     fontSize: 15,
     color: "#F44336",
     fontWeight: "500",
+  },
+
+  // ================================================================
+  // PURSE MODAL STYLES
+  // ================================================================
+
+  // Purse toggle row
+  purseToggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E5E5",
+    marginBottom: 16,
+  },
+  purseToggleLabel: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#333",
+  },
+  purseToggle: {
+    width: 52,
+    height: 32,
+    backgroundColor: "#E5E5E5",
+    borderRadius: 16,
+    padding: 2,
+    justifyContent: "center",
+  },
+  purseToggleActive: {
+    backgroundColor: "#0D5C3A",
+  },
+  purseToggleThumb: {
+    width: 28,
+    height: 28,
+    backgroundColor: "#FFF",
+    borderRadius: 14,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  purseToggleThumbActive: {
+    alignSelf: "flex-end",
+  },
+
+  // Purse input group
+  purseInputGroup: {
+    marginBottom: 20,
+  },
+  purseInputLabel: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#333",
+    marginBottom: 4,
+  },
+  purseInputHelper: {
+    fontSize: 13,
+    color: "#666",
+    marginBottom: 8,
+  },
+  purseInputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  purseCurrencyPrefix: {
+    backgroundColor: "#E8E4D4",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#D4D4D4",
+    marginRight: 8,
+  },
+  purseCurrencyText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#333",
+  },
+  purseAmountInput: {
+    flex: 1,
+    backgroundColor: "#FFF",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#D4D4D4",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 18,
+    fontWeight: "600",
+    color: "#1a1a1a",
+  },
+  pursePerLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#666",
+    marginLeft: 8,
+  },
+
+  // Purse total card
+  purseTotalCard: {
+    backgroundColor: "#E8F5E9",
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 8,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: "#0D5C3A",
+  },
+  purseTotalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  purseTotalLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#0D5C3A",
+  },
+  purseTotalAmount: {
+    fontSize: 28,
+    fontWeight: "800",
+    color: "#0D5C3A",
+    marginBottom: 8,
+  },
+  purseTotalBreakdown: {
+    borderTopWidth: 1,
+    borderTopColor: "rgba(13, 92, 58, 0.2)",
+    paddingTop: 8,
+    gap: 4,
+  },
+  purseTotalLine: {
+    fontSize: 13,
+    color: "#555",
+  },
+
+  // Purse disclaimer
+  purseDisclaimer: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: "#F5F5F5",
+    borderRadius: 8,
+    padding: 12,
+    gap: 8,
+  },
+  purseDisclaimerText: {
+    flex: 1,
+    fontSize: 12,
+    color: "#666",
+    lineHeight: 18,
+  },
+
+  // Purse breakdown preview (for settings row)
+  purseBreakdownPreview: {
+    fontSize: 12,
+    color: "#666",
+    marginTop: 2,
   },
 });

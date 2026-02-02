@@ -53,6 +53,12 @@ export interface LeagueFormData {
   // Step 4
   handicapSystem: "swingthoughts" | "league_managed";
   pointsPerWeek: number;
+  // Purse - PGA style (in Step 4)
+  purseEnabled: boolean;
+  purseAmount: number;        // Season championship purse
+  weeklyPurse: number;        // Per-week prize
+  elevatedPurse: number;      // Bonus for elevated events
+  purseCurrency: string;
   // Step 5
   startDate: Date | null;
   frequency: "weekly" | "biweekly";
@@ -64,10 +70,6 @@ export interface LeagueFormData {
   hasElevatedEvents: boolean;
   elevatedWeeks: number[];
   elevatedMultiplier: number;
-  // Purse (optional) - NEW
-  purseEnabled: boolean;
-  purseAmount: number;
-  purseCurrency: string;
 }
 
 export const DEFAULT_FORM_DATA: LeagueFormData = {
@@ -84,6 +86,11 @@ export const DEFAULT_FORM_DATA: LeagueFormData = {
   nineHoleOption: "either",
   handicapSystem: "swingthoughts",
   pointsPerWeek: 100,
+  purseEnabled: false,
+  purseAmount: 0,
+  weeklyPurse: 0,
+  elevatedPurse: 0,
+  purseCurrency: "USD",
   startDate: null,
   frequency: "weekly",
   scoreDeadline: "sunday",
@@ -93,9 +100,6 @@ export const DEFAULT_FORM_DATA: LeagueFormData = {
   hasElevatedEvents: false,
   elevatedWeeks: [],
   elevatedMultiplier: 2,
-  purseEnabled: false,
-  purseAmount: 0,
-  purseCurrency: "USD",
 };
 
 // Helper functions
@@ -132,4 +136,23 @@ export const formatCurrency = (amount: number, currency: string): string => {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   }).format(amount);
+};
+
+// Calculate total purse from all sources
+export const calculateTotalPurse = (formData: LeagueFormData): number => {
+  let total = 0;
+  
+  if (formData.purseAmount > 0) {
+    total += formData.purseAmount;
+  }
+  
+  if (formData.weeklyPurse > 0 && formData.numberOfWeeks > 0) {
+    total += formData.weeklyPurse * formData.numberOfWeeks;
+  }
+  
+  if (formData.elevatedPurse > 0 && formData.elevatedWeeks.length > 0) {
+    total += formData.elevatedPurse * formData.elevatedWeeks.length;
+  }
+  
+  return total;
 };

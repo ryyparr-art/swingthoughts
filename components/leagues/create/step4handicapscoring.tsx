@@ -2,13 +2,14 @@
  * Step 4: Handicap & Scoring
  * - Handicap system (SwingThoughts vs League Managed)
  * - Points per week (configurable, default 100)
+ * - League purse (PGA-style: season total, weekly, elevated events)
  */
 
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import React from "react";
-import { Text, TouchableOpacity, View } from "react-native";
+import { Text, TextInput, TouchableOpacity, View } from "react-native";
 
 import { styles } from "./styles";
 import { LeagueFormData } from "./types";
@@ -30,6 +31,43 @@ export default function Step4HandicapScoring({ formData, updateFormData }: Step4
     if (newValue >= 10 && newValue <= 1000) {
       updateFormData({ pointsPerWeek: newValue });
     }
+  };
+
+  const handlePurseChange = (field: 'purseAmount' | 'weeklyPurse' | 'elevatedPurse', text: string) => {
+    const numericValue = text.replace(/[^0-9]/g, "");
+    const amount = numericValue ? parseInt(numericValue, 10) : 0;
+    updateFormData({ [field]: amount });
+  };
+
+  // Calculate total purse display
+  const calculateTotalPurse = () => {
+    let total = 0;
+    
+    // Season purse
+    if (formData.purseAmount > 0) {
+      total += formData.purseAmount;
+    }
+    
+    // Weekly purse × number of weeks
+    if (formData.weeklyPurse > 0 && formData.numberOfWeeks > 0) {
+      total += formData.weeklyPurse * formData.numberOfWeeks;
+    }
+    
+    // Elevated event purse × number of elevated weeks
+    if (formData.elevatedPurse > 0 && formData.elevatedWeeks.length > 0) {
+      total += formData.elevatedPurse * formData.elevatedWeeks.length;
+    }
+    
+    return total;
+  };
+
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(amount);
   };
 
   return (
@@ -127,13 +165,170 @@ export default function Step4HandicapScoring({ formData, updateFormData }: Step4
             />
           </TouchableOpacity>
         </View>
-        <View style={[styles.infoBox, { marginTop: 16 }]}>
-          <Ionicons name="information-circle-outline" size={18} color="#666" />
-          <Text style={styles.infoBoxText}>
-            Points are distributed based on weekly standings. Common values: 100, 200, or 500 points per week.
-          </Text>
+      </View>
+
+      {/* Divider */}
+      <View style={styles.divider} />
+
+      {/* League Purse Section */}
+      <View style={styles.inputGroup}>
+        <Text style={styles.label}>
+          League Purse <Text style={styles.optionalTag}>(optional)</Text>
+        </Text>
+        <Text style={styles.helperText}>
+          Track prize money PGA-style. This is for display only — we don't handle money.
+        </Text>
+
+        <View style={styles.optionRow}>
+          <TouchableOpacity
+            style={[styles.optionButton, !formData.purseEnabled && styles.optionSelected]}
+            onPress={() => {
+              handlePress();
+              updateFormData({ 
+                purseEnabled: false, 
+                purseAmount: 0,
+                weeklyPurse: 0,
+                elevatedPurse: 0,
+              });
+            }}
+          >
+            <Text style={[styles.optionText, !formData.purseEnabled && styles.optionTextSelected]}>
+              No Purse
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.optionButton, formData.purseEnabled && styles.optionSelected]}
+            onPress={() => {
+              handlePress();
+              updateFormData({ purseEnabled: true });
+            }}
+          >
+            <Text style={[styles.optionText, formData.purseEnabled && styles.optionTextSelected]}>
+              Add Purse
+            </Text>
+          </TouchableOpacity>
         </View>
       </View>
+
+      {/* Purse Details */}
+      {formData.purseEnabled && (
+        <>
+          {/* Season Championship Purse */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>
+              Season Championship 🏆
+            </Text>
+            <Text style={styles.helperText}>
+              End-of-season prize for final standings
+            </Text>
+            <View style={styles.purseInputRow}>
+              <View style={styles.currencyPrefix}>
+                <Text style={styles.currencyText}>$</Text>
+              </View>
+              <TextInput
+                style={styles.purseInput}
+                value={formData.purseAmount > 0 ? formData.purseAmount.toString() : ""}
+                onChangeText={(text) => handlePurseChange('purseAmount', text)}
+                placeholder="0"
+                placeholderTextColor="#999"
+                keyboardType="number-pad"
+                maxLength={7}
+              />
+            </View>
+          </View>
+
+          {/* Weekly Purse */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>
+              Weekly Prize 📅
+            </Text>
+            <Text style={styles.helperText}>
+              Prize for each week's winner ({formData.numberOfWeeks} weeks)
+            </Text>
+            <View style={styles.purseInputRow}>
+              <View style={styles.currencyPrefix}>
+                <Text style={styles.currencyText}>$</Text>
+              </View>
+              <TextInput
+                style={styles.purseInput}
+                value={formData.weeklyPurse > 0 ? formData.weeklyPurse.toString() : ""}
+                onChangeText={(text) => handlePurseChange('weeklyPurse', text)}
+                placeholder="0"
+                placeholderTextColor="#999"
+                keyboardType="number-pad"
+                maxLength={6}
+              />
+              <Text style={styles.pursePerLabel}>/week</Text>
+            </View>
+          </View>
+
+          {/* Elevated Event Purse */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>
+              Elevated Event Bonus ⭐
+            </Text>
+            <Text style={styles.helperText}>
+              Additional prize for elevated/playoff weeks
+              {formData.elevatedWeeks.length > 0 
+                ? ` (${formData.elevatedWeeks.length} selected)`
+                : " (configure in Step 6)"}
+            </Text>
+            <View style={styles.purseInputRow}>
+              <View style={styles.currencyPrefix}>
+                <Text style={styles.currencyText}>$</Text>
+              </View>
+              <TextInput
+                style={styles.purseInput}
+                value={formData.elevatedPurse > 0 ? formData.elevatedPurse.toString() : ""}
+                onChangeText={(text) => handlePurseChange('elevatedPurse', text)}
+                placeholder="0"
+                placeholderTextColor="#999"
+                keyboardType="number-pad"
+                maxLength={6}
+              />
+              <Text style={styles.pursePerLabel}>/event</Text>
+            </View>
+          </View>
+
+          {/* Total Purse Summary */}
+          {calculateTotalPurse() > 0 && (
+            <View style={styles.purseSummaryCard}>
+              <View style={styles.purseSummaryHeader}>
+                <Ionicons name="cash-outline" size={20} color="#0D5C3A" />
+                <Text style={styles.purseSummaryTitle}>Total Season Purse</Text>
+              </View>
+              <Text style={styles.purseSummaryAmount}>
+                {formatCurrency(calculateTotalPurse())}
+              </Text>
+              <View style={styles.purseSummaryBreakdown}>
+                {formData.purseAmount > 0 && (
+                  <Text style={styles.purseSummaryLine}>
+                    Championship: {formatCurrency(formData.purseAmount)}
+                  </Text>
+                )}
+                {formData.weeklyPurse > 0 && (
+                  <Text style={styles.purseSummaryLine}>
+                    Weekly: {formatCurrency(formData.weeklyPurse)} × {formData.numberOfWeeks} = {formatCurrency(formData.weeklyPurse * formData.numberOfWeeks)}
+                  </Text>
+                )}
+                {formData.elevatedPurse > 0 && formData.elevatedWeeks.length > 0 && (
+                  <Text style={styles.purseSummaryLine}>
+                    Elevated: {formatCurrency(formData.elevatedPurse)} × {formData.elevatedWeeks.length} = {formatCurrency(formData.elevatedPurse * formData.elevatedWeeks.length)}
+                  </Text>
+                )}
+              </View>
+            </View>
+          )}
+
+          {/* Disclaimer */}
+          <View style={styles.infoBox}>
+            <Ionicons name="information-circle-outline" size={18} color="#666" />
+            <Text style={styles.infoBoxText}>
+              Purse amounts are for display only. Collecting and distributing funds is your responsibility.
+            </Text>
+          </View>
+        </>
+      )}
     </View>
   );
 }

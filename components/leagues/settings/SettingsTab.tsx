@@ -2,7 +2,7 @@
  * Settings Tab Component
  * 
  * League configuration settings.
- * Commissioners can edit basic info, schedule (before confirmed), and elevated events.
+ * Commissioners can edit basic info, schedule (before confirmed), elevated events, and purse.
  */
 
 import { Ionicons } from "@expo/vector-icons";
@@ -74,12 +74,41 @@ export default function SettingsTab({
     return day.charAt(0).toUpperCase() + day.slice(1);
   };
 
+  const formatCurrency = (amount: number): string => {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: league.purse?.currency || "USD",
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(amount);
+  };
+
+  // Calculate total purse
+  const calculateTotalPurse = (): number => {
+    if (!league.purse) return 0;
+    let total = 0;
+    if (league.purse.seasonPurse > 0) total += league.purse.seasonPurse;
+    if (league.purse.weeklyPurse > 0) total += league.purse.weeklyPurse * league.totalWeeks;
+    const elevatedWeeksCount = league.elevatedEvents?.weeks?.length ?? 0;
+    if (league.purse.elevatedPurse > 0 && elevatedWeeksCount > 0) {
+      total += league.purse.elevatedPurse * elevatedWeeksCount;
+    }
+    return total;
+  };
+
   // Local state
   const [editingField, setEditingField] = useState<string | null>(null);
   const [tempValue, setTempValue] = useState<any>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
+  const [showPurseModal, setShowPurseModal] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Purse editing state
+  const [purseEnabled, setPurseEnabled] = useState(!!league.purse);
+  const [seasonPurse, setSeasonPurse] = useState(league.purse?.seasonPurse?.toString() || "0");
+  const [weeklyPurse, setWeeklyPurse] = useState(league.purse?.weeklyPurse?.toString() || "0");
+  const [elevatedPurse, setElevatedPurse] = useState(league.purse?.elevatedPurse?.toString() || "0");
 
   const canEditSchedule = (): boolean => {
     return league.status === "upcoming" && !league.readyConfirmed;
@@ -94,6 +123,55 @@ export default function SettingsTab({
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleSavePurse = async () => {
+    try {
+      setSaving(true);
+      
+      const seasonAmount = parseInt(seasonPurse) || 0;
+      const weeklyAmount = parseInt(weeklyPurse) || 0;
+      const elevatedAmount = parseInt(elevatedPurse) || 0;
+      
+      const hasPurse = purseEnabled && (seasonAmount > 0 || weeklyAmount > 0 || elevatedAmount > 0);
+      
+      const purseData = hasPurse ? {
+        seasonPurse: seasonAmount,
+        weeklyPurse: weeklyAmount,
+        elevatedPurse: elevatedAmount,
+        currency: league.purse?.currency || "USD",
+      } : null;
+      
+      await onSaveSetting("purse", purseData);
+      setShowPurseModal(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openPurseModal = () => {
+    setPurseEnabled(!!league.purse);
+    setSeasonPurse(league.purse?.seasonPurse?.toString() || "0");
+    setWeeklyPurse(league.purse?.weeklyPurse?.toString() || "0");
+    setElevatedPurse(league.purse?.elevatedPurse?.toString() || "0");
+    setShowPurseModal(true);
+  };
+
+  // Calculate live total in modal
+  const getModalTotalPurse = (): number => {
+    if (!purseEnabled) return 0;
+    let total = 0;
+    const season = parseInt(seasonPurse) || 0;
+    const weekly = parseInt(weeklyPurse) || 0;
+    const elevated = parseInt(elevatedPurse) || 0;
+    
+    if (season > 0) total += season;
+    if (weekly > 0) total += weekly * league.totalWeeks;
+    const elevatedWeeksCount = league.elevatedEvents?.weeks?.length ?? 0;
+    if (elevated > 0 && elevatedWeeksCount > 0) {
+      total += elevated * elevatedWeeksCount;
+    }
+    return total;
   };
 
   // Text Edit Modal
@@ -153,6 +231,173 @@ export default function SettingsTab({
                   handleSave(editingField!, tempValue);
                 }
               }}
+              disabled={saving}
+            >
+              {saving ? (
+                <ActivityIndicator color="#FFF" size="small" />
+              ) : (
+                <Text style={styles.modalSaveText}>Save</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+
+  // Purse Edit Modal
+  const renderPurseModal = () => (
+    <Modal
+      visible={showPurseModal}
+      animationType="slide"
+      transparent
+      onRequestClose={() => setShowPurseModal(false)}
+    >
+      <KeyboardAvoidingView
+        style={styles.modalOverlay}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        <View style={[styles.modalContent, { maxHeight: "80%" }]}>
+          <ScrollView showsVerticalScrollIndicator={false}>
+            <Text style={styles.modalTitle}>Prize Purse 💰</Text>
+            <Text style={styles.modalSubtitle}>
+              Track prize money PGA-style. This is for display only.
+            </Text>
+
+            {/* Enable/Disable Toggle */}
+            <View style={styles.purseToggleRow}>
+              <Text style={styles.purseToggleLabel}>Enable Prize Purse</Text>
+              <TouchableOpacity
+                style={[styles.purseToggle, purseEnabled && styles.purseToggleActive]}
+                onPress={() => setPurseEnabled(!purseEnabled)}
+              >
+                <View style={[styles.purseToggleThumb, purseEnabled && styles.purseToggleThumbActive]} />
+              </TouchableOpacity>
+            </View>
+
+            {purseEnabled && (
+              <>
+                {/* Season Championship */}
+                <View style={styles.purseInputGroup}>
+                  <Text style={styles.purseInputLabel}>🏆 Season Championship</Text>
+                  <Text style={styles.purseInputHelper}>End-of-season prize for final standings</Text>
+                  <View style={styles.purseInputRow}>
+                    <View style={styles.purseCurrencyPrefix}>
+                      <Text style={styles.purseCurrencyText}>$</Text>
+                    </View>
+                    <TextInput
+                      style={styles.purseAmountInput}
+                      value={seasonPurse === "0" ? "" : seasonPurse}
+                      onChangeText={(text) => setSeasonPurse(text.replace(/[^0-9]/g, "") || "0")}
+                      placeholder="0"
+                      placeholderTextColor="#999"
+                      keyboardType="number-pad"
+                      maxLength={7}
+                    />
+                  </View>
+                </View>
+
+                {/* Weekly Prize */}
+                <View style={styles.purseInputGroup}>
+                  <Text style={styles.purseInputLabel}>📅 Weekly Prize</Text>
+                  <Text style={styles.purseInputHelper}>
+                    Prize for each week's winner ({league.totalWeeks} weeks)
+                  </Text>
+                  <View style={styles.purseInputRow}>
+                    <View style={styles.purseCurrencyPrefix}>
+                      <Text style={styles.purseCurrencyText}>$</Text>
+                    </View>
+                    <TextInput
+                      style={styles.purseAmountInput}
+                      value={weeklyPurse === "0" ? "" : weeklyPurse}
+                      onChangeText={(text) => setWeeklyPurse(text.replace(/[^0-9]/g, "") || "0")}
+                      placeholder="0"
+                      placeholderTextColor="#999"
+                      keyboardType="number-pad"
+                      maxLength={6}
+                    />
+                    <Text style={styles.pursePerLabel}>/week</Text>
+                  </View>
+                </View>
+
+                {/* Elevated Event Bonus */}
+                <View style={styles.purseInputGroup}>
+                  <Text style={styles.purseInputLabel}>⭐ Elevated Event Bonus</Text>
+                  <Text style={styles.purseInputHelper}>
+                    Additional prize for elevated/playoff weeks
+                    {(league.elevatedEvents?.weeks?.length ?? 0) > 0
+                      ? ` (${league.elevatedEvents?.weeks?.length} selected)`
+                      : " (none selected)"}
+                  </Text>
+                  <View style={styles.purseInputRow}>
+                    <View style={styles.purseCurrencyPrefix}>
+                      <Text style={styles.purseCurrencyText}>$</Text>
+                    </View>
+                    <TextInput
+                      style={styles.purseAmountInput}
+                      value={elevatedPurse === "0" ? "" : elevatedPurse}
+                      onChangeText={(text) => setElevatedPurse(text.replace(/[^0-9]/g, "") || "0")}
+                      placeholder="0"
+                      placeholderTextColor="#999"
+                      keyboardType="number-pad"
+                      maxLength={6}
+                    />
+                    <Text style={styles.pursePerLabel}>/event</Text>
+                  </View>
+                </View>
+
+                {/* Total Summary */}
+                {getModalTotalPurse() > 0 && (
+                  <View style={styles.purseTotalCard}>
+                    <View style={styles.purseTotalHeader}>
+                      <Ionicons name="cash-outline" size={18} color="#0D5C3A" />
+                      <Text style={styles.purseTotalLabel}>Total Season Purse</Text>
+                    </View>
+                    <Text style={styles.purseTotalAmount}>
+                      {formatCurrency(getModalTotalPurse())}
+                    </Text>
+                    <View style={styles.purseTotalBreakdown}>
+                      {parseInt(seasonPurse) > 0 && (
+                        <Text style={styles.purseTotalLine}>
+                          Championship: {formatCurrency(parseInt(seasonPurse))}
+                        </Text>
+                      )}
+                      {parseInt(weeklyPurse) > 0 && (
+                        <Text style={styles.purseTotalLine}>
+                          Weekly: {formatCurrency(parseInt(weeklyPurse))} × {league.totalWeeks} = {formatCurrency(parseInt(weeklyPurse) * league.totalWeeks)}
+                        </Text>
+                      )}
+                      {parseInt(elevatedPurse) > 0 && (league.elevatedEvents?.weeks?.length ?? 0) > 0 && (
+                        <Text style={styles.purseTotalLine}>
+                          Elevated: {formatCurrency(parseInt(elevatedPurse))} × {league.elevatedEvents?.weeks?.length} = {formatCurrency(parseInt(elevatedPurse) * (league.elevatedEvents?.weeks?.length ?? 0))}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                )}
+
+                {/* Disclaimer */}
+                <View style={styles.purseDisclaimer}>
+                  <Ionicons name="information-circle-outline" size={16} color="#666" />
+                  <Text style={styles.purseDisclaimerText}>
+                    Purse amounts are for display only. Collecting and distributing funds is your responsibility.
+                  </Text>
+                </View>
+              </>
+            )}
+          </ScrollView>
+
+          <View style={styles.modalButtonRow}>
+            <TouchableOpacity
+              style={styles.modalCancelButtonSmall}
+              onPress={() => setShowPurseModal(false)}
+            >
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalSaveButton}
+              onPress={handleSavePurse}
               disabled={saving}
             >
               {saving ? (
@@ -294,6 +539,8 @@ export default function SettingsTab({
       />
     );
   };
+
+  const totalPurse = calculateTotalPurse();
 
   return (
     <>
@@ -475,6 +722,55 @@ export default function SettingsTab({
           </View>
         </View>
 
+        {/* Scoring & Purse */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Scoring & Purse</Text>
+
+          <SettingRow
+            label="Points Per Week"
+            value={`${league.pointsPerWeek || 100} pts`}
+            editable={isCommissioner}
+            onEdit={() => {
+              Alert.alert("Points Per Week", "Select points distributed each week:", [
+                { text: "Cancel", style: "cancel" },
+                { text: "50 pts", onPress: () => handleSave("pointsPerWeek", 50) },
+                { text: "100 pts", onPress: () => handleSave("pointsPerWeek", 100) },
+                { text: "200 pts", onPress: () => handleSave("pointsPerWeek", 200) },
+                { text: "500 pts", onPress: () => handleSave("pointsPerWeek", 500) },
+              ]);
+            }}
+          />
+
+          {/* Prize Purse Row */}
+          <TouchableOpacity
+            style={[styles.settingRow, !isCommissioner && styles.settingRowDisabled]}
+            onPress={isCommissioner ? openPurseModal : undefined}
+            disabled={!isCommissioner}
+            activeOpacity={isCommissioner ? 0.7 : 1}
+          >
+            <View style={styles.settingRowContent}>
+              <Text style={styles.settingLabel}>Prize Purse</Text>
+              {league.purse && totalPurse > 0 ? (
+                <View>
+                  <Text style={[styles.settingValue, { color: "#0D5C3A", fontWeight: "700" }]}>
+                    {formatCurrency(totalPurse)} total
+                  </Text>
+                  <Text style={styles.purseBreakdownPreview}>
+                    {[
+                      league.purse.seasonPurse > 0 && `🏆 ${formatCurrency(league.purse.seasonPurse)}`,
+                      league.purse.weeklyPurse > 0 && `📅 ${formatCurrency(league.purse.weeklyPurse)}/wk`,
+                      league.purse.elevatedPurse > 0 && `⭐ ${formatCurrency(league.purse.elevatedPurse)}/evt`,
+                    ].filter(Boolean).join("  ")}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.settingValue}>Not configured</Text>
+              )}
+            </View>
+            {isCommissioner && <Ionicons name="chevron-forward" size={20} color="#CCC" />}
+          </TouchableOpacity>
+        </View>
+
         {/* Format (Read-Only) */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Format</Text>
@@ -623,6 +919,7 @@ export default function SettingsTab({
       </ScrollView>
 
       {renderTextEditModal()}
+      {renderPurseModal()}
       {renderDatePicker()}
       {renderTimePicker()}
     </>

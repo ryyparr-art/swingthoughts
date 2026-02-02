@@ -234,6 +234,7 @@ export const styles = StyleSheet.create({
   weekChipSelected: { borderColor: "#0D5C3A", backgroundColor: "#0D5C3A" },
   weekChipText: { fontSize: 16, fontWeight: "600", color: "#555" },
   weekChipTextSelected: { color: "#FFF" },
+  selectedWeeksText: { fontSize: 13, color: "#0D5C3A", fontWeight: "600", marginTop: 8 },
 
   // Review Screen
   reviewHeader: { backgroundColor: "#0D5C3A", borderRadius: 16, padding: 20, marginBottom: 20 },
@@ -249,7 +250,7 @@ export const styles = StyleSheet.create({
   divider: { height: 1, backgroundColor: "#D4D4D4", marginVertical: 20 },
 
   // Purse Input
-  purseInputRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  purseInputRow: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 8 },
   currencyPrefix: { 
     backgroundColor: "#E8E4D4", 
     paddingHorizontal: 16, 
@@ -271,6 +272,32 @@ export const styles = StyleSheet.create({
     fontWeight: "600", 
     color: "#1a1a1a" 
   },
+  pursePerLabel: { fontSize: 14, fontWeight: "600", color: "#666", marginLeft: 8 },
+
+  // Purse Summary Card
+  purseSummaryCard: {
+    backgroundColor: "#E8F5E9",
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: "#0D5C3A",
+  },
+  purseSummaryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  purseSummaryTitle: { fontSize: 14, fontWeight: "600", color: "#0D5C3A" },
+  purseSummaryAmount: { fontSize: 28, fontWeight: "800", color: "#0D5C3A", marginBottom: 8 },
+  purseSummaryBreakdown: {
+    borderTopWidth: 1,
+    borderTopColor: "rgba(13, 92, 58, 0.2)",
+    paddingTop: 8,
+    gap: 4,
+  },
+  purseSummaryLine: { fontSize: 13, color: "#555" },
 
   // Course Picker Modal
   modalContainer: { flex: 1, backgroundColor: "#F4EED8" },

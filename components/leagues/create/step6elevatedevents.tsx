@@ -3,14 +3,13 @@
  * - Elevated events toggle
  * - Elevated weeks selection
  * - Points multiplier
- * - League purse (optional tracking)
  */
 
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import React from "react";
-import { ScrollView, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { ScrollView, Text, TouchableOpacity, View } from "react-native";
 
 import { styles } from "./styles";
 import { LeagueFormData } from "./types";
@@ -42,19 +41,15 @@ export default function Step6ElevatedEvents({ formData, updateFormData }: Step6P
     }
   };
 
-  const handlePurseChange = (text: string) => {
-    // Only allow numbers
-    const numericValue = text.replace(/[^0-9]/g, "");
-    const amount = numericValue ? parseInt(numericValue, 10) : 0;
-    updateFormData({ purseAmount: amount });
-  };
-
   return (
     <View style={styles.stepContent}>
       {/* Elevated Events Toggle */}
       <View style={styles.inputGroup}>
         <Text style={styles.label}>Include Playoffs / Elevated Events?</Text>
-        <View style={styles.optionRow}>
+        <Text style={styles.helperText}>
+          Designate special weeks worth extra points (like PGA majors)
+        </Text>
+        <View style={[styles.optionRow, { marginTop: 12 }]}>
           <TouchableOpacity
             style={[styles.optionButton, !formData.hasElevatedEvents && styles.optionSelected]}
             onPress={() => {
@@ -87,7 +82,10 @@ export default function Step6ElevatedEvents({ formData, updateFormData }: Step6P
             <Text style={styles.label}>
               Select Elevated Weeks <Text style={styles.required}>*</Text>
             </Text>
-            <Text style={styles.helperText}>Worth {formData.elevatedMultiplier}x points</Text>
+            <Text style={styles.helperText}>
+              Worth {formData.elevatedMultiplier}x points
+              {formData.elevatedPurse > 0 && ` + ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0 }).format(formData.elevatedPurse)} bonus`}
+            </Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.weeksScroll}>
               <View style={styles.weeksRow}>
                 {Array.from({ length: formData.numberOfWeeks }, (_, i) => i + 1).map((w) => (
@@ -108,12 +106,20 @@ export default function Step6ElevatedEvents({ formData, updateFormData }: Step6P
                 ))}
               </View>
             </ScrollView>
+            {formData.elevatedWeeks.length > 0 && (
+              <Text style={styles.selectedWeeksText}>
+                Selected: Week{formData.elevatedWeeks.length > 1 ? "s" : ""} {formData.elevatedWeeks.join(", ")}
+              </Text>
+            )}
           </View>
 
           {/* Points Multiplier */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Points Multiplier</Text>
-            <View style={styles.stepperRow}>
+            <Text style={styles.helperText}>
+              How much more are elevated weeks worth?
+            </Text>
+            <View style={[styles.stepperRow, { marginTop: 12 }]}>
               <TouchableOpacity
                 style={styles.stepperBtn}
                 onPress={() => adjustMultiplier(-0.5)}
@@ -141,71 +147,26 @@ export default function Step6ElevatedEvents({ formData, updateFormData }: Step6P
               </TouchableOpacity>
             </View>
           </View>
+
+          {/* Example Calculation */}
+          <View style={styles.infoCard}>
+            <Ionicons name="calculator-outline" size={20} color="#0D5C3A" />
+            <Text style={styles.infoText}>
+              Regular week: {formData.pointsPerWeek} pts{"\n"}
+              Elevated week: {Math.round(formData.pointsPerWeek * formData.elevatedMultiplier)} pts
+            </Text>
+          </View>
         </>
       )}
 
-      {/* Divider */}
-      <View style={styles.divider} />
-
-      {/* League Purse (Optional) */}
-      <View style={styles.inputGroup}>
-        <Text style={styles.label}>
-          League Purse <Text style={styles.optionalTag}>(optional)</Text>
-        </Text>
-        <Text style={styles.helperText}>
-          Track a prize pool for your league. This is for display only — we don't handle money.
-        </Text>
-
-        <View style={styles.optionRow}>
-          <TouchableOpacity
-            style={[styles.optionButton, !formData.purseEnabled && styles.optionSelected]}
-            onPress={() => {
-              handlePress();
-              updateFormData({ purseEnabled: false, purseAmount: 0 });
-            }}
-          >
-            <Text style={[styles.optionText, !formData.purseEnabled && styles.optionTextSelected]}>
-              No Purse
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.optionButton, formData.purseEnabled && styles.optionSelected]}
-            onPress={() => {
-              handlePress();
-              updateFormData({ purseEnabled: true });
-            }}
-          >
-            <Text style={[styles.optionText, formData.purseEnabled && styles.optionTextSelected]}>
-              Add Purse
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* Purse Amount */}
-      {formData.purseEnabled && (
-        <View style={styles.inputGroup}>
-          <Text style={styles.label}>Purse Amount</Text>
-          <View style={styles.purseInputRow}>
-            <View style={styles.currencyPrefix}>
-              <Text style={styles.currencyText}>$</Text>
-            </View>
-            <TextInput
-              style={styles.purseInput}
-              value={formData.purseAmount > 0 ? formData.purseAmount.toString() : ""}
-              onChangeText={handlePurseChange}
-              placeholder="0"
-              placeholderTextColor="#999"
-              keyboardType="number-pad"
-              maxLength={7}
-            />
-          </View>
-          <View style={[styles.infoBox, { marginTop: 12 }]}>
-            <Ionicons name="information-circle-outline" size={18} color="#666" />
-            <Text style={styles.infoBoxText}>
-              This amount will be displayed on your league page. Collecting and distributing funds is your responsibility.
-            </Text>
-          </View>
+      {/* No Elevated Events Info */}
+      {!formData.hasElevatedEvents && (
+        <View style={styles.infoCardLarge}>
+          <Ionicons name="trophy-outline" size={40} color="#CCC" />
+          <Text style={styles.infoCardTitle}>All Weeks Equal</Text>
+          <Text style={styles.infoCardDesc}>
+            Every week will be worth {formData.pointsPerWeek} points. You can always add elevated events later in league settings.
+          </Text>
         </View>
       )}
     </View>

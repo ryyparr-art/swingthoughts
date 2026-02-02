@@ -33,11 +33,21 @@ export interface League {
   hostUserId: string;
   managerIds?: string[];
   restrictedCourses?: Array<{ courseId: number; courseName: string }>;
+  // Points per week
+  pointsPerWeek?: number;
+  // Elevated events
   elevatedEvents?: {
     enabled: boolean;
     weeks: number[];
     multiplier: number;
   };
+  // PGA-style purse
+  purse?: {
+    seasonPurse: number;      // End-of-season championship purse
+    weeklyPurse: number;      // Per-week winner prize
+    elevatedPurse: number;    // Bonus for elevated/playoff weeks
+    currency: string;
+  } | null;
   hashtags?: string[];
   searchKeywords?: string[];
   previousSeasonId?: string;
@@ -148,4 +158,36 @@ export const getRoleBadge = (role: Member["role"]) => {
     default:
       return null;
   }
+};
+
+// Calculate total purse from all sources
+export const calculateTotalPurse = (league: League): number => {
+  if (!league.purse) return 0;
+  
+  let total = 0;
+  
+  if (league.purse.seasonPurse > 0) {
+    total += league.purse.seasonPurse;
+  }
+  
+  if (league.purse.weeklyPurse > 0 && league.totalWeeks > 0) {
+    total += league.purse.weeklyPurse * league.totalWeeks;
+  }
+  
+  const elevatedWeeksCount = league.elevatedEvents?.weeks?.length ?? 0;
+  if (league.purse.elevatedPurse > 0 && elevatedWeeksCount > 0) {
+    total += league.purse.elevatedPurse * elevatedWeeksCount;
+  }
+  
+  return total;
+};
+
+// Format currency
+export const formatCurrency = (amount: number, currency: string = "USD"): string => {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: currency,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(amount);
 };
