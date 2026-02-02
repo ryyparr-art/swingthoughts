@@ -430,17 +430,18 @@ export default function LeagueHome() {
     return date.toLocaleDateString();
   };
 
-  const getHandicapDisplay = () => {
-    if (!myMembership || !selectedLeague) return "-";
-    if (selectedLeague.handicapSystem === "league_managed") {
-      return myMembership.leagueHandicap !== undefined 
-        ? myMembership.leagueHandicap.toString() 
-        : "-";
-    }
-    return myMembership.swingThoughtsHandicap !== undefined 
-      ? myMembership.swingThoughtsHandicap.toString() 
+  // AFTER (handles null AND undefined)
+const getHandicapDisplay = () => {
+  if (!myMembership || !selectedLeague) return "-";
+  if (selectedLeague.handicapSystem === "league_managed") {
+    return myMembership.leagueHandicap != null 
+      ? myMembership.leagueHandicap.toString() 
       : "-";
-  };
+  }
+  return myMembership.swingThoughtsHandicap != null 
+    ? myMembership.swingThoughtsHandicap.toString() 
+    : "-";
+};
 
   const formatDateShort = (timestamp: Timestamp) => {
     return timestamp.toDate().toLocaleDateString("en-US", {

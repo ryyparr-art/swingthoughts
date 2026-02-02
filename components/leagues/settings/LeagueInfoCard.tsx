@@ -30,11 +30,14 @@ interface LeagueData {
   leagueType: "live" | "sim";
   simPlatform?: string;
   format: "stroke" | "2v2";
-  // Original field names
-  holes: number;
+  // Support both property names for flexibility
+  holes?: number;
+  holesPerRound?: number;
   handicapSystem: "swingthoughts" | "league_managed";
   frequency: "weekly" | "biweekly" | "monthly";
-  scoreDeadline: string; // Day of week (e.g., "sunday")
+  // Support both property names for deadline
+  scoreDeadline?: string; // Day of week (e.g., "sunday")
+  scoreDeadlineDays?: number; // Number of days
   startDate: Timestamp;
   endDate: Timestamp;
   courseRestriction?: boolean;
@@ -145,11 +148,25 @@ export default function LeagueInfoCard({
     }
   };
 
+  // ✅ UPDATED: Support both scoreDeadline (string) and scoreDeadlineDays (number)
   const getDeadlineDisplay = () => {
-    // scoreDeadline is day of week like "sunday"
-    const day = league.scoreDeadline;
-    if (!day) return "Not set";
-    return day.charAt(0).toUpperCase() + day.slice(1);
+    // If scoreDeadline is a string (day of week like "sunday")
+    if (league.scoreDeadline && typeof league.scoreDeadline === "string") {
+      const day = league.scoreDeadline;
+      return day.charAt(0).toUpperCase() + day.slice(1);
+    }
+    // If scoreDeadlineDays is a number
+    if (league.scoreDeadlineDays != null) {
+      return `${league.scoreDeadlineDays} day${league.scoreDeadlineDays !== 1 ? "s" : ""}`;
+    }
+    return "Not set";
+  };
+
+  // ✅ UPDATED: Support both holes and holesPerRound
+  const getHolesDisplay = () => {
+    const holes = league.holes ?? league.holesPerRound;
+    if (holes == null) return "Not set";
+    return `${holes} per round`;
   };
 
   const getCourseDisplay = () => {
@@ -218,7 +235,7 @@ export default function LeagueInfoCard({
       <View style={styles.infoCard}>
         <InfoRow icon="trophy-outline" label="Format" value={getFormatDisplay()} />
         <InfoRow icon="golf-outline" label="Type" value={getTypeDisplay()} />
-        <InfoRow icon="flag-outline" label="Holes" value={`${league.holes} per round`} />
+        <InfoRow icon="flag-outline" label="Holes" value={getHolesDisplay()} />
         <InfoRow icon="calculator-outline" label="Handicaps" value={getHandicapDisplay()} />
         <InfoRow icon="calendar-outline" label="Frequency" value={getFrequencyDisplay()} />
         <InfoRow icon="time-outline" label="Deadline" value={getDeadlineDisplay()} />
