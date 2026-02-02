@@ -56,7 +56,7 @@ export default function LockerScreen() {
             console.log("⚡ Using cached locker data");
             setProfile(cached.profile);
             setClubs(cached.clubs);
-            setBadges(cached.badges);
+            setBadges(Array.isArray(cached.badges) ? cached.badges : []);
             setShowingCached(true);
             setLoading(false);
           }
