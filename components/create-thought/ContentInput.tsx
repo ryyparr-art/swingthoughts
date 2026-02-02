@@ -47,27 +47,84 @@ export default function ContentInput({
   selectedTournaments,
   selectedLeagues,
 }: ContentInputProps) {
+  
+  // Render content with styled mentions and hashtags
+  const renderStyledContent = () => {
+    if (!content) return null;
+    
+    // Build patterns from selected items
+    const mentionPatterns = selectedMentions
+      .map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    
+    const tournamentPatterns = selectedTournaments
+      .map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    
+    const leaguePatterns = selectedLeagues
+      .map(l => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    
+    const allPatterns = [...mentionPatterns, ...tournamentPatterns, ...leaguePatterns]
+      .sort((a, b) => b.length - a.length);
+    
+    if (allPatterns.length === 0) {
+      return <Text style={styles.overlayText}>{content}</Text>;
+    }
+    
+    const combinedRegex = new RegExp(`(${allPatterns.join('|')})`, 'g');
+    const parts = content.split(combinedRegex);
+    
+    return (
+      <Text style={styles.overlayText}>
+        {parts.map((part, index) => {
+          if (selectedMentions.includes(part)) {
+            return <Text key={index} style={styles.styledMention}>{part}</Text>;
+          }
+          if (selectedTournaments.includes(part)) {
+            return <Text key={index} style={styles.styledTournament}>{part}</Text>;
+          }
+          if (selectedLeagues.includes(part)) {
+            return <Text key={index} style={styles.styledLeague}>{part}</Text>;
+          }
+          return <Text key={index}>{part}</Text>;
+        })}
+      </Text>
+    );
+  };
+  
   return (
     <View style={styles.section}>
       <Text style={styles.sectionLabel}>
         Use @ for partners/courses, # for tournaments/leagues
       </Text>
       
-      <TextInput
-        ref={textInputRef}
-        style={styles.textInput}
-        placeholder="What clicked for you today?"
-        placeholderTextColor="#999"
-        multiline
-        maxLength={MAX_CHARACTERS}
-        value={content}
-        onChangeText={onContentChange}
-        editable={writable}
-        autoCorrect={true}
-        autoCapitalize="sentences"
-        spellCheck={true}
-        textAlignVertical="top"
-      />
+      {/* Rich Text Input Container */}
+      <View style={styles.textInputContainer}>
+        {/* Styled overlay - shows colored/bold text */}
+        <View style={styles.textOverlay} pointerEvents="none">
+          {renderStyledContent()}
+        </View>
+        
+        {/* Actual TextInput - transparent text */}
+        <TextInput
+          ref={textInputRef}
+          style={[
+            styles.textInput,
+            (selectedMentions.length > 0 || selectedTournaments.length > 0 || selectedLeagues.length > 0) 
+              ? styles.textInputTransparent 
+              : null
+          ]}
+          placeholder="What clicked for you today?"
+          placeholderTextColor="#999"
+          multiline
+          maxLength={MAX_CHARACTERS}
+          value={content}
+          onChangeText={onContentChange}
+          editable={writable}
+          autoCorrect={true}
+          autoCapitalize="sentences"
+          spellCheck={true}
+          textAlignVertical="top"
+        />
+      </View>
 
       {/* Tagged Partners/Courses */}
       {selectedMentions.length > 0 && (
@@ -225,16 +282,56 @@ const styles = StyleSheet.create({
   section: { marginBottom: 24 },
   sectionLabel: { fontSize: 14, fontWeight: "700", color: "#0D5C3A", marginBottom: 12 },
 
-  // Text Input
-  textInput: {
+  // Rich Text Input Container
+  textInputContainer: {
+    position: "relative",
     backgroundColor: "#FFF",
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+    minHeight: 120,
+  },
+  
+  // Styled overlay - positioned exactly over the TextInput
+  textOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    padding: 16,
+    zIndex: 1,
+  },
+  overlayText: {
+    fontSize: 16,
+    lineHeight: 22,
+    color: "#333",
+  },
+  
+  // Styled mentions in overlay
+  styledMention: {
+    fontWeight: "700",
+    color: "#0D5C3A",
+  },
+  styledTournament: {
+    fontWeight: "700",
+    color: "#B8860B",
+  },
+  styledLeague: {
+    fontWeight: "700",
+    color: "#FF6B35",
+  },
+
+  // Text Input - transparent when overlay is active
+  textInput: {
     padding: 16,
     fontSize: 16,
     minHeight: 120,
     textAlignVertical: "top",
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
+    lineHeight: 22,
+    color: "#333",
+  },
+  textInputTransparent: {
+    color: "transparent",
   },
 
   // Tagged Items - Partners/Courses

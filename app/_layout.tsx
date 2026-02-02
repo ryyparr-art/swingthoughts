@@ -1,4 +1,5 @@
 import { CacheProvider } from "@/contexts/CacheContext";
+import { NewPostProvider } from "@/contexts/NewPostContext";
 import { markNotificationAsRead } from "@/utils/notificationHelpers";
 import { registerForPushNotificationsAsync, setupNotificationResponseListener } from "@/utils/pushNotificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -401,27 +402,27 @@ export default function RootLayout() {
           break;
 
         // ============================================
-// MESSAGES - Go to message thread (1:1 and Group)
-// ============================================
-case "message":
-case "group_message":  // ✅ NEW: Handle group messages
-  // ✅ Use threadId if provided (works for both 1:1 and groups)
-  if (data.threadId) {
-    router.push(`/messages/${data.threadId}`);
-  } else if (data.actorId) {
-    // Fallback: construct threadId for legacy 1:1 notifications
-    const currentUserId = authModule.auth.currentUser?.uid;
-    if (currentUserId) {
-      const threadId = [currentUserId, data.actorId as string].sort().join("_");
-      router.push(`/messages/${threadId}`);
-    } else {
-      router.push("/messages");
-    }
-  } else {
-    // Last resort: go to messages list
-    router.push("/messages");
-  }
-  break;
+        // MESSAGES - Go to message thread (1:1 and Group)
+        // ============================================
+        case "message":
+        case "group_message":  // ✅ NEW: Handle group messages
+          // ✅ Use threadId if provided (works for both 1:1 and groups)
+          if (data.threadId) {
+            router.push(`/messages/${data.threadId}`);
+          } else if (data.actorId) {
+            // Fallback: construct threadId for legacy 1:1 notifications
+            const currentUserId = authModule.auth.currentUser?.uid;
+            if (currentUserId) {
+              const threadId = [currentUserId, data.actorId as string].sort().join("_");
+              router.push(`/messages/${threadId}`);
+            } else {
+              router.push("/messages");
+            }
+          } else {
+            // Last resort: go to messages list
+            router.push("/messages");
+          }
+          break;
 
         // ============================================
         // FALLBACK - Use generic routing based on available data
@@ -474,7 +475,9 @@ case "group_message":  // ✅ NEW: Handle group messages
 
   return (
     <CacheProvider>
-      <Slot />
+      <NewPostProvider>
+        <Slot />
+      </NewPostProvider>
     </CacheProvider>
   );
 }

@@ -1,5 +1,5 @@
 /**
- * Global Cache Context - FIXED
+ * Global Cache Context
  * 
  * Provides persistent caching across all app screens to improve navigation speed.
  * Screens can:
@@ -7,18 +7,19 @@
  * 2. Refresh in background
  * 3. Auto-update when new data arrives
  * 
- * Cache expires after 5 minutes but persists across navigation.
+ * Cache expires after 30 minutes but persists across navigation.
  * 
  * FIXES:
  * - Properly handles empty arrays ([] !== null)
  * - Optimized memory cache (no recreating on every render)
  * - Better cache hit detection
+ * - Increased TTL from 5 min to 30 min for better UX
  */
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { createContext, useCallback, useContext, useRef } from "react";
 
-const CACHE_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
+const CACHE_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
 
 interface CacheEntry {
   data: any;
@@ -270,6 +271,7 @@ export const CACHE_KEYS = {
   NOTIFICATIONS: (userId: string) => `notifications_cache_${userId}`,
   LOCKER: (userId: string) => `locker_cache_${userId}`,
   LOCKER_NOTES: (userId: string) => `locker_notes_cache_${userId}`,
+  LEAGUES: (userId: string) => `leagues_cache_${userId}`,
 
   // 🔐 Messages
   MESSAGE_THREAD: (userId: string, otherUserId: string) =>

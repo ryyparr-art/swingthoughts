@@ -87,6 +87,8 @@ export interface FeedPost {
   // Tags
   taggedCourses?: { courseId: number | string; courseName: string }[];
   taggedPartners?: { userId: string; displayName: string }[];
+  taggedTournaments?: { tournamentId: string; name: string }[];
+  taggedLeagues?: { leagueId: string; name: string }[];
   
   // Metadata
   createdAt: Timestamp;
@@ -682,6 +684,8 @@ async function processPosts(
       // Tags
       taggedCourses: data.taggedCourses || [],
       taggedPartners: data.taggedPartners || [],
+      taggedTournaments: data.taggedTournaments || [],
+      taggedLeagues: data.taggedLeagues || [],
       
       // Metadata
       createdAt: data.createdAt,

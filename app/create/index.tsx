@@ -3,11 +3,16 @@
  * 
  * Refactored to use modular components while preserving all functionality
  * and data schema. Key fix: Tournaments and Leagues are now tracked separately.
+ * 
+ * NEW: Integrates with NewPostContext for optimistic UI updates.
+ * After create/edit/delete, the pending post is stored so Clubhouse
+ * can instantly update without refetching.
  */
 
 import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
 import { auth, db, storage } from "@/constants/firebaseConfig";
 import { POST_TYPES } from "@/constants/postTypes";
+import { useNewPost } from "@/contexts/NewPostContext";
 import {
   checkRateLimit,
   EMAIL_VERIFICATION_MESSAGE,
@@ -85,6 +90,9 @@ export default function CreateScreen() {
 
   const router = useRouter();
   const { editId } = useLocalSearchParams();
+  
+  // ✅ NEW: Hook for optimistic UI updates
+  const { setPendingPost } = useNewPost();
 
   /* ---------------------------------------------------------------- */
   /* STATE                                                            */
@@ -141,6 +149,9 @@ export default function CreateScreen() {
   // Edit mode
   const [isEditMode, setIsEditMode] = useState(false);
   const [editingPostId, setEditingPostId] = useState<string | null>(null);
+  
+  // Store original post data for edit mode (to preserve likes, comments, createdAt)
+  const [originalPostData, setOriginalPostData] = useState<any>(null);
 
   // Debounce
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -215,6 +226,12 @@ export default function CreateScreen() {
 
         setIsEditMode(true);
         setEditingPostId(editId);
+        
+        // ✅ Store original post data to preserve likes, comments, createdAt
+        setOriginalPostData({
+          ...postData,
+          id: editId,
+        });
         
         // Prevent tag cleanup during initial load
         isInitialLoadRef.current = true;
@@ -723,27 +740,28 @@ export default function CreateScreen() {
   const handleContentChange = (text: string) => {
     setContent(text);
 
-    // Skip cleanup during initial edit load
-    if (isInitialLoadRef.current) return;
+    // Skip ONLY cleanup during initial edit load, but still allow autocomplete
+    if (!isInitialLoadRef.current) {
+      // Clean up removed mentions
+      const cleanedMentions = selectedMentions.filter((mention) => text.includes(mention));
+      if (cleanedMentions.length !== selectedMentions.length) {
+        setSelectedMentions(cleanedMentions);
+      }
 
-    // Clean up removed mentions
-    const cleanedMentions = selectedMentions.filter((mention) => text.includes(mention));
-    if (cleanedMentions.length !== selectedMentions.length) {
-      setSelectedMentions(cleanedMentions);
+      // Clean up removed tournaments - FIXED
+      const cleanedTournaments = selectedTournaments.filter((t) => text.includes(t));
+      if (cleanedTournaments.length !== selectedTournaments.length) {
+        setSelectedTournaments(cleanedTournaments);
+      }
+
+      // Clean up removed leagues - FIXED
+      const cleanedLeagues = selectedLeagues.filter((l) => text.includes(l));
+      if (cleanedLeagues.length !== selectedLeagues.length) {
+        setSelectedLeagues(cleanedLeagues);
+      }
     }
 
-    // Clean up removed tournaments - FIXED
-    const cleanedTournaments = selectedTournaments.filter((t) => text.includes(t));
-    if (cleanedTournaments.length !== selectedTournaments.length) {
-      setSelectedTournaments(cleanedTournaments);
-    }
-
-    // Clean up removed leagues - FIXED
-    const cleanedLeagues = selectedLeagues.filter((l) => text.includes(l));
-    if (cleanedLeagues.length !== selectedLeagues.length) {
-      setSelectedLeagues(cleanedLeagues);
-    }
-
+    // Autocomplete logic - always runs (not affected by isInitialLoadRef)
     const lastAtIndex = text.lastIndexOf("@");
     const lastHashIndex = text.lastIndexOf("#");
 
@@ -1095,6 +1113,13 @@ export default function CreateScreen() {
     try {
       setIsPosting(true);
       await deleteDoc(doc(db, "thoughts", editingPostId));
+      
+      // ✅ NEW: Set pending delete for optimistic UI update
+      setPendingPost({
+        type: "delete",
+        postId: editingPostId,
+      });
+      
       soundPlayer.play("dart");
       Alert.alert("Deleted 🗑️", "Your thought has been deleted.");
       router.back();
@@ -1427,11 +1452,74 @@ export default function CreateScreen() {
 
       if (isEditMode && editingPostId) {
         await updateDoc(doc(db, "thoughts", editingPostId), postData);
+        
+        // ✅ NEW: Set pending edit for optimistic UI update
+        setPendingPost({
+          type: "edit",
+          post: {
+            id: editingPostId,
+            thoughtId: originalPostData?.thoughtId || editingPostId,
+            userId: uid,
+            userType: currentUserData.userType || "Golfer",
+            content: content.trim(),
+            postType: selectedType,
+            
+            imageUrls: uploadedImageUrls,
+            imageCount: uploadedImageUrls.length,
+            videoUrl: uploadedVideoUrl,
+            videoThumbnailUrl: uploadedThumbnailUrl,
+            videoDuration: uploadedVideoUrl ? videoDuration : null,
+            videoTrimStart: uploadedVideoUrl ? trimStart : null,
+            videoTrimEnd: uploadedVideoUrl ? trimEnd : null,
+            
+            // Preserve original engagement data
+            createdAt: originalPostData?.createdAt || new Date(),
+            likes: originalPostData?.likes || 0,
+            likedBy: originalPostData?.likedBy || [],
+            comments: originalPostData?.comments || 0,
+            
+            userName: currentUserData.displayName || "Unknown",
+            displayName: currentUserData.displayName || "Unknown",
+            userAvatar: currentUserData.avatar || null,
+            avatarUrl: currentUserData.avatar || null,
+            userVerified: currentUserData.verified === true,
+            
+            taggedPartners: extractedPartners.map((p) => ({
+              userId: p.userId,
+              displayName: p.displayName,
+            })),
+            taggedCourses: extractedCourses.map((c) => ({
+              courseId: c.courseId,
+              courseName: c.courseName,
+            })),
+            taggedTournaments: extractedTournaments.map((t) => ({
+              tournamentId: t.tournamentId,
+              name: t.name,
+            })),
+            taggedLeagues: extractedLeagues.map((l) => ({
+              leagueId: l.leagueId,
+              name: l.name,
+            })),
+            
+            regionKey: currentUserData.regionKey || "",
+            geohash: geohash,
+            location: {
+              city: userCity,
+              state: userState,
+              latitude: userLat || null,
+              longitude: userLon || null,
+            },
+            
+            hasMedia: uploadedImageUrls.length > 0 || uploadedVideoUrl !== null,
+            mediaType: uploadedImageUrls.length > 0 ? "images" : uploadedVideoUrl ? "video" : null,
+          },
+        });
+        
         soundPlayer.play("postThought");
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         Alert.alert("Updated ✏️", "Your thought has been updated.");
       } else {
-        await addDoc(collection(db, "thoughts"), {
+        const newPostRef = await addDoc(collection(db, "thoughts"), {
           thoughtId: `thought_${Date.now()}`,
           userId: uid,
           ...postData,
@@ -1439,6 +1527,67 @@ export default function CreateScreen() {
         });
 
         await updateRateLimitTimestamp("post");
+
+        // ✅ NEW: Set pending create for optimistic UI update
+        setPendingPost({
+          type: "create",
+          post: {
+            id: newPostRef.id,
+            thoughtId: `thought_${Date.now()}`,
+            userId: uid,
+            userType: currentUserData.userType || "Golfer",
+            content: content.trim(),
+            postType: selectedType,
+            
+            imageUrls: uploadedImageUrls,
+            imageCount: uploadedImageUrls.length,
+            videoUrl: uploadedVideoUrl,
+            videoThumbnailUrl: uploadedThumbnailUrl,
+            videoDuration: uploadedVideoUrl ? videoDuration : null,
+            videoTrimStart: uploadedVideoUrl ? trimStart : null,
+            videoTrimEnd: uploadedVideoUrl ? trimEnd : null,
+            
+            createdAt: new Date(),
+            likes: 0,
+            likedBy: [],
+            comments: 0,
+            
+            userName: currentUserData.displayName || "Unknown",
+            displayName: currentUserData.displayName || "Unknown",
+            userAvatar: currentUserData.avatar || null,
+            avatarUrl: currentUserData.avatar || null,
+            userVerified: currentUserData.verified === true,
+            
+            taggedPartners: extractedPartners.map((p) => ({
+              userId: p.userId,
+              displayName: p.displayName,
+            })),
+            taggedCourses: extractedCourses.map((c) => ({
+              courseId: c.courseId,
+              courseName: c.courseName,
+            })),
+            taggedTournaments: extractedTournaments.map((t) => ({
+              tournamentId: t.tournamentId,
+              name: t.name,
+            })),
+            taggedLeagues: extractedLeagues.map((l) => ({
+              leagueId: l.leagueId,
+              name: l.name,
+            })),
+            
+            regionKey: currentUserData.regionKey || "",
+            geohash: geohash,
+            location: {
+              city: userCity,
+              state: userState,
+              latitude: userLat || null,
+              longitude: userLon || null,
+            },
+            
+            hasMedia: uploadedImageUrls.length > 0 || uploadedVideoUrl !== null,
+            mediaType: uploadedImageUrls.length > 0 ? "images" : uploadedVideoUrl ? "video" : null,
+          },
+        });
 
         soundPlayer.play("postThought");
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
