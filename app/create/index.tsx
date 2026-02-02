@@ -65,14 +65,13 @@ import {
   extractHashtags,
   GolfCourse,
   IMAGE_QUALITY,
-  MAX_CHARACTERS,
   MAX_IMAGE_WIDTH,
   MAX_IMAGES,
   MAX_VIDEO_DURATION,
   Partner,
   PendingImage,
   TaggedLeague,
-  TaggedTournament,
+  TaggedTournament
 } from "@/components/create-thought/types";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
@@ -146,6 +145,9 @@ export default function CreateScreen() {
   // Debounce
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Track initial edit load to prevent tag cleanup
+  const isInitialLoadRef = useRef(false);
+
   // Image carousel
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
 
@@ -213,8 +215,9 @@ export default function CreateScreen() {
 
         setIsEditMode(true);
         setEditingPostId(editId);
-        setContent(postData.content || "");
-        setSelectedType(postData.postType || "swing-thought");
+        
+        // Prevent tag cleanup during initial load
+        isInitialLoadRef.current = true;
 
         // Load media
         if (postData.imageUrls && postData.imageUrls.length > 0) {
@@ -266,6 +269,15 @@ export default function CreateScreen() {
           });
         }
         setSelectedLeagues(existingLeagues);
+
+        // Set content LAST so cleanup doesn't remove tags
+        setContent(postData.content || "");
+        setSelectedType(postData.postType || "swing-thought");
+
+        // Reset the flag after a short delay to allow state to settle
+        setTimeout(() => {
+          isInitialLoadRef.current = false;
+        }, 100);
       } catch (error) {
         console.error("Error loading post:", error);
         soundPlayer.play("error");
@@ -710,6 +722,9 @@ export default function CreateScreen() {
 
   const handleContentChange = (text: string) => {
     setContent(text);
+
+    // Skip cleanup during initial edit load
+    if (isInitialLoadRef.current) return;
 
     // Clean up removed mentions
     const cleanedMentions = selectedMentions.filter((mention) => text.includes(mention));

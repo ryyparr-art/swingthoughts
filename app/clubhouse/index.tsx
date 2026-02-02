@@ -1236,7 +1236,6 @@ export default function ClubhouseScreen() {
           // Check if it's a hashtag (#)
           const hashtag = hashtagMap[part];
           if (hashtag) {
-            // Tournaments are tappable, leagues are not (yet)
             if (hashtag.type === 'tournament') {
               return (
                 <Text
@@ -1253,12 +1252,17 @@ export default function ClubhouseScreen() {
                   {part}
                 </Text>
               );
-            } else {
-              // League - styled but not tappable (feature coming soon)
+            } else if (hashtag.type === 'league') {
+              // League - navigate to league page
               return (
                 <Text
                   key={index}
-                  style={styles.hashtagInactive}
+                  style={styles.hashtagLeague}
+                  onPress={() => {
+                    soundPlayer.play('click');
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    router.push(`/leagues/${hashtag.id}`);
+                  }}
                 >
                   {part}
                 </Text>
@@ -1979,5 +1983,10 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#DAA520",
     opacity: 0.8,
+  },
+  hashtagLeague: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FF6B35",  // Orange for leagues
   },
 });
