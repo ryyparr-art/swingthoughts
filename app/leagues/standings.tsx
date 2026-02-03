@@ -45,15 +45,27 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 interface League {
   id: string;
   name: string;
+  avatar?: string;
   format: "stroke" | "2v2";
   status: "upcoming" | "active" | "completed";
   currentWeek: number;
   totalWeeks: number;
+  pointsPerWeek?: number;
+  hasElevatedEvents?: boolean;
+  elevatedWeeks?: number[];
+  elevatedMultiplier?: number;
+  purse?: {
+    seasonPurse: number;
+    weeklyPurse: number;
+    elevatedPurse: number;
+    currency?: string;
+  };
 }
 
 interface LeagueCard {
   id: string;
   name: string;
+  avatar?: string;
   currentWeek: number;
   totalWeeks: number;
 }
@@ -199,6 +211,7 @@ export default function LeagueStandings() {
           userLeagues.push({
             id: leagueDoc.id,
             name: leagueData.name,
+            avatar: leagueData.avatar,
             currentWeek: leagueData.currentWeek || 0,
             totalWeeks: leagueData.totalWeeks || 0,
           });
@@ -425,9 +438,13 @@ export default function LeagueStandings() {
       >
         <View style={styles.leagueSelectorContent}>
           <View style={styles.leagueLogoPlaceholder}>
-            <Text style={styles.leagueLogoText}>
-              {selected?.name?.charAt(0) || "L"}
-            </Text>
+            {selectedLeague?.avatar ? (
+              <Image source={{ uri: selectedLeague.avatar }} style={styles.leagueLogoImage} />
+            ) : (
+              <Text style={styles.leagueLogoText}>
+                {selected?.name?.charAt(0) || "L"}
+              </Text>
+            )}
           </View>
           <View style={styles.leagueSelectorText}>
             <Text style={styles.leagueName}>
@@ -666,9 +683,13 @@ export default function LeagueStandings() {
             >
               <View style={styles.selectorOptionContent}>
                 <View style={styles.selectorLogoPlaceholder}>
-                  <Text style={styles.selectorLogoText}>
-                    {league.name?.charAt(0) || "L"}
-                  </Text>
+                  {league.avatar ? (
+                    <Image source={{ uri: league.avatar }} style={styles.selectorLogoImage} />
+                  ) : (
+                    <Text style={styles.selectorLogoText}>
+                      {league.name?.charAt(0) || "L"}
+                    </Text>
+                  )}
                 </View>
                 <View>
                   <Text style={styles.selectorOptionTitle}>{league.name}</Text>
@@ -761,6 +782,45 @@ export default function LeagueStandings() {
             </View>
           )}
         </View>
+
+        {/* Purse Summary */}
+        {selectedLeague?.purse && (selectedLeague.purse.seasonPurse > 0 || selectedLeague.purse.weeklyPurse > 0 || selectedLeague.purse.elevatedPurse > 0) ? (
+          <View style={styles.purseCard}>
+            <View style={styles.purseCardHeader}>
+              <Text style={styles.purseCardTitle}>💰 Prize Purse</Text>
+              <Text style={styles.purseCardTotal}>
+                ${(() => {
+                  const p = selectedLeague.purse!;
+                  let total = p.seasonPurse || 0;
+                  total += (p.weeklyPurse || 0) * (selectedLeague.totalWeeks || 0);
+                  const elevatedCount = selectedLeague.elevatedWeeks?.length ?? 0;
+                  total += (p.elevatedPurse || 0) * elevatedCount;
+                  return total.toLocaleString();
+                })()}
+              </Text>
+            </View>
+            <View style={styles.purseCardBreakdown}>
+              {selectedLeague.purse.seasonPurse > 0 ? (
+                <View style={styles.purseCardRow}>
+                  <Text style={styles.purseCardLabel}>🏆 Championship</Text>
+                  <Text style={styles.purseCardAmount}>${selectedLeague.purse.seasonPurse.toLocaleString()}</Text>
+                </View>
+              ) : null}
+              {selectedLeague.purse.weeklyPurse > 0 ? (
+                <View style={styles.purseCardRow}>
+                  <Text style={styles.purseCardLabel}>📅 Weekly ({selectedLeague.totalWeeks} wks)</Text>
+                  <Text style={styles.purseCardAmount}>${selectedLeague.purse.weeklyPurse.toLocaleString()}/wk</Text>
+                </View>
+              ) : null}
+              {selectedLeague.purse.elevatedPurse > 0 && (selectedLeague.elevatedWeeks?.length ?? 0) > 0 ? (
+                <View style={styles.purseCardRow}>
+                  <Text style={styles.purseCardLabel}>🏅 Elevated ({selectedLeague.elevatedWeeks?.length} evts)</Text>
+                  <Text style={styles.purseCardAmount}>${selectedLeague.purse.elevatedPurse.toLocaleString()}/evt</Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
+        ) : null}
 
         <View style={styles.bottomSpacer} />
       </ScrollView>
@@ -863,11 +923,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#0D5C3A",
     justifyContent: "center",
     alignItems: "center",
+    overflow: "hidden",
   },
   leagueLogoText: {
     fontSize: 18,
     fontWeight: "700",
     color: "#FFF",
+  },
+  leagueLogoImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
   leagueSelectorText: {
     marginLeft: 12,
@@ -1161,6 +1227,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     marginRight: 12,
+    overflow: "hidden",
+  },
+  selectorLogoImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
   },
   selectorLogoText: {
     fontSize: 16,
@@ -1215,5 +1287,54 @@ const styles = StyleSheet.create({
 
   bottomSpacer: {
     height: 100,
+  },
+
+  // Purse Card
+  purseCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  purseCardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  purseCardTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#333",
+  },
+  purseCardTotal: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#0D5C3A",
+  },
+  purseCardBreakdown: {
+    borderTopWidth: 1,
+    borderTopColor: "#F0F0F0",
+    paddingTop: 10,
+    gap: 8,
+  },
+  purseCardRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  purseCardLabel: {
+    fontSize: 14,
+    color: "#666",
+  },
+  purseCardAmount: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
   },
 });

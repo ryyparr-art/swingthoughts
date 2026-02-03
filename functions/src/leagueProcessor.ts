@@ -5,76 +5,88 @@
  * - Season starting notifications (day before)
  * - Season activation (on start date)
  * - Score reminders (after tee time)
- * - Week completion (calculate winners, update standings)
- * - Season completion (crown champion)
+ * - Week completion (calculate winners, update standings, purse tracking)
+ * - Season completion (crown champion, championship purse)
+ * 
+ * Purse Support:
+ * - Weekly prize → awarded to week winner
+ * - Elevated bonus → added to weekly prize for elevated weeks
+ * - Season championship → awarded to season champion
  * 
  * Deploy: firebase deploy --only functions:processLeaguesDaily
  */
 
-import * as admin from "firebase-admin";
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 
-const db = admin.firestore();
+const db = getFirestore();
 
 // ============================================================================
-// NOTIFICATION HELPERS (duplicated from index.ts for modularity)
+// NOTIFICATION HELPER (imported for non-purse notifications)
 // ============================================================================
 
-interface CreateNotificationParams {
-  userId: string;
-  type: string;
-  actorId?: string;
-  actorName?: string;
-  actorAvatar?: string;
-  leagueId?: string;
-  leagueName?: string;
-  teamName?: string;
-  weekNumber?: number;
-  message: string;
+import { createNotificationDocument } from "./notifications/helpers";
+
+// ============================================================================
+// PURSE HELPERS
+// ============================================================================
+
+interface PurseData {
+  seasonPurse: number;
+  weeklyPurse: number;
+  elevatedPurse: number;
+  currency: string;
 }
 
 /**
- * Create a notification document (simplified version for league processor)
+ * Check if a week is an elevated event
  */
-async function createNotificationDocument(params: CreateNotificationParams): Promise<void> {
-  const {
-    userId,
-    type,
-    actorId,
-    actorName,
-    actorAvatar,
-    leagueId,
-    leagueName,
-    teamName,
-    weekNumber,
-    message,
-  } = params;
-
-  const now = Timestamp.now();
-  const expiresAt = Timestamp.fromDate(
-    new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+function isElevatedWeek(league: FirebaseFirestore.DocumentData, week: number): boolean {
+  return (
+    league.elevatedEvents?.enabled === true &&
+    Array.isArray(league.elevatedEvents?.weeks) &&
+    league.elevatedEvents.weeks.includes(week)
   );
+}
 
-  const notificationData: Record<string, any> = {
-    userId,
-    type,
-    actorId: actorId || null,
-    actorName: actorName || "System",
-    actorAvatar: actorAvatar || null,
-    message,
-    read: false,
-    createdAt: now,
-    updatedAt: now,
-    expiresAt,
+/**
+ * Get the purse data from a league document (null if no purse configured)
+ */
+function getLeaguePurse(league: FirebaseFirestore.DocumentData): PurseData | null {
+  if (!league.purse) return null;
+  const p = league.purse;
+  if ((p.seasonPurse || 0) === 0 && (p.weeklyPurse || 0) === 0 && (p.elevatedPurse || 0) === 0) {
+    return null;
+  }
+  return {
+    seasonPurse: p.seasonPurse || 0,
+    weeklyPurse: p.weeklyPurse || 0,
+    elevatedPurse: p.elevatedPurse || 0,
+    currency: p.currency || "USD",
   };
+}
 
-  if (leagueId) notificationData.leagueId = leagueId;
-  if (leagueName) notificationData.leagueName = leagueName;
-  if (teamName) notificationData.teamName = teamName;
-  if (weekNumber) notificationData.weekNumber = weekNumber;
+/**
+ * Calculate the total prize for a given week
+ * Returns 0 if no purse is configured or no weekly prize
+ */
+function calculateWeekPrize(purse: PurseData | null, isElevated: boolean): number {
+  if (!purse) return 0;
+  let total = purse.weeklyPurse || 0;
+  if (isElevated) {
+    total += purse.elevatedPurse || 0;
+  }
+  return total;
+}
 
-  await db.collection("notifications").add(notificationData);
+/**
+ * Format a currency amount (e.g. "$25", "$500")
+ */
+function formatPrize(amount: number, currency: string = "USD"): string {
+  if (amount <= 0) return "";
+  // Simple format - works for USD and most currencies
+  if (currency === "USD") return `$${amount}`;
+  return `${amount} ${currency}`;
 }
 
 /**
@@ -88,13 +100,22 @@ function generateLeagueMessage(
     weekNumber?: number;
     netScore?: number;
     actorName?: string;
+    isElevated?: boolean;
+    prizeAmount?: number;
+    currency?: string;
   }
 ): string {
-  const { leagueName, weekNumber, netScore, actorName } = extraData;
+  const { leagueName, weekNumber, netScore, actorName, isElevated, prizeAmount, currency } = extraData;
+
+  const elevatedPrefix = isElevated ? "🏅 " : "";
+  const elevatedLabel = isElevated ? "Elevated " : "";
+  const prizeStr = prizeAmount && prizeAmount > 0 ? ` 💰 ${formatPrize(prizeAmount, currency)} prize` : "";
 
   switch (type) {
     case "league_score_reminder":
-      return `Don't forget to post your Week ${weekNumber || ""} score for ${leagueName || "your league"}!`;
+      return isElevated
+        ? `🏅 Don't forget your Elevated Week ${weekNumber || ""} score for ${leagueName || "your league"}!`
+        : `Don't forget to post your Week ${weekNumber || ""} score for ${leagueName || "your league"}!`;
 
     case "league_season_starting":
       return `${leagueName || "Your league"} kicks off tomorrow! Get ready 🏌️`;
@@ -103,13 +124,21 @@ function generateLeagueMessage(
       return `Week 1 is live in ${leagueName || "your league"}! Post your first score`;
 
     case "league_season_complete":
-      return `Congratulations to ${actorName || "the champion"} - Season Champion of ${leagueName || "the league"}! 🏆`;
+      return `Congratulations to ${actorName || "the champion"} — Season Champion of ${leagueName || "the league"}! 🏆${prizeStr}`;
 
-    case "league_week_start":
-      return `Week ${weekNumber || ""} is now open in ${leagueName || "your league"}! Get some birdies out there! 🏌️`;
+    case "league_week_start": {
+      const prizePreview = prizeAmount && prizeAmount > 0
+        ? ` ${formatPrize(prizeAmount, currency)} prize`
+        : "";
+      if (isElevated) {
+        const multiplier = extraData.teamName || "2x"; // repurpose teamName for multiplier string if needed
+        return `🏅 Elevated Week ${weekNumber || ""} is now open in ${leagueName || "your league"}! ${multiplier} points${prizePreview ? ` • ${prizePreview}` : ""} 🏌️`;
+      }
+      return `Week ${weekNumber || ""} is now open in ${leagueName || "your league"}!${prizePreview ? ` ${prizePreview} up for grabs!` : ""} 🏌️`;
+    }
 
     case "league_week_complete":
-      return `${actorName || "Someone"} wins Week ${weekNumber || ""}${netScore ? ` with ${netScore} net` : ""}! 🏆`;
+      return `${elevatedPrefix}${actorName || "Someone"} wins ${elevatedLabel}Week ${weekNumber || ""}${netScore ? ` with ${netScore} net` : ""}!${prizeStr.length > 0 ? prizeStr : " 🏆"}`;
 
     default:
       return `League update for ${leagueName || "your league"}`;
@@ -251,6 +280,7 @@ async function processSeasonStartingToday(today: Date): Promise<void> {
     await db.collection("leagues").doc(leagueId).update({
       status: "active",
       currentWeek: 1,
+      _updatedByProcessor: true,
     });
 
     // Get all active members and send notifications
@@ -282,6 +312,7 @@ async function processSeasonStartingToday(today: Date): Promise<void> {
 
 /**
  * Process score reminders for active leagues
+ * Now includes elevated week awareness (🏅)
  */
 async function processScoreReminders(currentDayName: string, currentHour: number): Promise<void> {
   console.log(`⏰ Checking score reminders for ${currentDayName}...`);
@@ -313,6 +344,9 @@ async function processScoreReminders(currentDayName: string, currentHour: number
     if (Math.abs(currentHour - reminderHour) > 1) continue;
 
     console.log(`⏰ Processing reminders for ${leagueName} (Week ${currentWeek})`);
+
+    // Check if this is an elevated week
+    const elevated = isElevatedWeek(league, currentWeek);
 
     // Get all active members
     const membersSnap = await db
@@ -349,12 +383,13 @@ async function processScoreReminders(currentDayName: string, currentHour: number
         message: generateLeagueMessage("league_score_reminder", {
           leagueName,
           weekNumber: currentWeek,
+          isElevated: elevated,
         }),
       });
       reminderCount++;
     }
 
-    console.log(`✅ Sent ${reminderCount} score reminders for ${leagueName}`);
+    console.log(`✅ Sent ${reminderCount} score reminders for ${leagueName}${elevated ? " (🏅 Elevated)" : ""}`);
   }
 }
 
@@ -364,6 +399,7 @@ async function processScoreReminders(currentDayName: string, currentHour: number
 
 /**
  * Process week completion for leagues that played yesterday
+ * Now includes purse tracking and elevated event awareness
  */
 async function processWeekCompletion(yesterdayDayName: string): Promise<void> {
   console.log(`🏆 Processing week completion for leagues with playDay=${yesterdayDayName}...`);
@@ -383,7 +419,12 @@ async function processWeekCompletion(yesterdayDayName: string): Promise<void> {
     const totalWeeks = league.totalWeeks || league.numberOfWeeks || 12;
     const format = league.format || "stroke"; // "stroke" or "2v2"
 
-    console.log(`🏆 Processing Week ${currentWeek} for ${leagueName} (${format})`);
+    // Purse & elevated context
+    const purse = getLeaguePurse(league);
+    const elevated = isElevatedWeek(league, currentWeek);
+    const weekPrize = calculateWeekPrize(purse, elevated);
+
+    console.log(`🏆 Processing Week ${currentWeek} for ${leagueName} (${format})${elevated ? " 🏅 ELEVATED" : ""}${weekPrize > 0 ? ` 💰 ${formatPrize(weekPrize, purse?.currency)}` : ""}`);
 
     try {
       // Get all approved scores for this week
@@ -402,17 +443,20 @@ async function processWeekCompletion(yesterdayDayName: string): Promise<void> {
 
       // Process based on format
       if (format === "2v2") {
-        await processWeekComplete2v2(leagueId, leagueName, currentWeek, scoresSnap, league);
+        await processWeekComplete2v2(leagueId, leagueName, currentWeek, scoresSnap, league, purse, elevated, weekPrize);
       } else {
-        await processWeekCompleteStroke(leagueId, leagueName, currentWeek, scoresSnap);
+        await processWeekCompleteStroke(leagueId, leagueName, currentWeek, scoresSnap, league, purse, elevated, weekPrize);
       }
 
       // Check if season is complete
       if (currentWeek >= totalWeeks) {
-        await completeLeagueSeason(leagueId, leagueName, format);
+        await completeLeagueSeason(leagueId, leagueName, format, purse);
       } else {
         // Advance to next week and send notifications
-        await advanceToNextWeek(leagueId, leagueName, currentWeek + 1, format, league);
+        const nextWeek = currentWeek + 1;
+        const nextElevated = isElevatedWeek(league, nextWeek);
+        const nextWeekPrize = calculateWeekPrize(purse, nextElevated);
+        await advanceToNextWeek(leagueId, leagueName, nextWeek, format, league, purse, nextElevated, nextWeekPrize);
       }
     } catch (error) {
       console.error(`🔥 Error processing ${leagueName}:`, error);
@@ -422,12 +466,17 @@ async function processWeekCompletion(yesterdayDayName: string): Promise<void> {
 
 /**
  * Process stroke play week completion
+ * Now includes purse tracking in week_results and notifications
  */
 async function processWeekCompleteStroke(
   leagueId: string,
   leagueName: string,
   currentWeek: number,
-  scoresSnap: FirebaseFirestore.QuerySnapshot
+  scoresSnap: FirebaseFirestore.QuerySnapshot,
+  league: FirebaseFirestore.DocumentData,
+  purse: PurseData | null,
+  isElevated: boolean,
+  weekPrize: number
 ): Promise<void> {
   // Collect and sort scores
   const scores: Array<{
@@ -461,6 +510,9 @@ async function processWeekCompleteStroke(
 
   const winner = scores[0];
 
+  // Elevated multiplier for points
+  const pointsMultiplier = isElevated ? (league.elevatedEvents?.multiplier || 2) : 1;
+
   // Create week_result document
   await db.collection("leagues").doc(leagueId).collection("week_results").add({
     week: currentWeek,
@@ -470,17 +522,21 @@ async function processWeekCompleteStroke(
     score: winner.netScore,
     courseName: winner.courseName || null,
     format: "stroke",
+    isElevated,
+    pointsMultiplier,
+    prizeAwarded: weekPrize,
     standings: scores.map((s, i) => ({
       placement: i + 1,
       odtsuserId: s.odtsuserId,
       displayName: s.displayName,
       netScore: s.netScore,
     })),
+    source: "processor",
     createdAt: Timestamp.now(),
   });
 
-  // Update member standings
-  await updateStandings(leagueId, scores, currentWeek);
+  // Update member standings (with multiplier for elevated weeks)
+  await updateStandings(leagueId, scores, currentWeek, pointsMultiplier);
 
   // Send week complete notifications
   const membersSnap = await db
@@ -503,22 +559,29 @@ async function processWeekCompleteStroke(
         actorName: winner.displayName,
         weekNumber: currentWeek,
         netScore: winner.netScore,
+        isElevated,
+        prizeAmount: weekPrize,
+        currency: purse?.currency,
       }),
     });
   }
 
-  console.log(`✅ Week ${currentWeek} winner: ${winner.displayName} (${winner.netScore} net)`);
+  console.log(`✅ Week ${currentWeek} winner: ${winner.displayName} (${winner.netScore} net)${isElevated ? " 🏅" : ""}${weekPrize > 0 ? ` 💰 ${formatPrize(weekPrize, purse?.currency)}` : ""}`);
 }
 
 /**
  * Process 2v2 week completion
+ * Now includes purse tracking in week_results and notifications
  */
 async function processWeekComplete2v2(
   leagueId: string,
   leagueName: string,
   currentWeek: number,
   scoresSnap: FirebaseFirestore.QuerySnapshot,
-  league: FirebaseFirestore.DocumentData
+  league: FirebaseFirestore.DocumentData,
+  purse: PurseData | null,
+  isElevated: boolean,
+  weekPrize: number
 ): Promise<void> {
   // Get matchups for this week
   const weeklyMatchups = league.weeklyMatchups?.[currentWeek];
@@ -549,6 +612,9 @@ async function processWeekComplete2v2(
     const data = doc.data();
     scoresByUser[data.userId] = data.netScore;
   });
+
+  // Elevated multiplier for points
+  const pointsMultiplier = isElevated ? (league.elevatedEvents?.multiplier || 2) : 1;
 
   // Calculate team scores and matchup results
   const matchupResults: Array<{
@@ -612,27 +678,30 @@ async function processWeekComplete2v2(
       winnerName,
     });
 
-    // Update team records
+    // Update team records (apply multiplier to points for elevated weeks)
     if (winnerId) {
       const loserId = winnerId === matchup.team1Id ? matchup.team2Id : matchup.team1Id;
+      const winPoints = (league.pointsPerWin || 3) * pointsMultiplier;
 
       await db.collection("leagues").doc(leagueId).collection("teams").doc(winnerId).update({
         wins: FieldValue.increment(1),
-        points: FieldValue.increment(league.pointsPerWin || 3),
+        points: FieldValue.increment(winPoints),
       });
 
       await db.collection("leagues").doc(leagueId).collection("teams").doc(loserId).update({
         losses: FieldValue.increment(1),
       });
     } else {
-      // Tie - both teams get tie points
+      // Tie - both teams get tie points (with multiplier)
+      const tiePoints = (league.pointsPerTie || 1) * pointsMultiplier;
+
       await db.collection("leagues").doc(leagueId).collection("teams").doc(matchup.team1Id).update({
         ties: FieldValue.increment(1),
-        points: FieldValue.increment(league.pointsPerTie || 1),
+        points: FieldValue.increment(tiePoints),
       });
       await db.collection("leagues").doc(leagueId).collection("teams").doc(matchup.team2Id).update({
         ties: FieldValue.increment(1),
-        points: FieldValue.increment(league.pointsPerTie || 1),
+        points: FieldValue.increment(tiePoints),
       });
     }
   }
@@ -659,7 +728,11 @@ async function processWeekComplete2v2(
     teamName: weekWinner?.teamName || null,
     score: weekWinner?.score || null,
     format: "2v2",
+    isElevated,
+    pointsMultiplier,
+    prizeAwarded: weekPrize,
     matchupResults,
+    source: "processor",
     createdAt: Timestamp.now(),
   });
 
@@ -684,11 +757,14 @@ async function processWeekComplete2v2(
         actorName: weekWinner?.teamName || "A team",
         weekNumber: currentWeek,
         netScore: weekWinner?.score,
+        isElevated,
+        prizeAmount: weekPrize,
+        currency: purse?.currency,
       }),
     });
   }
 
-  console.log(`✅ Week ${currentWeek} 2v2 results processed`);
+  console.log(`✅ Week ${currentWeek} 2v2 results processed${isElevated ? " 🏅" : ""}${weekPrize > 0 ? ` 💰 ${formatPrize(weekPrize, purse?.currency)}` : ""}`);
 }
 
 // ============================================================================
@@ -697,6 +773,7 @@ async function processWeekComplete2v2(
 
 /**
  * Update league standings after week completion
+ * Now supports points multiplier for elevated weeks
  */
 async function updateStandings(
   leagueId: string,
@@ -706,15 +783,18 @@ async function updateStandings(
     netScore: number;
     grossScore: number;
   }>,
-  currentWeek: number
+  currentWeek: number,
+  pointsMultiplier: number = 1
 ): Promise<void> {
   // Points system: 1st = N points, 2nd = N-1, etc. (N = number of players)
+  // Multiplied by pointsMultiplier for elevated weeks
   const totalPlayers = scores.length;
 
   for (let i = 0; i < scores.length; i++) {
     const score = scores[i];
     const placement = i + 1;
-    const points = Math.max(totalPlayers - i, 1); // At least 1 point for participating
+    const basePoints = Math.max(totalPlayers - i, 1); // At least 1 point for participating
+    const points = Math.round(basePoints * pointsMultiplier);
     const isWinner = placement === 1;
 
     // Update member's stats
@@ -772,7 +852,7 @@ async function updateStandings(
     position++;
   }
 
-  console.log(`✅ Updated standings for ${membersSnap.size} members`);
+  console.log(`✅ Updated standings for ${membersSnap.size} members (${pointsMultiplier}x points)`);
 }
 
 // ============================================================================
@@ -781,18 +861,28 @@ async function updateStandings(
 
 /**
  * Advance league to next week and send notifications
+ * Now includes elevated event preview and purse info
  */
 async function advanceToNextWeek(
   leagueId: string,
   leagueName: string,
   nextWeek: number,
   format: string,
-  league: FirebaseFirestore.DocumentData
+  league: FirebaseFirestore.DocumentData,
+  purse: PurseData | null,
+  nextElevated: boolean,
+  nextWeekPrize: number
 ): Promise<void> {
   // Update league
   await db.collection("leagues").doc(leagueId).update({
     currentWeek: nextWeek,
+    _updatedByProcessor: true,
   });
+
+  // Get elevated multiplier string for message
+  const multiplierStr = nextElevated
+    ? `${league.elevatedEvents?.multiplier || 2}x`
+    : "";
 
   // Get all active members
   const membersSnap = await db
@@ -813,6 +903,10 @@ async function advanceToNextWeek(
       message: generateLeagueMessage("league_week_start", {
         leagueName,
         weekNumber: nextWeek,
+        isElevated: nextElevated,
+        prizeAmount: nextWeekPrize,
+        currency: purse?.currency,
+        teamName: multiplierStr, // repurposed for multiplier string in message
       }),
     });
   }
@@ -843,7 +937,8 @@ async function advanceToNextWeek(
         const team2 = teamsMap[matchup.team2Id];
 
         if (team1 && team2) {
-          const matchupMessage = `${team1.name} vs ${team2.name} - Week ${nextWeek} matchup is set! ⚔️`;
+          const elevatedTag = nextElevated ? "🏅 " : "";
+          const matchupMessage = `${elevatedTag}${team1.name} vs ${team2.name} — Week ${nextWeek} matchup is set! ⚔️`;
 
           // Notify team1 members
           for (const memberId of team1.memberIds) {
@@ -875,7 +970,7 @@ async function advanceToNextWeek(
     }
   }
 
-  console.log(`✅ Advanced ${leagueName} to Week ${nextWeek}`);
+  console.log(`✅ Advanced ${leagueName} to Week ${nextWeek}${nextElevated ? " 🏅 ELEVATED" : ""}`);
 }
 
 // ============================================================================
@@ -884,11 +979,13 @@ async function advanceToNextWeek(
 
 /**
  * Complete a league season
+ * Now includes championship purse in notification
  */
 async function completeLeagueSeason(
   leagueId: string,
   leagueName: string,
-  format: string
+  format: string,
+  purse: PurseData | null
 ): Promise<void> {
   console.log(`🏆 Completing season for ${leagueName}`);
 
@@ -931,12 +1028,17 @@ async function completeLeagueSeason(
     }
   }
 
+  // Championship purse amount
+  const championshipPurse = purse?.seasonPurse || 0;
+
   // Update league status
   await db.collection("leagues").doc(leagueId).update({
     status: "completed",
     completedAt: Timestamp.now(),
     championId: champion?.id || null,
     championName: champion?.name || null,
+    championshipPurse: championshipPurse > 0 ? championshipPurse : null,
+    _updatedByProcessor: true,
   });
 
   // Send season complete notifications
@@ -958,9 +1060,11 @@ async function completeLeagueSeason(
       message: generateLeagueMessage("league_season_complete", {
         leagueName,
         actorName: champion?.name || "The Champion",
+        prizeAmount: championshipPurse,
+        currency: purse?.currency,
       }),
     });
   }
 
-  console.log(`✅ Season complete! Champion: ${champion?.name || "Unknown"}`);
+  console.log(`✅ Season complete! Champion: ${champion?.name || "Unknown"}${championshipPurse > 0 ? ` 💰 ${formatPrize(championshipPurse, purse?.currency)}` : ""}`);
 }

@@ -23,6 +23,7 @@ import {
   View,
 } from "react-native";
 
+import ImageCropModal from "./ImageCropModal";
 import { styles } from "./styles";
 import { League, formatDateShort } from "./types";
 
@@ -32,10 +33,9 @@ interface SettingsTabProps {
   isCommissioner: boolean;
   isHost: boolean;
   refreshing: boolean;
-  uploadingAvatar: boolean;
   onRefresh: () => void;
   onSaveSetting: (field: string, value: any) => Promise<void>;
-  onUploadLeagueAvatar: () => Promise<void>;
+  onAvatarCropped: (uri: string) => Promise<void>;
   onArchiveLeague: () => void;
   onDeleteLeague: () => void;
   onStartNewSeason: () => void;
@@ -47,10 +47,9 @@ export default function SettingsTab({
   isCommissioner,
   isHost,
   refreshing,
-  uploadingAvatar,
   onRefresh,
   onSaveSetting,
-  onUploadLeagueAvatar,
+  onAvatarCropped,
   onArchiveLeague,
   onDeleteLeague,
   onStartNewSeason,
@@ -89,7 +88,7 @@ export default function SettingsTab({
     let total = 0;
     if (league.purse.seasonPurse > 0) total += league.purse.seasonPurse;
     if (league.purse.weeklyPurse > 0) total += league.purse.weeklyPurse * league.totalWeeks;
-    const elevatedWeeksCount = league.elevatedEvents?.weeks?.length ?? 0;
+    const elevatedWeeksCount = league.elevatedWeeks?.length ?? 0;
     if (league.purse.elevatedPurse > 0 && elevatedWeeksCount > 0) {
       total += league.purse.elevatedPurse * elevatedWeeksCount;
     }
@@ -102,6 +101,8 @@ export default function SettingsTab({
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [showPurseModal, setShowPurseModal] = useState(false);
+  const [showCropModal, setShowCropModal] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // Purse editing state
@@ -167,7 +168,7 @@ export default function SettingsTab({
     
     if (season > 0) total += season;
     if (weekly > 0) total += weekly * league.totalWeeks;
-    const elevatedWeeksCount = league.elevatedEvents?.weeks?.length ?? 0;
+    const elevatedWeeksCount = league.elevatedWeeks?.length ?? 0;
     if (elevated > 0 && elevatedWeeksCount > 0) {
       total += elevated * elevatedWeeksCount;
     }
@@ -325,8 +326,8 @@ export default function SettingsTab({
                   <Text style={styles.purseInputLabel}>⭐ Elevated Event Bonus</Text>
                   <Text style={styles.purseInputHelper}>
                     Additional prize for elevated/playoff weeks
-                    {(league.elevatedEvents?.weeks?.length ?? 0) > 0
-                      ? ` (${league.elevatedEvents?.weeks?.length} selected)`
+                    {(league.elevatedWeeks?.length ?? 0) > 0
+                      ? ` (${league.elevatedWeeks?.length} selected)`
                       : " (none selected)"}
                   </Text>
                   <View style={styles.purseInputRow}>
@@ -367,9 +368,9 @@ export default function SettingsTab({
                           Weekly: {formatCurrency(parseInt(weeklyPurse))} × {league.totalWeeks} = {formatCurrency(parseInt(weeklyPurse) * league.totalWeeks)}
                         </Text>
                       )}
-                      {parseInt(elevatedPurse) > 0 && (league.elevatedEvents?.weeks?.length ?? 0) > 0 && (
+                      {parseInt(elevatedPurse) > 0 && (league.elevatedWeeks?.length ?? 0) > 0 && (
                         <Text style={styles.purseTotalLine}>
-                          Elevated: {formatCurrency(parseInt(elevatedPurse))} × {league.elevatedEvents?.weeks?.length} = {formatCurrency(parseInt(elevatedPurse) * (league.elevatedEvents?.weeks?.length ?? 0))}
+                          Elevated: {formatCurrency(parseInt(elevatedPurse))} × {league.elevatedWeeks?.length} = {formatCurrency(parseInt(elevatedPurse) * (league.elevatedWeeks?.length ?? 0))}
                         </Text>
                       )}
                     </View>
@@ -559,13 +560,16 @@ export default function SettingsTab({
           {isCommissioner && (
             <TouchableOpacity
               style={styles.leagueAvatarRow}
-              onPress={onUploadLeagueAvatar}
+              onPress={() => setShowCropModal(true)}
               disabled={uploadingAvatar}
             >
               {league.avatar ? (
-                <Image source={{ uri: league.avatar }} style={styles.leagueAvatarPreview} />
+                <Image
+                  source={{ uri: league.avatar }}
+                  style={[styles.leagueAvatarPreview, { borderRadius: 32 }]}
+                />
               ) : (
-                <View style={[styles.leagueAvatarPreview, styles.leagueAvatarPlaceholder]}>
+                <View style={[styles.leagueAvatarPreview, styles.leagueAvatarPlaceholder, { borderRadius: 32 }]}>
                   <Ionicons name="trophy-outline" size={32} color="#FFF" />
                 </View>
               )}
@@ -790,7 +794,7 @@ export default function SettingsTab({
 
           <SettingRow
             label="Holes"
-            value={`${league.holesPerRound} holes per round`}
+            value={`${league.holes || 18} holes per round`}
             editable={false}
           />
 
@@ -811,26 +815,21 @@ export default function SettingsTab({
 
           <SettingRow
             label="Enabled"
-            value={league.elevatedEvents?.enabled ? "Yes" : "No"}
+            value={league.hasElevatedEvents ? "Yes" : "No"}
             editable={isCommissioner}
             onEdit={() => {
-              const current = league.elevatedEvents?.enabled || false;
-              handleSave("elevatedEvents", {
-                ...league.elevatedEvents,
-                enabled: !current,
-                weeks: league.elevatedEvents?.weeks || [],
-                multiplier: league.elevatedEvents?.multiplier || 2,
-              });
+              const current = league.hasElevatedEvents || false;
+              handleSave("hasElevatedEvents", !current);
             }}
           />
 
-          {league.elevatedEvents?.enabled && (
+          {league.hasElevatedEvents && (
             <>
               <SettingRow
                 label="Weeks"
                 value={
-                  league.elevatedEvents.weeks.length > 0
-                    ? league.elevatedEvents.weeks.map((w) => `Week ${w}`).join(", ")
+                  (league.elevatedWeeks?.length ?? 0) > 0
+                    ? league.elevatedWeeks!.map((w: number) => `Week ${w}`).join(", ")
                     : "None selected"
                 }
                 editable={isCommissioner}
@@ -841,34 +840,22 @@ export default function SettingsTab({
 
               <SettingRow
                 label="Multiplier"
-                value={`${league.elevatedEvents.multiplier}x points`}
+                value={`${league.elevatedMultiplier || 2}x points`}
                 editable={isCommissioner}
                 onEdit={() => {
                   Alert.alert("Points Multiplier", "Select multiplier for elevated events:", [
                     { text: "Cancel", style: "cancel" },
                     {
                       text: "1.5x",
-                      onPress: () =>
-                        handleSave("elevatedEvents", {
-                          ...league.elevatedEvents,
-                          multiplier: 1.5,
-                        }),
+                      onPress: () => handleSave("elevatedMultiplier", 1.5),
                     },
                     {
                       text: "2x",
-                      onPress: () =>
-                        handleSave("elevatedEvents", {
-                          ...league.elevatedEvents,
-                          multiplier: 2,
-                        }),
+                      onPress: () => handleSave("elevatedMultiplier", 2),
                     },
                     {
                       text: "3x",
-                      onPress: () =>
-                        handleSave("elevatedEvents", {
-                          ...league.elevatedEvents,
-                          multiplier: 3,
-                        }),
+                      onPress: () => handleSave("elevatedMultiplier", 3),
                     },
                   ]);
                 }}
@@ -922,6 +909,20 @@ export default function SettingsTab({
       {renderPurseModal()}
       {renderDatePicker()}
       {renderTimePicker()}
+
+      <ImageCropModal
+        visible={showCropModal}
+        onClose={() => setShowCropModal(false)}
+        title="League Avatar"
+        onCropComplete={async (uri) => {
+          try {
+            setUploadingAvatar(true);
+            await onAvatarCropped(uri);
+          } finally {
+            setUploadingAvatar(false);
+          }
+        }}
+      />
     </>
   );
 }

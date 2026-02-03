@@ -19,27 +19,27 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
-    addDoc,
-    collection,
-    doc,
-    getDoc,
-    getDocs,
-    limit,
-    query,
-    serverTimestamp,
-    where,
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  query,
+  serverTimestamp,
+  where,
 } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Image,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Image,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -50,11 +50,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 interface League {
   id: string;
   name: string;
+  avatar?: string;
   description: string;
   leagueType: "live" | "sim";
   simPlatform: string | null;
   format: "stroke" | "2v2";
-  holes: 9 | 18;
+  holes: number;
   frequency: "weekly" | "biweekly";
   regionName: string;
   startDate: any;
@@ -703,9 +704,14 @@ export default function LeagueDetail() {
             style={styles.backIcon}
           />
         </TouchableOpacity>
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {league.name}
-        </Text>
+        <View style={styles.headerCenter}>
+          {league.avatar ? (
+            <Image source={{ uri: league.avatar }} style={styles.headerAvatar} />
+          ) : null}
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {league.name}
+          </Text>
+        </View>
         <View style={styles.headerButton} />
       </View>
 
@@ -776,12 +782,25 @@ const styles = StyleSheet.create({
     tintColor: "#FFF",
   },
   headerTitle: {
-    flex: 1,
     fontSize: 18,
     fontWeight: "700",
     color: "#FFF",
-    textAlign: "center",
+    flexShrink: 1,
+  },
+  headerCenter: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
     marginHorizontal: 8,
+  },
+  headerAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.4)",
   },
 
   // Content

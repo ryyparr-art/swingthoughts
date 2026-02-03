@@ -45,8 +45,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 interface League {
   id: string;
   name: string;
+  avatar?: string;
   format: "stroke" | "2v2";
-  holesPerRound: number;
+  holes: number;
   frequency: "weekly" | "biweekly" | "monthly";
   scoreDeadlineDays: number;
   status: "upcoming" | "active" | "completed";
@@ -54,17 +55,23 @@ interface League {
   totalWeeks: number;
   startDate: Timestamp;
   endDate: Timestamp;
+  pointsPerWeek?: number;
   restrictedCourses?: Array<{ courseId: number; courseName: string }>;
-  elevatedEvents?: {
-    enabled: boolean;
-    weeks: number[];
-    multiplier: number;
+  hasElevatedEvents?: boolean;
+  elevatedWeeks?: number[];
+  elevatedMultiplier?: number;
+  purse?: {
+    seasonPurse: number;
+    weeklyPurse: number;
+    elevatedPurse: number;
+    currency?: string;
   };
 }
 
 interface LeagueCard {
   id: string;
   name: string;
+  avatar?: string;
   currentWeek: number;
   totalWeeks: number;
 }
@@ -94,6 +101,8 @@ interface WeekSchedule {
   isElevated: boolean;
   multiplier: number;
   basePoints: number;
+  weeklyPurse: number;
+  elevatedPurse: number;
   courseName?: string;
   winner?: WeekResult;
   matchups?: Array<{ team1: Team; team2: Team; result?: string }>;
@@ -205,6 +214,7 @@ export default function LeagueSchedule() {
           userLeagues.push({
             id: leagueDoc.id,
             name: leagueData.name,
+            avatar: leagueData.avatar,
             currentWeek: leagueData.currentWeek || 0,
             totalWeeks: leagueData.totalWeeks || 0,
           });
@@ -280,7 +290,7 @@ export default function LeagueSchedule() {
   const generateSchedule = (league: League) => {
     const weeks: WeekSchedule[] = [];
     const startDate = league.startDate.toDate();
-    const basePoints = 100; // Base points per week
+    const basePoints = league.pointsPerWeek || 100;
 
     // Calculate week duration based on frequency
     const weekDuration =
@@ -298,10 +308,10 @@ export default function LeagueSchedule() {
       weekEnd.setDate(weekStart.getDate() + weekDuration - 1);
 
       const isElevated =
-        league.elevatedEvents?.enabled &&
-        league.elevatedEvents.weeks?.includes(i);
+        league.hasElevatedEvents &&
+        league.elevatedWeeks?.includes(i);
       const multiplier = isElevated
-        ? league.elevatedEvents?.multiplier || 2
+        ? league.elevatedMultiplier || 2
         : 1;
 
       let status: "complete" | "current" | "upcoming" = "upcoming";
@@ -323,6 +333,10 @@ export default function LeagueSchedule() {
         }
       }
 
+      // Calculate purse for this week
+      const weeklyPurse = league.purse?.weeklyPurse || 0;
+      const elevatedPurse = isElevated ? (league.purse?.elevatedPurse || 0) : 0;
+
       weeks.push({
         week: i,
         startDate: weekStart,
@@ -331,6 +345,8 @@ export default function LeagueSchedule() {
         isElevated: isElevated || false,
         multiplier,
         basePoints: basePoints * multiplier,
+        weeklyPurse,
+        elevatedPurse,
         courseName,
       });
     }
@@ -496,9 +512,13 @@ export default function LeagueSchedule() {
       >
         <View style={styles.leagueSelectorContent}>
           <View style={styles.leagueLogoPlaceholder}>
-            <Text style={styles.leagueLogoText}>
-              {selected?.name?.charAt(0) || "L"}
-            </Text>
+            {selectedLeague?.avatar ? (
+              <Image source={{ uri: selectedLeague.avatar }} style={styles.leagueLogoImage} />
+            ) : (
+              <Text style={styles.leagueLogoText}>
+                {selected?.name?.charAt(0) || "L"}
+              </Text>
+            )}
           </View>
           <View style={styles.leagueSelectorText}>
             <Text style={styles.leagueName}>
@@ -536,7 +556,7 @@ export default function LeagueSchedule() {
             </Text>
             {week.isElevated ? (
               <View style={styles.elevatedBadge}>
-                <Ionicons name="star" size={12} color="#C9A227" />
+                <Text style={{ fontSize: 12 }}>🏅</Text>
                 <Text style={styles.elevatedText}>{week.multiplier}X</Text>
               </View>
             ) : null}
@@ -558,6 +578,13 @@ export default function LeagueSchedule() {
           <View style={styles.weekPointsContainer}>
             <Text style={styles.weekPoints}>{week.basePoints} pts</Text>
           </View>
+          {(week.weeklyPurse > 0 || week.elevatedPurse > 0) ? (
+            <View style={styles.weekPurseContainer}>
+              <Text style={styles.weekPurse}>
+                💰 ${week.weeklyPurse + week.elevatedPurse}
+              </Text>
+            </View>
+          ) : null}
         </View>
 
         {/* 2v2 Matchups */}
@@ -683,9 +710,13 @@ export default function LeagueSchedule() {
             >
               <View style={styles.selectorOptionContent}>
                 <View style={styles.selectorLogoPlaceholder}>
-                  <Text style={styles.selectorLogoText}>
-                    {league.name?.charAt(0) || "L"}
-                  </Text>
+                  {league.avatar ? (
+                    <Image source={{ uri: league.avatar }} style={styles.selectorLogoImage} />
+                  ) : (
+                    <Text style={styles.selectorLogoText}>
+                      {league.name?.charAt(0) || "L"}
+                    </Text>
+                  )}
                 </View>
                 <View>
                   <Text style={styles.selectorOptionTitle}>{league.name}</Text>
@@ -857,11 +888,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#0D5C3A",
     justifyContent: "center",
     alignItems: "center",
+    overflow: "hidden",
   },
   leagueLogoText: {
     fontSize: 18,
     fontWeight: "700",
     color: "#FFF",
+  },
+  leagueLogoImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
   leagueSelectorText: {
     marginLeft: 12,
@@ -984,6 +1021,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
     color: "#0D5C3A",
+  },
+  weekPurseContainer: {
+    backgroundColor: "#FFF8E1",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginLeft: 6,
+  },
+  weekPurse: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#C9A227",
   },
 
   // Matchups
@@ -1155,6 +1204,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     marginRight: 12,
+    overflow: "hidden",
+  },
+  selectorLogoImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
   },
   selectorLogoText: {
     fontSize: 16,

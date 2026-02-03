@@ -51,12 +51,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 interface League {
   id: string;
   name: string;
+  avatar?: string;
   description?: string;
   customRules?: string;
   leagueType: "live" | "sim";
   simPlatform?: string;
   format: "stroke" | "2v2";
-  holesPerRound: number;
+  holes: number;
   handicapSystem: "swingthoughts" | "league_managed";
   frequency: "weekly" | "biweekly" | "monthly";
   scoreDeadlineDays: number;
@@ -70,16 +71,15 @@ interface League {
   managerIds?: string[];
   regionName?: string;
   restrictedCourses?: Array<{ courseId: number; courseName: string }>;
-  elevatedEvents?: {
-    enabled: boolean;
-    weeks: number[];
-    multiplier: number;
-  };
+  hasElevatedEvents?: boolean;
+  elevatedWeeks?: number[];
+  elevatedMultiplier?: number;
 }
 
 interface LeagueCard {
   id: string;
   name: string;
+  avatar?: string;
   currentWeek: number;
   totalWeeks: number;
   userRank?: number;
@@ -280,6 +280,7 @@ export default function LeagueHome() {
           userLeagues.push({
             id: leagueDoc.id,
             name: leagueData.name,
+            avatar: leagueData.avatar,
             currentWeek: leagueData.currentWeek || 0,
             totalWeeks: leagueData.totalWeeks || 0,
             userRank: memberData.currentRank,
@@ -518,9 +519,13 @@ const getHandicapDisplay = () => {
         disabled={myLeagues.length <= 1}
       >
         <View style={styles.leagueLogoPlaceholder}>
-          <Text style={styles.leagueLogoText}>
-            {selected?.name?.charAt(0) || "L"}
-          </Text>
+          {selectedLeague?.avatar ? (
+            <Image source={{ uri: selectedLeague.avatar }} style={styles.leagueLogoImage} />
+          ) : (
+            <Text style={styles.leagueLogoText}>
+              {selected?.name?.charAt(0) || "L"}
+            </Text>
+          )}
         </View>
         <View style={styles.leagueSelectorText}>
           <Text style={styles.leagueName}>
@@ -865,9 +870,13 @@ const getHandicapDisplay = () => {
             >
               <View style={styles.selectorOptionContent}>
                 <View style={styles.selectorLogoPlaceholder}>
-                  <Text style={styles.selectorLogoText}>
-                    {league.name?.charAt(0) || "L"}
-                  </Text>
+                  {league.avatar ? (
+                    <Image source={{ uri: league.avatar }} style={styles.selectorLogoImage} />
+                  ) : (
+                    <Text style={styles.selectorLogoText}>
+                      {league.name?.charAt(0) || "L"}
+                    </Text>
+                  )}
                 </View>
                 <View>
                   <Text style={styles.selectorOptionTitle}>{league.name}</Text>
@@ -1039,11 +1048,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#0D5C3A",
     justifyContent: "center",
     alignItems: "center",
+    overflow: "hidden",
   },
   leagueLogoText: {
     fontSize: 18,
     fontWeight: "700",
     color: "#FFF",
+  },
+  leagueLogoImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
   },
   leagueSelectorText: {
     marginLeft: 12,
@@ -1437,6 +1452,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     marginRight: 12,
+    overflow: "hidden",
+  },
+  selectorLogoImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
   },
   selectorLogoText: {
     fontSize: 16,

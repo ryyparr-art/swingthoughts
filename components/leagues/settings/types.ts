@@ -14,7 +14,7 @@ export interface League {
   leagueType: "live" | "sim";
   simPlatform?: string;
   format: "stroke" | "2v2";
-  holesPerRound: 9 | 18;
+  holes: 9 | 18;
   handicapSystem: "swingthoughts" | "league_managed";
   isPublic: boolean;
   regionKey: string;
@@ -23,8 +23,10 @@ export interface League {
   endDate: Timestamp;
   frequency: "weekly" | "biweekly" | "monthly";
   scoreDeadlineDays: number;
+  scoreDeadLine?: string | null;
   playDay?: string | null;
   teeTime?: string | null;
+  nineHoleOption?: "either" | "front" | "back";
   totalWeeks: number;
   currentWeek: number;
   memberCount: number;
@@ -35,17 +37,15 @@ export interface League {
   restrictedCourses?: Array<{ courseId: number; courseName: string }>;
   // Points per week
   pointsPerWeek?: number;
-  // Elevated events
-  elevatedEvents?: {
-    enabled: boolean;
-    weeks: number[];
-    multiplier: number;
-  };
+  // Elevated events (flat fields matching Firestore)
+  hasElevatedEvents?: boolean;
+  elevatedWeeks?: number[];
+  elevatedMultiplier?: number;
   // PGA-style purse
   purse?: {
-    seasonPurse: number;      // End-of-season championship purse
-    weeklyPurse: number;      // Per-week winner prize
-    elevatedPurse: number;    // Bonus for elevated/playoff weeks
+    seasonPurse: number;
+    weeklyPurse: number;
+    elevatedPurse: number;
     currency: string;
   } | null;
   hashtags?: string[];
@@ -174,7 +174,7 @@ export const calculateTotalPurse = (league: League): number => {
     total += league.purse.weeklyPurse * league.totalWeeks;
   }
   
-  const elevatedWeeksCount = league.elevatedEvents?.weeks?.length ?? 0;
+  const elevatedWeeksCount = league.elevatedWeeks?.length ?? 0;
   if (league.purse.elevatedPurse > 0 && elevatedWeeksCount > 0) {
     total += league.purse.elevatedPurse * elevatedWeeksCount;
   }

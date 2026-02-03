@@ -373,7 +373,7 @@ export default function LeagueSettingsScreen() {
   const handleUploadTeamAvatar = async (team: Team) => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [1, 1], quality: 0.8,
+        mediaTypes: ["images"], allowsEditing: true, aspect: [1, 1], quality: 0.8,
       });
       if (result.canceled || !result.assets[0]) return;
       
@@ -535,18 +535,13 @@ export default function LeagueSettingsScreen() {
     }
   };
 
-  const handleUploadLeagueAvatar = async () => {
+  // AVATAR HANDLER — receives an already-cropped URI from ImageCropModal
+  const handleAvatarCropped = async (uri: string) => {
     if (!league) return;
     try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, aspect: [1, 1], quality: 0.8,
-      });
-      if (result.canceled || !result.assets[0]) return;
-      
-      setUploadingAvatar(true);
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      
-      const response = await fetch(result.assets[0].uri);
+
+      const response = await fetch(uri);
       const blob = await response.blob();
       const storageRef = ref(storage, `leagues/${leagueId}/avatar.jpg`);
       await uploadBytes(storageRef, blob);
@@ -556,8 +551,6 @@ export default function LeagueSettingsScreen() {
     } catch (error) {
       console.error("Error uploading league avatar:", error);
       Alert.alert("Error", "Failed to upload league avatar.");
-    } finally {
-      setUploadingAvatar(false);
     }
   };
 
@@ -745,10 +738,16 @@ export default function LeagueSettingsScreen() {
       
       {activeTab === "settings" && (
         <SettingsTab
-          league={league} leagueId={leagueId} isCommissioner={isCommissioner} isHost={isHost}
-          refreshing={refreshing} uploadingAvatar={uploadingAvatar} onRefresh={handleRefresh}
-          onSaveSetting={handleSaveSetting} onUploadLeagueAvatar={handleUploadLeagueAvatar}
-          onArchiveLeague={handleArchiveLeague} onDeleteLeague={handleDeleteLeague}
+          league={league}
+          leagueId={leagueId}
+          isCommissioner={isCommissioner}
+          isHost={isHost}
+          refreshing={refreshing}
+          onRefresh={handleRefresh}
+          onSaveSetting={handleSaveSetting}
+          onAvatarCropped={handleAvatarCropped}
+          onArchiveLeague={handleArchiveLeague}
+          onDeleteLeague={handleDeleteLeague}
           onStartNewSeason={handleStartNewSeason}
         />
       )}
