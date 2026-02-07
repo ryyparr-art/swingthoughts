@@ -91,6 +91,12 @@ export default function Step7Review({ formData }: Step7Props) {
             {DAYS_OF_WEEK.find((d) => d.key === formData.scoreDeadline)?.label || formData.scoreDeadline}
           </Text>
         </View>
+        <View style={styles.reviewRow}>
+          <Text style={styles.reviewLabel}>Score Approval</Text>
+          <Text style={styles.reviewValue}>
+            {formData.scoreApproval === "manager" ? "Manager Review" : "Auto-Approve"}
+          </Text>
+        </View>
       </View>
 
       {/* Schedule */}

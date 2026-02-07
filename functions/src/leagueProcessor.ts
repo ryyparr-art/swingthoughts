@@ -154,14 +154,6 @@ function isOnDate(timestamp: Timestamp, targetDate: Date): boolean {
   return tsDate.getTime() === target.getTime();
 }
 
-/**
- * Get today's date string for idempotency tracking (YYYY-MM-DD)
- */
-function getTodayString(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-}
-
 // ============================================================================
 // MAIN SCHEDULED FUNCTION
 // ============================================================================
@@ -176,16 +168,17 @@ export const processLeaguesDaily = onSchedule(
     console.log("🔄 Starting daily league processor...");
 
     const now = new Date();
-    const today = getDateOnly(now);
+    const etNow = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+    const today = getDateOnly(etNow);
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
 
-    const currentDayName = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][now.getDay()];
+    const currentDayName = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][etNow.getDay()];
     const yesterdayDayName = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][yesterday.getDay()];
-    const currentHour = now.getHours();
-    const todayStr = getTodayString();
+    const currentHour = etNow.getHours();
+    const todayStr = `${etNow.getFullYear()}-${String(etNow.getMonth() + 1).padStart(2, "0")}-${String(etNow.getDate()).padStart(2, "0")}`;
 
     try {
       // 1. SEASON STARTING TOMORROW (only notify once)
@@ -198,9 +191,7 @@ export const processLeaguesDaily = onSchedule(
       await processScoreReminders(currentDayName, currentHour, todayStr);
 
       // 4. WEEK COMPLETION (only at 6 AM)
-      if (currentHour === 6) {
-        await processWeekCompletion(yesterdayDayName);
-      }
+      await processWeekCompletion(yesterdayDayName);
 
       console.log("✅ Daily league processor complete");
     } catch (error) {

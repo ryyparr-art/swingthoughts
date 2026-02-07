@@ -512,6 +512,7 @@ export default function LeaguePostScore() {
         scoreToPar: grossScore - totalPar,
         postedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+        status: league.scoreApproval === "manager" ? "pending" : "approved",
       };
 
       // Only include adjusted scores for SwingThoughts handicap system

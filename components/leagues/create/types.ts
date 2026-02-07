@@ -53,6 +53,7 @@ export interface LeagueFormData {
   // Step 4
   handicapSystem: "swingthoughts" | "league_managed";
   pointsPerWeek: number;
+  scoreApproval: "auto" | "manager" | null;
   // Purse - PGA style (in Step 4)
   purseEnabled: boolean;
   purseAmount: number;        // Season championship purse
@@ -100,6 +101,7 @@ export const DEFAULT_FORM_DATA: LeagueFormData = {
   hasElevatedEvents: false,
   elevatedWeeks: [],
   elevatedMultiplier: 2,
+  scoreApproval: null,
 };
 
 // Helper functions

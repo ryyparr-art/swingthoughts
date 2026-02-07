@@ -167,6 +167,50 @@ export default function Step4HandicapScoring({ formData, updateFormData }: Step4
         </View>
       </View>
 
+      {/* Score Approval */}
+      <View style={styles.inputGroup}>
+        <Text style={styles.label}>
+          Score Approval <Text style={styles.required}>*</Text>
+        </Text>
+        <Text style={styles.helperText}>
+          How are submitted scores verified?
+        </Text>
+        <View style={[styles.optionRow, { marginTop: 12 }]}>
+          <TouchableOpacity
+            style={[styles.optionButton, formData.scoreApproval === "auto" && styles.optionSelected]}
+            onPress={() => {
+              handlePress();
+              updateFormData({ scoreApproval: "auto" });
+            }}
+          >
+            <Ionicons name="checkmark-circle" size={24} color={formData.scoreApproval === "auto" ? "#0D5C3A" : "#666"} />
+            <Text style={[styles.optionText, formData.scoreApproval === "auto" && styles.optionTextSelected]}>
+              Auto-Approve
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.optionButton, formData.scoreApproval === "manager" && styles.optionSelected]}
+            onPress={() => {
+              handlePress();
+              updateFormData({ scoreApproval: "manager" });
+            }}
+          >
+            <Ionicons name="shield-checkmark" size={24} color={formData.scoreApproval === "manager" ? "#0D5C3A" : "#666"} />
+            <Text style={[styles.optionText, formData.scoreApproval === "manager" && styles.optionTextSelected]}>
+              Manager Review
+            </Text>
+          </TouchableOpacity>
+        </View>
+        {formData.scoreApproval === "manager" && (
+          <View style={styles.infoCard}>
+            <Ionicons name="information-circle" size={20} color="#0D5C3A" />
+            <Text style={styles.infoText}>
+              Scores will be held as pending until you approve them in league settings.
+            </Text>
+          </View>
+        )}
+      </View>
+
       {/* Divider */}
       <View style={styles.divider} />
 

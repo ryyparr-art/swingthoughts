@@ -13,6 +13,7 @@ export interface League {
   courseRestriction?: boolean;
   allowedCourses?: Array<{ courseId: number; courseName: string }>;
   avatar?: string;
+  scoreApproval?: "auto" | "manager";
 }
 
 export interface CourseBasic {

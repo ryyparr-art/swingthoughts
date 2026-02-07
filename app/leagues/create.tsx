@@ -202,7 +202,7 @@ export default function CreateLeague() {
       case 3:
         return !formData.courseRestriction || formData.allowedCourses.length > 0;
       case 4:
-        return true;
+        return formData.scoreApproval !== null;
       case 5:
         return formData.startDate !== null && formData.numberOfWeeks >= 1;
       case 6:
@@ -308,6 +308,7 @@ export default function CreateLeague() {
         allowedCourses: formData.allowedCourses,
         nineHoleOption: formData.holes === 9 ? formData.nineHoleOption : null,
         handicapSystem: formData.format === "stroke" ? formData.handicapSystem : "league_managed",
+        scoreApproval: formData.scoreApproval || "auto",
         // Points per week
         pointsPerWeek: formData.pointsPerWeek,
         startDate,

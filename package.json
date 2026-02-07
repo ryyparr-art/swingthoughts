@@ -51,7 +51,7 @@
     "expo-web-browser": "~15.0.10",
     "firebase": "^12.7.0",
     "firebase-admin": "^13.6.0",
-    "firebase-functions": "^7.0.3",
+    "firebase-functions": "^7.0.5",
     "ngeohash": "^0.6.3",
     "react": "19.1.0",
     "react-dom": "19.1.0",
