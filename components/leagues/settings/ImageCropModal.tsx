@@ -10,6 +10,10 @@
  * - Circular mask overlay so users see exactly what the final avatar looks like
  * - Crops + resizes to a clean 512×512 square (displays as circle via borderRadius)
  *
+ * IMPORTANT: The crop area is flex:1 so its height varies by device. We measure
+ * it with onLayout and use the measured value for both mask positioning and crop math.
+ * The image and circle are both centered in that measured area.
+ *
  * Usage:
  *   <ImageCropModal
  *     visible={showCropModal}
@@ -24,20 +28,20 @@ import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import React, { useCallback, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    Dimensions,
-    Image,
-    Modal,
-    Platform,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Dimensions,
+  Image,
+  LayoutChangeEvent,
+  Modal,
+  Platform,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const CROP_SIZE = SCREEN_WIDTH * 0.75;
-const CROP_AREA_HEIGHT = SCREEN_WIDTH;
 const OUTPUT_SIZE = 512;
 
 interface ImageCropModalProps {
@@ -60,24 +64,29 @@ export default function ImageCropModal({
   const [processing, setProcessing] = useState(false);
   const [step, setStep] = useState<"pick" | "crop">("pick");
 
-  // Use state for transform so the image re-renders on changes
+  // Display dimensions: image scaled so its short side = CROP_SIZE
+  const [displaySize, setDisplaySize] = useState({ width: 0, height: 0 });
+
+  // Measured crop area dimensions (from onLayout)
+  const [cropAreaSize, setCropAreaSize] = useState({ width: SCREEN_WIDTH, height: SCREEN_WIDTH });
+
+  // User transform: scale=1 means short side fills the crop circle exactly
   const [scale, setScale] = useState(1);
   const [translateX, setTranslateX] = useState(0);
   const [translateY, setTranslateY] = useState(0);
 
-  // Refs for gesture tracking (don't trigger renders mid-gesture)
   const gestureState = useRef({
     startX: 0,
     startY: 0,
     startScale: 1,
     startDistance: 0,
     isZooming: false,
-    baseScale: 1, // minimum scale to fill crop area
   });
 
   const resetState = useCallback(() => {
     setSourceUri(null);
     setImageSize({ width: 0, height: 0 });
+    setDisplaySize({ width: 0, height: 0 });
     setProcessing(false);
     setStep("pick");
     setScale(1);
@@ -89,7 +98,6 @@ export default function ImageCropModal({
       startScale: 1,
       startDistance: 0,
       isZooming: false,
-      baseScale: 1,
     };
   }, []);
 
@@ -97,6 +105,13 @@ export default function ImageCropModal({
     resetState();
     onClose();
   }, [resetState, onClose]);
+
+  // ─── Measure crop area ──────────────────────────────────────
+
+  const onCropAreaLayout = useCallback((e: LayoutChangeEvent) => {
+    const { width, height } = e.nativeEvent.layout;
+    setCropAreaSize({ width, height });
+  }, []);
 
   // ─── Image Picking ──────────────────────────────────────────
 
@@ -145,12 +160,21 @@ export default function ImageCropModal({
         setSourceUri(uri);
         setStep("crop");
 
-        // Calculate scale so the shorter dimension fills the crop circle
-        const minDim = Math.min(width, height);
-        const fillScale = CROP_SIZE / minDim;
+        // Scale image so its shorter side = CROP_SIZE (fills the circle at scale=1)
+        const aspect = width / height;
+        let dw: number;
+        let dh: number;
 
-        gestureState.current.baseScale = fillScale;
-        setScale(fillScale);
+        if (aspect >= 1) {
+          dh = CROP_SIZE;
+          dw = CROP_SIZE * aspect;
+        } else {
+          dw = CROP_SIZE;
+          dh = CROP_SIZE / aspect;
+        }
+
+        setDisplaySize({ width: dw, height: dh });
+        setScale(1);
         setTranslateX(0);
         setTranslateY(0);
       },
@@ -169,21 +193,19 @@ export default function ImageCropModal({
   const clampTranslation = (
     tx: number,
     ty: number,
-    s: number,
-    imgW: number,
-    imgH: number
+    s: number
   ): { x: number; y: number } => {
-    const displayW = imgW * s;
-    const displayH = imgH * s;
-    const maxX = Math.max(0, (displayW - CROP_SIZE) / 2);
-    const maxY = Math.max(0, (displayH - CROP_SIZE) / 2);
+    const renderedW = displaySize.width * s;
+    const renderedH = displaySize.height * s;
+    const maxX = Math.max(0, (renderedW - CROP_SIZE) / 2);
+    const maxY = Math.max(0, (renderedH - CROP_SIZE) / 2);
     return {
       x: Math.min(maxX, Math.max(-maxX, tx)),
       y: Math.min(maxY, Math.max(-maxY, ty)),
     };
   };
 
-  // ─── Touch Handlers (direct, no PanResponder) ──────────────
+  // ─── Touch Handlers ─────────────────────────────────────────
 
   const onTouchStart = useCallback(
     (e: any) => {
@@ -211,27 +233,22 @@ export default function ImageCropModal({
       const gs = gestureState.current;
 
       if (touches.length === 2 && gs.startDistance > 0) {
-        // Pinch zoom
         const dist = getDistance(touches);
         const pinchRatio = dist / gs.startDistance;
-        const newScale = Math.min(
-          Math.max(gs.startScale * pinchRatio, gs.baseScale * 0.8),
-          gs.baseScale * 6
-        );
-        const clamped = clampTranslation(gs.startX, gs.startY, newScale, imageSize.width, imageSize.height);
+        const newScale = Math.min(Math.max(gs.startScale * pinchRatio, 0.8), 6);
+        const clamped = clampTranslation(gs.startX, gs.startY, newScale);
         setScale(newScale);
         setTranslateX(clamped.x);
         setTranslateY(clamped.y);
       } else if (touches.length === 1 && !gs.isZooming) {
-        // Pan
         const newX = gs.startX + touches[0].pageX;
         const newY = gs.startY + touches[0].pageY;
-        const clamped = clampTranslation(newX, newY, scale, imageSize.width, imageSize.height);
+        const clamped = clampTranslation(newX, newY, scale);
         setTranslateX(clamped.x);
         setTranslateY(clamped.y);
       }
     },
-    [scale, imageSize]
+    [scale, displaySize]
   );
 
   const onTouchEnd = useCallback(() => {
@@ -239,51 +256,90 @@ export default function ImageCropModal({
     gs.isZooming = false;
     gs.startDistance = 0;
 
-    // Snap back if zoomed out too far
-    if (scale < gs.baseScale) {
-      const clamped = clampTranslation(translateX, translateY, gs.baseScale, imageSize.width, imageSize.height);
-      setScale(gs.baseScale);
+    if (scale < 1) {
+      const clamped = clampTranslation(translateX, translateY, 1);
+      setScale(1);
       setTranslateX(clamped.x);
       setTranslateY(clamped.y);
     }
-  }, [scale, translateX, translateY, imageSize]);
+  }, [scale, translateX, translateY, displaySize]);
 
   // ─── Crop & Export ──────────────────────────────────────────
+  //
+  // Both the image and the crop circle are centered in the cropArea.
+  // The image is rendered at displaySize and then CSS-transformed.
+  //
+  // Image center in cropArea coords: (cropAreaW/2, cropAreaH/2)
+  // Circle center in cropArea coords: (cropAreaW/2, cropAreaH/2)
+  // → They are the same point. Only translateX/Y offsets the image.
+  //
+  // When translateX=+T, the image moves right by T, so the crop circle
+  // "sees" content T pixels to the LEFT of image center.
+  //
+  // Crop circle top-left in rendered-image-local coords:
+  //   cropX = (renderedW - CROP_SIZE) / 2 - translateX
+  //   cropY = (renderedH - CROP_SIZE) / 2 - translateY
 
   const handleCrop = async () => {
-    if (!sourceUri) return;
+    if (!sourceUri || displaySize.width === 0) return;
 
     try {
       setProcessing(true);
 
-      const displayW = imageSize.width * scale;
-      const displayH = imageSize.height * scale;
+      const renderedW = displaySize.width * scale;
+      const renderedH = displaySize.height * scale;
 
-      // Crop area center is at the center of the view.
-      // Image center is offset by (translateX, translateY) from crop center.
-      // Top-left of crop area in display coords, relative to image top-left:
-      const cropDisplayX = displayW / 2 - translateX - CROP_SIZE / 2;
-      const cropDisplayY = displayH / 2 - translateY - CROP_SIZE / 2;
+      // Crop circle top-left in rendered-image coordinates
+      const cropX = (renderedW - CROP_SIZE) / 2 - translateX;
+      const cropY = (renderedH - CROP_SIZE) / 2 - translateY;
 
-      // Convert to original image pixel coordinates
-      const originX = Math.round(Math.max(0, cropDisplayX / scale));
-      const originY = Math.round(Math.max(0, cropDisplayY / scale));
-      const cropSizeOriginal = Math.round(CROP_SIZE / scale);
+      // Convert rendered coords → original image pixels
+      const ratioX = imageSize.width / renderedW;
+      const ratioY = imageSize.height / renderedH;
+
+      const originX = Math.round(cropX * ratioX);
+      const originY = Math.round(cropY * ratioY);
+      const cropW = Math.round(CROP_SIZE * ratioX);
+      const cropH = Math.round(CROP_SIZE * ratioY);
+
+      // Use the smaller to keep it square
+      const cropSide = Math.min(cropW, cropH);
 
       // Clamp to image bounds
-      const safeWidth = Math.min(cropSizeOriginal, imageSize.width - originX);
-      const safeHeight = Math.min(cropSizeOriginal, imageSize.height - originY);
-      const safeCropSize = Math.min(safeWidth, safeHeight);
+      const safeX = Math.max(0, Math.min(originX, imageSize.width - cropSide));
+      const safeY = Math.max(0, Math.min(originY, imageSize.height - cropSide));
+      const safeSize = Math.max(
+        1,
+        Math.min(cropSide, imageSize.width - safeX, imageSize.height - safeY)
+      );
+
+      console.log("[ImageCropModal] crop debug:", {
+        imageSize,
+        displaySize,
+        scale,
+        translateX,
+        translateY,
+        renderedW,
+        renderedH,
+        cropX,
+        cropY,
+        originX,
+        originY,
+        cropSide,
+        safeX,
+        safeY,
+        safeSize,
+      });
 
       const result = await ImageManipulator.manipulateAsync(
         sourceUri,
         [
           {
             crop: {
-              originX: Math.max(0, originX),
-              originY: Math.max(0, originY),
-              width: Math.max(1, safeCropSize),
-              height: Math.max(1, safeCropSize),
+              originX: safeX,
+              originY: safeY,
+              width: safeSize,
+              height: safeSize,
             },
           },
           { resize: { width: outputSize, height: outputSize } },
@@ -311,7 +367,9 @@ export default function ImageCropModal({
         <Ionicons name="image-outline" size={48} color="#0D5C3A" />
       </View>
       <Text style={cropStyles.pickTitle}>{title}</Text>
-      <Text style={cropStyles.pickSubtitle}>Choose a photo to crop as your avatar</Text>
+      <Text style={cropStyles.pickSubtitle}>
+        Choose a photo to crop as your avatar
+      </Text>
 
       <TouchableOpacity style={cropStyles.pickButton} onPress={pickFromLibrary}>
         <Ionicons name="images-outline" size={22} color="#FFF" />
@@ -330,9 +388,16 @@ export default function ImageCropModal({
   );
 
   // ─── Render: Crop Step ──────────────────────────────────────
+  //
+  // The mask circle must be centered in the cropArea. Since cropArea uses
+  // flex:1, we measure it and compute offsets dynamically.
 
-  const maskTopBottom = (CROP_AREA_HEIGHT - CROP_SIZE) / 2;
-  const maskLeftRight = (SCREEN_WIDTH - CROP_SIZE) / 2;
+  const circleTop = (cropAreaSize.height - CROP_SIZE) / 2;
+  const circleLeft = (cropAreaSize.width - CROP_SIZE) / 2;
+
+  // For the border-trick mask: we create a circle larger than the crop area
+  // with a huge borderWidth. The "hole" is CROP_SIZE.
+  const maskPadding = Math.max(SCREEN_WIDTH, cropAreaSize.height);
 
   const renderCropStep = () => (
     <View style={cropStyles.cropContainer}>
@@ -351,64 +416,75 @@ export default function ImageCropModal({
         <View style={cropStyles.headerButton} />
       </View>
 
-      {/* Crop area */}
+      {/* Crop area - measured with onLayout */}
       <View
         style={cropStyles.cropArea}
+        onLayout={onCropAreaLayout}
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
         onTouchCancel={onTouchEnd}
       >
-        {sourceUri && (
+        {sourceUri && displaySize.width > 0 && (
           <Image
             source={{ uri: sourceUri }}
             style={{
-              width: imageSize.width,
-              height: imageSize.height,
+              width: displaySize.width,
+              height: displaySize.height,
               transform: [
                 { translateX: translateX },
                 { translateY: translateY },
                 { scale: scale },
               ],
             }}
-            resizeMode="contain"
+            resizeMode="cover"
           />
         )}
 
         {/* Circle mask overlay */}
         <View style={StyleSheet.absoluteFill} pointerEvents="none">
-          {/* Top bar */}
-          <View style={[cropStyles.maskBlock, { top: 0, left: 0, right: 0, height: maskTopBottom }]} />
-          {/* Bottom bar */}
-          <View style={[cropStyles.maskBlock, { bottom: 0, left: 0, right: 0, height: maskTopBottom }]} />
-          {/* Left bar */}
-          <View style={[cropStyles.maskBlock, { top: maskTopBottom, left: 0, width: maskLeftRight, height: CROP_SIZE }]} />
-          {/* Right bar */}
-          <View style={[cropStyles.maskBlock, { top: maskTopBottom, right: 0, width: maskLeftRight, height: CROP_SIZE }]} />
-          {/* Circle border */}
           <View
-            style={[
-              cropStyles.circleBorder,
-              {
-                top: maskTopBottom,
-                left: maskLeftRight,
-                width: CROP_SIZE,
-                height: CROP_SIZE,
-                borderRadius: CROP_SIZE / 2,
-              },
-            ]}
+            style={{
+              position: "absolute",
+              top: circleTop - maskPadding,
+              left: circleLeft - maskPadding,
+              width: CROP_SIZE + maskPadding * 2,
+              height: CROP_SIZE + maskPadding * 2,
+              borderRadius: (CROP_SIZE + maskPadding * 2) / 2,
+              borderWidth: maskPadding,
+              borderColor: "rgba(0, 0, 0, 0.6)",
+            }}
+          />
+          {/* Circle border ring */}
+          <View
+            style={{
+              position: "absolute",
+              top: circleTop,
+              left: circleLeft,
+              width: CROP_SIZE,
+              height: CROP_SIZE,
+              borderRadius: CROP_SIZE / 2,
+              borderWidth: 2,
+              borderColor: "rgba(255, 255, 255, 0.8)",
+            }}
           />
         </View>
       </View>
 
       {/* Footer */}
       <View style={cropStyles.cropFooter}>
-        <TouchableOpacity style={cropStyles.footerCancelButton} onPress={handleClose}>
+        <TouchableOpacity
+          style={cropStyles.footerCancelButton}
+          onPress={handleClose}
+        >
           <Text style={cropStyles.footerCancelText}>Cancel</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[cropStyles.footerSaveButton, processing && cropStyles.footerSaveDisabled]}
+          style={[
+            cropStyles.footerSaveButton,
+            processing && cropStyles.footerSaveDisabled,
+          ]}
           onPress={handleCrop}
           disabled={processing}
         >
@@ -425,8 +501,6 @@ export default function ImageCropModal({
     </View>
   );
 
-  // ─── Main Render ────────────────────────────────────────────
-
   return (
     <Modal
       visible={visible}
@@ -441,15 +515,11 @@ export default function ImageCropModal({
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────
-
 const cropStyles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#000",
   },
-
-  // ─── Pick step ──────────────────────────
   pickContainer: {
     flex: 1,
     justifyContent: "center",
@@ -520,8 +590,6 @@ const cropStyles = StyleSheet.create({
     fontWeight: "600",
     color: "#999",
   },
-
-  // ─── Crop step ──────────────────────────
   cropContainer: {
     flex: 1,
     backgroundColor: "#000",
@@ -552,17 +620,6 @@ const cropStyles = StyleSheet.create({
     alignItems: "center",
     overflow: "hidden",
   },
-  maskBlock: {
-    position: "absolute",
-    backgroundColor: "rgba(0, 0, 0, 0.6)",
-  },
-  circleBorder: {
-    position: "absolute",
-    borderWidth: 2,
-    borderColor: "rgba(255, 255, 255, 0.8)",
-  },
-
-  // ─── Footer ────────────────────────────
   cropFooter: {
     flexDirection: "row",
     alignItems: "center",

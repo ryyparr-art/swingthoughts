@@ -25,6 +25,25 @@ import { createNotificationDocument, generateGroupedMessage, getUserData } from 
 const db = getFirestore();
 
 // ============================================================================
+// HELPER: Get league data with avatar
+// ============================================================================
+
+interface LeagueInfo {
+  name: string;
+  avatar?: string;
+}
+
+async function getLeagueInfo(leagueId: string): Promise<LeagueInfo | null> {
+  const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+  if (!leagueDoc.exists) return null;
+  const data = leagueDoc.data();
+  return {
+    name: data?.name || "the league",
+    avatar: data?.avatar || undefined,
+  };
+}
+
+// ============================================================================
 // JOIN REQUESTS (ROOT-LEVEL COLLECTION)
 // ============================================================================
 
@@ -48,6 +67,10 @@ export const onJoinRequestCreated = onDocumentCreated(
         actorAvatar = actorAvatar || userData?.avatar;
       }
 
+      // Get league avatar as fallback
+      const leagueInfo = await getLeagueInfo(leagueId);
+      const finalAvatar = actorAvatar || leagueInfo?.avatar;
+
       const managersSnap = await db
         .collection("leagues").doc(leagueId)
         .collection("members").where("role", "in", ["commissioner", "manager"]).get();
@@ -56,7 +79,7 @@ export const onJoinRequestCreated = onDocumentCreated(
         if (managerDoc.id === userId) continue;
         await createNotificationDocument({
           userId: managerDoc.id, type: "league_join_request",
-          actorId: userId, actorName: actorName || "Someone", actorAvatar,
+          actorId: userId, actorName: actorName || "Someone", actorAvatar: finalAvatar,
           leagueId, leagueName: leagueName || "the league",
           message: generateGroupedMessage("league_join_request", actorName || "Someone", 1, { leagueName: leagueName || "the league" }),
         });
@@ -78,8 +101,10 @@ export const onJoinRequestUpdated = onDocumentUpdated(
       if (!userId || !leagueId) return;
 
       if (before.status !== "rejected" && after.status === "rejected") {
+        const leagueInfo = await getLeagueInfo(leagueId);
         await createNotificationDocument({
           userId, type: "league_join_rejected",
+          actorAvatar: leagueInfo?.avatar,
           leagueId, leagueName: leagueName || "the league",
           message: generateGroupedMessage("league_join_rejected", "", 1, { leagueName: leagueName || "the league" }),
         });
@@ -102,12 +127,14 @@ export const onLeagueScoreCreated = onDocumentCreated(
       if (!score) return;
 
       const leagueId = event.params.leagueId;
-      const { userId, displayName, netScore, week } = score;
+      const { userId, displayName, avatar, netScore, week } = score;
       if (!userId) return;
 
-      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
-      if (!leagueDoc.exists) return;
-      const leagueName = leagueDoc.data()?.name || "the league";
+      const leagueInfo = await getLeagueInfo(leagueId);
+      if (!leagueInfo) return;
+
+      // Use scorer's avatar, fallback to league avatar
+      const actorAvatar = avatar || leagueInfo.avatar;
 
       const membersSnap = await db.collection("leagues").doc(leagueId).collection("members").get();
       const memberIds = membersSnap.docs.map((doc) => doc.id).filter((id) => id !== userId);
@@ -115,9 +142,9 @@ export const onLeagueScoreCreated = onDocumentCreated(
       for (const memberId of memberIds) {
         await createNotificationDocument({
           userId: memberId, type: "league_score_posted",
-          actorId: userId, actorName: displayName || "Someone",
-          leagueId, leagueName, weekNumber: week,
-          message: generateGroupedMessage("league_score_posted", displayName || "Someone", 1, { leagueName, netScore }),
+          actorId: userId, actorName: displayName || "Someone", actorAvatar,
+          leagueId, leagueName: leagueInfo.name, weekNumber: week,
+          message: generateGroupedMessage("league_score_posted", displayName || "Someone", 1, { leagueName: leagueInfo.name, netScore }),
         });
       }
       console.log(`✅ League score notifications sent to ${memberIds.length} members`);
@@ -136,20 +163,23 @@ export const onLeagueScoreUpdated = onDocumentUpdated(
       const leagueId = event.params.leagueId;
       const { userId, week } = after;
 
-      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
-      if (!leagueDoc.exists) return;
-      const leagueName = leagueDoc.data()?.name || "the league";
+      const leagueInfo = await getLeagueInfo(leagueId);
+      if (!leagueInfo) return;
 
       if (before.status !== "disqualified" && after.status === "disqualified") {
         await createNotificationDocument({
-          userId, type: "league_score_dq", leagueId, leagueName, weekNumber: week,
+          userId, type: "league_score_dq",
+          actorAvatar: leagueInfo.avatar,
+          leagueId, leagueName: leagueInfo.name, weekNumber: week,
           message: generateGroupedMessage("league_score_dq", "", 1, { weekNumber: week }),
         });
       }
 
       if (before.status === "disqualified" && after.status === "approved") {
         await createNotificationDocument({
-          userId, type: "league_score_reinstated", leagueId, leagueName, weekNumber: week,
+          userId, type: "league_score_reinstated",
+          actorAvatar: leagueInfo.avatar,
+          leagueId, leagueName: leagueInfo.name, weekNumber: week,
           message: generateGroupedMessage("league_score_reinstated", "", 1, { weekNumber: week }),
         });
       }
@@ -158,7 +188,9 @@ export const onLeagueScoreUpdated = onDocumentUpdated(
       const afterEditCount = after.editHistory?.length || 0;
       if (afterEditCount > beforeEditCount) {
         await createNotificationDocument({
-          userId, type: "league_score_edited", leagueId, leagueName, weekNumber: week,
+          userId, type: "league_score_edited",
+          actorAvatar: leagueInfo.avatar,
+          leagueId, leagueName: leagueInfo.name, weekNumber: week,
           message: generateGroupedMessage("league_score_edited", "", 1, { weekNumber: week }),
         });
       }
@@ -181,11 +213,13 @@ export const onLeagueMemberCreated = onDocumentCreated(
 
       const leagueId = event.params.leagueId;
       const memberId = event.params.memberId;
-      const { role, displayName, status } = member;
+      const { role, displayName, avatar, status } = member;
 
-      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
-      if (!leagueDoc.exists) return;
-      const leagueName = leagueDoc.data()?.name || "the league";
+      const leagueInfo = await getLeagueInfo(leagueId);
+      if (!leagueInfo) return;
+
+      // Use member's avatar, fallback to league avatar
+      const actorAvatar = avatar || leagueInfo.avatar;
 
       if (status === "pending") {
         const managersSnap = await db.collection("leagues").doc(leagueId)
@@ -194,9 +228,9 @@ export const onLeagueMemberCreated = onDocumentCreated(
           if (managerDoc.id === memberId) continue;
           await createNotificationDocument({
             userId: managerDoc.id, type: "league_join_request",
-            actorId: memberId, actorName: displayName || "Someone",
-            leagueId, leagueName,
-            message: generateGroupedMessage("league_join_request", displayName || "Someone", 1, { leagueName }),
+            actorId: memberId, actorName: displayName || "Someone", actorAvatar,
+            leagueId, leagueName: leagueInfo.name,
+            message: generateGroupedMessage("league_join_request", displayName || "Someone", 1, { leagueName: leagueInfo.name }),
           });
         }
       }
@@ -204,8 +238,9 @@ export const onLeagueMemberCreated = onDocumentCreated(
       if (status === "active" && role === "member") {
         await createNotificationDocument({
           userId: memberId, type: "league_join_approved",
-          leagueId, leagueName,
-          message: generateGroupedMessage("league_join_approved", "", 1, { leagueName }),
+          actorAvatar: leagueInfo.avatar,
+          leagueId, leagueName: leagueInfo.name,
+          message: generateGroupedMessage("league_join_approved", "", 1, { leagueName: leagueInfo.name }),
         });
       }
     } catch (error) { console.error("🔥 onLeagueMemberCreated failed:", error); }
@@ -223,21 +258,24 @@ export const onLeagueMemberUpdated = onDocumentUpdated(
       const leagueId = event.params.leagueId;
       const memberId = event.params.memberId;
 
-      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
-      if (!leagueDoc.exists) return;
-      const leagueName = leagueDoc.data()?.name || "the league";
+      const leagueInfo = await getLeagueInfo(leagueId);
+      if (!leagueInfo) return;
 
       if (before.status === "pending" && after.status === "active") {
         await createNotificationDocument({
-          userId: memberId, type: "league_join_approved", leagueId, leagueName,
-          message: generateGroupedMessage("league_join_approved", "", 1, { leagueName }),
+          userId: memberId, type: "league_join_approved",
+          actorAvatar: leagueInfo.avatar,
+          leagueId, leagueName: leagueInfo.name,
+          message: generateGroupedMessage("league_join_approved", "", 1, { leagueName: leagueInfo.name }),
         });
       }
 
       if (before.status === "pending" && after.status === "rejected") {
         await createNotificationDocument({
-          userId: memberId, type: "league_join_rejected", leagueId, leagueName,
-          message: generateGroupedMessage("league_join_rejected", "", 1, { leagueName }),
+          userId: memberId, type: "league_join_rejected",
+          actorAvatar: leagueInfo.avatar,
+          leagueId, leagueName: leagueInfo.name,
+          message: generateGroupedMessage("league_join_rejected", "", 1, { leagueName: leagueInfo.name }),
         });
       }
 
@@ -245,8 +283,10 @@ export const onLeagueMemberUpdated = onDocumentUpdated(
         const teamDoc = await db.collection("leagues").doc(leagueId).collection("teams").doc(after.teamId).get();
         const teamName = teamDoc.exists ? teamDoc.data()?.name : "a team";
         await createNotificationDocument({
-          userId: memberId, type: "league_team_assigned", leagueId, leagueName, teamName,
-          message: generateGroupedMessage("league_team_assigned", "", 1, { leagueName, teamName }),
+          userId: memberId, type: "league_team_assigned",
+          actorAvatar: leagueInfo.avatar,
+          leagueId, leagueName: leagueInfo.name, teamName,
+          message: generateGroupedMessage("league_team_assigned", "", 1, { leagueName: leagueInfo.name, teamName }),
         });
       }
 
@@ -254,15 +294,19 @@ export const onLeagueMemberUpdated = onDocumentUpdated(
         const teamDoc = await db.collection("leagues").doc(leagueId).collection("teams").doc(before.teamId).get();
         const teamName = teamDoc.exists ? teamDoc.data()?.name : "the team";
         await createNotificationDocument({
-          userId: memberId, type: "league_team_removed", leagueId, leagueName, teamName,
+          userId: memberId, type: "league_team_removed",
+          actorAvatar: leagueInfo.avatar,
+          leagueId, leagueName: leagueInfo.name, teamName,
           message: generateGroupedMessage("league_team_removed", "", 1, { teamName }),
         });
       }
 
       if (before.role !== "manager" && after.role === "manager") {
         await createNotificationDocument({
-          userId: memberId, type: "league_manager_invite", leagueId, leagueName,
-          message: generateGroupedMessage("league_manager_invite", "", 1, { leagueName }),
+          userId: memberId, type: "league_manager_invite",
+          actorAvatar: leagueInfo.avatar,
+          leagueId, leagueName: leagueInfo.name,
+          message: generateGroupedMessage("league_manager_invite", "", 1, { leagueName: leagueInfo.name }),
         });
       }
     } catch (error) { console.error("🔥 onLeagueMemberUpdated failed:", error); }
@@ -282,13 +326,14 @@ export const onLeagueMemberDeleted = onDocumentDeleted(
       const memberId = event.params.memberId;
       if (member.role === "commissioner") return;
 
-      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
-      if (!leagueDoc.exists) return;
-      const leagueName = leagueDoc.data()?.name || "the league";
+      const leagueInfo = await getLeagueInfo(leagueId);
+      if (!leagueInfo) return;
 
       await createNotificationDocument({
-        userId: memberId, type: "league_removed", leagueId, leagueName,
-        message: generateGroupedMessage("league_removed", "", 1, { leagueName }),
+        userId: memberId, type: "league_removed",
+        actorAvatar: leagueInfo.avatar,
+        leagueId, leagueName: leagueInfo.name,
+        message: generateGroupedMessage("league_removed", "", 1, { leagueName: leagueInfo.name }),
       });
     } catch (error) { console.error("🔥 onLeagueMemberDeleted failed:", error); }
   }
@@ -314,19 +359,21 @@ export const onWeekResultCreated = onDocumentCreated(
       }
 
       const leagueId = event.params.leagueId;
-      const { userId, displayName, week, score, teamName } = result;
+      const { userId, displayName, avatar, week, score, teamName } = result;
 
-      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
-      if (!leagueDoc.exists) return;
-      const leagueName = leagueDoc.data()?.name || "the league";
+      const leagueInfo = await getLeagueInfo(leagueId);
+      if (!leagueInfo) return;
+
+      // Use winner's avatar, fallback to league avatar
+      const actorAvatar = avatar || leagueInfo.avatar;
 
       const membersSnap = await db.collection("leagues").doc(leagueId).collection("members").get();
 
       for (const memberDoc of membersSnap.docs) {
         await createNotificationDocument({
           userId: memberDoc.id, type: "league_week_complete",
-          actorId: userId, actorName: displayName || teamName || "Someone",
-          leagueId, leagueName, weekNumber: week,
+          actorId: userId, actorName: displayName || teamName || "Someone", actorAvatar,
+          leagueId, leagueName: leagueInfo.name, weekNumber: week,
           message: generateGroupedMessage("league_week_complete", displayName || teamName || "Someone", 1, { weekNumber: week, netScore: score }),
         });
       }
@@ -349,6 +396,7 @@ export const onLeagueUpdated = onDocumentUpdated(
 
       const leagueId = event.params.leagueId;
       const leagueName = after.name || "the league";
+      const leagueAvatar = after.avatar || undefined;
 
       // ⚠️ DUPLICATE GUARD: Skip lifecycle events if triggered by processor
       const isProcessorUpdate = after._updatedByProcessor === true;
@@ -362,13 +410,14 @@ export const onLeagueUpdated = onDocumentUpdated(
       if (before.status !== "active" && after.status === "active") {
         if (isProcessorUpdate) {
           console.log("⏭️ Skipping season_started - handled by leagueProcessor");
-          // Clean up the flag
           await db.collection("leagues").doc(leagueId).update({ _updatedByProcessor: FieldValue.delete() });
         } else {
           const memberIds = await getMemberIds();
           for (const memberId of memberIds) {
             await createNotificationDocument({
-              userId: memberId, type: "league_season_started", leagueId, leagueName,
+              userId: memberId, type: "league_season_started",
+              actorAvatar: leagueAvatar,
+              leagueId, leagueName,
               message: generateGroupedMessage("league_season_started", "", 1, { leagueName }),
             });
           }
@@ -388,7 +437,7 @@ export const onLeagueUpdated = onDocumentUpdated(
           for (const memberId of memberIds) {
             await createNotificationDocument({
               userId: memberId, type: "league_season_complete",
-              actorId: championId, actorName: championName,
+              actorId: championId, actorName: championName, actorAvatar: leagueAvatar,
               leagueId, leagueName,
               message: generateGroupedMessage("league_season_complete", championName, 1, { leagueName }),
             });
@@ -406,7 +455,9 @@ export const onLeagueUpdated = onDocumentUpdated(
           const memberIds = await getMemberIds();
           for (const memberId of memberIds) {
             await createNotificationDocument({
-              userId: memberId, type: "league_week_start", leagueId, leagueName,
+              userId: memberId, type: "league_week_start",
+              actorAvatar: leagueAvatar,
+              leagueId, leagueName,
               weekNumber: after.currentWeek,
               message: generateGroupedMessage("league_week_start", "", 1, { weekNumber: after.currentWeek }),
             });
@@ -430,14 +481,18 @@ export const onLeagueUpdated = onDocumentUpdated(
                 if (team1 && team2) {
                   for (const memberId of team1.memberIds) {
                     await createNotificationDocument({
-                      userId: memberId, type: "league_matchup", leagueId, leagueName,
+                      userId: memberId, type: "league_matchup",
+                      actorAvatar: leagueAvatar,
+                      leagueId, leagueName,
                       teamName: team1.name, weekNumber: after.currentWeek,
                       message: generateGroupedMessage("league_matchup", "", 1, { teamName: team1.name, weekNumber: after.currentWeek }),
                     });
                   }
                   for (const memberId of team2.memberIds) {
                     await createNotificationDocument({
-                      userId: memberId, type: "league_matchup", leagueId, leagueName,
+                      userId: memberId, type: "league_matchup",
+                      actorAvatar: leagueAvatar,
+                      leagueId, leagueName,
                       teamName: team2.name, weekNumber: after.currentWeek,
                       message: generateGroupedMessage("league_matchup", "", 1, { teamName: team2.name, weekNumber: after.currentWeek }),
                     });
@@ -466,13 +521,15 @@ export const onLeagueAnnouncementCreated = onDocumentCreated(
       if (!announcement) return;
 
       const leagueId = event.params.leagueId;
-      const { authorId, type: announcementType } = announcement;
+      const { authorId, authorAvatar, type: announcementType } = announcement;
 
       if (announcementType === "system") return;
 
-      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
-      if (!leagueDoc.exists) return;
-      const leagueName = leagueDoc.data()?.name || "the league";
+      const leagueInfo = await getLeagueInfo(leagueId);
+      if (!leagueInfo) return;
+
+      // Use author's avatar, fallback to league avatar
+      const actorAvatar = authorAvatar || leagueInfo.avatar;
 
       const membersSnap = await db.collection("leagues").doc(leagueId).collection("members").get();
       const memberIds = membersSnap.docs.map((doc) => doc.id).filter((id) => id !== authorId);
@@ -480,9 +537,9 @@ export const onLeagueAnnouncementCreated = onDocumentCreated(
       for (const memberId of memberIds) {
         await createNotificationDocument({
           userId: memberId, type: "league_announcement",
-          actorId: authorId, actorName: announcement.authorName || "The Commissioner",
-          leagueId, leagueName,
-          message: generateGroupedMessage("league_announcement", "", 1, { leagueName }),
+          actorId: authorId, actorName: announcement.authorName || "The Commissioner", actorAvatar,
+          leagueId, leagueName: leagueInfo.name,
+          message: generateGroupedMessage("league_announcement", "", 1, { leagueName: leagueInfo.name }),
         });
       }
       console.log(`✅ Announcement notifications sent to ${memberIds.length} members`);
@@ -504,11 +561,13 @@ export const onTeamEditRequestCreated = onDocumentCreated(
       if (!request) return;
 
       const leagueId = event.params.leagueId;
-      const { requesterId, requesterName, teamName } = request;
+      const { requesterId, requesterName, requesterAvatar, teamName } = request;
 
-      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
-      if (!leagueDoc.exists) return;
-      const leagueName = leagueDoc.data()?.name || "the league";
+      const leagueInfo = await getLeagueInfo(leagueId);
+      if (!leagueInfo) return;
+
+      // Use requester's avatar, fallback to league avatar
+      const actorAvatar = requesterAvatar || leagueInfo.avatar;
 
       const managersSnap = await db.collection("leagues").doc(leagueId)
         .collection("members").where("role", "in", ["commissioner", "manager"]).get();
@@ -517,9 +576,9 @@ export const onTeamEditRequestCreated = onDocumentCreated(
         if (managerDoc.id === requesterId) continue;
         await createNotificationDocument({
           userId: managerDoc.id, type: "league_team_edit_request",
-          actorId: requesterId, actorName: requesterName || "Someone",
-          leagueId, leagueName, teamName,
-          message: generateGroupedMessage("league_team_edit_request", requesterName || "Someone", 1, { leagueName, teamName }),
+          actorId: requesterId, actorName: requesterName || "Someone", actorAvatar,
+          leagueId, leagueName: leagueInfo.name, teamName,
+          message: generateGroupedMessage("league_team_edit_request", requesterName || "Someone", 1, { leagueName: leagueInfo.name, teamName }),
         });
       }
     } catch (error) { console.error("🔥 onTeamEditRequestCreated failed:", error); }
@@ -537,16 +596,17 @@ export const onTeamEditRequestUpdated = onDocumentUpdated(
       const leagueId = event.params.leagueId;
       const { requesterId, teamId, teamName } = after;
 
-      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
-      if (!leagueDoc.exists) return;
-      const leagueName = leagueDoc.data()?.name || "the league";
+      const leagueInfo = await getLeagueInfo(leagueId);
+      if (!leagueInfo) return;
 
       if (before.status !== "approved" && after.status === "approved") {
         const teamDoc = await db.collection("leagues").doc(leagueId).collection("teams").doc(teamId).get();
         const teamMemberIds = teamDoc.exists ? teamDoc.data()?.memberIds || [] : [requesterId];
         for (const memberId of teamMemberIds) {
           await createNotificationDocument({
-            userId: memberId, type: "league_team_edit_approved", leagueId, leagueName, teamName,
+            userId: memberId, type: "league_team_edit_approved",
+            actorAvatar: leagueInfo.avatar,
+            leagueId, leagueName: leagueInfo.name, teamName,
             message: generateGroupedMessage("league_team_edit_approved", "", 1, { teamName }),
           });
         }
@@ -554,7 +614,9 @@ export const onTeamEditRequestUpdated = onDocumentUpdated(
 
       if (before.status !== "rejected" && after.status === "rejected") {
         await createNotificationDocument({
-          userId: requesterId, type: "league_team_edit_rejected", leagueId, leagueName, teamName,
+          userId: requesterId, type: "league_team_edit_rejected",
+          actorAvatar: leagueInfo.avatar,
+          leagueId, leagueName: leagueInfo.name, teamName,
           message: generateGroupedMessage("league_team_edit_rejected", "", 1, { teamName }),
         });
       }
@@ -579,15 +641,17 @@ export const onLeagueInviteCreated = onDocumentCreated(
       const { inviteeId, inviterId, inviterName, inviterAvatar } = invite;
       if (!inviteeId) return;
 
-      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
-      if (!leagueDoc.exists) return;
-      const leagueName = leagueDoc.data()?.name || "a league";
+      const leagueInfo = await getLeagueInfo(leagueId);
+      if (!leagueInfo) return;
+
+      // Use inviter's avatar, fallback to league avatar
+      const actorAvatar = inviterAvatar || leagueInfo.avatar;
 
       await createNotificationDocument({
         userId: inviteeId, type: "league_invite",
-        actorId: inviterId, actorName: inviterName || "Someone", actorAvatar: inviterAvatar,
-        leagueId, leagueName,
-        message: generateGroupedMessage("league_invite", "", 1, { leagueName }),
+        actorId: inviterId, actorName: inviterName || "Someone", actorAvatar,
+        leagueId, leagueName: leagueInfo.name,
+        message: generateGroupedMessage("league_invite", "", 1, { leagueName: leagueInfo.name }),
       });
     } catch (error) { console.error("🔥 onLeagueInviteCreated failed:", error); }
   }
@@ -603,18 +667,20 @@ export const onManagerInviteCreated = onDocumentCreated(
       if (!invite) return;
 
       const leagueId = event.params.leagueId;
-      const { inviteeId, inviterId, inviterName } = invite;
+      const { inviteeId, inviterId, inviterName, inviterAvatar } = invite;
       if (!inviteeId) return;
 
-      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
-      if (!leagueDoc.exists) return;
-      const leagueName = leagueDoc.data()?.name || "a league";
+      const leagueInfo = await getLeagueInfo(leagueId);
+      if (!leagueInfo) return;
+
+      // Use inviter's avatar, fallback to league avatar
+      const actorAvatar = inviterAvatar || leagueInfo.avatar;
 
       await createNotificationDocument({
         userId: inviteeId, type: "league_manager_invite",
-        actorId: inviterId, actorName: inviterName || "The Commissioner",
-        leagueId, leagueName,
-        message: generateGroupedMessage("league_manager_invite", "", 1, { leagueName }),
+        actorId: inviterId, actorName: inviterName || "The Commissioner", actorAvatar,
+        leagueId, leagueName: leagueInfo.name,
+        message: generateGroupedMessage("league_manager_invite", "", 1, { leagueName: leagueInfo.name }),
       });
     } catch (error) { console.error("🔥 onManagerInviteCreated failed:", error); }
   }
@@ -637,11 +703,15 @@ export const onLeagueInviteCreatedRoot = onDocumentCreated(
       const { leagueId, leagueName, invitedUserId, invitedUserName, invitedByUserId, invitedByUserName, invitedByUserAvatar } = invite;
       if (!leagueId || !invitedUserId || !invitedByUserId) return;
 
+      // Get league avatar as fallback
+      const leagueInfo = await getLeagueInfo(leagueId);
+      const actorAvatar = invitedByUserAvatar || leagueInfo?.avatar;
+
       // Notify invitee
       await createNotificationDocument({
         userId: invitedUserId, type: "league_invite",
         actorId: invitedByUserId, actorName: invitedByUserName || "Someone",
-        actorAvatar: invitedByUserAvatar, leagueId, leagueName: leagueName || "a league", inviteId,
+        actorAvatar, leagueId, leagueName: leagueName || "a league", inviteId,
         message: `${invitedByUserName || "Someone"} invited you to join ${leagueName || "a league"}`,
       });
 
@@ -654,7 +724,7 @@ export const onLeagueInviteCreatedRoot = onDocumentCreated(
         await createNotificationDocument({
           userId: managerDoc.id, type: "league_invite_sent",
           actorId: invitedByUserId, actorName: invitedByUserName || "Someone",
-          actorAvatar: invitedByUserAvatar, leagueId, leagueName: leagueName || "the league", inviteId,
+          actorAvatar, leagueId, leagueName: leagueName || "the league", inviteId,
           message: `${invitedByUserName || "Someone"} invited ${invitedUserName || "a user"} to join ${leagueName || "the league"}`,
         });
       }
@@ -672,6 +742,10 @@ export const onLeagueInviteUpdatedRoot = onDocumentUpdated(
 
       const { leagueId, leagueName, invitedUserId, invitedUserName, invitedUserAvatar, invitedByUserId } = after;
       if (!leagueId || !invitedUserId || !invitedByUserId) return;
+
+      // Get league avatar as fallback
+      const leagueInfo = await getLeagueInfo(leagueId);
+      const actorAvatar = invitedUserAvatar || leagueInfo?.avatar;
 
       // Accepted
       if (before.status === "pending" && after.status === "accepted") {
@@ -692,7 +766,7 @@ export const onLeagueInviteUpdatedRoot = onDocumentUpdated(
         await createNotificationDocument({
           userId: invitedByUserId, type: "league_invite_accepted",
           actorId: invitedUserId, actorName: invitedUserName || "Someone",
-          actorAvatar: invitedUserAvatar, leagueId, leagueName: leagueName || "the league",
+          actorAvatar, leagueId, leagueName: leagueName || "the league",
           message: `${invitedUserName || "Someone"} accepted your invite to join ${leagueName || "the league"}`,
         });
       }
@@ -702,7 +776,7 @@ export const onLeagueInviteUpdatedRoot = onDocumentUpdated(
         await createNotificationDocument({
           userId: invitedByUserId, type: "league_invite_declined",
           actorId: invitedUserId, actorName: invitedUserName || "Someone",
-          actorAvatar: invitedUserAvatar, leagueId, leagueName: leagueName || "the league",
+          actorAvatar, leagueId, leagueName: leagueName || "the league",
           message: `${invitedUserName || "Someone"} declined your invite to join ${leagueName || "the league"}`,
         });
       }

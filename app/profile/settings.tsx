@@ -3,8 +3,8 @@ import { auth, db } from "@/constants/firebaseConfig";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import * as ImagePicker from "expo-image-picker";
 import { useRouter } from "expo-router";
+import ImageCropModal from "@/components/leagues/settings/ImageCropModal";
 import {
   EmailAuthProvider,
   reauthenticateWithCredential,
@@ -85,6 +85,7 @@ export default function SettingsScreen() {
 
   // Sound settings - using new API
   const [soundsEnabled, setSoundsEnabled] = useState(soundPlayer.isEnabled());
+  const [avatarCropVisible, setAvatarCropVisible] = useState(false);
 
   useEffect(() => {
     fetchSettings();
@@ -152,31 +153,18 @@ export default function SettingsScreen() {
   };
 
   /* ------------------ PICK + UPLOAD AVATAR ------------------ */
-  const handlePickAvatar = async () => {
+  const handlePickAvatar = () => {
+    soundPlayer.play('click');
+    setAvatarCropVisible(true);
+  };
+
+  const handleAvatarCropComplete = async (uri: string) => {
+    if (!userId) return;
+
     try {
-      soundPlayer.play('click');
-      const { status } =
-        await ImagePicker.requestMediaLibraryPermissionsAsync();
-
-      if (status !== "granted") {
-        soundPlayer.play('error');
-        Alert.alert("Permission required", "Photo access is needed.");
-        return;
-      }
-
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.9,
-      });
-
-      if (result.canceled || !result.assets[0] || !userId) return;
-
       setUploadingAvatar(true);
 
-      const imageUri = result.assets[0].uri;
-      const response = await fetch(imageUri);
+      const response = await fetch(uri);
       const blob = await response.blob();
 
       const storage = getStorage();
@@ -192,13 +180,13 @@ export default function SettingsScreen() {
       setSettings({ ...settings, avatar: downloadURL });
 
       soundPlayer.play('postThought');
-      setUploadingAvatar(false);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err) {
       console.error("Avatar error:", err);
       soundPlayer.play('error');
-      setUploadingAvatar(false);
       Alert.alert("Error", "Failed to update profile photo");
+    } finally {
+      setUploadingAvatar(false);
     }
   };
 
@@ -1228,6 +1216,13 @@ export default function SettingsScreen() {
         onUpdate={() => {
           fetchSettings();
         }}
+      />
+
+      <ImageCropModal
+        visible={avatarCropVisible}
+        onClose={() => setAvatarCropVisible(false)}
+        onCropComplete={handleAvatarCropComplete}
+        title="Profile Photo"
       />
     </View>
   );

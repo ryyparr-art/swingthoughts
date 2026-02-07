@@ -29,6 +29,14 @@ interface Step5Props {
   updateFormData: (updates: Partial<LeagueFormData>) => void;
 }
 
+/**
+ * Normalize a date to midnight (start of day)
+ * This ensures consistent date comparisons in leagueProcessor
+ */
+const normalizeToMidnight = (date: Date): Date => {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+};
+
 export default function Step5Schedule({ formData, updateFormData }: Step5Props) {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
@@ -43,10 +51,12 @@ export default function Step5Schedule({ formData, updateFormData }: Step5Props) 
       setShowDatePicker(false);
     }
     if (event.type === "set" && selectedDate) {
-      updateFormData({ startDate: selectedDate });
+      // Normalize to midnight to avoid time-based comparison issues
+      updateFormData({ startDate: normalizeToMidnight(selectedDate) });
     }
     if (Platform.OS === "ios" && selectedDate) {
-      updateFormData({ startDate: selectedDate });
+      // Normalize to midnight to avoid time-based comparison issues
+      updateFormData({ startDate: normalizeToMidnight(selectedDate) });
     }
   };
 

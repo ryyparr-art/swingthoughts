@@ -5,7 +5,15 @@
  * - Week-by-week schedule grouped by month
  * - Status badges (complete/current/upcoming)
  * - Previous winner for completed weeks
+ * - User's posted score badge (tappable → week scores screen)
  * - Matchups for 2v2 leagues with teams
+ *
+ * Week card behavior:
+ * - Complete + user posted → winner + score badge (tappable)
+ * - Complete + no score    → winner only, not tappable
+ * - Current + user posted  → score badge replaces Post Score (tappable)
+ * - Current + no score     → Post Score button
+ * - Upcoming               → locked, not tappable
  */
 
 import { auth, db } from "@/constants/firebaseConfig";
@@ -22,6 +30,7 @@ import {
   orderBy,
   query,
   Timestamp,
+  where,
 } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
@@ -93,6 +102,14 @@ interface WeekResult {
   matchResult?: string;
 }
 
+/** User's posted score for a given week */
+interface UserWeekScore {
+  grossScore: number;
+  netScore?: number;
+  courseName?: string;
+  scoreId: string;
+}
+
 interface WeekSchedule {
   week: number;
   startDate: Date;
@@ -106,10 +123,7 @@ interface WeekSchedule {
   courseName?: string;
   winner?: WeekResult;
   matchups?: Array<{ team1: Team; team2: Team; result?: string }>;
-  userScore?: {
-    score: number;
-    rank: number;
-  };
+  userScore?: UserWeekScore;
   scoresPosted?: number;
 }
 
@@ -142,6 +156,9 @@ export default function LeagueSchedule() {
   const [schedule, setSchedule] = useState<MonthGroup[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
 
+  // User's scores per week
+  const [userScores, setUserScores] = useState<Record<number, UserWeekScore>>({});
+
   // Commissioner/Manager status
   const [isCommissionerOrManager, setIsCommissionerOrManager] = useState(false);
 
@@ -170,6 +187,28 @@ export default function LeagueSchedule() {
         }
       );
       unsubscribers.push(leagueUnsub);
+
+      // Listen to user's scores (real-time so it updates after posting)
+      const scoresUnsub = onSnapshot(
+        query(
+          collection(db, "leagues", selectedLeagueId, "scores"),
+          where("userId", "==", currentUserId)
+        ),
+        (snapshot) => {
+          const scores: Record<number, UserWeekScore> = {};
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data();
+            scores[data.week] = {
+              grossScore: data.grossScore,
+              netScore: data.netScore,
+              courseName: data.courseName,
+              scoreId: docSnap.id,
+            };
+          });
+          setUserScores(scores);
+        }
+      );
+      unsubscribers.push(scoresUnsub);
 
       // Check membership role
       getDoc(doc(db, "leagues", selectedLeagueId, "members", currentUserId)).then(
@@ -308,11 +347,8 @@ export default function LeagueSchedule() {
       weekEnd.setDate(weekStart.getDate() + weekDuration - 1);
 
       const isElevated =
-        league.hasElevatedEvents &&
-        league.elevatedWeeks?.includes(i);
-      const multiplier = isElevated
-        ? league.elevatedMultiplier || 2
-        : 1;
+        league.hasElevatedEvents && league.elevatedWeeks?.includes(i);
+      const multiplier = isElevated ? league.elevatedMultiplier || 2 : 1;
 
       let status: "complete" | "current" | "upcoming" = "upcoming";
       if (i < league.currentWeek) {
@@ -327,7 +363,6 @@ export default function LeagueSchedule() {
         if (league.restrictedCourses.length === 1) {
           courseName = league.restrictedCourses[0].courseName;
         } else {
-          // Rotate through courses or use specific assignment
           const courseIndex = (i - 1) % league.restrictedCourses.length;
           courseName = league.restrictedCourses[courseIndex].courseName;
         }
@@ -335,7 +370,7 @@ export default function LeagueSchedule() {
 
       // Calculate purse for this week
       const weeklyPurse = league.purse?.weeklyPurse || 0;
-      const elevatedPurse = isElevated ? (league.purse?.elevatedPurse || 0) : 0;
+      const elevatedPurse = isElevated ? league.purse?.elevatedPurse || 0 : 0;
 
       weeks.push({
         week: i,
@@ -405,18 +440,17 @@ export default function LeagueSchedule() {
     router.push(`/leagues/post-score?leagueId=${selectedLeagueId}`);
   };
 
+  const handleViewWeekScores = (weekNumber: number) => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push(
+      `/leagues/week-scores?leagueId=${selectedLeagueId}&week=${weekNumber}`
+    );
+  };
+
   const handleSettings = () => {
     soundPlayer.play("click");
     router.push(`/leagues/settings?id=${selectedLeagueId}`);
-  };
-
-  const handleWeekPress = (week: WeekSchedule) => {
-    soundPlayer.play("click");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    // Navigate to week detail or expand
-    router.push(
-      `/leagues/week-detail?leagueId=${selectedLeagueId}&week=${week.week}`
-    );
   };
 
   /* ================================================================ */
@@ -428,9 +462,23 @@ export default function LeagueSchedule() {
     const endMonth = end.toLocaleString("en-US", { month: "short" });
 
     if (startMonth === endMonth) {
-      return startMonth.toUpperCase() + " " + start.getDate() + " - " + end.getDate();
+      return (
+        startMonth.toUpperCase() +
+        " " +
+        start.getDate() +
+        " - " +
+        end.getDate()
+      );
     }
-    return startMonth.toUpperCase() + " " + start.getDate() + " - " + endMonth.toUpperCase() + " " + end.getDate();
+    return (
+      startMonth.toUpperCase() +
+      " " +
+      start.getDate() +
+      " - " +
+      endMonth.toUpperCase() +
+      " " +
+      end.getDate()
+    );
   };
 
   const getStatusBadge = (status: "complete" | "current" | "upcoming") => {
@@ -513,7 +561,10 @@ export default function LeagueSchedule() {
         <View style={styles.leagueSelectorContent}>
           <View style={styles.leagueLogoPlaceholder}>
             {selectedLeague?.avatar ? (
-              <Image source={{ uri: selectedLeague.avatar }} style={styles.leagueLogoImage} />
+              <Image
+                source={{ uri: selectedLeague.avatar }}
+                style={styles.leagueLogoImage}
+              />
             ) : (
               <Text style={styles.leagueLogoText}>
                 {selected?.name?.charAt(0) || "L"}
@@ -536,18 +587,33 @@ export default function LeagueSchedule() {
     );
   };
 
+  /** Score badge shown when user has posted a score for a week */
+  const renderUserScoreBadge = (weekNumber: number, score: UserWeekScore) => (
+    <TouchableOpacity
+      style={styles.scoreBadge}
+      onPress={() => handleViewWeekScores(weekNumber)}
+      activeOpacity={0.7}
+    >
+      <View style={styles.scoreBadgeLeft}>
+        <Ionicons name="checkmark-circle" size={20} color="#4CAF50" />
+        <Text style={styles.scoreBadgeLabel}>Your Score</Text>
+      </View>
+      <View style={styles.scoreBadgeRight}>
+        <Text style={styles.scoreBadgeValue}>{score.grossScore}</Text>
+        <Ionicons name="chevron-forward" size={16} color="#999" />
+      </View>
+    </TouchableOpacity>
+  );
+
   const renderWeekCard = (week: WeekSchedule) => {
     const badge = getStatusBadge(week.status);
     const is2v2 = selectedLeague?.format === "2v2";
-    const hasTeams = teams.length > 0;
+    const hasTeamsData = teams.length > 0;
+    const userScore = userScores[week.week];
+    const hasUserScore = !!userScore;
 
     return (
-      <TouchableOpacity
-        key={week.week}
-        style={styles.weekCard}
-        onPress={() => handleWeekPress(week)}
-        activeOpacity={0.7}
-      >
+      <View key={week.week} style={styles.weekCard}>
         {/* Header Row */}
         <View style={styles.weekHeader}>
           <View style={styles.weekDateContainer}>
@@ -578,7 +644,7 @@ export default function LeagueSchedule() {
           <View style={styles.weekPointsContainer}>
             <Text style={styles.weekPoints}>{week.basePoints} pts</Text>
           </View>
-          {(week.weeklyPurse > 0 || week.elevatedPurse > 0) ? (
+          {week.weeklyPurse > 0 || week.elevatedPurse > 0 ? (
             <View style={styles.weekPurseContainer}>
               <Text style={styles.weekPurse}>
                 💰 ${week.weeklyPurse + week.elevatedPurse}
@@ -588,7 +654,10 @@ export default function LeagueSchedule() {
         </View>
 
         {/* 2v2 Matchups */}
-        {is2v2 && hasTeams && week.matchups && week.matchups.length > 0 ? (
+        {is2v2 &&
+        hasTeamsData &&
+        week.matchups &&
+        week.matchups.length > 0 ? (
           <View style={styles.matchupsContainer}>
             <Text style={styles.matchupsLabel}>Matchups:</Text>
             {week.matchups.map((matchup, idx) => (
@@ -641,12 +710,17 @@ export default function LeagueSchedule() {
                 </>
               )}
             </View>
-            <Ionicons name="chevron-forward" size={18} color="#999" />
           </View>
         ) : null}
 
-        {/* Current Week CTA */}
-        {week.status === "current" ? (
+        {/* User's posted score (complete or current weeks) */}
+        {(week.status === "complete" || week.status === "current") &&
+        hasUserScore ? (
+          renderUserScoreBadge(week.week, userScore)
+        ) : null}
+
+        {/* Current Week CTA - only show if NO score posted */}
+        {week.status === "current" && !hasUserScore ? (
           <View style={styles.currentWeekCta}>
             <View style={styles.deadlineRow}>
               <Ionicons name="time-outline" size={16} color="#2196F3" />
@@ -671,7 +745,7 @@ export default function LeagueSchedule() {
             <Text style={styles.upcomingText}>Opens when week starts</Text>
           </View>
         ) : null}
-      </TouchableOpacity>
+      </View>
     );
   };
 
@@ -711,7 +785,10 @@ export default function LeagueSchedule() {
               <View style={styles.selectorOptionContent}>
                 <View style={styles.selectorLogoPlaceholder}>
                   {league.avatar ? (
-                    <Image source={{ uri: league.avatar }} style={styles.selectorLogoImage} />
+                    <Image
+                      source={{ uri: league.avatar }}
+                      style={styles.selectorLogoImage}
+                    />
                   ) : (
                     <Text style={styles.selectorLogoText}>
                       {league.name?.charAt(0) || "L"}
@@ -1107,6 +1184,40 @@ const styles = StyleSheet.create({
   winnerScore: {
     fontSize: 14,
     color: "#666",
+  },
+
+  // User Score Badge
+  scoreBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#F0FAF0",
+    borderWidth: 1,
+    borderColor: "#C8E6C9",
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginTop: 12,
+  },
+  scoreBadgeLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  scoreBadgeLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
+  },
+  scoreBadgeRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  scoreBadgeValue: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#0D5C3A",
   },
 
   // Current Week CTA

@@ -40,17 +40,20 @@ interface LeagueData {
   scoreDeadlineDays?: number; // Number of days
   startDate: Timestamp;
   endDate: Timestamp;
+  totalWeeks?: number;
   courseRestriction?: boolean;
   allowedCourses?: Array<{ courseId: number; courseName: string }>;
-  // Original elevated event fields
+  // Elevated events
   hasElevatedEvents?: boolean;
   elevatedWeeks?: number[];
   elevatedMultiplier?: number;
-  // New fields (additive)
+  // Points & Purse
   pointsPerWeek?: number;
   purse?: {
-    amount: number;
-    currency: string;
+    seasonPurse: number;
+    weeklyPurse: number;
+    elevatedPurse: number;
+    currency?: string;
   } | null;
 }
 
@@ -95,6 +98,10 @@ const formatDateShort = (timestamp: Timestamp): string => {
     month: "short",
     day: "numeric",
   });
+};
+
+const formatCurrency = (amount: number): string => {
+  return "$" + amount.toLocaleString();
 };
 
 /* ================================================================ */
@@ -148,21 +155,17 @@ export default function LeagueInfoCard({
     }
   };
 
-  // ✅ UPDATED: Support both scoreDeadline (string) and scoreDeadlineDays (number)
   const getDeadlineDisplay = () => {
-    // If scoreDeadline is a string (day of week like "sunday")
     if (league.scoreDeadline && typeof league.scoreDeadline === "string") {
       const day = league.scoreDeadline;
       return day.charAt(0).toUpperCase() + day.slice(1);
     }
-    // If scoreDeadlineDays is a number
     if (league.scoreDeadlineDays != null) {
       return `${league.scoreDeadlineDays} day${league.scoreDeadlineDays !== 1 ? "s" : ""}`;
     }
     return "Not set";
   };
 
-  // ✅ UPDATED: Support both holes and holesPerRound
   const getHolesDisplay = () => {
     const holes = league.holes ?? league.holesPerRound;
     if (holes == null) return "Not set";
@@ -189,6 +192,26 @@ export default function LeagueInfoCard({
 
   const getSeasonDisplay = () => {
     return `${formatDateShort(league.startDate)} - ${formatDateShort(league.endDate)}`;
+  };
+
+  const getPointsDisplay = () => {
+    const pts = league.pointsPerWeek || 100;
+    return `${pts} pts/week`;
+  };
+
+  const hasPurse = () => {
+    if (!league.purse) return false;
+    const p = league.purse;
+    return (p.seasonPurse || 0) > 0 || (p.weeklyPurse || 0) > 0 || (p.elevatedPurse || 0) > 0;
+  };
+
+  const calculateTotalPurse = (): number => {
+    if (!league.purse) return 0;
+    let total = league.purse.seasonPurse || 0;
+    total += (league.purse.weeklyPurse || 0) * (league.totalWeeks || 0);
+    const elevatedCount = league.elevatedWeeks?.length ?? 0;
+    total += (league.purse.elevatedPurse || 0) * elevatedCount;
+    return total;
   };
 
   /* ================================================================ */
@@ -237,12 +260,74 @@ export default function LeagueInfoCard({
         <InfoRow icon="golf-outline" label="Type" value={getTypeDisplay()} />
         <InfoRow icon="flag-outline" label="Holes" value={getHolesDisplay()} />
         <InfoRow icon="calculator-outline" label="Handicaps" value={getHandicapDisplay()} />
+        <InfoRow icon="ribbon-outline" label="Points" value={getPointsDisplay()} />
         <InfoRow icon="calendar-outline" label="Frequency" value={getFrequencyDisplay()} />
         <InfoRow icon="time-outline" label="Deadline" value={getDeadlineDisplay()} />
         <InfoRow icon="location-outline" label="Courses" value={getCourseDisplay()} />
         <InfoRow icon="star-outline" label="Elevated Events" value={getElevatedDisplay()} />
-        <InfoRow icon="calendar-number-outline" label="Season" value={getSeasonDisplay()} isLast />
+        <InfoRow
+          icon="calendar-number-outline"
+          label="Season"
+          value={getSeasonDisplay()}
+          isLast={!hasPurse()}
+        />
+        {hasPurse() && (
+          <InfoRow
+            icon="cash-outline"
+            label="Prize Purse"
+            value={formatCurrency(calculateTotalPurse())}
+            isLast
+          />
+        )}
       </View>
+
+      {/* Purse Breakdown */}
+      {hasPurse() && league.purse && (
+        <View style={styles.purseBreakdown}>
+          <Text style={styles.purseBreakdownTitle}>💰 Purse Breakdown</Text>
+          <View style={styles.purseBreakdownRows}>
+            {(league.purse.seasonPurse || 0) > 0 && (
+              <View style={styles.purseRow}>
+                <Text style={styles.purseRowLabel}>🏆 Championship</Text>
+                <Text style={styles.purseRowAmount}>
+                  {formatCurrency(league.purse.seasonPurse)}
+                </Text>
+              </View>
+            )}
+            {(league.purse.weeklyPurse || 0) > 0 && (
+              <View style={styles.purseRow}>
+                <Text style={styles.purseRowLabel}>
+                  📅 Weekly ({league.totalWeeks || 0} wks)
+                </Text>
+                <Text style={styles.purseRowAmount}>
+                  {formatCurrency(league.purse.weeklyPurse)}/wk
+                </Text>
+              </View>
+            )}
+            {(league.purse.elevatedPurse || 0) > 0 &&
+              (league.elevatedWeeks?.length ?? 0) > 0 && (
+                <View style={styles.purseRow}>
+                  <Text style={styles.purseRowLabel}>
+                    🏅 Elevated ({league.elevatedWeeks?.length} evts)
+                  </Text>
+                  <Text style={styles.purseRowAmount}>
+                    {formatCurrency(league.purse.elevatedPurse)}/evt
+                  </Text>
+                </View>
+              )}
+          </View>
+          <View style={styles.purseTotalRow}>
+            <Text style={styles.purseTotalLabel}>Total</Text>
+            <Text style={styles.purseTotalAmount}>
+              {formatCurrency(calculateTotalPurse())}
+            </Text>
+          </View>
+          <Text style={styles.purseDisclaimer}>
+            Prize pool is for display only — collecting and distributing funds
+            is handled by the commissioner.
+          </Text>
+        </View>
+      )}
 
       {/* Allowed Courses List */}
       {league.courseRestriction && league.allowedCourses && league.allowedCourses.length > 1 && (
@@ -387,6 +472,65 @@ const styles = StyleSheet.create({
     textAlign: "right",
     flex: 1,
     marginLeft: 16,
+  },
+
+  // Purse Breakdown
+  purseBreakdown: {
+    marginTop: 12,
+    backgroundColor: "#FFFBEB",
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#F0E6B0",
+  },
+  purseBreakdownTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#333",
+    marginBottom: 12,
+  },
+  purseBreakdownRows: {
+    gap: 8,
+  },
+  purseRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  purseRowLabel: {
+    fontSize: 14,
+    color: "#666",
+  },
+  purseRowAmount: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
+  },
+  purseTotalRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#E8D88C",
+  },
+  purseTotalLabel: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#333",
+  },
+  purseTotalAmount: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#0D5C3A",
+  },
+  purseDisclaimer: {
+    fontSize: 11,
+    color: "#999",
+    fontStyle: "italic",
+    marginTop: 10,
+    textAlign: "center",
   },
 
   // Course List

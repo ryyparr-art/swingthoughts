@@ -6,6 +6,7 @@
  * - Stroke: Player standings with avatar, rounds, points, wins
  * - 2v2: Team standings with W-L record
  * - User's row flashes with green border on load
+ * - Weekly Scores button navigates to week-scores screen
  */
 
 import { auth, db } from "@/constants/firebaseConfig";
@@ -340,6 +341,14 @@ export default function LeagueStandings() {
     // Could navigate to team detail page
   };
 
+  const handleWeeklyScores = () => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push(
+      `/leagues/week-scores?leagueId=${selectedLeagueId}&week=${selectedLeague?.currentWeek || 1}`
+    );
+  };
+
   /* ================================================================ */
   /* HELPERS                                                         */
   /* ================================================================ */
@@ -458,6 +467,22 @@ export default function LeagueStandings() {
         {myLeagues.length > 1 ? (
           <Ionicons name="chevron-down" size={20} color="#0D5C3A" />
         ) : null}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderWeeklyScoresButton = () => {
+    if (!selectedLeague || !selectedLeagueId) return null;
+
+    return (
+      <TouchableOpacity
+        style={styles.weeklyScoresButton}
+        onPress={handleWeeklyScores}
+        activeOpacity={0.7}
+      >
+        <Ionicons name="calendar-outline" size={18} color="#0D5C3A" />
+        <Text style={styles.weeklyScoresButtonText}>Weekly Scores</Text>
+        <Ionicons name="chevron-forward" size={16} color="#999" />
       </TouchableOpacity>
     );
   };
@@ -762,6 +787,7 @@ export default function LeagueStandings() {
         }
       >
         {renderLeagueSelector()}
+        {renderWeeklyScoresButton()}
 
         <View style={styles.standingsCard}>
           <Text style={styles.standingsTitle}>Standings</Text>
@@ -909,7 +935,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFF",
     padding: 12,
     borderRadius: 12,
-    marginBottom: 16,
+    marginBottom: 12,
   },
   leagueSelectorContent: {
     flexDirection: "row",
@@ -947,6 +973,23 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#666",
     marginTop: 2,
+  },
+
+  // Weekly Scores Button
+  weeklyScoresButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF",
+    padding: 14,
+    borderRadius: 12,
+    marginBottom: 16,
+    gap: 8,
+  },
+  weeklyScoresButtonText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#0D5C3A",
+    flex: 1,
   },
 
   // Standings Card

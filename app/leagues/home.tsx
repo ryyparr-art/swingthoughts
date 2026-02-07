@@ -28,6 +28,8 @@ import {
   orderBy,
   query,
   Timestamp,
+  where,
+  
 } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
@@ -136,6 +138,14 @@ interface WeekWinner {
   teamCount?: number;
 }
 
+/** User's posted score for the current week */
+interface CurrentWeekScore {
+  grossScore: number;
+  netScore?: number;
+  courseName?: string;
+  scoreId: string;
+}
+
 /* ================================================================ */
 /* MAIN COMPONENT                                                   */
 /* ================================================================ */
@@ -161,6 +171,7 @@ export default function LeagueHome() {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [totalMembers, setTotalMembers] = useState(0);
   const [lastWeekWinner, setLastWeekWinner] = useState<WeekWinner | null>(null);
+  const [currentWeekScore, setCurrentWeekScore] = useState<CurrentWeekScore | null>(null);
 
   // Commissioner/Manager status
   const [isCommissionerOrManager, setIsCommissionerOrManager] = useState(false);
@@ -259,6 +270,44 @@ export default function LeagueHome() {
     }
   }, [selectedLeagueId, currentUserId]);
 
+  // Listen for current week score (separate top-level effect)
+  useEffect(() => {
+    if (!selectedLeagueId || !currentUserId || !selectedLeague) {
+      setCurrentWeekScore(null);
+      return;
+    }
+
+    const currentWeek = selectedLeague.currentWeek;
+    if (!currentWeek || currentWeek <= 0) {
+      setCurrentWeekScore(null);
+      return;
+    }
+
+    const scoreUnsub = onSnapshot(
+      query(
+        collection(db, "leagues", selectedLeagueId, "scores"),
+        where("userId", "==", currentUserId),
+        where("week", "==", currentWeek)
+      ),
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const docSnap = snapshot.docs[0];
+          const data = docSnap.data();
+          setCurrentWeekScore({
+            grossScore: data.grossScore,
+            netScore: data.netScore,
+            courseName: data.courseName,
+            scoreId: docSnap.id,
+          });
+        } else {
+          setCurrentWeekScore(null);
+        }
+      }
+    );
+
+    return () => scoreUnsub();
+  }, [selectedLeagueId, currentUserId, selectedLeague?.currentWeek]);
+
   const loadMyLeagues = async () => {
     if (!currentUserId) return;
 
@@ -325,7 +374,6 @@ export default function LeagueHome() {
 
   const loadLastWeekWinner = async (leagueId: string) => {
     try {
-      // Get the most recent week result
       const resultsSnap = await getDocs(
         query(
           collection(db, "leagues", leagueId, "week_results"),
@@ -355,7 +403,7 @@ export default function LeagueHome() {
     }
     setRefreshing(false);
   };
-
+  
   /* ================================================================ */
   /* HANDLERS                                                        */
   /* ================================================================ */
@@ -372,6 +420,14 @@ export default function LeagueHome() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/leagues/post-score?leagueId=${selectedLeagueId}`);
   };
+
+  const handleViewWeekScores = () => {
+  soundPlayer.play("click");
+  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  router.push(
+    `/leagues/week-scores?leagueId=${selectedLeagueId}&week=${selectedLeague?.currentWeek || 1}`
+  );
+};
 
   const handleOpenRules = () => {
     soundPlayer.play("click");
@@ -787,14 +843,35 @@ const getHandicapDisplay = () => {
           ) : null}
 
           {selectedLeague?.status === "active" ? (
-            <TouchableOpacity
-              style={styles.postScoreButton}
-              onPress={handlePostScore}
-            >
-              <Ionicons name="add-circle-outline" size={20} color="#FFF" />
-              <Text style={styles.postScoreButtonText}>Post Score</Text>
-            </TouchableOpacity>
-          ) : null}
+  currentWeekScore ? (
+    <TouchableOpacity
+      style={styles.scoreBadge}
+      onPress={handleViewWeekScores}
+      activeOpacity={0.7}
+    >
+      <View style={styles.scoreBadgeLeft}>
+        <Ionicons name="checkmark-circle" size={20} color="#4CAF50" />
+        <Text style={styles.scoreBadgeLabel}>
+          Week {selectedLeague?.currentWeek} Score
+        </Text>
+      </View>
+      <View style={styles.scoreBadgeRight}>
+        <Text style={styles.scoreBadgeValue}>
+          {currentWeekScore.grossScore}
+        </Text>
+        <Ionicons name="chevron-forward" size={16} color="#999" />
+      </View>
+    </TouchableOpacity>
+  ) : (
+    <TouchableOpacity
+      style={styles.postScoreButton}
+      onPress={handlePostScore}
+    >
+      <Ionicons name="add-circle-outline" size={20} color="#FFF" />
+      <Text style={styles.postScoreButtonText}>Post Score</Text>
+    </TouchableOpacity>
+  )
+) : null}
         </View>
       </View>
     );
@@ -1556,5 +1633,38 @@ inviteIconButton: {
   alignItems: "center",
   justifyContent: "center",
   marginLeft: 12,
+},
+// Score Badge (replaces Post Score when score is posted)
+scoreBadge: {
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "space-between",
+  backgroundColor: "#F0FAF0",
+  borderWidth: 1,
+  borderColor: "#C8E6C9",
+  borderRadius: 10,
+  paddingVertical: 10,
+  paddingHorizontal: 14,
+  marginTop: 16,
+},
+scoreBadgeLeft: {
+  flexDirection: "row",
+  alignItems: "center",
+  gap: 8,
+},
+scoreBadgeLabel: {
+  fontSize: 14,
+  fontWeight: "600",
+  color: "#333",
+},
+scoreBadgeRight: {
+  flexDirection: "row",
+  alignItems: "center",
+  gap: 6,
+},
+scoreBadgeValue: {
+  fontSize: 20,
+  fontWeight: "700",
+  color: "#0D5C3A",
 },
 });
