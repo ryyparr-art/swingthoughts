@@ -40,6 +40,7 @@ export interface Thought {
   // Denormalized user data (from post)
   userName?: string;
   userAvatar?: string;
+  avatar?: string;
   userHandicap?: number;
   userVerified?: boolean;
   
@@ -121,13 +122,14 @@ export const convertPostDataToThought = (postId: string, data: any): Thought => 
     likedBy: data.likedBy || [],
     comments: data.comments || 0,
     
-    userName: data.userName,
-    userAvatar: data.userAvatar,
+    userName: data.userName || data.displayName,
+    userAvatar: data.userAvatar || data.avatar,
+    avatar: data.avatar,
     userHandicap: data.userHandicap,
     userVerified: data.userVerified,
     
     displayName: data.userName || data.displayName,
-    avatarUrl: data.userAvatar || data.avatarUrl,
+    avatarUrl: data.userAvatar || data.avatarUrl || data.avatar,
     
     courseName: data.courseName,
     taggedPartners: data.taggedPartners || [],
@@ -246,6 +248,7 @@ export const convertCachedFeedToThoughts = (feedItems: FeedItem[]): Thought[] =>
         avatarUrl: postItem.avatar,
         userName: postItem.displayName,
         userAvatar: postItem.avatar,
+        avatar: postItem.avatar,
         userHandicap: postItem.handicap ? parseInt(postItem.handicap) : undefined,
         userVerified: postItem.verified,
         
@@ -295,6 +298,7 @@ export const convertCachedFeedToThoughts = (feedItems: FeedItem[]): Thought[] =>
         avatarUrl: scoreItem.avatar,
         userName: scoreItem.displayName,
         userAvatar: scoreItem.avatar,
+        avatar: scoreItem.avatar,
         courseName: scoreItem.courseName,
         taggedCourses: [{
           courseId: scoreItem.courseId,

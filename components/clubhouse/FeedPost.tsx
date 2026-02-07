@@ -76,7 +76,7 @@ export default function FeedPost({
   const isScore = thought.postType === "score";
   
   const displayName = thought.userName || thought.displayName || "Unknown";
-  const avatarUrl = thought.userAvatar || thought.avatarUrl;
+  const avatarUrl = thought.userAvatar || thought.avatarUrl || thought.avatar;
   
   // Header text for special post types
   let headerText = "";

@@ -260,7 +260,7 @@ export function useFeed({
           setFeedItems(feed);
           
           // Convert fresh feed to thoughts
-          const freshThoughts = await convertFeedToThoughts(feed);
+          const freshThoughts = convertCachedFeedToThoughts(feed);
           
           // Merge: Update existing posts with fresh data, keep order
           setThoughts(prev => {
@@ -302,7 +302,7 @@ export function useFeed({
         console.log("🔀 Cold start - applying full shuffle");
         setFeedItems(feed);
         
-        const thoughtsFromFeed = await convertFeedToThoughts(feed);
+        const thoughtsFromFeed = convertCachedFeedToThoughts(feed);
         
         const thoughtsWithBracket = thoughtsFromFeed.map(t => ({
           ...t,

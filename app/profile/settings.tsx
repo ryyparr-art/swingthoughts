@@ -5,6 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import ImageCropModal from "@/components/leagues/settings/ImageCropModal";
+import { useCache, CACHE_KEYS } from "@/contexts/CacheContext";
 import {
   EmailAuthProvider,
   reauthenticateWithCredential,
@@ -64,6 +65,7 @@ export default function SettingsScreen() {
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [supportModalVisible, setSupportModalVisible] = useState(false);
   const [locationPrefsVisible, setLocationPrefsVisible] = useState(false);
+  const { clearCache } = useCache();
   
   // Email change modal
   const [emailModalVisible, setEmailModalVisible] = useState(false);
@@ -168,7 +170,7 @@ export default function SettingsScreen() {
       const blob = await response.blob();
 
       const storage = getStorage();
-      const avatarRef = ref(storage, `avatars/${userId}/avatar.jpg`);
+      const avatarRef = ref(storage, `avatars/${userId}/avatar_${Date.now()}.jpg`);
 
       await uploadBytes(avatarRef, blob);
       const downloadURL = await getDownloadURL(avatarRef);
@@ -178,6 +180,9 @@ export default function SettingsScreen() {
       });
 
       setSettings({ ...settings, avatar: downloadURL });
+      await clearCache(CACHE_KEYS.USER_PROFILE(userId));
+      await clearCache(CACHE_KEYS.FEED(userId));
+      await clearCache(CACHE_KEYS.LOCKER(userId));
 
       soundPlayer.play('postThought');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);

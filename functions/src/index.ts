@@ -108,6 +108,11 @@ export {
   syncTournamentSchedule
 } from "./tournamentSync";
 
+// ============================================================================
+// USER TRIGGERS
+// ============================================================================
+export { onUserUpdated } from "./triggers/users";
+
 
 
 
