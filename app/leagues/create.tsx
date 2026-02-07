@@ -348,6 +348,7 @@ export default function CreateLeague() {
         displayName: userData?.displayName || "Commissioner",
         avatar: userData?.avatar || null,
         role: "commissioner",
+        status: "active",
         joinedAt: serverTimestamp(),
         totalPoints: 0,
         roundsPlayed: 0,
