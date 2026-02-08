@@ -27,6 +27,7 @@ export interface EditPostData {
   trimStart: number;
   trimEnd: number;
   showVideoTrimmer: boolean;
+  mediaAspectRatio: number | null;
 
   // Tags
   selectedMentions: string[];
@@ -121,6 +122,7 @@ export const loadPostForEdit = async (
       trimStart,
       trimEnd,
       showVideoTrimmer,
+      mediaAspectRatio: postData.mediaAspectRatio || null,
       selectedMentions,
       selectedTournaments,
       selectedLeagues,

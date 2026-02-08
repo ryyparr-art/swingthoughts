@@ -2,7 +2,7 @@
  * Video Components for SwingThoughts
  * 
  * Optimized for golf swing analysis:
- * - Clean thumbnail that doesn't kill engagement
+ * - Clean thumbnail with dynamic aspect ratio (Instagram-style)
  * - Quick-fading controls
  * - Speed controls (0.25x, 0.5x, 1x)
  * - Frame stepping for swing breakdown
@@ -35,11 +35,13 @@ const SCREEN_WIDTH = Dimensions.get("window").width;
 /* ==================================================================
    IN-FEED VIDEO THUMBNAIL
    Clean design that doesn't obscure the content
+   Dynamic height based on mediaAspectRatio
    ================================================================== */
 interface VideoThumbnailProps {
   videoUrl: string;
   thumbnailUrl?: string;
   videoDuration?: number;
+  mediaHeight?: number;
   onPress: () => void;
 }
 
@@ -47,6 +49,7 @@ export const VideoThumbnail = ({
   videoUrl,
   thumbnailUrl,
   videoDuration,
+  mediaHeight = 300,
   onPress,
 }: VideoThumbnailProps) => {
   const handlePress = () => {
@@ -64,16 +67,16 @@ export const VideoThumbnail = ({
 
   return (
     <TouchableOpacity activeOpacity={0.95} onPress={handlePress}>
-      <View style={thumbnailStyles.container}>
+      <View style={[thumbnailStyles.container, { height: mediaHeight }]}>
         {/* Thumbnail Image */}
         {thumbnailUrl ? (
           <Image
             source={{ uri: thumbnailUrl }}
-            style={thumbnailStyles.thumbnail}
+            style={{ width: "100%", height: mediaHeight }}
             resizeMode="cover"
           />
         ) : (
-          <View style={[thumbnailStyles.thumbnail, thumbnailStyles.placeholderBg]}>
+          <View style={[thumbnailStyles.placeholderBg, { width: "100%", height: mediaHeight }]}>
             <Ionicons name="videocam" size={48} color="#666" />
           </View>
         )}
@@ -609,13 +612,8 @@ const WebFullscreenVideo = ({
 const thumbnailStyles = StyleSheet.create({
   container: {
     width: "100%",
-    height: 300,
     backgroundColor: "#111",
     position: "relative",
-  },
-  thumbnail: {
-    width: "100%",
-    height: "100%",
   },
   placeholderBg: {
     backgroundColor: "#1a1a1a",

@@ -73,6 +73,7 @@ export interface Thought {
   // Media metadata
   hasMedia?: boolean;
   mediaType?: "images" | "video" | null;
+  mediaAspectRatio?: number;
   
   // Score reference
   scoreId?: string;
@@ -148,6 +149,7 @@ export const convertPostDataToThought = (postId: string, data: any): Thought => 
     
     hasMedia: data.hasMedia,
     mediaType: data.mediaType,
+    mediaAspectRatio: data.mediaAspectRatio,
     
     scoreId: data.scoreId,
   };
@@ -271,6 +273,7 @@ export const convertCachedFeedToThoughts = (feedItems: FeedItem[]): Thought[] =>
         
         hasMedia: postItem.hasMedia,
         mediaType: (postItem.mediaType === "images" || postItem.mediaType === "video") ? postItem.mediaType : null,
+        mediaAspectRatio: (postItem as any).mediaAspectRatio,
         engagementScore: postItem.engagementScore,
         viewCount: postItem.viewCount,
         

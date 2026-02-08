@@ -230,6 +230,7 @@ interface BuildPostParams {
   extractedCourses: Course[];
   extractedTournaments: TaggedTournament[];
   extractedLeagues: TaggedLeague[];
+  mediaAspectRatio?: number;
 }
 
 export const buildPostData = async (params: BuildPostParams) => {
@@ -277,6 +278,7 @@ export const buildPostData = async (params: BuildPostParams) => {
     videoDuration: params.uploadedVideoUrl ? params.videoDuration : null,
     videoTrimStart: params.uploadedVideoUrl ? params.trimStart : null,
     videoTrimEnd: params.uploadedVideoUrl ? params.trimEnd : null,
+    mediaAspectRatio: params.mediaAspectRatio || null,
 
     likes: 0,
     likedBy: [] as string[],
@@ -395,5 +397,6 @@ export const buildOptimisticPost = (
     location: postData.location,
     hasMedia: postData.hasMedia,
     mediaType: postData.mediaType,
+    mediaAspectRatio: postData.mediaAspectRatio,
   };
 };

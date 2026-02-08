@@ -172,6 +172,8 @@ interface PickVideoResult {
   videoUri: string;
   thumbnailUri: string;
   durationSeconds: number;
+  videoWidth: number;
+  videoHeight: number;
 }
 
 export const pickVideo = async (): Promise<PickVideoResult | null> => {
@@ -210,6 +212,8 @@ export const pickVideo = async (): Promise<PickVideoResult | null> => {
       const compressedUri = await compressVideo(asset.uri);
       const thumbnailUri = await generateVideoThumbnail(compressedUri);
       const durationSeconds = duration / 1000;
+      const videoWidth = asset.width || 1080;
+      const videoHeight = asset.height || 1920;
 
       if (durationSeconds > MAX_VIDEO_DURATION) {
         soundPlayer.play("click");
@@ -220,7 +224,7 @@ export const pickVideo = async (): Promise<PickVideoResult | null> => {
         );
       }
 
-      return { videoUri: compressedUri, thumbnailUri, durationSeconds };
+      return { videoUri: compressedUri, thumbnailUri, durationSeconds, videoWidth, videoHeight };
     }
 
     return null;

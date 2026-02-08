@@ -5,19 +5,20 @@
  * - Multi-image carousel with pagination dots
  * - Video thumbnail with play button
  * - Tap to expand to fullscreen
+ * - Dynamic aspect ratio (Instagram-style): clamped between 4:5 portrait and 1.91:1 landscape
  */
 
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import React, { useState } from "react";
 import {
-    Dimensions,
-    FlatList,
-    Image,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  Dimensions,
+  FlatList,
+  Image,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 import { VideoThumbnail } from "@/components/video/VideoComponents";
@@ -38,6 +39,7 @@ interface FeedPostMediaProps {
   videoDuration?: number;
   videoTrimStart?: number;
   videoTrimEnd?: number;
+  mediaAspectRatio?: number;
   onImagePress: (imageUrl: string) => void;
   onVideoPress: (
     videoUrl: string,
@@ -61,6 +63,7 @@ export default function FeedPostMedia({
   videoDuration,
   videoTrimStart,
   videoTrimEnd,
+  mediaAspectRatio,
   onImagePress,
   onVideoPress,
 }: FeedPostMediaProps) {
@@ -69,6 +72,10 @@ export default function FeedPostMedia({
   
   // Current image index for carousel
   const [currentIndex, setCurrentIndex] = useState(0);
+
+  // Clamp aspect ratio: min 0.8 (4:5 portrait), max 1.91 (landscape), default 1.0 (square)
+  const clampedRatio = Math.min(1.91, Math.max(0.8, mediaAspectRatio || 1.0));
+  const mediaHeight = Math.round(SCREEN_WIDTH / clampedRatio);
 
   // Handle image tap
   const handleImagePress = (url: string) => {
@@ -111,7 +118,7 @@ export default function FeedPostMedia({
               <View style={{ width: SCREEN_WIDTH }}>
                 <Image 
                   source={{ uri: item }} 
-                  style={styles.image}
+                  style={{ width: "100%", height: mediaHeight }}
                   resizeMode="cover"
                 />
               </View>
@@ -155,6 +162,7 @@ export default function FeedPostMedia({
         videoUrl={videoUrl}
         thumbnailUrl={videoThumbnailUrl}
         videoDuration={videoDuration}
+        mediaHeight={mediaHeight}
         onPress={handleVideoPress}
       />
     );
@@ -169,11 +177,6 @@ export default function FeedPostMedia({
 /* ================================================================ */
 
 const styles = StyleSheet.create({
-  image: {
-    width: "100%",
-    height: 300,
-  },
-  
   // Pagination dots
   paginationDots: {
     position: "absolute",

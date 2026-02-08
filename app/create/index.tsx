@@ -100,6 +100,7 @@ export default function CreateScreen() {
   const [videoThumbnailUri, setVideoThumbnailUri] = useState<string | null>(null);
   const [isPosting, setIsPosting] = useState(false);
   const [isProcessingMedia, setIsProcessingMedia] = useState(false);
+  const [mediaAspectRatio, setMediaAspectRatio] = useState<number | null>(null);
 
   // Cropping (CropModal handles its own zoom/pan state internally)
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
@@ -202,6 +203,7 @@ export default function CreateScreen() {
       setTrimStart(data.trimStart);
       setTrimEnd(data.trimEnd);
       setShowVideoTrimmer(data.showVideoTrimmer);
+      setMediaAspectRatio(data.mediaAspectRatio);
 
       // Tags
       setSelectedMentions(data.selectedMentions);
@@ -266,6 +268,7 @@ export default function CreateScreen() {
       setTrimStart(0);
       setTrimEnd(Math.min(result.durationSeconds, MAX_VIDEO_DURATION));
       setShowVideoTrimmer(true);
+      setMediaAspectRatio(result.videoWidth / result.videoHeight);
     }
     setIsProcessingMedia(false);
   };
@@ -284,7 +287,10 @@ export default function CreateScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const newUris = imageUris.filter((_, i) => i !== index);
     setImageUris(newUris);
-    if (newUris.length === 0) setMediaType(null);
+    if (newUris.length === 0) {
+      setMediaType(null);
+      setMediaAspectRatio(null);
+    }
     if (currentImageIndex >= newUris.length) {
       setCurrentImageIndex(Math.max(0, newUris.length - 1));
     }
@@ -298,6 +304,7 @@ export default function CreateScreen() {
     setMediaType(null);
     setShowVideoTrimmer(false);
     setIsVideoPlaying(false);
+    setMediaAspectRatio(null);
   };
 
   /* ---------------------------------------------------------------- */
@@ -307,6 +314,10 @@ export default function CreateScreen() {
   const handleCropComplete = (croppedUri: string) => {
     const newImageUris = [...imageUris, croppedUri];
     setImageUris(newImageUris);
+
+    if (newImageUris.length === 1) {
+      setMediaAspectRatio(1.0);
+    }
 
     if (currentCropIndex < pendingImages.length - 1) {
       // Move to next image
@@ -326,9 +337,14 @@ export default function CreateScreen() {
 
     try {
       setIsProcessingMedia(true);
-      const compressed = await compressImage(pendingImages[currentCropIndex].uri);
+      const pending = pendingImages[currentCropIndex];
+      const compressed = await compressImage(pending.uri);
       const newImageUris = [...imageUris, compressed];
       setImageUris(newImageUris);
+
+      if (newImageUris.length === 1) {
+        setMediaAspectRatio(pending.width / pending.height);
+      }
 
       if (currentCropIndex < pendingImages.length - 1) {
         setCurrentCropIndex(currentCropIndex + 1);
@@ -637,6 +653,7 @@ export default function CreateScreen() {
         extractedCourses: courses,
         extractedTournaments: tournaments,
         extractedLeagues: leagues,
+        mediaAspectRatio: mediaAspectRatio || undefined,
       });
 
       // Submit

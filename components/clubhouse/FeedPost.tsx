@@ -168,6 +168,7 @@ export default function FeedPost({
         videoDuration={thought.videoDuration}
         videoTrimStart={thought.videoTrimStart}
         videoTrimEnd={thought.videoTrimEnd}
+        mediaAspectRatio={thought.mediaAspectRatio}
         onImagePress={onImagePress}
         onVideoPress={onVideoPress}
       />
