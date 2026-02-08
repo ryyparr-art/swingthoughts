@@ -73,7 +73,7 @@ export default function LockerUserScreen() {
             console.log("⚡ User locker cache hit:", viewingUserId);
             setProfile(cached.profile);
             setClubs(cached.clubs);
-            setBadges(cached.badges);
+            setBadges(cached.badges || []);
             if (cached.partnershipStatus) {
               setPartnershipStatus(cached.partnershipStatus);
             }
