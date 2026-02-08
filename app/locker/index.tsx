@@ -17,6 +17,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -367,35 +368,40 @@ export default function LockerScreen() {
             </Text>
 
             {/* CAREER STATS ROW - Always visible */}
-            <View style={styles.careerStatsContainer}>
-              <View style={styles.statItem}>
-                <Text style={styles.statEmoji}>🦩</Text>
-                <Text style={styles.statCount}>
-                  {profile?.totalBirdies > 0 ? profile.totalBirdies : "-"}
-                </Text>
-              </View>
+            <TouchableOpacity
+              onPress={() => router.push(`/locker/stats-tracker?userId=${currentUserId}`)}
+              activeOpacity={0.7}
+            >
+              <View style={styles.careerStatsContainer}>
+                <View style={styles.statItem}>
+                  <Text style={styles.statEmoji}>🦩</Text>
+                  <Text style={styles.statCount}>
+                    {profile?.totalBirdies > 0 ? profile.totalBirdies : "-"}
+                  </Text>
+                </View>
               
-              <View style={styles.statItem}>
-                <Text style={styles.statEmoji}>🦅</Text>
-                <Text style={styles.statCount}>
-                  {profile?.totalEagles > 0 ? profile.totalEagles : "-"}
-                </Text>
-              </View>
+                <View style={styles.statItem}>
+                  <Text style={styles.statEmoji}>🦅</Text>
+                  <Text style={styles.statCount}>
+                    {profile?.totalEagles > 0 ? profile.totalEagles : "-"}
+                  </Text>
+                </View>
               
-              <View style={styles.statItem}>
-                <Text style={styles.statEmoji}>🦢</Text>
-                <Text style={styles.statCount}>
-                  {profile?.totalAlbatross > 0 ? profile.totalAlbatross : "-"}
-                </Text>
-              </View>
+                <View style={styles.statItem}>
+                  <Text style={styles.statEmoji}>🦢</Text>
+                  <Text style={styles.statCount}>
+                    {profile?.totalAlbatross > 0 ? profile.totalAlbatross : "-"}
+                  </Text>
+                </View>
               
-              <View style={styles.statItem}>
-                <Image source={HoleInOne} style={styles.statIcon} />
-                <Text style={styles.statCount}>
-                  {profile?.totalHoleInOnes > 0 ? profile.totalHoleInOnes : "-"}
-                </Text>
+                <View style={styles.statItem}>
+                  <Image source={HoleInOne} style={styles.statIcon} />
+                  <Text style={styles.statCount}>
+                    {profile?.totalHoleInOnes > 0 ? profile.totalHoleInOnes : "-"}
+                  </Text>
+                </View>
               </View>
-            </View>
+            </TouchableOpacity>
 
             {/* HOME COURSE & GAME IDENTITY */}
             {(homeCourseName || profile?.gameIdentity) && (
@@ -727,7 +733,6 @@ const styles = StyleSheet.create({
     color: "white",
   },
 });
-
 
 
 

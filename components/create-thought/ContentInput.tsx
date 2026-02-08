@@ -1,8 +1,16 @@
 /**
  * ContentInput Component
  * 
- * Text input with autocomplete for @mentions and #hashtags
- * Shows tagged partners, courses, tournaments, and leagues separately
+ * Text input with inline @mention and #hashtag highlighting.
+ * Uses an overlay that sits on top of the TextInput.
+ * 
+ * How it works:
+ * - TextInput text is always visible (#333) for normal text
+ * - When tags exist, an overlay renders on top with:
+ *   - Normal text portions = transparent (so input text shows through)
+ *   - Tagged text portions = colored + bold (painted over the input text)
+ * - Both layers use identical text metrics (fontSize, lineHeight, padding, fontFamily)
+ *   to ensure perfect alignment
  */
 
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -10,6 +18,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import React from "react";
 import {
+    Platform,
     ScrollView,
     StyleSheet,
     Text,
@@ -20,16 +29,32 @@ import {
 
 import { AutocompleteItem, MAX_CHARACTERS } from "./types";
 
+/* ================================================================ */
+/* SHARED TEXT METRICS - must match exactly between overlay & input  */
+/* ================================================================ */
+
+const TEXT_STYLE = {
+  fontSize: 16,
+  lineHeight: 22,
+  fontFamily: Platform.OS === "ios" ? "System" : undefined,
+  paddingTop: 16,
+  paddingBottom: 16,
+  paddingLeft: 16,
+  paddingRight: 16,
+};
+
+/* ================================================================ */
+/* MAIN COMPONENT                                                   */
+/* ================================================================ */
+
 interface ContentInputProps {
   content: string;
   onContentChange: (text: string) => void;
   writable: boolean;
   textInputRef: React.RefObject<TextInput | null>;
-  // Autocomplete
   showAutocomplete: boolean;
   autocompleteResults: AutocompleteItem[];
   onSelectAutocomplete: (item: AutocompleteItem) => void;
-  // Tagged items
   selectedMentions: string[];
   selectedTournaments: string[];
   selectedLeagues: string[];
@@ -47,70 +72,79 @@ export default function ContentInput({
   selectedTournaments,
   selectedLeagues,
 }: ContentInputProps) {
-  
-  // Render content with styled mentions and hashtags
-  const renderStyledContent = () => {
-    if (!content) return null;
-    
-    // Build patterns from selected items
-    const mentionPatterns = selectedMentions
-      .map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    
-    const tournamentPatterns = selectedTournaments
-      .map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    
-    const leaguePatterns = selectedLeagues
-      .map(l => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-    
-    const allPatterns = [...mentionPatterns, ...tournamentPatterns, ...leaguePatterns]
-      .sort((a, b) => b.length - a.length);
-    
-    if (allPatterns.length === 0) {
-      return <Text style={styles.overlayText}>{content}</Text>;
-    }
-    
-    const combinedRegex = new RegExp(`(${allPatterns.join('|')})`, 'g');
-    const parts = content.split(combinedRegex);
-    
+
+  const hasTags =
+    selectedMentions.length > 0 ||
+    selectedTournaments.length > 0 ||
+    selectedLeagues.length > 0;
+
+  /* ---------------------------------------------------------------- */
+  /* STYLED OVERLAY                                                   */
+  /* ---------------------------------------------------------------- */
+
+  const renderOverlay = () => {
+    if (!content || !hasTags) return null;
+
+    // Build tagged items sorted longest-first to prevent partial matches
+    const allTagged = [
+      ...selectedMentions.map(m => ({ text: m, type: "mention" as const })),
+      ...selectedTournaments.map(t => ({ text: t, type: "tournament" as const })),
+      ...selectedLeagues.map(l => ({ text: l, type: "league" as const })),
+    ].sort((a, b) => b.text.length - a.text.length);
+
+    // Build regex
+    const escaped = allTagged.map(t =>
+      t.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    );
+    const regex = new RegExp(`(${escaped.join('|')})`, 'g');
+    const parts = content.split(regex);
+
+    // Fast lookup
+    const typeMap = new Map<string, "mention" | "tournament" | "league">();
+    allTagged.forEach(t => typeMap.set(t.text, t.type));
+
     return (
       <Text style={styles.overlayText}>
-        {parts.map((part, index) => {
-          if (selectedMentions.includes(part)) {
-            return <Text key={index} style={styles.styledMention}>{part}</Text>;
+        {parts.map((part, i) => {
+          const tagType = typeMap.get(part);
+          if (tagType === "mention") {
+            return <Text key={i} style={styles.tagMention}>{part}</Text>;
           }
-          if (selectedTournaments.includes(part)) {
-            return <Text key={index} style={styles.styledTournament}>{part}</Text>;
+          if (tagType === "tournament") {
+            return <Text key={i} style={styles.tagTournament}>{part}</Text>;
           }
-          if (selectedLeagues.includes(part)) {
-            return <Text key={index} style={styles.styledLeague}>{part}</Text>;
+          if (tagType === "league") {
+            return <Text key={i} style={styles.tagLeague}>{part}</Text>;
           }
-          return <Text key={index}>{part}</Text>;
+          // Normal text: transparent so the TextInput text shows through
+          return <Text key={i} style={styles.tagNone}>{part}</Text>;
         })}
       </Text>
     );
   };
-  
+
   return (
     <View style={styles.section}>
       <Text style={styles.sectionLabel}>
         Use @ for partners/courses, # for tournaments/leagues
       </Text>
-      
-      {/* Rich Text Input Container */}
-      <View style={styles.textInputContainer}>
-        {/* Styled overlay - shows colored/bold text */}
-        <View style={styles.textOverlay} pointerEvents="none">
-          {renderStyledContent()}
-        </View>
-        
-        {/* Actual TextInput - transparent text */}
+
+      <View style={styles.inputWrapper}>
+        {/* Overlay: sits on top, tagged text colored, normal text transparent */}
+        {hasTags && (
+          <View style={styles.overlay} pointerEvents="none">
+            {renderOverlay()}
+          </View>
+        )}
+
+        {/* TextInput: always has colored text for untagged portions */}
         <TextInput
           ref={textInputRef}
           style={[
             styles.textInput,
-            (selectedMentions.length > 0 || selectedTournaments.length > 0 || selectedLeagues.length > 0) 
-              ? styles.textInputTransparent 
-              : null
+            // When overlay active, hide the tagged portions of input text
+            // by making ALL input text transparent - overlay handles rendering
+            hasTags && { color: "transparent" },
           ]}
           placeholder="What clicked for you today?"
           placeholderTextColor="#999"
@@ -123,50 +157,11 @@ export default function ContentInput({
           autoCapitalize="sentences"
           spellCheck={true}
           textAlignVertical="top"
+          selectionColor="#0D5C3A"
+          // Ensure cursor is visible even with transparent text
+          caretHidden={false}
         />
       </View>
-
-      {/* Tagged Partners/Courses */}
-      {selectedMentions.length > 0 && (
-        <View style={styles.mentionsPreview}>
-          <Text style={styles.mentionsLabel}>Tagged:</Text>
-          <View style={styles.mentionChips}>
-            {selectedMentions.map((mention, idx) => (
-              <View key={idx} style={styles.mentionChip}>
-                <Text style={styles.mentionChipText}>{mention}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      )}
-
-      {/* Tagged Tournaments */}
-      {selectedTournaments.length > 0 && (
-        <View style={styles.tournamentsPreview}>
-          <Text style={styles.tournamentsLabel}>Tournaments:</Text>
-          <View style={styles.mentionChips}>
-            {selectedTournaments.map((tournament, idx) => (
-              <View key={idx} style={styles.tournamentChip}>
-                <Text style={styles.tournamentChipText}>{tournament}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      )}
-
-      {/* Tagged Leagues */}
-      {selectedLeagues.length > 0 && (
-        <View style={styles.leaguesPreview}>
-          <Text style={styles.leaguesLabel}>Leagues:</Text>
-          <View style={styles.mentionChips}>
-            {selectedLeagues.map((league, idx) => (
-              <View key={idx} style={styles.leagueChip}>
-                <Text style={styles.leagueChipText}>{league}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      )}
 
       <Text style={styles.charCount}>
         {content.length}/{MAX_CHARACTERS}
@@ -201,31 +196,21 @@ function AutocompleteDropdown({ results, onSelect }: AutocompleteDropdownProps) 
 
   const getIconName = (type: string): keyof typeof Ionicons.glyphMap => {
     switch (type) {
-      case "partner":
-        return "person";
-      case "course":
-        return "golf";
-      case "tournament":
-        return "trophy";
-      case "league":
-        return "ribbon";
-      default:
-        return "help";
+      case "partner": return "person";
+      case "course": return "golf";
+      case "tournament": return "trophy";
+      case "league": return "ribbon";
+      default: return "help";
     }
   };
 
   const getTypeLabel = (type: string): string => {
     switch (type) {
-      case "partner":
-        return "Partner";
-      case "course":
-        return "Course";
-      case "tournament":
-        return "Tournament";
-      case "league":
-        return "League";
-      default:
-        return type;
+      case "partner": return "Partner";
+      case "course": return "Course";
+      case "tournament": return "Tournament";
+      case "league": return "League";
+      default: return type;
     }
   };
 
@@ -238,33 +223,30 @@ function AutocompleteDropdown({ results, onSelect }: AutocompleteDropdownProps) 
   return (
     <View style={styles.autocompleteContainer}>
       <ScrollView
-        style={styles.autocompleteScrollView}
+        style={styles.autocompleteScroll}
         nestedScrollEnabled
         keyboardShouldPersistTaps="handled"
       >
         {results.map((item, idx) => (
           <TouchableOpacity
             key={`${item.userId || item.courseId || item.id || item.leagueId}-${idx}`}
-            style={styles.autocompleteItem}
+            style={styles.acItem}
             onPress={() => handleSelect(item)}
           >
-            <View style={styles.autocompleteItemContent}>
-              <View
-                style={[
-                  styles.autocompleteIcon,
-                  item.type === "tournament" && styles.tournamentIcon,
-                  item.type === "league" && styles.leagueIcon,
-                ]}
-              >
+            <View style={styles.acRow}>
+              <View style={[
+                styles.acIcon,
+                item.type === "tournament" && styles.acIconTournament,
+                item.type === "league" && styles.acIconLeague,
+              ]}>
                 <Ionicons name={getIconName(item.type)} size={16} color="#FFF" />
               </View>
-
-              <View style={styles.autocompleteTextContainer}>
-                <Text style={styles.autocompleteName}>{getDisplayName(item)}</Text>
-                {item.location && (
-                  <Text style={styles.autocompleteLocation}>{item.location}</Text>
-                )}
-                <Text style={styles.autocompleteType}>{getTypeLabel(item.type)}</Text>
+              <View style={styles.acText}>
+                <Text style={styles.acName}>{getDisplayName(item)}</Text>
+                {item.location ? (
+                  <Text style={styles.acLocation}>{item.location}</Text>
+                ) : null}
+                <Text style={styles.acType}>{getTypeLabel(item.type)}</Text>
               </View>
             </View>
           </TouchableOpacity>
@@ -282,8 +264,8 @@ const styles = StyleSheet.create({
   section: { marginBottom: 24 },
   sectionLabel: { fontSize: 14, fontWeight: "700", color: "#0D5C3A", marginBottom: 12 },
 
-  // Rich Text Input Container
-  textInputContainer: {
+  /* --- Input wrapper (holds both layers) --- */
+  inputWrapper: {
     position: "relative",
     backgroundColor: "#FFF",
     borderRadius: 12,
@@ -291,108 +273,62 @@ const styles = StyleSheet.create({
     borderColor: "#E0E0E0",
     minHeight: 120,
   },
-  
-  // Styled overlay - positioned exactly over the TextInput
-  textOverlay: {
+
+  /* --- Overlay layer --- */
+  overlay: {
     position: "absolute",
     top: 0,
     left: 0,
     right: 0,
-    padding: 16,
-    zIndex: 1,
+    bottom: 0,
+    paddingTop: TEXT_STYLE.paddingTop,
+    paddingBottom: TEXT_STYLE.paddingBottom,
+    paddingLeft: TEXT_STYLE.paddingLeft,
+    paddingRight: TEXT_STYLE.paddingRight,
+    zIndex: 2,
   },
   overlayText: {
-    fontSize: 16,
-    lineHeight: 22,
+    fontSize: TEXT_STYLE.fontSize,
+    lineHeight: TEXT_STYLE.lineHeight,
+    fontFamily: TEXT_STYLE.fontFamily,
+  },
+  // Non-tagged text in overlay: transparent so TextInput text shows
+  tagNone: {
     color: "#333",
   },
-  
-  // Styled mentions in overlay
-  styledMention: {
+  // Tagged text: colored and bold, painted over the transparent input text
+  tagMention: {
     fontWeight: "700",
     color: "#0D5C3A",
   },
-  styledTournament: {
+  tagTournament: {
     fontWeight: "700",
     color: "#B8860B",
   },
-  styledLeague: {
+  tagLeague: {
     fontWeight: "700",
     color: "#FF6B35",
   },
 
-  // Text Input - transparent when overlay is active
+  /* --- TextInput layer --- */
   textInput: {
-    padding: 16,
-    fontSize: 16,
+    paddingTop: TEXT_STYLE.paddingTop,
+    paddingBottom: TEXT_STYLE.paddingBottom,
+    paddingLeft: TEXT_STYLE.paddingLeft,
+    paddingRight: TEXT_STYLE.paddingRight,
+    fontSize: TEXT_STYLE.fontSize,
+    lineHeight: TEXT_STYLE.lineHeight,
+    fontFamily: TEXT_STYLE.fontFamily,
     minHeight: 120,
     textAlignVertical: "top",
-    lineHeight: 22,
     color: "#333",
-  },
-  textInputTransparent: {
-    color: "transparent",
+    zIndex: 1,
   },
 
-  // Tagged Items - Partners/Courses
-  mentionsPreview: {
-    marginTop: 8,
-    padding: 12,
-    backgroundColor: "rgba(13, 92, 58, 0.05)",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "rgba(13, 92, 58, 0.2)",
-  },
-  mentionsLabel: { fontSize: 12, fontWeight: "600", color: "#0D5C3A", marginBottom: 6 },
-  mentionChips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  mentionChip: {
-    backgroundColor: "#0D5C3A",
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-  },
-  mentionChipText: { color: "#FFF", fontSize: 12, fontWeight: "600" },
-
-  // Tagged Items - Tournaments
-  tournamentsPreview: {
-    marginTop: 8,
-    padding: 12,
-    backgroundColor: "rgba(255, 215, 0, 0.1)",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "rgba(255, 215, 0, 0.3)",
-  },
-  tournamentsLabel: { fontSize: 12, fontWeight: "600", color: "#B8860B", marginBottom: 6 },
-  tournamentChip: {
-    backgroundColor: "#FFD700",
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-  },
-  tournamentChipText: { color: "#0D5C3A", fontSize: 12, fontWeight: "700" },
-
-  // Tagged Items - Leagues
-  leaguesPreview: {
-    marginTop: 8,
-    padding: 12,
-    backgroundColor: "rgba(255, 107, 53, 0.1)",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "rgba(255, 107, 53, 0.3)",
-  },
-  leaguesLabel: { fontSize: 12, fontWeight: "600", color: "#FF6B35", marginBottom: 6 },
-  leagueChip: {
-    backgroundColor: "#FF6B35",
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 12,
-  },
-  leagueChipText: { color: "#FFF", fontSize: 12, fontWeight: "700" },
-
-  // Character Count
+  /* --- Char count --- */
   charCount: { fontSize: 12, color: "#999", textAlign: "right", marginTop: 4 },
 
-  // Autocomplete
+  /* --- Autocomplete --- */
   autocompleteContainer: {
     backgroundColor: "#FFF",
     borderRadius: 8,
@@ -406,27 +342,21 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
   },
-  autocompleteScrollView: { maxHeight: 250 },
-  autocompleteItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" },
-  autocompleteItemContent: { flexDirection: "row", alignItems: "center", gap: 12 },
-  autocompleteIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+  autocompleteScroll: { maxHeight: 250 },
+  acItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" },
+  acRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  acIcon: {
+    width: 32, height: 32, borderRadius: 16,
     backgroundColor: "#0D5C3A",
-    alignItems: "center",
-    justifyContent: "center",
+    alignItems: "center", justifyContent: "center",
   },
-  tournamentIcon: { backgroundColor: "#FFD700" },
-  leagueIcon: { backgroundColor: "#FF6B35" },
-  autocompleteTextContainer: { flex: 1 },
-  autocompleteName: { fontSize: 14, fontWeight: "600", color: "#0D5C3A" },
-  autocompleteLocation: { fontSize: 12, color: "#666", marginTop: 2 },
-  autocompleteType: {
-    fontSize: 10,
-    color: "#999",
-    marginTop: 2,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
+  acIconTournament: { backgroundColor: "#FFD700" },
+  acIconLeague: { backgroundColor: "#FF6B35" },
+  acText: { flex: 1 },
+  acName: { fontSize: 14, fontWeight: "600", color: "#0D5C3A" },
+  acLocation: { fontSize: 12, color: "#666", marginTop: 2 },
+  acType: {
+    fontSize: 10, color: "#999", marginTop: 2,
+    textTransform: "uppercase", letterSpacing: 0.5,
   },
 });

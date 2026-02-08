@@ -118,6 +118,12 @@ service cloud.firestore {
         );
 
       allow delete: if isAdmin();
+
+      // ✅ Handicap History - readable by any signed-in user, only Cloud Functions write
+      match /handicapHistory/{historyId} {
+        allow read: if isSignedIn();
+        allow write: if false;
+      }
     }
 
     // ============================================================================

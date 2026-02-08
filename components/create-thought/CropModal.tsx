@@ -1,38 +1,45 @@
 /**
  * CropModal Component
- * 
- * Full-screen modal for cropping images before upload
+ *
+ * Full-screen modal for cropping images to a square before upload.
+ * Based on ImageCropModal (pinch-to-zoom + pan) but with a square mask
+ * instead of circular. Supports cropping multiple images in sequence.
+ *
+ * Features:
+ * - Pan & pinch-to-zoom on the selected image
+ * - Square mask overlay so users see exactly what the final crop looks like
+ * - Crops + resizes to MAX_IMAGE_WIDTH square
+ * - "Skip Crop" to use original without cropping
+ * - Multi-image support with "Next Image" / "Done" flow
  */
 
 import { Ionicons } from "@expo/vector-icons";
-import Slider from "@react-native-community/slider";
-import React from "react";
+import * as ImageManipulator from "expo-image-manipulator";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    Dimensions,
-    Image,
-    Modal,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Dimensions,
+  Image,
+  LayoutChangeEvent,
+  Modal,
+  Platform,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 
-import { PendingImage } from "./types";
+import { IMAGE_QUALITY, MAX_IMAGE_WIDTH, PendingImage } from "./types";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
+const CROP_SIZE = SCREEN_WIDTH - 48;
 
 interface CropModalProps {
   visible: boolean;
   pendingImages: PendingImage[];
   currentCropIndex: number;
-  cropOffset: { x: number; y: number };
-  cropScale: number;
   isProcessingMedia: boolean;
-  onCropOffsetChange: (offset: { x: number; y: number }) => void;
-  onCropScaleChange: (scale: number) => void;
-  onCropComplete: () => void;
+  onCropComplete: (croppedUri: string) => void;
   onSkipCrop: () => void;
   onCancel: () => void;
 }
@@ -41,168 +48,396 @@ export default function CropModal({
   visible,
   pendingImages,
   currentCropIndex,
-  cropOffset,
-  cropScale,
   isProcessingMedia,
-  onCropOffsetChange,
-  onCropScaleChange,
   onCropComplete,
   onSkipCrop,
   onCancel,
 }: CropModalProps) {
-  if (!visible || pendingImages.length === 0) return null;
+  // Display dimensions: image scaled so its short side = CROP_SIZE
+  const [displaySize, setDisplaySize] = useState({ width: 0, height: 0 });
 
+  // Measured crop area (from onLayout)
+  const [cropAreaSize, setCropAreaSize] = useState({ width: SCREEN_WIDTH, height: SCREEN_WIDTH });
+
+  // User transform
+  const [scale, setScale] = useState(1);
+  const [translateX, setTranslateX] = useState(0);
+  const [translateY, setTranslateY] = useState(0);
+  const [processing, setProcessing] = useState(false);
+
+  const gestureState = useRef({
+    startX: 0,
+    startY: 0,
+    startScale: 1,
+    startDistance: 0,
+    isZooming: false,
+  });
+
+  // Current image
   const currentImage = pendingImages[currentCropIndex];
-  if (!currentImage) return null;
+  const isLastImage = currentCropIndex >= pendingImages.length - 1;
 
-  const imageAspect = currentImage.width / currentImage.height;
-  const containerSize = SCREEN_WIDTH - 48;
+  /* ---------------------------------------------------------------- */
+  /* RESET ON IMAGE CHANGE                                            */
+  /* ---------------------------------------------------------------- */
+
+  useEffect(() => {
+    if (!currentImage) return;
+
+    const { width, height } = currentImage;
+    const aspect = width / height;
+
+    // Scale so short side fills CROP_SIZE
+    let dw: number;
+    let dh: number;
+    if (aspect >= 1) {
+      dh = CROP_SIZE;
+      dw = CROP_SIZE * aspect;
+    } else {
+      dw = CROP_SIZE;
+      dh = CROP_SIZE / aspect;
+    }
+
+    setDisplaySize({ width: dw, height: dh });
+    setScale(1);
+    setTranslateX(0);
+    setTranslateY(0);
+    gestureState.current = {
+      startX: 0,
+      startY: 0,
+      startScale: 1,
+      startDistance: 0,
+      isZooming: false,
+    };
+  }, [currentCropIndex, currentImage?.uri]);
+
+  /* ---------------------------------------------------------------- */
+  /* LAYOUT MEASUREMENT                                               */
+  /* ---------------------------------------------------------------- */
+
+  const onCropAreaLayout = useCallback((e: LayoutChangeEvent) => {
+    const { width, height } = e.nativeEvent.layout;
+    setCropAreaSize({ width, height });
+  }, []);
+
+  /* ---------------------------------------------------------------- */
+  /* GESTURE HELPERS                                                  */
+  /* ---------------------------------------------------------------- */
+
+  const getDistance = (touches: any[]): number => {
+    const dx = touches[0].pageX - touches[1].pageX;
+    const dy = touches[0].pageY - touches[1].pageY;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+
+  const clampTranslation = (
+    tx: number,
+    ty: number,
+    s: number
+  ): { x: number; y: number } => {
+    const renderedW = displaySize.width * s;
+    const renderedH = displaySize.height * s;
+    const maxX = Math.max(0, (renderedW - CROP_SIZE) / 2);
+    const maxY = Math.max(0, (renderedH - CROP_SIZE) / 2);
+    return {
+      x: Math.min(maxX, Math.max(-maxX, tx)),
+      y: Math.min(maxY, Math.max(-maxY, ty)),
+    };
+  };
+
+  /* ---------------------------------------------------------------- */
+  /* TOUCH HANDLERS                                                   */
+  /* ---------------------------------------------------------------- */
+
+  const onTouchStart = useCallback(
+    (e: any) => {
+      const touches = e.nativeEvent.touches;
+      const gs = gestureState.current;
+
+      if (touches.length === 2) {
+        gs.isZooming = true;
+        gs.startDistance = getDistance(touches);
+        gs.startScale = scale;
+        gs.startX = translateX;
+        gs.startY = translateY;
+      } else if (touches.length === 1) {
+        gs.isZooming = false;
+        gs.startX = translateX - touches[0].pageX;
+        gs.startY = translateY - touches[0].pageY;
+      }
+    },
+    [scale, translateX, translateY]
+  );
+
+  const onTouchMove = useCallback(
+    (e: any) => {
+      const touches = e.nativeEvent.touches;
+      const gs = gestureState.current;
+
+      if (touches.length === 2 && gs.startDistance > 0) {
+        const dist = getDistance(touches);
+        const pinchRatio = dist / gs.startDistance;
+        const newScale = Math.min(Math.max(gs.startScale * pinchRatio, 0.8), 6);
+        const clamped = clampTranslation(gs.startX, gs.startY, newScale);
+        setScale(newScale);
+        setTranslateX(clamped.x);
+        setTranslateY(clamped.y);
+      } else if (touches.length === 1 && !gs.isZooming) {
+        const newX = gs.startX + touches[0].pageX;
+        const newY = gs.startY + touches[0].pageY;
+        const clamped = clampTranslation(newX, newY, scale);
+        setTranslateX(clamped.x);
+        setTranslateY(clamped.y);
+      }
+    },
+    [scale, displaySize]
+  );
+
+  const onTouchEnd = useCallback(() => {
+    const gs = gestureState.current;
+    gs.isZooming = false;
+    gs.startDistance = 0;
+
+    if (scale < 1) {
+      const clamped = clampTranslation(translateX, translateY, 1);
+      setScale(1);
+      setTranslateX(clamped.x);
+      setTranslateY(clamped.y);
+    }
+  }, [scale, translateX, translateY, displaySize]);
+
+  /* ---------------------------------------------------------------- */
+  /* CROP & EXPORT                                                    */
+  /* ---------------------------------------------------------------- */
+
+  const handleCrop = async () => {
+    if (!currentImage || displaySize.width === 0) return;
+
+    try {
+      setProcessing(true);
+
+      const renderedW = displaySize.width * scale;
+      const renderedH = displaySize.height * scale;
+
+      // Square crop area top-left in rendered-image coordinates
+      const cropX = (renderedW - CROP_SIZE) / 2 - translateX;
+      const cropY = (renderedH - CROP_SIZE) / 2 - translateY;
+
+      // Convert rendered coords → original image pixels
+      const ratioX = currentImage.width / renderedW;
+      const ratioY = currentImage.height / renderedH;
+
+      const originX = Math.round(cropX * ratioX);
+      const originY = Math.round(cropY * ratioY);
+      const cropW = Math.round(CROP_SIZE * ratioX);
+      const cropH = Math.round(CROP_SIZE * ratioY);
+
+      const cropSide = Math.min(cropW, cropH);
+
+      // Clamp to image bounds
+      const safeX = Math.max(0, Math.min(originX, currentImage.width - cropSide));
+      const safeY = Math.max(0, Math.min(originY, currentImage.height - cropSide));
+      const safeSize = Math.max(
+        1,
+        Math.min(cropSide, currentImage.width - safeX, currentImage.height - safeY)
+      );
+
+      const result = await ImageManipulator.manipulateAsync(
+        currentImage.uri,
+        [
+          {
+            crop: {
+              originX: safeX,
+              originY: safeY,
+              width: safeSize,
+              height: safeSize,
+            },
+          },
+          { resize: { width: MAX_IMAGE_WIDTH } },
+        ],
+        {
+          compress: IMAGE_QUALITY,
+          format: ImageManipulator.SaveFormat.JPEG,
+        }
+      );
+
+      onCropComplete(result.uri);
+    } catch (error) {
+      console.error("Crop error:", error);
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  /* ---------------------------------------------------------------- */
+  /* RENDER                                                           */
+  /* ---------------------------------------------------------------- */
+
+  if (!visible || pendingImages.length === 0 || !currentImage) return null;
+
+  // Square mask positioning
+  const squareTop = (cropAreaSize.height - CROP_SIZE) / 2;
+  const squareLeft = (cropAreaSize.width - CROP_SIZE) / 2;
+  const maskPadding = Math.max(SCREEN_WIDTH, cropAreaSize.height);
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="fullScreen">
-      <SafeAreaView style={styles.container}>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle="fullScreen"
+      onRequestClose={onCancel}
+    >
+      <View style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity onPress={onCancel} style={styles.headerButton}>
-            <Ionicons name="close" size={28} color="#FFF" />
+          <TouchableOpacity onPress={onCancel} style={styles.headerBtn}>
+            <Ionicons name="close" size={26} color="#FFF" />
           </TouchableOpacity>
 
-          <Text style={styles.title}>
-            Crop Image {currentCropIndex + 1} of {pendingImages.length}
+          <Text style={styles.headerTitle}>
+            Crop {currentCropIndex + 1} of {pendingImages.length}
           </Text>
 
-          <TouchableOpacity
-            onPress={onCropComplete}
-            style={styles.headerButton}
-            disabled={isProcessingMedia}
-          >
-            {isProcessingMedia ? (
-              <ActivityIndicator size="small" color="#FFD700" />
-            ) : (
-              <Ionicons name="checkmark" size={28} color="#FFD700" />
-            )}
-          </TouchableOpacity>
+          <View style={styles.headerBtn} />
         </View>
 
         {/* Crop Area */}
-        <View style={styles.cropAreaContainer}>
-          <View style={[styles.cropArea, { width: containerSize, height: containerSize }]}>
+        <View
+          style={styles.cropArea}
+          onLayout={onCropAreaLayout}
+          onTouchStart={onTouchStart}
+          onTouchMove={onTouchMove}
+          onTouchEnd={onTouchEnd}
+          onTouchCancel={onTouchEnd}
+        >
+          {displaySize.width > 0 && (
             <Image
               source={{ uri: currentImage.uri }}
-              style={[
-                styles.cropImage,
-                {
-                  width:
-                    imageAspect >= 1
-                      ? containerSize * cropScale
-                      : containerSize * imageAspect * cropScale,
-                  height:
-                    imageAspect >= 1
-                      ? (containerSize / imageAspect) * cropScale
-                      : containerSize * cropScale,
-                  transform: [{ translateX: cropOffset.x }, { translateY: cropOffset.y }],
-                },
-              ]}
-              resizeMode="contain"
+              style={{
+                width: displaySize.width,
+                height: displaySize.height,
+                transform: [
+                  { translateX },
+                  { translateY },
+                  { scale },
+                ],
+              }}
+              resizeMode="cover"
+            />
+          )}
+
+          {/* Square mask overlay */}
+          <View style={StyleSheet.absoluteFill} pointerEvents="none">
+            {/* Top dark band */}
+            <View style={[styles.maskBand, { top: 0, left: 0, right: 0, height: Math.max(0, squareTop) }]} />
+            {/* Bottom dark band */}
+            <View style={[styles.maskBand, { bottom: 0, left: 0, right: 0, height: Math.max(0, squareTop) }]} />
+            {/* Left dark band */}
+            <View style={[styles.maskBand, { top: squareTop, left: 0, width: Math.max(0, squareLeft), height: CROP_SIZE }]} />
+            {/* Right dark band */}
+            <View style={[styles.maskBand, { top: squareTop, right: 0, width: Math.max(0, squareLeft), height: CROP_SIZE }]} />
+
+            {/* Square border */}
+            <View
+              style={{
+                position: "absolute",
+                top: squareTop,
+                left: squareLeft,
+                width: CROP_SIZE,
+                height: CROP_SIZE,
+                borderWidth: 1.5,
+                borderColor: "rgba(255, 255, 255, 0.6)",
+              }}
             />
 
-            {/* Grid Overlay */}
-            <View style={styles.gridOverlay} pointerEvents="none">
-              <View style={styles.gridRow}>
-                <View style={styles.gridCell} />
-                <View style={[styles.gridCell, styles.gridCellBorder]} />
-                <View style={styles.gridCell} />
-              </View>
-              <View style={[styles.gridRow, styles.gridRowBorder]}>
-                <View style={styles.gridCell} />
-                <View style={[styles.gridCell, styles.gridCellBorder]} />
-                <View style={styles.gridCell} />
-              </View>
-              <View style={styles.gridRow}>
-                <View style={styles.gridCell} />
-                <View style={[styles.gridCell, styles.gridCellBorder]} />
-                <View style={styles.gridCell} />
-              </View>
-            </View>
+            {/* Grid lines (rule of thirds) */}
+            <View
+              style={{
+                position: "absolute",
+                top: squareTop + CROP_SIZE / 3,
+                left: squareLeft,
+                width: CROP_SIZE,
+                height: 1,
+                backgroundColor: "rgba(255, 255, 255, 0.2)",
+              }}
+            />
+            <View
+              style={{
+                position: "absolute",
+                top: squareTop + (CROP_SIZE * 2) / 3,
+                left: squareLeft,
+                width: CROP_SIZE,
+                height: 1,
+                backgroundColor: "rgba(255, 255, 255, 0.2)",
+              }}
+            />
+            <View
+              style={{
+                position: "absolute",
+                top: squareTop,
+                left: squareLeft + CROP_SIZE / 3,
+                width: 1,
+                height: CROP_SIZE,
+                backgroundColor: "rgba(255, 255, 255, 0.2)",
+              }}
+            />
+            <View
+              style={{
+                position: "absolute",
+                top: squareTop,
+                left: squareLeft + (CROP_SIZE * 2) / 3,
+                width: 1,
+                height: CROP_SIZE,
+                backgroundColor: "rgba(255, 255, 255, 0.2)",
+              }}
+            />
           </View>
         </View>
 
-        {/* Controls */}
-        <View style={styles.controls}>
-          <Text style={styles.controlLabel}>Zoom</Text>
-          <Slider
-            style={styles.slider}
-            minimumValue={1}
-            maximumValue={3}
-            value={cropScale}
-            onValueChange={onCropScaleChange}
-            minimumTrackTintColor="#FFD700"
-            maximumTrackTintColor="#444"
-            thumbTintColor="#FFD700"
-          />
+        {/* Instruction */}
+        <Text style={styles.instruction}>Pinch to zoom · Drag to move</Text>
 
-          <View style={styles.offsetControls}>
-            <View style={styles.offsetRow}>
-              <Text style={styles.controlLabel}>Horizontal</Text>
-              <Slider
-                style={styles.slider}
-                minimumValue={-100}
-                maximumValue={100}
-                value={cropOffset.x}
-                onValueChange={(x) => onCropOffsetChange({ ...cropOffset, x })}
-                minimumTrackTintColor="#FFD700"
-                maximumTrackTintColor="#444"
-                thumbTintColor="#FFD700"
-              />
-            </View>
+        {/* Footer */}
+        <View style={styles.footer}>
+          <TouchableOpacity
+            style={styles.skipBtn}
+            onPress={onSkipCrop}
+            disabled={processing || isProcessingMedia}
+          >
+            <Text style={styles.skipBtnText}>Skip</Text>
+          </TouchableOpacity>
 
-            <View style={styles.offsetRow}>
-              <Text style={styles.controlLabel}>Vertical</Text>
-              <Slider
-                style={styles.slider}
-                minimumValue={-100}
-                maximumValue={100}
-                value={cropOffset.y}
-                onValueChange={(y) => onCropOffsetChange({ ...cropOffset, y })}
-                minimumTrackTintColor="#FFD700"
-                maximumTrackTintColor="#444"
-                thumbTintColor="#FFD700"
-              />
-            </View>
-          </View>
-
-          {/* Action Buttons */}
-          <View style={styles.actionButtons}>
-            <TouchableOpacity
-              style={styles.skipButton}
-              onPress={onSkipCrop}
-              disabled={isProcessingMedia}
-            >
-              <Text style={styles.skipButtonText}>Skip Crop</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.confirmButton}
-              onPress={onCropComplete}
-              disabled={isProcessingMedia}
-            >
-              {isProcessingMedia ? (
-                <ActivityIndicator size="small" color="#0D5C3A" />
-              ) : (
-                <Text style={styles.confirmButtonText}>
-                  {currentCropIndex < pendingImages.length - 1 ? "Next Image" : "Done"}
+          <TouchableOpacity
+            style={[styles.cropBtn, (processing || isProcessingMedia) && styles.cropBtnDisabled]}
+            onPress={handleCrop}
+            disabled={processing || isProcessingMedia}
+          >
+            {processing || isProcessingMedia ? (
+              <ActivityIndicator color="#0D5C3A" size="small" />
+            ) : (
+              <>
+                <Ionicons name="checkmark" size={20} color="#0D5C3A" />
+                <Text style={styles.cropBtnText}>
+                  {isLastImage ? "Done" : "Next"}
                 </Text>
-              )}
-            </TouchableOpacity>
-          </View>
+              </>
+            )}
+          </TouchableOpacity>
         </View>
-      </SafeAreaView>
+      </View>
     </Modal>
   );
 }
 
+/* ================================================================ */
+/* STYLES                                                           */
+/* ================================================================ */
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#1a1a1a" },
+  container: {
+    flex: 1,
+    backgroundColor: "#000",
+  },
 
   // Header
   header: {
@@ -210,67 +445,83 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: "#0D5C3A",
+    paddingTop: Platform.OS === "ios" ? 60 : 16,
+    paddingBottom: 12,
+    backgroundColor: "rgba(0, 0, 0, 0.8)",
   },
-  headerButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
-  title: { fontSize: 16, fontWeight: "700", color: "#FFF" },
+  headerBtn: {
+    width: 44,
+    height: 44,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  headerTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#FFF",
+  },
 
-  // Crop Area
-  cropAreaContainer: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24 },
+  // Crop area
   cropArea: {
-    backgroundColor: "#000",
-    overflow: "hidden",
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: "#FFD700",
-    position: "relative",
-  },
-  cropImage: { position: "absolute" },
-
-  // Grid Overlay
-  gridOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 },
-  gridRow: { flex: 1, flexDirection: "row" },
-  gridRowBorder: {
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: "rgba(255, 215, 0, 0.3)",
-  },
-  gridCell: { flex: 1 },
-  gridCellBorder: {
-    borderLeftWidth: 1,
-    borderRightWidth: 1,
-    borderColor: "rgba(255, 215, 0, 0.3)",
-  },
-
-  // Controls
-  controls: {
-    backgroundColor: "#2a2a2a",
-    padding: 20,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-  },
-  controlLabel: { fontSize: 12, fontWeight: "600", color: "#999", marginBottom: 8 },
-  slider: { width: "100%", height: 40 },
-  offsetControls: { marginTop: 16 },
-  offsetRow: { marginBottom: 12 },
-
-  // Action Buttons
-  actionButtons: { flexDirection: "row", gap: 12, marginTop: 20 },
-  skipButton: {
     flex: 1,
-    paddingVertical: 14,
-    borderRadius: 10,
-    backgroundColor: "#444",
+    justifyContent: "center",
     alignItems: "center",
+    overflow: "hidden",
   },
-  skipButtonText: { color: "#FFF", fontWeight: "600", fontSize: 15 },
-  confirmButton: {
-    flex: 2,
+
+  // Mask bands (dark overlay outside the square)
+  maskBand: {
+    position: "absolute",
+    backgroundColor: "rgba(0, 0, 0, 0.55)",
+  },
+
+  // Instruction
+  instruction: {
+    textAlign: "center",
+    color: "rgba(255, 255, 255, 0.5)",
+    fontSize: 13,
+    fontWeight: "500",
+    paddingVertical: 8,
+  },
+
+  // Footer
+  footer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    paddingBottom: Platform.OS === "ios" ? 40 : 16,
+    backgroundColor: "rgba(0, 0, 0, 0.8)",
+    gap: 12,
+  },
+  skipBtn: {
     paddingVertical: 14,
-    borderRadius: 10,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    backgroundColor: "rgba(255, 255, 255, 0.15)",
+  },
+  skipBtnText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#FFF",
+  },
+  cropBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
     backgroundColor: "#FFD700",
-    alignItems: "center",
   },
-  confirmButtonText: { color: "#0D5C3A", fontWeight: "700", fontSize: 15 },
+  cropBtnDisabled: {
+    opacity: 0.6,
+  },
+  cropBtnText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#0D5C3A",
+  },
 });

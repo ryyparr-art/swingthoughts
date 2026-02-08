@@ -113,6 +113,8 @@ export {
 // ============================================================================
 export { onUserUpdated } from "./triggers/users";
 
+export { onHandicapScoreCreated, onHandicapLeagueScoreCreated } from "./triggers/handicapCalculator";
+
 
 
 

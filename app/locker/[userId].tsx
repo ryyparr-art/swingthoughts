@@ -474,6 +474,10 @@ export default function LockerUserScreen() {
             </Text>
 
             {/* CAREER STATS ROW - Always visible */}
+            <TouchableOpacity
+              onPress={() => router.push(`/locker/stats-tracker?userId=${viewingUserId}`)}
+              activeOpacity={0.7}
+            >
             <View style={styles.careerStatsContainer}>
               <View style={styles.statItem}>
                 <Text style={styles.statEmoji}>🦩</Text>
@@ -503,6 +507,7 @@ export default function LockerUserScreen() {
                 </Text>
               </View>
             </View>
+          </TouchableOpacity>
 
             {/* HOME COURSE & GAME IDENTITY */}
             {(profile?.homeCourse || profile?.gameIdentity) && (
