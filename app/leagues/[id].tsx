@@ -25,6 +25,7 @@ import {
   getDoc,
   getDocs,
   limit,
+  orderBy,
   query,
   serverTimestamp,
   where,
@@ -65,28 +66,39 @@ interface League {
   memberCount: number;
   hostUserId: string;
   status: string;
-  lastWeekResult?: LastWeekResult;
 }
 
-interface LastWeekResult {
+interface WeekResult {
   week: number;
-  // Stroke play
-  winnerId?: string;
-  winnerName?: string;
-  winnerAvatar?: string;
-  score?: number;
-  courseName?: string;
-  participantCount?: number;
-  // 2v2 teams
-  teamName?: string;
-  teamMembers?: Array<{
-    userId: string;
+  format: string;
+  isElevated: boolean;
+  score: number | null;
+  prizeAwarded: number;
+  createdAt: any;
+  // Stroke
+  userId?: string;
+  displayName?: string;
+  avatar?: string | null;
+  courseName?: string | null;
+  standings?: Array<{
+    placement: number;
+    odtsuserId: string;
     displayName: string;
-    avatar: string | null;
+    netScore: number;
   }>;
-  matchResult?: string;
-  opponentTeamName?: string;
-  teamCount?: number;
+  // 2v2
+  teamId?: string | null;
+  teamName?: string | null;
+  matchupResults?: Array<{
+    team1Id: string;
+    team2Id: string;
+    team1Name: string;
+    team2Name: string;
+    team1Score: number;
+    team2Score: number;
+    winnerId: string | null;
+    winnerName: string | null;
+  }>;
 }
 
 interface Member {
@@ -125,6 +137,7 @@ export default function LeagueDetail() {
 
   // State
   const [league, setLeague] = useState<League | null>(null);
+  const [lastWeekResult, setLastWeekResult] = useState<WeekResult | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -167,6 +180,21 @@ export default function LeagueDetail() {
       if (currentUserId && leagueData.hostUserId === currentUserId) {
         setIsCommissioner(true);
         setIsMember(true);
+      }
+
+      // Load latest week result
+      const weekResultsSnap = await getDocs(
+        query(
+          collection(db, "leagues", leagueId, "week_results"),
+          orderBy("week", "desc"),
+          limit(1)
+        )
+      );
+      if (!weekResultsSnap.empty) {
+        const resultData = weekResultsSnap.docs[0].data() as WeekResult;
+        setLastWeekResult(resultData);
+      } else {
+        setLastWeekResult(null);
       }
 
       // Load members (limit 10 for preview)
@@ -309,10 +337,8 @@ export default function LeagueDetail() {
   const renderHeroCard = () => {
     if (!league) return null;
 
-    const result = league.lastWeekResult;
-
     // No results yet - show season start info
-    if (!result) {
+    if (!lastWeekResult) {
       return (
         <View style={styles.heroCard}>
           <View style={styles.heroCardInner}>
@@ -340,45 +366,38 @@ export default function LeagueDetail() {
       );
     }
 
+    const result = lastWeekResult;
+    const elevatedPrefix = result.isElevated ? "🏅 " : "";
+
     // 2v2 Team Winner
-    if (league.format === "2v2" && result.teamName) {
+    if (result.format === "2v2" && result.teamName) {
+      // Find the winning matchup to get opponent info
+      const winningMatchup = result.matchupResults?.find(
+        (m) => m.winnerId === result.teamId
+      );
+
       return (
         <View style={[styles.heroCard, styles.heroCardWinner]}>
           <View style={styles.heroCardInner}>
-            <Text style={styles.heroLabelGold}>🏆 WEEK {result.week} CHAMPIONS</Text>
+            <Text style={styles.heroLabelGold}>
+              {elevatedPrefix}🏆 WEEK {result.week} CHAMPIONS
+            </Text>
             <Text style={styles.heroTeamName}>{result.teamName}</Text>
-            
-            {/* Team member avatars */}
-            {result.teamMembers && result.teamMembers.length > 0 && (
-              <View style={styles.heroTeamAvatars}>
-                {result.teamMembers.map((member, index) => (
-                  <View key={member.userId} style={styles.heroTeamMember}>
-                    {member.avatar ? (
-                      <Image source={{ uri: member.avatar }} style={styles.heroTeamAvatar} />
-                    ) : (
-                      <View style={styles.heroTeamAvatarPlaceholder}>
-                        <Text style={styles.heroTeamAvatarInitial}>
-                          {member.displayName[0]?.toUpperCase()}
-                        </Text>
-                      </View>
-                    )}
-                    <Text style={styles.heroTeamMemberName} numberOfLines={1}>
-                      {member.displayName.split(" ")[0]}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            )}
 
-            {result.opponentTeamName && (
+            {winningMatchup && (
               <Text style={styles.heroMatchResult}>
-                Won {result.matchResult} vs {result.opponentTeamName}
+                Beat {winningMatchup.winnerId === winningMatchup.team1Id
+                  ? winningMatchup.team2Name
+                  : winningMatchup.team1Name}{" "}
+                ({winningMatchup.team1Score} - {winningMatchup.team2Score})
               </Text>
             )}
 
-            <Text style={styles.heroParticipants}>
-              {result.teamCount} teams competed
-            </Text>
+            {result.matchupResults && (
+              <Text style={styles.heroParticipants}>
+                {result.matchupResults.length * 2} teams competed
+              </Text>
+            )}
           </View>
         </View>
       );
@@ -388,32 +407,36 @@ export default function LeagueDetail() {
     return (
       <View style={[styles.heroCard, styles.heroCardWinner]}>
         <View style={styles.heroCardInner}>
-          <Text style={styles.heroLabelGold}>🏆 WEEK {result.week} LOW LEADER</Text>
-          
+          <Text style={styles.heroLabelGold}>
+            {elevatedPrefix}🏆 WEEK {result.week} LOW LEADER
+          </Text>
+
           {/* Winner avatar */}
           <View style={styles.heroWinnerAvatar}>
-            {result.winnerAvatar ? (
-              <Image source={{ uri: result.winnerAvatar }} style={styles.heroAvatar} />
+            {result.avatar ? (
+              <Image source={{ uri: result.avatar }} style={styles.heroAvatar} />
             ) : (
               <View style={styles.heroAvatarPlaceholder}>
                 <Text style={styles.heroAvatarInitial}>
-                  {result.winnerName?.[0]?.toUpperCase() || "?"}
+                  {result.displayName?.[0]?.toUpperCase() || "?"}
                 </Text>
               </View>
             )}
           </View>
 
-          <Text style={styles.heroWinnerName}>{result.winnerName}</Text>
-          
-          {result.score && result.courseName && (
+          <Text style={styles.heroWinnerName}>{result.displayName}</Text>
+
+          {result.score != null && result.courseName && (
             <Text style={styles.heroScore}>
-              {result.score} at {result.courseName}
+              {result.score} net at {result.courseName}
             </Text>
           )}
 
-          <Text style={styles.heroParticipants}>
-            {result.participantCount} golfers competed
-          </Text>
+          {result.standings && (
+            <Text style={styles.heroParticipants}>
+              {result.standings.length} golfers competed
+            </Text>
+          )}
         </View>
       </View>
     );

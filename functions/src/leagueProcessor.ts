@@ -22,6 +22,7 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 const db = getFirestore();
 
 import { createNotificationDocument } from "./notifications/helpers";
+import { calculateWeeklyPoints } from "./pointsDistribution";
 
 // ============================================================================
 // MEMBER HELPER
@@ -547,7 +548,7 @@ async function processWeekCompleteStroke(
     createdAt: Timestamp.now(),
   });
 
-  await updateStandings(leagueId, scores, currentWeek, pointsMultiplier);
+  await updateStandings(leagueId, scores, currentWeek, league, isElevated);
 
   // Notify all active members with personalized message for winner
   const activeMembers = await getActiveMembers(leagueId);
@@ -609,7 +610,15 @@ async function processWeekComplete2v2(
     scoresByUser[data.userId] = data.netScore;
   });
 
-  const pointsMultiplier = isElevated ? getElevatedMultiplier(league) : 1;
+  const pointsPerWeek = league.pointsPerWeek || 100;
+  const multiplier = isElevated ? getElevatedMultiplier(league) : 1;
+
+  // FedEx Cup style: each matchup is a 2-player event
+  // Winner = 1st place points, Loser = 2nd place points, Tie = split the difference
+  const matchupPointsTable = calculateWeeklyPoints(pointsPerWeek, 2, isElevated, multiplier);
+  const winnerPoints = matchupPointsTable[0]?.points || pointsPerWeek;
+  const loserPoints = matchupPointsTable[1]?.points || Math.round(pointsPerWeek * 0.6);
+  const tiePoints = Math.round((winnerPoints + loserPoints) / 2);
 
   const matchupResults: Array<{
     team1Id: string;
@@ -668,17 +677,16 @@ async function processWeekComplete2v2(
 
     if (winnerId) {
       const loserId = winnerId === matchup.team1Id ? matchup.team2Id : matchup.team1Id;
-      const winPoints = (league.pointsPerWin || 3) * pointsMultiplier;
 
       await db.collection("leagues").doc(leagueId).collection("teams").doc(winnerId).update({
         wins: FieldValue.increment(1),
-        points: FieldValue.increment(winPoints),
+        points: FieldValue.increment(winnerPoints),
       });
       await db.collection("leagues").doc(leagueId).collection("teams").doc(loserId).update({
         losses: FieldValue.increment(1),
+        points: FieldValue.increment(loserPoints),
       });
     } else {
-      const tiePoints = (league.pointsPerTie || 1) * pointsMultiplier;
       await db.collection("leagues").doc(leagueId).collection("teams").doc(matchup.team1Id).update({
         ties: FieldValue.increment(1),
         points: FieldValue.increment(tiePoints),
@@ -707,7 +715,9 @@ async function processWeekComplete2v2(
     score: weekWinner?.score || null,
     format: "2v2",
     isElevated,
-    pointsMultiplier,
+    winnerPoints,
+    loserPoints,
+    tiePoints,
     prizeAwarded: weekPrize,
     matchupResults,
     source: "processor",
@@ -764,15 +774,20 @@ async function updateStandings(
     grossScore: number;
   }>,
   currentWeek: number,
-  pointsMultiplier: number = 1
+  league: FirebaseFirestore.DocumentData,
+  isElevated: boolean
 ): Promise<void> {
   const totalPlayers = scores.length;
+  const pointsPerWeek = league.pointsPerWeek || 100;
+  const multiplier = isElevated ? getElevatedMultiplier(league) : 1;
+
+  // Calculate FedEx Cup style points distribution
+  const pointsTable = calculateWeeklyPoints(pointsPerWeek, totalPlayers, isElevated, multiplier);
 
   for (let i = 0; i < scores.length; i++) {
     const score = scores[i];
     const placement = i + 1;
-    const basePoints = Math.max(totalPlayers - i, 1);
-    const points = Math.round(basePoints * pointsMultiplier);
+    const points = pointsTable[i]?.points || 1;
     const isWinner = placement === 1;
 
     const memberRef = db.collection("leagues").doc(leagueId).collection("members").doc(score.odtsuserId);
@@ -826,7 +841,7 @@ async function updateStandings(
     position++;
   }
 
-  console.log(`✅ Updated standings for ${sortedMembers.length} members (${pointsMultiplier}x points)`);
+  console.log(`✅ Updated standings for ${sortedMembers.length} members (${isElevated ? "elevated" : "regular"} points)`);
 }
 
 // ============================================================================

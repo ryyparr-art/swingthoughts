@@ -510,7 +510,11 @@ export default function LockerUserScreen() {
                 {profile?.homeCourse && (
                   <View style={styles.identityRow}>
                     <Ionicons name="flag" size={16} color="rgba(255,255,255,0.9)" />
-                    <Text style={styles.identityText}>{profile.homeCourse}</Text>
+                    <Text style={styles.identityText}>
+                      {typeof profile.homeCourse === "string"
+                        ? profile.homeCourse
+                        : profile.homeCourse?.courseName || "Home Course"}
+                    </Text>
                   </View>
                 )}
                 {profile?.gameIdentity && (
