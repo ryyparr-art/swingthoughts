@@ -364,9 +364,8 @@ export default function MessageThreadScreen() {
       // ✅ Add message to subcollection
       await addDoc(messagesRef, {
         senderId: userId,
-        senderName: isGroup ? senderName : undefined,      // ✅ Only for groups
-        senderAvatar: isGroup ? senderAvatar : undefined,  // ✅ Only for groups
-        receiverId: isGroup ? null : otherUserId,          // ✅ null for groups
+        ...(isGroup ? { senderName, senderAvatar } : {}),
+        receiverId: isGroup ? null : otherUserId,
         content: newMessage.trim(),
         createdAt: serverTimestamp(),
         read: false,

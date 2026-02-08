@@ -81,7 +81,7 @@ service cloud.firestore {
       let u = getUserData();
       return !('lastMessageTime' in u) ||
         u.lastMessageTime == null ||
-        u.lastMessageTime < request.time - duration.value(0.2, 's');
+        u.lastMessageTime < request.time - duration.value(1, 's');
     }
 
     function canScore() {
@@ -501,9 +501,10 @@ service cloud.firestore {
         }
 
         // ✅ Check if user is participant in parent thread (for group chats)
-        // Note: This requires a document read, use sparingly
+        // Only call this when the thread document exists
         function isParentThreadParticipant() {
           return request.auth != null &&
+            exists(/databases/$(database)/documents/threads/$(threadId)) &&
             get(/databases/$(database)/documents/threads/$(threadId)).data.participants.hasAny([request.auth.uid]);
         }
 
@@ -521,8 +522,8 @@ service cloud.firestore {
           );
 
         // ✅ Create message if user has thread access and is the sender
-        // - 1:1: receiverId required
-        // - Group: receiverId not required (message goes to all participants)
+        // - 1:1: User ID is in thread ID (works even if thread doc doesn't exist yet)
+        // - Group: User is participant in existing thread doc
         allow create: if isSignedIn() &&
           isEmailVerified() &&
           canMessage() &&
@@ -985,7 +986,6 @@ service cloud.firestore {
     }
   }
 }
-
 
 
 
