@@ -209,8 +209,22 @@ export const pickVideo = async (): Promise<PickVideoResult | null> => {
         return null;
       }
 
-      const compressedUri = await compressVideo(asset.uri);
-      const thumbnailUri = await generateVideoThumbnail(compressedUri);
+      let compressedUri: string;
+      try {
+        compressedUri = await compressVideo(asset.uri);
+      } catch (compErr: any) {
+        Alert.alert("Compression Error", `${compErr?.message || compErr}`);
+        compressedUri = asset.uri;
+      }
+
+      let thumbnailUri: string;
+      try {
+        thumbnailUri = await generateVideoThumbnail(compressedUri);
+      } catch (thumbErr: any) {
+        Alert.alert("Thumbnail Error", `${thumbErr?.message || thumbErr}`);
+        thumbnailUri = "";
+      }
+
       const durationSeconds = duration / 1000;
       const videoWidth = asset.width || 1080;
       const videoHeight = asset.height || 1920;
@@ -228,10 +242,21 @@ export const pickVideo = async (): Promise<PickVideoResult | null> => {
     }
 
     return null;
-  } catch (error) {
+  } catch (error: any) {
     console.error("Video picker error:", error);
     soundPlayer.play("error");
-    Alert.alert("Error", "Failed to select video. Please try again.");
+    
+    const errorMsg = error?.message || error || "Unknown error";
+    
+    if (errorMsg.includes("3164") || errorMsg.includes("PHPhotos")) {
+      Alert.alert(
+        "Video Unavailable",
+        "This video may still be downloading from iCloud. Open it in your Photos app first to ensure it's fully downloaded, then try again."
+      );
+    } else {
+      Alert.alert("Video Error", `${errorMsg}`);
+    }
+    
     return null;
-  }
-};
+   }
+  };
