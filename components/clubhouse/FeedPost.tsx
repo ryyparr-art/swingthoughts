@@ -9,6 +9,9 @@
  * - Footer (like and comment buttons)
  */
 
+import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import { useRouter } from "expo-router";
 import React from "react";
 import {
   Image,
@@ -17,15 +20,12 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { useRouter } from "expo-router";
-import * as Haptics from "expo-haptics";
-import { Ionicons } from "@expo/vector-icons";
 
-import { soundPlayer } from "@/utils/soundPlayer";
 import { getPostTypeLabel } from "@/constants/postTypes";
 import { getRelativeTime, Thought } from "@/utils/feedHelpers";
-import FeedPostMedia from "./FeedPostMedia";
+import { soundPlayer } from "@/utils/soundPlayer";
 import FeedPostContent from "./FeedPostContent";
+import FeedPostMedia from "./FeedPostMedia";
 
 /* ================================================================ */
 /* TYPES                                                            */
@@ -39,7 +39,7 @@ interface FeedPostProps {
   onComment: (thought: Thought) => void;
   onEdit: (thought: Thought) => void;
   onReport: (thought: Thought) => void;
-  onImagePress: (imageUrl: string) => void;
+  onImagePress: (imageUrls: string[], startIndex: number) => void;
   onVideoPress: (
     videoUrl: string,
     thumbnailUrl?: string,

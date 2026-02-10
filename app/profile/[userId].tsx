@@ -2,6 +2,7 @@ import PartnersModal from "@/components/modals/PartnersModal";
 import UserPostsGalleryModal from "@/components/modals/UserPostsGalleryModal";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
+import ClubCardModal from "@/components/profile/ClubCardModal";
 import { auth, db } from "@/constants/firebaseConfig";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -12,6 +13,7 @@ import { collection, doc, getDoc, getDocs, query, where } from "firebase/firesto
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
   FlatList,
   Image,
@@ -31,6 +33,13 @@ interface UserProfile {
   handicap: number;
   badges: string[];
   selectedBadges?: string[];
+  personalDetails?: {
+    firstName?: string;
+    lastName?: string;
+    dateOfBirth?: any;
+    gender?: string;
+    handedness?: string;
+  };
 }
 
 interface Post {
@@ -51,7 +60,6 @@ interface Stats {
   leaderboardScores: number;
 }
 
-// ✅ Default stats to prevent undefined errors
 const DEFAULT_STATS: Stats = {
   swingThoughts: 0,
   leaderboardScores: 0,
@@ -71,9 +79,13 @@ export default function ProfileScreen() {
   const [partnersModalVisible, setPartnersModalVisible] = useState(false);
   const [galleryModalVisible, setGalleryModalVisible] = useState(false);
   const [selectedPostId, setSelectedPostId] = useState<string | undefined>(undefined);
+  const [clubCardModalVisible, setClubCardModalVisible] = useState(false);
+  const [memberSince, setMemberSince] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [showingCached, setShowingCached] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [isPartner, setIsPartner] = useState(false);
+  const [viewedPrivacy, setViewedPrivacy] = useState<"public" | "private">("public");
 
   useEffect(() => {
     if (userId && typeof userId === "string") {
@@ -92,7 +104,6 @@ export default function ProfileScreen() {
         console.log("⚡ User profile cache hit:", targetUserId);
         setProfile(cached.profile);
         setPosts(cached.posts || []);
-        // ✅ Use default stats if cached.stats is undefined
         setStats(cached.stats ?? DEFAULT_STATS);
         setShowingCached(true);
         setLoading(false);
@@ -118,8 +129,17 @@ export default function ProfileScreen() {
       const userDoc = await getDoc(doc(db, "users", targetUserId));
       
       if (userDoc.exists()) {
-        const data = userDoc.data() as UserProfile;
-        setProfile(data);
+        const data = userDoc.data();
+        setProfile({
+          displayName: data.displayName || "",
+          avatar: data.avatar || "",
+          handicap: data.handicap,
+          badges: data.badges || [],
+          selectedBadges: data.selectedBadges || [],
+          personalDetails: data.personalDetails || {},
+        });
+        setViewedPrivacy(data.accountPrivacy || "public");
+        setMemberSince(data.createdAt || null);
       } else {
         soundPlayer.play('error');
         setProfile(null);
@@ -181,8 +201,16 @@ export default function ProfileScreen() {
       setStats(statsData);
 
       if (userDoc.exists()) {
+        const data = userDoc.data();
         await setCache(CACHE_KEYS.USER_PROFILE(targetUserId), {
-          profile: userDoc.data() as UserProfile,
+          profile: {
+            displayName: data.displayName || "",
+            avatar: data.avatar || "",
+            handicap: data.handicap,
+            badges: data.badges || [],
+            selectedBadges: data.selectedBadges || [],
+            personalDetails: data.personalDetails || {},
+          },
           posts: postsData,
           stats: statsData,
         });
@@ -233,10 +261,19 @@ export default function ProfileScreen() {
       ]);
       
       const partnerDocIds = new Set<string>();
-      snap1.forEach(doc => partnerDocIds.add(doc.id));
-      snap2.forEach(doc => partnerDocIds.add(doc.id));
+      let foundPartner = false;
+
+      snap1.forEach(doc => {
+        partnerDocIds.add(doc.id);
+        if (currentUserId && doc.data().user2Id === currentUserId) foundPartner = true;
+      });
+      snap2.forEach(doc => {
+        partnerDocIds.add(doc.id);
+        if (currentUserId && doc.data().user1Id === currentUserId) foundPartner = true;
+      });
       
       setPartnerCount(partnerDocIds.size);
+      setIsPartner(foundPartner);
     } catch (error) {
       console.error("Error fetching partner count:", error);
       setPartnerCount(0);
@@ -249,12 +286,45 @@ export default function ProfileScreen() {
     router.push(`/create?editId=${postId}`);
   };
 
-  /* ========================= HELPER: FORMAT STAT VALUE ========================= */
+  /* ========================= HELPERS ========================= */
   
   const formatStatValue = (value: number | undefined | null): string => {
     if (value === undefined || value === null) return "—";
     return value.toString();
   };
+
+  const getRealName = (): { text: string; isPlaceholder: boolean } | null => {
+    const pd = profile?.personalDetails;
+    const first = pd?.firstName?.trim() || "";
+    const last = pd?.lastName?.trim() || "";
+    const hasName = first || last;
+
+    // If viewing someone else's private profile and not a partner, hide real name
+    if (!isOwnProfile && viewedPrivacy === "private" && !isPartner) {
+      return null;
+    }
+
+    if (hasName) {
+      return { text: `${first} ${last}`.trim(), isPlaceholder: false };
+    }
+
+    // Own profile with no name set — show placeholder
+    if (isOwnProfile) {
+      return { text: "Add your name in Settings", isPlaceholder: true };
+    }
+
+    return null;
+  };
+
+  const showHciInfo = () => {
+    Alert.alert(
+      "Handicap Index (HCI)",
+      "Your Handicap Index is automatically calculated based on your posted scores using the SwingThoughts handicap system. It represents your potential scoring ability.",
+      [{ text: "Got it" }]
+    );
+  };
+
+  /* ========================= RENDER POST ========================= */
 
   const renderPost = ({ item }: { item: Post }) => {
     const images = item.imageUrls || (item.imageUrl ? [item.imageUrl] : []);
@@ -334,6 +404,8 @@ export default function ProfileScreen() {
     );
   };
 
+  /* ========================= SCREEN ========================= */
+
   if (loading && !showingCached) {
     return (
       <View style={styles.loadingContainer}>
@@ -349,6 +421,8 @@ export default function ProfileScreen() {
       </View>
     );
   }
+
+  const realName = getRealName();
 
   return (
     <View style={styles.container}>
@@ -411,51 +485,92 @@ export default function ProfileScreen() {
         }
         ListHeaderComponent={
           <>
-            {/* ✅ Golf Membership Card Style Header */}
-            <View style={styles.profileCard}>
-              <View style={styles.profileCardInner}>
-                {/* Avatar with Gold Ring */}
-                <View style={styles.avatarContainer}>
-                  {profile.avatar ? (
-                    <Image source={{ uri: profile.avatar }} style={styles.avatar} />
-                  ) : (
-                    <View style={styles.avatarPlaceholder}>
-                      <Text style={styles.avatarInitial}>
-                        {profile.displayName[0]?.toUpperCase() || "?"}
+            {/* ===== CLUB CARD ===== */}
+            <TouchableOpacity
+              activeOpacity={0.85}
+              onPress={() => {
+                soundPlayer.play('click');
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                setClubCardModalVisible(true);
+              }}
+            >
+            <View style={styles.clubCard}>
+              {/* Top edge detail */}
+              <View style={styles.cardEdgeTop} />
+
+              <View style={styles.clubCardInner}>
+                {/* Avatar row: avatar left, info right */}
+                <View style={styles.cardTopRow}>
+                  {/* LEFT: Avatar + displayName */}
+                  <View style={styles.cardLeftCol}>
+                    <View style={styles.avatarRing}>
+                      {profile.avatar ? (
+                        <Image source={{ uri: profile.avatar }} style={styles.avatar} />
+                      ) : (
+                        <View style={styles.avatarPlaceholder}>
+                          <Text style={styles.avatarInitial}>
+                            {profile.displayName[0]?.toUpperCase() || "?"}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                    <Text style={styles.displayName} numberOfLines={1}>
+                      {profile.displayName}
+                    </Text>
+                  </View>
+
+                  {/* RIGHT: Club Card label, real name, HCI */}
+                  <View style={styles.cardRightCol}>
+                    <Text style={styles.clubCardLabel}>CLUB CARD</Text>
+                    {realName && (
+                      <Text
+                        style={[
+                          styles.realName,
+                          realName.isPlaceholder && styles.realNamePlaceholder,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {realName.text}
+                      </Text>
+                    )}
+                    <View style={styles.hciRow}>
+                      <Text style={styles.hciLabel}>HCI</Text>
+                      <TouchableOpacity
+                        onPress={() => {
+                          soundPlayer.play("click");
+                          showHciInfo();
+                        }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons
+                          name="information-circle-outline"
+                          size={14}
+                          color="#C5A55A"
+                        />
+                      </TouchableOpacity>
+                      <Text style={styles.hciValue}>
+                        {profile.handicap !== undefined && profile.handicap !== null
+                          ? profile.handicap
+                          : "—"}
                       </Text>
                     </View>
-                  )}
+                  </View>
                 </View>
 
-                {/* Display Name */}
-                <Text style={styles.displayName}>{profile.displayName}</Text>
+                {/* Divider */}
+                <View style={styles.cardDivider} />
 
-                {/* Stats Row - Connected Bar */}
+                {/* Stats Bar */}
                 <View style={styles.statsBar}>
                   {/* Thoughts */}
                   <View style={styles.statItem}>
                     <View style={styles.statValueRow}>
-                      <Ionicons name="chatbubble-outline" size={14} color="#0D5C3A" style={styles.statIcon} />
+                      <Ionicons name="chatbubble-outline" size={14} color="#C5A55A" style={styles.statIcon} />
                       <Text style={styles.statValue}>
                         {formatStatValue(stats?.swingThoughts)}
                       </Text>
                     </View>
                     <Text style={styles.statLabel}>THOUGHTS</Text>
-                  </View>
-
-                  <View style={styles.statDivider} />
-
-                  {/* Handicap */}
-                  <View style={styles.statItem}>
-                    <View style={styles.statValueRow}>
-                      <Ionicons name="golf-outline" size={14} color="#0D5C3A" style={styles.statIcon} />
-                      <Text style={styles.statValue}>
-                        {profile.handicap !== undefined && profile.handicap !== null 
-                          ? profile.handicap 
-                          : "—"}
-                      </Text>
-                    </View>
-                    <Text style={styles.statLabel}>HANDICAP</Text>
                   </View>
 
                   <View style={styles.statDivider} />
@@ -470,14 +585,14 @@ export default function ProfileScreen() {
                     }}
                   >
                     <View style={styles.statValueRow}>
-                      <Ionicons name="people-outline" size={14} color="#0D5C3A" style={styles.statIcon} />
+                      <Ionicons name="people-outline" size={14} color="#C5A55A" style={styles.statIcon} />
                       <Text style={styles.statValue}>
                         {formatStatValue(partnerCount)}
                       </Text>
                     </View>
                     <View style={styles.statLabelRow}>
                       <Text style={styles.statLabel}>PARTNERS</Text>
-                      <Ionicons name="chevron-forward" size={10} color="#999" />
+                      <Ionicons name="chevron-forward" size={10} color="#8B7355" />
                     </View>
                   </TouchableOpacity>
 
@@ -486,7 +601,7 @@ export default function ProfileScreen() {
                   {/* Scores */}
                   <View style={styles.statItem}>
                     <View style={styles.statValueRow}>
-                      <Ionicons name="trophy-outline" size={14} color="#0D5C3A" style={styles.statIcon} />
+                      <Ionicons name="trophy-outline" size={14} color="#C5A55A" style={styles.statIcon} />
                       <Text style={styles.statValue}>
                         {formatStatValue(stats?.leaderboardScores)}
                       </Text>
@@ -495,7 +610,11 @@ export default function ProfileScreen() {
                   </View>
                 </View>
               </View>
+
+              {/* Bottom edge detail */}
+              <View style={styles.cardEdgeBottom} />
             </View>
+            </TouchableOpacity>
 
             <View style={styles.postsHeader}>
               <Text style={styles.postsTitle}>Thoughts</Text>
@@ -538,6 +657,27 @@ export default function ProfileScreen() {
 
       <BottomActionBar />
       <SwingFooter />
+
+      <ClubCardModal
+        visible={clubCardModalVisible}
+        onClose={() => {
+          soundPlayer.play('click');
+          setClubCardModalVisible(false);
+        }}
+        displayName={profile.displayName}
+        avatar={profile.avatar}
+        realName={realName}
+        handicap={profile.handicap}
+        swingThoughts={stats.swingThoughts}
+        partnerCount={partnerCount}
+        leaderboardScores={stats.leaderboardScores}
+        memberSince={memberSince}
+        isOwnProfile={isOwnProfile}
+        onPartnersPress={() => {
+          setClubCardModalVisible(false);
+          setTimeout(() => setPartnersModalVisible(true), 300);
+        }}
+      />
     </View>
   );
 }
@@ -595,83 +735,159 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  /* ✅ Golf Membership Card Styles */
-  profileCard: {
+  /* ===== CLUB CARD ===== */
+  clubCard: {
     marginHorizontal: 16,
     marginTop: 20,
     marginBottom: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#D4D0C5",
-    backgroundColor: "#F4EED8",
+    borderRadius: 14,
+    backgroundColor: "#4A3628",
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 6,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 10,
     overflow: "hidden",
   },
 
-  profileCardInner: {
-    paddingVertical: 24,
-    paddingHorizontal: 16,
-    alignItems: "center",
-    backgroundColor: "#F4EED8",
+  cardEdgeTop: {
+    height: 3,
+    backgroundColor: "#C5A55A",
+    opacity: 0.6,
   },
 
-  avatarContainer: {
+  cardEdgeBottom: {
+    height: 3,
+    backgroundColor: "#C5A55A",
+    opacity: 0.6,
+  },
+
+  clubCardInner: {
+    paddingTop: 20,
+    paddingBottom: 16,
+    paddingHorizontal: 18,
+    // Subtle grain-like overlay via inner border
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: "rgba(197, 165, 90, 0.15)",
+  },
+
+  cardTopRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
     marginBottom: 16,
-    borderRadius: 54,
-    padding: 4,
-    backgroundColor: "#FFD700",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 8,
+  },
+
+  /* LEFT: Avatar + Display Name */
+  cardLeftCol: {
+    alignItems: "center",
+    marginRight: 18,
+    width: 90,
+  },
+
+  avatarRing: {
+    borderRadius: 42,
+    padding: 2,
+    borderWidth: 2,
+    borderColor: "#C5A55A",
+    marginBottom: 8,
   },
 
   avatar: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: "#E0E0E0",
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "#4A3528",
   },
 
   avatarPlaceholder: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     backgroundColor: "#0D5C3A",
     justifyContent: "center",
     alignItems: "center",
   },
 
   avatarInitial: {
-    fontSize: 40,
+    fontSize: 30,
     fontWeight: "700",
     color: "#FFFFFF",
   },
 
   displayName: {
-    fontSize: 26,
-    fontWeight: "800",
-    color: "#0D5C3A",
-    marginBottom: 20,
-    letterSpacing: 0.5,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#F4EED8",
+    textAlign: "center",
+    maxWidth: 90,
   },
 
-  /* Stats Bar - Connected */
+  /* RIGHT: Club Card info */
+  cardRightCol: {
+    flex: 1,
+    paddingTop: 4,
+    alignItems: "center",
+  },
+
+  clubCardLabel: {
+    fontSize: 11,
+    fontWeight: "900",
+    color: "#C5A55A",
+    letterSpacing: 3,
+    marginBottom: 6,
+  },
+
+  realName: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#F4EED8",
+    marginBottom: 6,
+  },
+
+  realNamePlaceholder: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#8B7355",
+    fontStyle: "italic",
+  },
+
+  hciRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+
+  hciLabel: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#8B7355",
+    letterSpacing: 1,
+  },
+
+  hciValue: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: "#C5A55A",
+  },
+
+  /* DIVIDER */
+  cardDivider: {
+    height: 1,
+    backgroundColor: "rgba(197, 165, 90, 0.25)",
+    marginBottom: 14,
+  },
+
+  /* STATS BAR */
   statsBar: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#FFFFFF",
-    borderRadius: 12,
+    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#E0E0E0",
-    paddingVertical: 14,
-    paddingHorizontal: 8,
-    width: "100%",
+    borderColor: "rgba(197, 165, 90, 0.2)",
+    paddingVertical: 12,
+    paddingHorizontal: 6,
   },
 
   statItem: {
@@ -682,8 +898,8 @@ const styles = StyleSheet.create({
 
   statDivider: {
     width: 1,
-    height: 36,
-    backgroundColor: "#E0E0E0",
+    height: 32,
+    backgroundColor: "rgba(197, 165, 90, 0.25)",
   },
 
   statValueRow: {
@@ -697,15 +913,15 @@ const styles = StyleSheet.create({
   },
 
   statValue: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: "800",
-    color: "#0D5C3A",
+    color: "#F4EED8",
   },
 
   statLabel: {
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: "700",
-    color: "#888",
+    color: "#8B7355",
     letterSpacing: 0.5,
   },
 
@@ -715,6 +931,7 @@ const styles = StyleSheet.create({
     gap: 2,
   },
 
+  /* ===== POSTS ===== */
   postsHeader: {
     paddingHorizontal: 16,
     paddingVertical: 12,

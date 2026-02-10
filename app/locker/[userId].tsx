@@ -12,6 +12,7 @@ import {
   sendPartnerRequest,
 } from "@/utils/partnerUtils";
 
+import LockerClubsDisplay from "@/components/locker/LockerClubsDisplay";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
@@ -656,23 +657,7 @@ export default function LockerUserScreen() {
           </View>
 
           {/* CLUBS */}
-          <View style={styles.clubsSection}>
-            <Text style={styles.sectionTitle}>
-              {isOwnLocker ? "My Clubs" : "Their Clubs"}
-            </Text>
-
-            {["driver", "irons", "wedges", "putter", "ball"].map((type) => {
-              const val = clubs?.[type];
-              return (
-                <View key={type} style={styles.clubCard}>
-                  <Text style={styles.clubLabel}>{type.toUpperCase()}</Text>
-                  <Text style={styles.clubValue}>
-                    {val || "Not added"}
-                  </Text>
-                </View>
-              );
-            })}
-          </View>
+          <LockerClubsDisplay clubs={clubs} isOwnLocker={isOwnLocker} />
         </ScrollView>
 
         <BottomActionBar 
@@ -897,29 +882,5 @@ const styles = StyleSheet.create({
     fontStyle: "italic",
   },
 
-  clubsSection: { width: "100%" },
-
-  clubCard: {
-    backgroundColor: "rgba(255,255,255,0.22)",
-    borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    marginBottom: 12,
-  },
-
-  clubLabel: {
-    textAlign: "center",
-    fontSize: 12,
-    fontWeight: "900",
-    color: "rgba(255,255,255,0.9)",
-    letterSpacing: 1.5,
-    marginBottom: 4,
-  },
-
-  clubValue: {
-    textAlign: "center",
-    fontSize: 16,
-    fontWeight: "700",
-    color: "white",
-  },
+  // Clubs section styles now in LockerClubsDisplay component
 });

@@ -44,6 +44,8 @@ export default function CourseLockerScreen() {
   const [isClaimed, setIsClaimed] = useState(false);
   const [claimedByUserId, setClaimedByUserId] = useState<string | null>(null);
   const [membershipModalVisible, setMembershipModalVisible] = useState(false);
+  const [courseLeagueId, setCourseLeagueId] = useState<string | null>(null);
+  const [courseLeagueName, setCourseLeagueName] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -64,6 +66,8 @@ export default function CourseLockerScreen() {
             setIsMember(cached.isMember || false);
             setIsPendingMembership(cached.isPendingMembership || false);
             setMembershipStatus(cached.membershipStatus || "none");
+            setCourseLeagueId(cached.courseLeagueId || null);
+            setCourseLeagueName(cached.courseLeagueName || null);
             setShowingCached(true);
             setLoading(false);
           }
@@ -175,6 +179,53 @@ export default function CourseLockerScreen() {
         }
       }
 
+      // Check if this course has an associated league
+      let foundLeagueId: string | null = null;
+      let foundLeagueName: string | null = null;
+
+      try {
+        // Query leagues where this course is in restrictedCourses
+        const leaguesQuery = query(
+          collection(db, "leagues"),
+          where("status", "in", ["upcoming", "active"])
+        );
+        const leaguesSnap = await getDocs(leaguesQuery);
+
+        for (const leagueDoc of leaguesSnap.docs) {
+          const leagueData = leagueDoc.data();
+          const restricted = leagueData.restrictedCourses || [];
+          const hasCourse = restricted.some(
+            (c: any) => c.courseId === Number(courseId)
+          );
+
+          if (hasCourse) {
+            foundLeagueId = leagueDoc.id;
+            foundLeagueName = leagueData.name || "League";
+            break;
+          }
+        }
+
+        // Fallback: if course is claimed, check if the owner hosts a league
+        if (!foundLeagueId && courseDetails.claimedByUserId) {
+          const ownerLeaguesQuery = query(
+            collection(db, "leagues"),
+            where("hostUserId", "==", courseDetails.claimedByUserId),
+            where("status", "in", ["upcoming", "active"])
+          );
+          const ownerLeaguesSnap = await getDocs(ownerLeaguesQuery);
+          if (!ownerLeaguesSnap.empty) {
+            const firstLeague = ownerLeaguesSnap.docs[0];
+            foundLeagueId = firstLeague.id;
+            foundLeagueName = firstLeague.data().name || "League";
+          }
+        }
+      } catch (err) {
+        console.log("⚠️ League lookup failed:", err);
+      }
+
+      setCourseLeagueId(foundLeagueId);
+      setCourseLeagueName(foundLeagueName);
+
       // Process scores
       allScores.sort((a, b) => a.netScore - b.netScore);
       const top6 = allScores.slice(0, 6).map(score => ({
@@ -204,6 +255,8 @@ export default function CourseLockerScreen() {
         isMember: userIsMember,
         isPendingMembership: userIsPending,
         membershipStatus: userMembershipStatus,
+        courseLeagueId: foundLeagueId,
+        courseLeagueName: foundLeagueName,
       });
       console.log("✅ Course locker cached");
 
@@ -502,7 +555,7 @@ export default function CourseLockerScreen() {
                 >
                   <Ionicons
                     name={isPlayer ? "checkmark-circle" : "golf"}
-                    size={16}
+                    size={14}
                     color="#fff"
                   />
                   <Text style={styles.actionText}>
@@ -528,7 +581,7 @@ export default function CourseLockerScreen() {
                         ? "alert-circle-outline"
                         : "ribbon"
                     }
-                    size={16}
+                    size={14}
                     color="#fff"
                   />
                   <Text style={styles.actionText}>
@@ -549,8 +602,30 @@ export default function CourseLockerScreen() {
                     !isClaimed && styles.lockerNoteLocked,
                   ]}
                 >
-                  <Ionicons name="mail" size={16} color="#fff" />
-                  <Text style={styles.actionText}>Locker Note</Text>
+                  <Ionicons name="mail" size={14} color="#fff" />
+                  <Text style={styles.actionText}>Locker{"\n"}Note</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => {
+                    soundPlayer.play('click');
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    if (courseLeagueId) {
+                      router.push(`/leagues/home?leagueId=${courseLeagueId}`);
+                    } else {
+                      Alert.alert(
+                        "No League Yet",
+                        `${courseData?.courseName || "This course"} hasn't created a league yet. Check back soon!`
+                      );
+                    }
+                  }}
+                  style={[
+                    styles.leagueButton,
+                    !courseLeagueId && styles.lockerNoteLocked,
+                  ]}
+                >
+                  <Ionicons name="trophy" size={14} color="#fff" />
+                  <Text style={styles.actionText}>League</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -744,14 +819,13 @@ const styles = StyleSheet.create({
 
   headerArea: {
     position: 'absolute',
-    top: '4.6%',
+    top: '0.5%',
     left: 0,
     right: 0,
-    minHeight: '6.6%',
     justifyContent: 'center',
     alignItems: "center",
-    paddingHorizontal: 24,
-    gap: 8,
+    paddingHorizontal: 16,
+    gap: 4,
     zIndex: 10,
   },
 
@@ -790,10 +864,10 @@ const styles = StyleSheet.create({
 
   actionRow: {
     flexDirection: "row",
-    gap: 4,
+    gap: 3,
     justifyContent: "space-between",
-    paddingHorizontal: 12,
-    marginBottom: 8,
+    paddingHorizontal: 8,
+    marginBottom: 0,
   },
 
   actionButton: {
@@ -801,19 +875,34 @@ const styles = StyleSheet.create({
     flexDirection: "column",
     alignItems: "center",
     justifyContent: "center",
-    gap: 2,
+    gap: 1,
     backgroundColor: "#0D5C3A",
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-    borderRadius: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    borderRadius: 7,
     borderWidth: 1.5,
     borderColor: "#8B6914",
-    minHeight: 42,
+    minHeight: 36,
   },
 
   activeButton: {
-    backgroundColor: "#FFD700",
+    backgroundColor: "#B8860B",
     borderColor: "#8B6914",
+  },
+
+  leagueButton: {
+    flex: 1,
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 1,
+    backgroundColor: "#2E8B57",
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+    borderRadius: 7,
+    borderWidth: 1.5,
+    borderColor: "#8B6914",
+    minHeight: 36,
   },
 
   pendingButton: {
@@ -828,16 +917,16 @@ const styles = StyleSheet.create({
 
   actionText: {
     color: "#fff",
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: "700",
     textAlign: "center",
-    lineHeight: 11,
+    lineHeight: 10,
     maxWidth: "100%",
   },
 
   shelf1: {
     position: 'absolute',
-    top: '20%',
+    top: '15%',
     left: 0,
     right: 0,
     height: '25.2%',
@@ -848,7 +937,7 @@ const styles = StyleSheet.create({
 
   shelf2: {
     position: 'absolute',
-    top: '47%',
+    top: '42%',
     left: 0,
     right: 0,
     height: '24.5%',
@@ -859,7 +948,7 @@ const styles = StyleSheet.create({
 
   shelf3: {
     position: 'absolute',
-    top: '73%',
+    top: '68%',
     left: 0,
     right: 0,
     height: '29.5%',

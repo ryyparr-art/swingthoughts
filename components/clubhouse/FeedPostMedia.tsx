@@ -40,7 +40,7 @@ interface FeedPostMediaProps {
   videoTrimStart?: number;
   videoTrimEnd?: number;
   mediaAspectRatio?: number;
-  onImagePress: (imageUrl: string) => void;
+  onImagePress: (imageUrls: string[], startIndex: number) => void;
   onVideoPress: (
     videoUrl: string,
     thumbnailUrl?: string,
@@ -77,11 +77,11 @@ export default function FeedPostMedia({
   const clampedRatio = Math.min(1.91, Math.max(0.8, mediaAspectRatio || 1.0));
   const mediaHeight = Math.round(SCREEN_WIDTH / clampedRatio);
 
-  // Handle image tap
-  const handleImagePress = (url: string) => {
+  // Handle image tap — pass full array + tapped index
+  const handleImagePress = (index: number) => {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    onImagePress(url);
+    onImagePress(images, index);
   };
 
   // Handle video tap
@@ -110,10 +110,10 @@ export default function FeedPostMedia({
             );
             setCurrentIndex(index);
           }}
-          renderItem={({ item }) => (
+          renderItem={({ item, index }) => (
             <TouchableOpacity
               activeOpacity={0.9}
-              onPress={() => handleImagePress(item)}
+              onPress={() => handleImagePress(index)}
             >
               <View style={{ width: SCREEN_WIDTH }}>
                 <Image 

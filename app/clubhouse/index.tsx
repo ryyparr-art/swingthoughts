@@ -13,7 +13,7 @@
  * - Pull-to-refresh
  * - Optimistic UI updates via NewPostContext
  * - Background preloading of other screens
- * - Image/video fullscreen viewers
+ * - Image/video fullscreen viewers (swipeable gallery)
  * - Comments and report modals
  * - Tournament chat modal
  */
@@ -73,6 +73,7 @@ const SCREEN_HEIGHT = Dimensions.get('window').height;
 export default function ClubhouseScreen() {
   const params = useLocalSearchParams();
   const flatListRef = useRef<FlatList<any>>(null);
+  const galleryListRef = useRef<FlatList<any>>(null);
 
   /* ---------------------------------------------------------------- */
   /* AUTH & USER DATA                                                 */
@@ -247,7 +248,9 @@ export default function ClubhouseScreen() {
   /* MEDIA VIEWER STATE                                               */
   /* ---------------------------------------------------------------- */
 
-  const [expandedImage, setExpandedImage] = useState<string | null>(null);
+  const [expandedImages, setExpandedImages] = useState<string[] | null>(null);
+  const [expandedImageIndex, setExpandedImageIndex] = useState(0);
+  const [galleryIndex, setGalleryIndex] = useState(0);
   const [expandedVideo, setExpandedVideo] = useState<{
     url: string;
     thumbnailUrl?: string;
@@ -256,8 +259,10 @@ export default function ClubhouseScreen() {
     duration?: number;
   } | null>(null);
 
-  const handleImagePress = useCallback((imageUrl: string) => {
-    setExpandedImage(imageUrl);
+  const handleImagePress = useCallback((imageUrls: string[], startIndex: number) => {
+    setExpandedImages(imageUrls);
+    setExpandedImageIndex(startIndex);
+    setGalleryIndex(startIndex);
   }, []);
 
   const handleVideoPress = useCallback((
@@ -267,7 +272,6 @@ export default function ClubhouseScreen() {
     trimEnd?: number,
     duration?: number
   ) => {
-    soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setExpandedVideo({
       url: videoUrl,
@@ -452,6 +456,28 @@ export default function ClubhouseScreen() {
   ]);
 
   /* ---------------------------------------------------------------- */
+  /* RENDER GALLERY IMAGE                                             */
+  /* ---------------------------------------------------------------- */
+
+  const renderGalleryImage = useCallback(({ item }: { item: string }) => (
+    <GestureHandlerRootView style={styles.gestureRoot}>
+      <View style={styles.galleryPage}>
+        <ImageZoom
+          uri={item}
+          minScale={1}
+          maxScale={3}
+          doubleTapScale={2}
+          isDoubleTapEnabled
+          isPinchEnabled
+          isPanEnabled
+          style={styles.zoomableImage}
+          resizeMode="contain"
+        />
+      </View>
+    </GestureHandlerRootView>
+  ), []);
+
+  /* ---------------------------------------------------------------- */
   /* RENDER                                                           */
   /* ---------------------------------------------------------------- */
 
@@ -591,41 +617,64 @@ export default function ClubhouseScreen() {
         />
       )}
 
-      {/* Image Viewer Modal */}
+      {/* Image Gallery Viewer Modal */}
       <Modal
-        visible={!!expandedImage}
+        visible={!!expandedImages}
         transparent
         animationType="fade"
-        onRequestClose={() => setExpandedImage(null)}
+        onRequestClose={() => setExpandedImages(null)}
       >
-        <GestureHandlerRootView style={styles.gestureRoot}>
-          <View style={styles.mediaViewerBackdrop}>
-            <ImageZoom
-              uri={expandedImage || ''}
-              minScale={1}
-              maxScale={3}
-              doubleTapScale={2}
-              isDoubleTapEnabled
-              isPinchEnabled
-              isPanEnabled
-              style={styles.zoomableImage}
-              resizeMode="contain"
-            />
-            <TouchableOpacity
-              style={styles.mediaViewerCloseButton}
-              onPress={() => {
-                soundPlayer.play('click');
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                setExpandedImage(null);
-              }}
-            >
-              <Image
-                source={require("@/assets/icons/Close.png")}
-                style={styles.closeIcon}
+        <View style={styles.mediaViewerBackdrop}>
+          {expandedImages && (
+            <>
+              <FlatList
+                ref={galleryListRef}
+                data={expandedImages}
+                horizontal
+                pagingEnabled
+                showsHorizontalScrollIndicator={false}
+                initialScrollIndex={expandedImageIndex}
+                getItemLayout={(_, index) => ({
+                  length: SCREEN_WIDTH,
+                  offset: SCREEN_WIDTH * index,
+                  index,
+                })}
+                onMomentumScrollEnd={(event) => {
+                  const index = Math.round(
+                    event.nativeEvent.contentOffset.x / SCREEN_WIDTH
+                  );
+                  setGalleryIndex(index);
+                }}
+                renderItem={renderGalleryImage}
+                keyExtractor={(item, index) => `gallery-${index}`}
               />
-            </TouchableOpacity>
-          </View>
-        </GestureHandlerRootView>
+
+              {/* Counter badge */}
+              {expandedImages.length > 1 && (
+                <View style={styles.galleryCounter}>
+                  <Text style={styles.galleryCounterText}>
+                    {galleryIndex + 1} / {expandedImages.length}
+                  </Text>
+                </View>
+              )}
+            </>
+          )}
+
+          {/* Close button */}
+          <TouchableOpacity
+            style={styles.mediaViewerCloseButton}
+            onPress={() => {
+              soundPlayer.play('click');
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setExpandedImages(null);
+            }}
+          >
+            <Image
+              source={require("@/assets/icons/Close.png")}
+              style={styles.closeIcon}
+            />
+          </TouchableOpacity>
+        </View>
       </Modal>
 
       {/* Fullscreen Video Player */}
@@ -677,6 +726,7 @@ const styles = StyleSheet.create({
   // Media viewer
   gestureRoot: {
     flex: 1,
+    width: SCREEN_WIDTH,
   },
   mediaViewerBackdrop: {
     flex: 1,
@@ -698,8 +748,28 @@ const styles = StyleSheet.create({
     height: 24,
     tintColor: "#FFF",
   },
+  galleryPage: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT,
+    justifyContent: "center",
+    alignItems: "center",
+  },
   zoomableImage: {
     width: SCREEN_WIDTH,
     height: SCREEN_HEIGHT * 0.8,
+  },
+  galleryCounter: {
+    position: "absolute",
+    top: 68,
+    alignSelf: "center",
+    backgroundColor: "rgba(0, 0, 0, 0.6)",
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  galleryCounterText: {
+    color: "#FFF",
+    fontSize: 14,
+    fontWeight: "700",
   },
 });
