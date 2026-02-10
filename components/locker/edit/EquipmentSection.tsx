@@ -518,7 +518,7 @@ export default function EquipmentSection({ clubs, onUpdate }: EquipmentSectionPr
 
       {/* ============ BALL ============ */}
       <View style={styles.subsection}>
-        <Text style={styles.subsectionTitle}>⚾ Ball</Text>
+        <Text style={styles.subsectionTitle}>🟡 Ball</Text>
         <View style={styles.inputGroup}>
           <View style={styles.labelRow}>
             <Text style={styles.label}>BALL</Text>
