@@ -15,7 +15,6 @@ import {
   doc,
   getDoc,
   serverTimestamp,
-  setDoc,
 } from "firebase/firestore";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -44,6 +43,7 @@ import {
   getTotalAdjScore,
   getTotalPar,
   haversine,
+  loadFullCourseData,
 } from "@/components/leagues/post-score/helpers";
 import Scorecard from "@/components/leagues/post-score/Scorecard";
 import ScoreSummary from "@/components/leagues/post-score/ScoreSummary";
@@ -58,9 +58,6 @@ import {
   TeeOption,
   UserProfile,
 } from "@/components/leagues/post-score/types";
-
-const API_KEY = process.env.EXPO_PUBLIC_GOLFCOURSE_API_KEY;
-const API_BASE = "https://api.golfcourseapi.com/v1";
 
 type Screen = "course" | "tee" | "scorecard";
 
@@ -304,60 +301,15 @@ export default function LeaguePostScore() {
     setLoadingCourse(true);
 
     try {
-      const courseDocRef = doc(db, "courses", String(courseId));
-      const courseSnap = await getDoc(courseDocRef);
-
-      let courseData: FullCourseData | null = null;
-
-      if (courseSnap.exists()) {
-        const data = courseSnap.data();
-        courseData = {
-          id: courseId,
-          courseId: courseId,
-          courseName: data.courseName || data.course_name || course.courseName,
-          course_name: data.course_name || data.courseName,
-          location: data.location || course.location,
-          tees: data.tees,
-        };
-      } else {
-        const res = await fetch(`${API_BASE}/courses/${courseId}`, {
-          headers: { Authorization: `Key ${API_KEY}` },
-        });
-
-        if (res.ok) {
-          const apiData = await res.json();
-          courseData = {
-            id: courseId,
-            courseId: courseId,
-            courseName: apiData.course_name,
-            course_name: apiData.course_name,
-            location: apiData.location,
-            tees: apiData.tees,
-          };
-
-          try {
-            await setDoc(
-              courseDocRef,
-              {
-                id: courseId,
-                courseId: courseId,
-                courseName: apiData.course_name,
-                course_name: apiData.course_name,
-                location: apiData.location,
-                tees: apiData.tees,
-                cachedAt: serverTimestamp(),
-              },
-              { merge: true }
-            );
-          } catch (e) {
-            console.error("Failed to cache course:", e);
-          }
-        }
-      }
+      const courseData = await loadFullCourseData(
+        courseId,
+        course.courseName || course.course_name,
+        course.location
+      );
 
       if (courseData) {
         setFullCourseData(courseData);
-
+        console.log("🔍 courseData.tees:", JSON.stringify(courseData.tees, null, 2)?.slice(0, 500));
         const tees = extractTees(courseData.tees);
 
         if (tees.length > 0) {
@@ -381,6 +333,8 @@ export default function LeaguePostScore() {
           setSelectedTee(defaultTee);
           setCurrentScreen("scorecard");
         }
+      } else {
+        Alert.alert("Error", "Could not load course data.");
       }
     } catch (error) {
       console.error("Error loading course:", error);

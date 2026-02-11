@@ -1,3 +1,21 @@
+/**
+ * Post Score Screen (Refactored)
+ *
+ * Flow: Course Selection → Tee Selection → Scorecard → Round Details → Submit
+ *
+ * Reuses league post-score components:
+ * - CourseSelector, TeeSelector, Scorecard, ScoreSummary
+ * - helpers.ts, types.ts, styles.ts
+ *
+ * Adds non-league features:
+ * - Hole-in-one detection & verification
+ * - Round description with @mention autocomplete
+ * - Scorecard image upload (required)
+ * - Scores collection write + Cloud Function triggers
+ * - User stats, course stats, location updates
+ * - Rate limiting & email verification
+ */
+
 import { auth, db, storage } from "@/constants/firebaseConfig";
 import { canPostScores } from "@/utils/canPostScores";
 import {
@@ -5,9 +23,10 @@ import {
   EMAIL_VERIFICATION_MESSAGE,
   getRateLimitMessage,
   isEmailVerified,
-  updateRateLimitTimestamp
+  updateRateLimitTimestamp,
 } from "@/utils/rateLimitHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
+import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
@@ -19,65 +38,59 @@ import {
   getDoc,
   increment,
   serverTimestamp,
-  setDoc,
-  updateDoc
+  updateDoc,
 } from "firebase/firestore";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Dimensions,
   FlatList,
   Image,
-  ImageBackground,
   KeyboardAvoidingView,
   Modal,
   Platform,
   ScrollView,
-  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-const SCREEN_WIDTH = Dimensions.get('window').width;
-const API_KEY = process.env.EXPO_PUBLIC_GOLFCOURSE_API_KEY;
-const API_BASE = "https://api.golfcourseapi.com/v1";
+// Reuse league post-score components
+import CourseSelector from "@/components/leagues/post-score/CourseSelector";
+import Scorecard from "@/components/leagues/post-score/Scorecard";
+import ScoreSummary from "@/components/leagues/post-score/ScoreSummary";
+import TeeSelector from "@/components/leagues/post-score/TeeSelector";
+import {
+  calculateAllAdjustedScores,
+  calculateCourseHandicap,
+  countFairways,
+  countGreens,
+  countPenalties,
+  extractTees,
+  generateDefaultHoles,
+  getTotalAdjScore,
+  getTotalPar,
+  getTotalScore,
+  haversine,
+  loadFullCourseData,
+} from "@/components/leagues/post-score/helpers";
+import { styles } from "@/components/leagues/post-score/styles";
+import {
+  CourseBasic,
+  FullCourseData,
+  TeeOption,
+} from "@/components/leagues/post-score/types";
+
+console.log("✅ PostScoreScreen module loaded successfully");
+
 const MAX_CHARACTERS = 280;
 
-/* ========================= TYPES ========================= */
-
-type HoleCount = 9 | 18;
-type HoleInOne = "yes" | "no";
-
-type UserLocation = {
-  city?: string;
-  state?: string;
-  zip?: string;
-  latitude?: number;
-  longitude?: number;
-};
-
-type Course = {
-  id?: number;
-  courseId?: number;
-  course_name?: string;
-  courseName?: string;
-  location?: {
-    city: string;
-    state: string;
-    latitude?: number;
-    longitude?: number;
-  };
-  tees?: {
-    male?: Array<{ name?: string; tee_name?: string; par_total?: number; par?: number; total_yards?: number; yardage?: number }>;
-    female?: Array<{ name?: string; tee_name?: string; par_total?: number; par?: number; total_yards?: number; yardage?: number }>;
-  };
-  distance?: number;
-};
+/* ================================================================ */
+/* TYPES                                                            */
+/* ================================================================ */
 
 interface Partner {
   userId: string;
@@ -85,25 +98,11 @@ interface Partner {
   avatar?: string;
 }
 
-interface TeeOption {
-  name: string;
-  par: number;
-  yardage?: number;
-  gender: "male" | "female";
-}
+type Screen = "course" | "tee" | "scorecard";
 
-/* ========================= HELPERS ========================= */
-
-function haversine(lat1: number, lon1: number, lat2: number, lon2: number) {
-  const toRad = (v: number) => (v * Math.PI) / 180;
-  const R = 3958.8;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
+/* ================================================================ */
+/* HELPERS                                                          */
+/* ================================================================ */
 
 function encodeGeohash(latitude: number, longitude: number, precision: number = 5): string {
   const base32 = "0123456789bcdefghjkmnpqrstuvwxyz";
@@ -117,341 +116,406 @@ function encodeGeohash(latitude: number, longitude: number, precision: number = 
   while (geohash.length < precision) {
     if (evenBit) {
       const lonMid = (lonMin + lonMax) / 2;
-      if (longitude > lonMid) {
-        idx = (idx << 1) + 1;
-        lonMin = lonMid;
-      } else {
-        idx = idx << 1;
-        lonMax = lonMid;
-      }
+      if (longitude > lonMid) { idx = (idx << 1) + 1; lonMin = lonMid; }
+      else { idx = idx << 1; lonMax = lonMid; }
     } else {
       const latMid = (latMin + latMax) / 2;
-      if (latitude > latMid) {
-        idx = (idx << 1) + 1;
-        latMin = latMid;
-      } else {
-        idx = idx << 1;
-        latMax = latMid;
-      }
+      if (latitude > latMid) { idx = (idx << 1) + 1; latMin = latMid; }
+      else { idx = idx << 1; latMax = latMid; }
     }
     evenBit = !evenBit;
-
-    if (++bit === 5) {
-      geohash += base32[idx];
-      bit = 0;
-      idx = 0;
-    }
+    if (++bit === 5) { geohash += base32[idx]; bit = 0; idx = 0; }
   }
-
   return geohash;
 }
 
-/* ========================= COMPONENT ========================= */
+/* ================================================================ */
+/* COMPONENT                                                        */
+/* ================================================================ */
 
 export default function PostScoreScreen() {
   const router = useRouter();
-  const scrollViewRef = useRef<ScrollView>(null);
+  const insets = useSafeAreaInsets();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentUserId = auth.currentUser?.uid;
 
-  const CloseIcon = require("@/assets/icons/Close.png");
+  console.log("🏌️ PostScoreScreen render, userId:", currentUserId);
+
+  // Current screen in flow
+  const [currentScreen, setCurrentScreen] = useState<Screen>("course");
+
+  /* ---------------------------------------------------------------- */
+  /* USER DATA                                                        */
+  /* ---------------------------------------------------------------- */
 
   const [userData, setUserData] = useState<any>(null);
   const [userRegionKey, setUserRegionKey] = useState<string | null>(null);
+  const [userLocation, setUserLocation] = useState<{
+    latitude?: number;
+    longitude?: number;
+  } | null>(null);
   const [allPartners, setAllPartners] = useState<Partner[]>([]);
   const canPost = canPostScores(userData);
 
-  const [location, setLocation] = useState<UserLocation | null>(null);
+  /* ---------------------------------------------------------------- */
+  /* COURSE & TEE STATE                                               */
+  /* ---------------------------------------------------------------- */
 
-  const [cachedCourses, setCachedCourses] = useState<Course[]>([]);
-  const [searchResults, setSearchResults] = useState<Course[]>([]);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedCourse, setSelectedCourse] = useState<Course | null>(null);
-  const [showCourseSearch, setShowCourseSearch] = useState(false);
-
-  const [teeOptions, setTeeOptions] = useState<TeeOption[]>([]);
+  const [availableCourses, setAvailableCourses] = useState<CourseBasic[]>([]);
+  const [fullCourseData, setFullCourseData] = useState<FullCourseData | null>(null);
+  const [availableTees, setAvailableTees] = useState<TeeOption[]>([]);
   const [selectedTee, setSelectedTee] = useState<TeeOption | null>(null);
-  const [showTeeDropdown, setShowTeeDropdown] = useState(false);
 
-  const [holeCount, setHoleCount] = useState<HoleCount>(18);
-  const [hadHoleInOne, setHadHoleInOne] = useState<HoleInOne>("no");
-  const [grossScore, setGrossScore] = useState("");
-  const [birdies, setBirdies] = useState("");
-  const [eagles, setEagles] = useState("");
-  const [albatross, setAlbatross] = useState("");
-  
-  const [holeNumber, setHoleNumber] = useState("");
+  /* ---------------------------------------------------------------- */
+  /* SCORE STATE                                                      */
+  /* ---------------------------------------------------------------- */
+
+  const [holeCount, setHoleCount] = useState<9 | 18>(18);
+  const [scores, setScores] = useState<(number | null)[]>(new Array(18).fill(null));
+  const [fir, setFir] = useState<(boolean | null)[]>(new Array(18).fill(null));
+  const [gir, setGir] = useState<(boolean | null)[]>(new Array(18).fill(null));
+  const [pnl, setPnl] = useState<(number | null)[]>(new Array(18).fill(null));
+
+  /* ---------------------------------------------------------------- */
+  /* HOLE-IN-ONE STATE                                                */
+  /* ---------------------------------------------------------------- */
+
+  const [hadHoleInOne, setHadHoleInOne] = useState(false);
+  const [holeInOneHoleNumber, setHoleInOneHoleNumber] = useState("");
   const [selectedVerifier, setSelectedVerifier] = useState<Partner | null>(null);
   const [showVerifierModal, setShowVerifierModal] = useState(false);
   const [verifierSearchQuery, setVerifierSearchQuery] = useState("");
 
+  /* ---------------------------------------------------------------- */
+  /* ROUND DETAILS STATE                                              */
+  /* ---------------------------------------------------------------- */
+
   const [roundDescription, setRoundDescription] = useState("");
   const [scorecardImageUri, setScorecardImageUri] = useState<string | null>(null);
-
-  const [submitting, setSubmitting] = useState(false);
-  const [submittingMessage, setSubmittingMessage] = useState("Submitting...");
-
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [autocompleteResults, setAutocompleteResults] = useState<any[]>([]);
   const [currentMention, setCurrentMention] = useState("");
   const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
 
+  /* ---------------------------------------------------------------- */
+  /* UI STATE                                                         */
+  /* ---------------------------------------------------------------- */
+
+  const [loading, setLoading] = useState(true);
+  const [loadingCourse, setLoadingCourse] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submittingMessage, setSubmittingMessage] = useState("Submitting...");
+
+  /* ================================================================ */
+  /* DERIVED VALUES                                                   */
+  /* ================================================================ */
+
+  const holesCount = holeCount;
+
+  const courseHandicap = useMemo(() => {
+    if (!selectedTee || !userData) return 0;
+    const handicapIndex = parseFloat(userData.handicap) || 0;
+    return calculateCourseHandicap(handicapIndex, selectedTee.slope_rating, holesCount);
+  }, [selectedTee, userData, holesCount]);
+
+  const adjScores = useMemo(() => {
+    if (!selectedTee) return scores.map(() => null);
+    return calculateAllAdjustedScores(scores, selectedTee.holes, courseHandicap, holesCount);
+  }, [scores, selectedTee, courseHandicap, holesCount]);
+
+  /* ================================================================ */
+  /* DATA LOADING                                                     */
+  /* ================================================================ */
+
   useEffect(() => {
-    const loadUser = async () => {
-      const uid = auth.currentUser?.uid;
-      if (!uid) return;
+    if (currentUserId) loadData();
+  }, [currentUserId]);
 
-      const snap = await getDoc(doc(db, "users", uid));
-      if (snap.exists()) {
-        const data = snap.data();
-        setUserData(data);
-        setLocation(data.location || null);
-        setUserRegionKey(data.regionKey || null);
+  const loadData = async () => {
+    if (!currentUserId) return;
+    console.log("📦 loadData started");
+    try {
+      setLoading(true);
 
-        const partners = data?.partners || [];
-        if (Array.isArray(partners) && partners.length > 0) {
-          const partnerDocs = await Promise.all(
-            partners.map((partnerId: string) => getDoc(doc(db, "users", partnerId)))
-          );
+      const snap = await getDoc(doc(db, "users", currentUserId));
+      if (!snap.exists()) return;
 
-          const partnerList = partnerDocs
+      const data = snap.data();
+      setUserData(data);
+      setUserRegionKey(data.regionKey || null);
+
+      if (data.location?.latitude && data.location?.longitude) {
+        setUserLocation({
+          latitude: data.location.latitude,
+          longitude: data.location.longitude,
+        });
+      }
+
+      // Load partners
+      const partners = data?.partners || [];
+      if (Array.isArray(partners) && partners.length > 0) {
+        const partnerDocs = await Promise.all(
+          partners.map((id: string) => getDoc(doc(db, "users", id)))
+        );
+        setAllPartners(
+          partnerDocs
             .filter((d) => d.exists())
             .map((d) => ({
               userId: d.id,
               displayName: d.data()?.displayName || "Unknown",
               avatar: d.data()?.avatar || undefined,
-            }));
-
-          setAllPartners(partnerList);
-        }
+            }))
+        );
       }
-    };
-    loadUser();
-  }, []);
 
-  useEffect(() => {
-    if (!userData) return;
-    loadCachedCourses();
-  }, [userData]);
-
-  const loadCachedCourses = async () => {
-    try {
-      const cached = userData?.cachedCourses || [];
-      
+      // Load cached courses
+      const cached = data?.cachedCourses || [];
       if (cached.length > 0) {
-        const uniqueCourses = cached.reduce((acc: Course[], current: Course) => {
-          const exists = acc.find(c => c.courseId === current.courseId || c.id === current.courseId);
-          if (!exists) {
-            acc.push(current);
+        const unique = cached.reduce((acc: any[], cur: any) => {
+          if (!acc.find((c: any) => c.courseId === cur.courseId || c.id === cur.courseId)) {
+            acc.push(cur);
           }
           return acc;
         }, []);
-        
-        const sorted = [...uniqueCourses].sort((a, b) => (a.distance || 999) - (b.distance || 999));
-        setCachedCourses(sorted.slice(0, 3));
-      } else {
-        setCachedCourses([]);
+
+        const courses: CourseBasic[] = unique.map((c: any) => {
+          let distance: number | undefined;
+          if (data.location?.latitude && data.location?.longitude && c.location?.latitude && c.location?.longitude) {
+            distance = haversine(data.location.latitude, data.location.longitude, c.location.latitude, c.location.longitude);
+          }
+          return {
+            id: c.id || c.courseId,
+            courseId: c.courseId || c.id,
+            courseName: c.courseName || c.course_name,
+            course_name: c.course_name || c.courseName,
+            location: c.location,
+            city: c.location?.city,
+            state: c.location?.state,
+            distance,
+          };
+        });
+
+        courses.sort((a: CourseBasic, b: CourseBasic) => (a.distance || 999) - (b.distance || 999));
+        setAvailableCourses(courses.slice(0, 5));
+        console.log("📦 Loaded", courses.length, "cached courses");
       }
     } catch (error) {
-      console.error("Error loading cached courses:", error);
-      setCachedCourses([]);
+      console.error("Error loading data:", error);
+    } finally {
+      setLoading(false);
+      console.log("📦 loadData complete");
     }
   };
 
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) {
-      setSearchResults([]);
+  const resetArrays = (hc: number) => {
+    setScores(new Array(hc).fill(null));
+    setFir(new Array(hc).fill(null));
+    setGir(new Array(hc).fill(null));
+    setPnl(new Array(hc).fill(null));
+  };
+
+  /* ================================================================ */
+  /* COURSE & TEE HANDLERS                                            */
+  /* ================================================================ */
+
+  const handleSelectCourse = async (course: CourseBasic) => {
+    console.log("🏌️ handleSelectCourse CALLED:", JSON.stringify(course).slice(0, 300));
+    
+    const rawCourseId = course.courseId || course.id;
+    console.log("🏌️ rawCourseId:", rawCourseId, "type:", typeof rawCourseId);
+    if (!rawCourseId) {
+      console.log("🏌️ BAIL: no rawCourseId");
       return;
     }
 
+    const courseId = typeof rawCourseId === "string" ? parseInt(rawCourseId, 10) : rawCourseId;
+    console.log("🏌️ parsed courseId:", courseId);
+    if (isNaN(courseId as number)) {
+      console.log("🏌️ BAIL: courseId is NaN");
+      return;
+    }
+
+    setLoadingCourse(true);
+
     try {
-      soundPlayer.play('click');
-      const res = await fetch(
-        `${API_BASE}/search?search_query=${encodeURIComponent(searchQuery)}`,
-        { headers: { Authorization: `Key ${API_KEY}` } }
+      console.log("🏌️ Calling loadFullCourseData...");
+      const courseData = await loadFullCourseData(
+        courseId as number,
+        course.courseName || course.course_name,
+        course.location
       );
-      const data = await res.json();
-      const courses: Course[] = data.courses || [];
 
-      if (location?.latitude && location?.longitude) {
-        const coursesWithDistance = courses.map((c) => ({
-          ...c,
-          distance: c.location?.latitude && c.location?.longitude
-            ? haversine(location.latitude!, location.longitude!, c.location.latitude, c.location.longitude)
-            : 999,
-        }));
-
-        coursesWithDistance.sort((a, b) => a.distance - b.distance);
-        setSearchResults(coursesWithDistance);
-      } else {
-        setSearchResults(courses);
-      }
-    } catch (error) {
-      console.error("Search error:", error);
-      setSearchResults([]);
-    }
-  };
-
-  const handleCourseSelect = async (course: Course) => {
-    soundPlayer.play('click');
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    
-    setShowCourseSearch(false);
-    setSearchResults([]);
-    setSearchQuery("");
-
-    const courseId = course.id || course.courseId;
-    
-    if (!course.location || !course.tees) {
-      try {
-        const courseDocRef = doc(db, "courses", String(courseId));
-        const courseSnap = await getDoc(courseDocRef);
+      console.log("🏌️ loadFullCourseData returned:", courseData ? "data" : "null");
+      if (courseData) {
+        console.log("🏌️ courseName:", courseData.courseName);
+        console.log("🏌️ tees:", JSON.stringify(courseData.tees, null, 2)?.slice(0, 500));
         
-        if (courseSnap.exists()) {
-          const fullCourseData = courseSnap.data();
-          
-          const completeCourse: Course = {
-            id: courseId,
-            courseId: courseId,
-            course_name: fullCourseData.courseName || course.courseName || course.course_name,
-            courseName: fullCourseData.courseName || course.courseName,
-            location: fullCourseData.location,
-            tees: fullCourseData.tees,
-            distance: course.distance,
-          };
-          
-          setSelectedCourse(completeCourse);
-          await loadTeesForCourse(completeCourse);
-          return;
-        }
-      } catch (error) {
-        console.error("Error loading course from Firestore:", error);
-      }
-    }
-    
-    setSelectedCourse(course);
-    await loadTeesForCourse(course);
-  };
-
-  const loadTeesForCourse = async (course: Course) => {
-    try {
-      const courseId = course.id || course.courseId;
-      const courseDocRef = doc(db, "courses", String(courseId));
-      const courseSnap = await getDoc(courseDocRef);
-
-      let tees: TeeOption[] = [];
-
-      if (courseSnap.exists()) {
-        const cachedData = courseSnap.data();
-
-        if (cachedData.tees) {
-          if (cachedData.tees.female && Array.isArray(cachedData.tees.female)) {
-            cachedData.tees.female.forEach((teeArray: any, index: number) => {
-              const teeData = Array.isArray(teeArray) ? teeArray[0] : teeArray;
-              
-              if (teeData && typeof teeData === 'object') {
-                tees.push({
-                  name: teeData.tee_name || `Women's Tee ${index + 1}`,
-                  par: teeData.par_total || teeData.par || 72,
-                  yardage: teeData.total_yards || teeData.yardage || undefined,
-                  gender: "female",
-                });
-              }
-            });
-          }
-
-          if (cachedData.tees.male && Array.isArray(cachedData.tees.male)) {
-            cachedData.tees.male.forEach((teeArray: any, index: number) => {
-              const teeData = Array.isArray(teeArray) ? teeArray[0] : teeArray;
-              
-              if (teeData && typeof teeData === 'object') {
-                tees.push({
-                  name: teeData.tee_name || `Men's Tee ${index + 1}`,
-                  par: teeData.par_total || teeData.par || 72,
-                  yardage: teeData.total_yards || teeData.yardage || undefined,
-                  gender: "male",
-                });
-              }
-            });
-          }
-        }
-      }
-
-      if (tees.length === 0) {
-        if (course.tees?.male) {
-          course.tees.male.forEach((tee, index) => {
-            tees.push({
-              name: tee.name || `Men's Tee ${index + 1}`,
-              par: tee.par_total || 72,
-              gender: "male",
-            });
-          });
-        }
-
-        if (course.tees?.female) {
-          course.tees.female.forEach((tee, index) => {
-            tees.push({
-              name: tee.name || `Women's Tee ${index + 1}`,
-              par: tee.par_total || 72,
-              gender: "female",
-            });
-          });
-        }
+        setFullCourseData(courseData);
+        const tees = extractTees(courseData.tees);
+        console.log("🏌️ extractTees returned:", tees.length, "tees");
 
         if (tees.length > 0) {
-          await setDoc(courseDocRef, {
-            id: courseId,
-            courseName: course.course_name || course.courseName,
-            location: course.location,
-            tees: course.tees,
-            userId: auth.currentUser!.uid,
-            cachedAt: serverTimestamp(),
-          }, { merge: true });
+          setAvailableTees(tees);
+          setCurrentScreen("tee");
+        } else {
+          Alert.alert("No Tee Data", "Using default values.");
+          const defaultTee: TeeOption = {
+            tee_name: "Default",
+            course_rating: 72,
+            slope_rating: 113,
+            par_total: holesCount === 9 ? 36 : 72,
+            total_yards: holesCount === 9 ? 3200 : 6400,
+            number_of_holes: holesCount,
+            holes: generateDefaultHoles(holesCount),
+            source: "male",
+          };
+          setSelectedTee(defaultTee);
+          setCurrentScreen("scorecard");
         }
-      }
-
-      if (tees.length > 0) {
-        setTeeOptions(tees);
-        setSelectedTee(tees[0]);
       } else {
-        const defaultTee = { name: "Standard", par: 72, gender: "male" as const };
-        setTeeOptions([defaultTee]);
-        setSelectedTee(defaultTee);
+        console.log("🏌️ courseData is null — showing error");
+        Alert.alert("Error", "Could not load course data.");
       }
     } catch (error) {
-      console.error("Error loading tees:", error);
-      const defaultTee = { name: "Standard", par: 72, gender: "male" as const };
-      setTeeOptions([defaultTee]);
-      setSelectedTee(defaultTee);
+      console.error("🏌️ Error loading course:", error);
+      Alert.alert("Error", "Failed to load course data.");
+    } finally {
+      setLoadingCourse(false);
     }
   };
 
-  const handleHoleInOneSelect = () => {
-    soundPlayer.play('click');
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    
-    setHadHoleInOne("yes");
-    
-    Alert.alert(
-      "Partner Verification Required",
-      "Hole-in-ones require partner verification",
-      [{ text: "Got It", style: "default" }]
-    );
+  const handleSelectTee = (tee: TeeOption) => {
+    console.log("🏌️ handleSelectTee:", tee.tee_name);
+    if (tee.holes && tee.holes.length >= holesCount) {
+      setSelectedTee(tee);
+    } else {
+      const filledHoles = [];
+      for (let i = 0; i < holesCount; i++) {
+        filledHoles.push(tee.holes?.[i] || { par: 4, yardage: 400 });
+      }
+      setSelectedTee({ ...tee, holes: filledHoles });
+    }
+    resetArrays(holesCount);
+    setCurrentScreen("scorecard");
   };
+
+  const handleChangeCourse = () => {
+    soundPlayer.play("click");
+    setSelectedTee(null);
+    setFullCourseData(null);
+    setAvailableTees([]);
+    setCurrentScreen("course");
+  };
+
+  const handleChangeTee = () => {
+    soundPlayer.play("click");
+    setSelectedTee(null);
+    setCurrentScreen("tee");
+  };
+
+  /* ================================================================ */
+  /* AUTO-DETECT FROM SCORES                                          */
+  /* ================================================================ */
+
+  /** Auto-detect hole-in-one when any hole is scored as 1 */
+  useEffect(() => {
+    if (!selectedTee) return;
+
+    const aceHoles: number[] = [];
+    for (let i = 0; i < holesCount; i++) {
+      if (scores[i] === 1) aceHoles.push(i + 1); // 1-indexed hole number
+    }
+
+    if (aceHoles.length > 0) {
+      if (!hadHoleInOne) {
+        setHadHoleInOne(true);
+        setHoleInOneHoleNumber(String(aceHoles[0]));
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert(
+          "Hole-in-One Detected! 🎯",
+          `Hole ${aceHoles[0]}! Select a partner to verify.`,
+          [{ text: "Got It" }]
+        );
+      } else {
+        // Update hole number if they change which hole has the ace
+        setHoleInOneHoleNumber(String(aceHoles[0]));
+      }
+    } else if (hadHoleInOne) {
+      // All aces removed — reset
+      setHadHoleInOne(false);
+      setHoleInOneHoleNumber("");
+      setSelectedVerifier(null);
+    }
+  }, [scores, holesCount, selectedTee]);
+
+  /** Auto-calculate birdie/eagle/albatross counts for display */
+  const scoreCounts = useMemo(() => {
+    if (!selectedTee) return { birdies: 0, eagles: 0, albatross: 0, aces: 0 };
+    let birdies = 0, eagles = 0, albatross = 0, aces = 0;
+    for (let i = 0; i < holesCount; i++) {
+      const score = scores[i];
+      const par = selectedTee.holes[i]?.par || 4;
+      if (score === null) continue;
+      if (score === 1) aces++;
+      const diff = score - par;
+      if (diff === -1) birdies++;
+      else if (diff === -2) eagles++;
+      else if (diff <= -3) albatross++;
+    }
+    return { birdies, eagles, albatross, aces };
+  }, [scores, selectedTee, holesCount]);
+
+  /* ================================================================ */
+  /* SCORE INPUT HANDLERS                                             */
+  /* ================================================================ */
+
+  const handleScoreChange = useCallback((holeIndex: number, value: string) => {
+    const numValue = value === "" ? null : parseInt(value, 10);
+    if (numValue !== null && (isNaN(numValue) || numValue < 1 || numValue > 15)) return;
+    setScores((prev) => { const next = [...prev]; next[holeIndex] = numValue; return next; });
+  }, []);
+
+  const handleFirToggle = useCallback((holeIndex: number) => {
+    setFir((prev) => {
+      const next = [...prev];
+      if (next[holeIndex] === null) next[holeIndex] = true;
+      else if (next[holeIndex] === true) next[holeIndex] = false;
+      else next[holeIndex] = null;
+      return next;
+    });
+  }, []);
+
+  const handleGirToggle = useCallback((holeIndex: number) => {
+    setGir((prev) => {
+      const next = [...prev];
+      if (next[holeIndex] === null) next[holeIndex] = true;
+      else if (next[holeIndex] === true) next[holeIndex] = false;
+      else next[holeIndex] = null;
+      return next;
+    });
+  }, []);
+
+  const handlePnlChange = useCallback((holeIndex: number, value: string) => {
+    const numValue = value === "" ? null : parseInt(value, 10);
+    if (numValue !== null && (isNaN(numValue) || numValue < 0 || numValue > 9)) return;
+    setPnl((prev) => { const next = [...prev]; next[holeIndex] = numValue; return next; });
+  }, []);
+
+  /* ================================================================ */
+  /* ROUND DESCRIPTION & @MENTIONS                                    */
+  /* ================================================================ */
 
   const renderDescriptionWithMentions = () => {
     const mentionRegex = /@([\w\s]+?)(?=\s{2,}|$|@|\n)/g;
     const parts: { text: string; isMention: boolean }[] = [];
     let lastIndex = 0;
-
     let match;
+
     while ((match = mentionRegex.exec(roundDescription)) !== null) {
       if (match.index > lastIndex) {
         parts.push({ text: roundDescription.slice(lastIndex, match.index), isMention: false });
       }
-
-      const mentionText = match[0].trim();
-      const isValidMention = selectedMentions.includes(mentionText);
-
+      const isValidMention = selectedMentions.includes(match[0].trim());
       parts.push({ text: match[0], isMention: isValidMention });
       lastIndex = match.index + match[0].length;
     }
@@ -460,34 +524,25 @@ export default function PostScoreScreen() {
       parts.push({ text: roundDescription.slice(lastIndex), isMention: false });
     }
 
-    return parts.map((part, index) => {
-      if (part.isMention) {
-        return (
-          <Text key={index} style={styles.mentionText}>
-            {part.text}
-          </Text>
-        );
-      }
-      return <Text key={index}>{part.text}</Text>;
-    });
+    return parts.map((part, index) =>
+      part.isMention
+        ? <Text key={index} style={{ fontSize: 16, fontWeight: "700", color: "#0D5C3A" }}>{part.text}</Text>
+        : <Text key={index}>{part.text}</Text>
+    );
   };
 
   const handleDescriptionChange = (text: string) => {
     setRoundDescription(text);
 
-    const cleanedMentions = selectedMentions.filter((mention) => text.includes(mention));
+    const cleanedMentions = selectedMentions.filter((m) => text.includes(m));
     if (cleanedMentions.length !== selectedMentions.length) {
       setSelectedMentions(cleanedMentions);
     }
 
     const lastAtIndex = text.lastIndexOf("@");
-    if (lastAtIndex === -1) {
-      setShowAutocomplete(false);
-      return;
-    }
+    if (lastAtIndex === -1) { setShowAutocomplete(false); return; }
 
     const afterAt = text.slice(lastAtIndex + 1);
-
     if (afterAt.endsWith("  ") || (afterAt.includes("@") && afterAt.indexOf("@") > 0)) {
       setShowAutocomplete(false);
       return;
@@ -495,65 +550,47 @@ export default function PostScoreScreen() {
 
     const words = text.split(/\s+/);
     const lastWord = words[words.length - 1];
-
-    if (!lastWord.startsWith("@")) {
-      setShowAutocomplete(false);
-      return;
-    }
+    if (!lastWord.startsWith("@")) { setShowAutocomplete(false); return; }
 
     const searchText = lastWord.slice(1);
     setCurrentMention(searchText);
 
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current);
-    }
-
+    if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       if (searchText.length >= 1) {
-        searchMentions(searchText);
+        const results = allPartners.filter((p) =>
+          p.displayName.toLowerCase().includes(searchText.toLowerCase())
+        );
+        setAutocompleteResults(results.map((p) => ({ ...p, type: "partner" })));
+        setShowAutocomplete(results.length > 0);
       } else {
         setShowAutocomplete(false);
       }
     }, 300);
   };
 
-  const searchMentions = async (searchText: string) => {
-    try {
-      const partnerResults = allPartners.filter((p) =>
-        p.displayName.toLowerCase().includes(searchText.toLowerCase())
-      );
-
-      if (partnerResults.length > 0) {
-        setAutocompleteResults(partnerResults.map((p) => ({ ...p, type: "partner" })));
-        setShowAutocomplete(true);
-      } else {
-        setShowAutocomplete(false);
-      }
-    } catch (err) {
-      console.error("Search error:", err);
-    }
-  };
-
   const handleSelectMention = (item: any) => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     const lastAtIndex = roundDescription.lastIndexOf("@");
     const beforeAt = roundDescription.slice(0, lastAtIndex);
     const afterMention = roundDescription.slice(lastAtIndex + 1 + currentMention.length);
-
     const mentionText = `@${item.displayName}`;
-    setRoundDescription(`${beforeAt}${mentionText} ${afterMention}`);
 
+    setRoundDescription(`${beforeAt}${mentionText} ${afterMention}`);
     if (!selectedMentions.includes(mentionText)) {
       setSelectedMentions([...selectedMentions, mentionText]);
     }
-
     setShowAutocomplete(false);
   };
 
+  /* ================================================================ */
+  /* SCORECARD IMAGE                                                  */
+  /* ================================================================ */
+
   const pickScorecardImage = async () => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -564,121 +601,103 @@ export default function PostScoreScreen() {
     });
 
     if (!result.canceled && result.assets[0]) {
-      soundPlayer.play('postThought');
+      soundPlayer.play("postThought");
       setScorecardImageUri(result.assets[0].uri);
     }
   };
 
+  /* ================================================================ */
+  /* CLOSE HANDLER                                                    */
+  /* ================================================================ */
+
   const handleClose = () => {
     const hasData =
       scorecardImageUri !== null ||
-      selectedCourse !== null ||
-      grossScore !== "" ||
+      fullCourseData !== null ||
+      scores.some((s) => s !== null) ||
       roundDescription.trim() !== "";
 
     if (hasData) {
-      soundPlayer.play('click');
-      Alert.alert(
-        "Discard Changes?",
-        "Are you sure you want to cancel? Your progress will be lost.",
-        [
-          {
-            text: "Keep Editing",
-            style: "cancel",
-            onPress: () => soundPlayer.play('click'),
+      soundPlayer.play("click");
+      Alert.alert("Discard Changes?", "Your progress will be lost.", [
+        { text: "Keep Editing", style: "cancel" },
+        {
+          text: "Discard",
+          style: "destructive",
+          onPress: () => {
+            soundPlayer.play("error");
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            router.back();
           },
-          {
-            text: "Discard",
-            style: "destructive",
-            onPress: () => {
-              soundPlayer.play('error');
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-              router.back();
-            },
-          },
-        ]
-      );
+        },
+      ]);
     } else {
-      soundPlayer.play('click');
+      soundPlayer.play("click");
       router.back();
     }
   };
 
+  /* ================================================================ */
+  /* SUBMIT                                                           */
+  /* ================================================================ */
+
   const handleSubmit = async () => {
+    if (!currentUserId || !selectedTee || !fullCourseData || !userData) return;
+
     setSubmitting(true);
     setSubmittingMessage("Submitting score...");
-
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
 
+    // Validations
     if (!canPost) {
-      soundPlayer.play('error');
-      setSubmitting(false);
+      soundPlayer.play("error"); setSubmitting(false);
       Alert.alert("Verification Pending", "Posting unlocks once your account is verified.");
       return;
     }
-
     if (!isEmailVerified()) {
-      soundPlayer.play('error');
-      setSubmitting(false);
+      soundPlayer.play("error"); setSubmitting(false);
       Alert.alert("Email Not Verified", EMAIL_VERIFICATION_MESSAGE);
       return;
     }
-
     const { allowed, remainingSeconds } = await checkRateLimit("score");
     if (!allowed) {
-      soundPlayer.play('error');
-      setSubmitting(false);
+      soundPlayer.play("error"); setSubmitting(false);
       Alert.alert("Please Wait", getRateLimitMessage("score", remainingSeconds));
       return;
     }
 
-    if (!selectedCourse) {
-      soundPlayer.play('error');
-      setSubmitting(false);
-      Alert.alert("Select Course", "Please select a course first.");
-      return;
-    }
-
-    if (!selectedTee) {
-      soundPlayer.play('error');
-      setSubmitting(false);
-      Alert.alert("Select Tee", "Please select your tee.");
-      return;
-    }
-
-    if (!grossScore.trim()) {
-      soundPlayer.play('error');
-      setSubmitting(false);
-      Alert.alert("Missing Score", "Please enter your gross score.");
+    // Check all scores entered
+    const activeScores = scores.slice(0, holesCount);
+    const missingScores = activeScores.filter((s) => s === null);
+    if (missingScores.length > 0) {
+      soundPlayer.play("error"); setSubmitting(false);
+      Alert.alert("Incomplete Scorecard", `Please enter scores for all ${holesCount} holes.`);
       return;
     }
 
     if (!scorecardImageUri) {
-      soundPlayer.play('error');
-      setSubmitting(false);
+      soundPlayer.play("error"); setSubmitting(false);
       Alert.alert("Scorecard Required", "Please upload a photo of your scorecard.");
       return;
     }
 
-    if (hadHoleInOne === "yes") {
-      if (!holeNumber.trim()) {
-        soundPlayer.play('error');
-        setSubmitting(false);
+    if (hadHoleInOne) {
+      if (!holeInOneHoleNumber.trim()) {
+        soundPlayer.play("error"); setSubmitting(false);
         Alert.alert("Missing Hole Number", "Please enter the hole number.");
         return;
       }
       if (!selectedVerifier) {
-        soundPlayer.play('error');
-        setSubmitting(false);
+        soundPlayer.play("error"); setSubmitting(false);
         Alert.alert("Select Verifier", "Please select a partner to verify your hole-in-one.");
         return;
       }
     }
 
     try {
+      // Upload scorecard image
       setSubmittingMessage("Compressing scorecard...");
-      
       const compressed = await manipulateAsync(
         scorecardImageUri,
         [{ resize: { width: 1080 } }],
@@ -688,7 +707,7 @@ export default function PostScoreScreen() {
       setSubmittingMessage("Uploading scorecard...");
       const response = await fetch(compressed.uri);
       const blob = await response.blob();
-      const imagePath = `scorecards/${auth.currentUser?.uid}/${Date.now()}.jpg`;
+      const imagePath = `scorecards/${currentUserId}/${Date.now()}.jpg`;
       const imageRef = ref(storage, imagePath);
       await uploadBytes(imageRef, blob);
       const imageUrl = await getDownloadURL(imageRef);
@@ -696,150 +715,149 @@ export default function PostScoreScreen() {
       // Extract tagged partners from description
       const mentionRegex = /@([\w\s]+?)(?=\s{2,}|$|@|\n)/g;
       const mentions = roundDescription.match(mentionRegex) || [];
-
       const extractedPartners: Partner[] = [];
 
       for (const mention of mentions) {
         const mentionText = mention.substring(1).trim();
-        const matchedPartner = allPartners.find(
+        const matched = allPartners.find(
           (p) => p.displayName.toLowerCase() === mentionText.toLowerCase()
         );
-
-        if (matchedPartner && !extractedPartners.find((p) => p.userId === matchedPartner.userId)) {
-          extractedPartners.push(matchedPartner);
+        if (matched && !extractedPartners.find((p) => p.userId === matched.userId)) {
+          extractedPartners.push(matched);
         }
       }
 
-      let regionKey = userRegionKey;
+      // Geohash
       let geohash = null;
-
-      if (selectedCourse.location?.latitude && selectedCourse.location?.longitude) {
-        geohash = encodeGeohash(
-          selectedCourse.location.latitude,
-          selectedCourse.location.longitude,
-          5
-        );
+      if (fullCourseData.location?.latitude && fullCourseData.location?.longitude) {
+        geohash = encodeGeohash(fullCourseData.location.latitude, fullCourseData.location.longitude, 5);
       }
 
       setSubmittingMessage("Saving score...");
 
-      const netScore = parseInt(grossScore) - (userData?.handicap || 0);
-      const courseId = selectedCourse.id || selectedCourse.courseId;
-      const courseName = selectedCourse.course_name || selectedCourse.courseName;
+      const grossScore = activeScores.reduce((sum: number, s) => sum + (s || 0), 0);
+      const totalPar = getTotalPar(selectedTee.holes, holesCount);
+      const handicapIndex = parseFloat(userData.handicap) || 0;
+      const netScore = getTotalAdjScore(adjScores.slice(0, holesCount)) ?? grossScore - courseHandicap;
+      const courseId = fullCourseData.courseId || fullCourseData.id;
+      const courseName = fullCourseData.courseName || fullCourseData.course_name;
 
-      // ✅ Score data - Cloud Function will create thought, update leaderboards, award badges
+      // Calculate birdie/eagle/albatross counts from hole-by-hole data
+      let birdieCount = 0, eagleCount = 0, albatrossCount = 0;
+      for (let i = 0; i < holesCount; i++) {
+        const score = activeScores[i];
+        const par = selectedTee.holes[i]?.par || 4;
+        if (score === null) continue;
+        const diff = score - par;
+        if (diff === -1) birdieCount++;
+        else if (diff === -2) eagleCount++;
+        else if (diff <= -3) albatrossCount++;
+      }
+
+      // Calculate stats
+      const fairways = countFairways(fir, selectedTee.holes, holesCount);
+      const greens = countGreens(gir, holesCount);
+      const penalties = countPenalties(pnl, holesCount);
+      const hasFirData = fir.some((v) => v !== null);
+      const hasGirData = gir.some((v) => v !== null);
+      const hasPnlData = pnl.some((v) => v !== null && v! > 0);
+
+      // Score data — Cloud Function will create thought, update leaderboards, award badges
       const scoreData: any = {
-        userId: auth.currentUser?.uid,
-        userName: userData?.displayName || "Unknown",
+        userId: currentUserId,
+        userName: userData.displayName || "Unknown",
         courseId: courseId,
         courseName: courseName,
-        holeCount: holeCount,
-        grossScore: parseInt(grossScore),
+        holeCount: holesCount,
+        grossScore: grossScore,
         netScore: netScore,
-        par: selectedTee.par,
-        tee: selectedTee.name,
-        teeYardage: selectedTee.yardage || null,
-        birdies: birdies ? parseInt(birdies) : 0,
-        eagles: eagles ? parseInt(eagles) : 0,
-        albatross: albatross ? parseInt(albatross) : 0,
-        hadHoleInOne: hadHoleInOne === "yes",
+        par: selectedTee.par_total,
+        tee: selectedTee.tee_name,
+        teeYardage: selectedTee.total_yards || null,
+        courseRating: selectedTee.course_rating,
+        slopeRating: selectedTee.slope_rating,
+        handicapIndex: handicapIndex,
+        courseHandicap: courseHandicap,
+        holeScores: activeScores,
+        adjScores: adjScores.slice(0, holesCount),
+        birdies: birdieCount,
+        eagles: eagleCount,
+        albatross: albatrossCount,
+        hadHoleInOne: hadHoleInOne,
         roundDescription: roundDescription.trim(),
         scorecardImageUrl: imageUrl,
-        location: selectedCourse.location || undefined,
-        regionKey: regionKey,
+        location: fullCourseData.location || undefined,
+        regionKey: userRegionKey,
         geohash: geohash,
         createdAt: serverTimestamp(),
-        // Include tagged partners for Cloud Function to use
         taggedPartners: extractedPartners.map((p) => ({
           userId: p.userId,
           displayName: p.displayName,
         })),
       };
 
-      if (hadHoleInOne === "yes") {
-        scoreData.holeNumber = parseInt(holeNumber);
+      // Stats
+      if (hasFirData || hasGirData || hasPnlData) {
+        scoreData.holeStats = { fir: fir.slice(0, holesCount), gir: gir.slice(0, holesCount), pnl: pnl.slice(0, holesCount) };
+        if (hasFirData) { scoreData.fairwaysHit = fairways.hit; scoreData.fairwaysPossible = fairways.possible; }
+        if (hasGirData) { scoreData.greensInRegulation = greens.hit; }
+        if (hasPnlData) { scoreData.totalPenalties = penalties; }
+      }
+
+      if (hadHoleInOne) {
+        scoreData.holeNumber = parseInt(holeInOneHoleNumber);
       }
 
       const scoreRef = await addDoc(collection(db, "scores"), scoreData);
       console.log("✅ Score created:", scoreRef.id);
 
-      // ✅ Create hole_in_ones document if applicable (triggers onHoleInOneCreated Cloud Function)
-      if (hadHoleInOne === "yes" && selectedVerifier) {
+      // Hole-in-one verification document
+      if (hadHoleInOne && selectedVerifier) {
         console.log("🏌️ Creating hole-in-one verification document...");
-        
         await addDoc(collection(db, "hole_in_ones"), {
-          userId: auth.currentUser?.uid,
-          userName: userData?.displayName || "Unknown",
-          userAvatar: userData?.avatar || null,
+          userId: currentUserId,
+          userName: userData.displayName || "Unknown",
+          userAvatar: userData.avatar || null,
           verifierId: selectedVerifier.userId,
           verifierName: selectedVerifier.displayName,
           scoreId: scoreRef.id,
           courseId: courseId,
           courseName: courseName,
-          holeNumber: parseInt(holeNumber),
-          holeCount: holeCount,
+          holeNumber: parseInt(holeInOneHoleNumber),
+          holeCount: holesCount,
           status: "pending",
           scorecardImageUrl: imageUrl,
           createdAt: serverTimestamp(),
         });
-        
         console.log("✅ Hole-in-one document created");
       }
 
-      // ✅ Update user location
+      // Update user location
       try {
         setSubmittingMessage("Updating location...");
         const { checkAndUpdateLocation, incrementLocationScoreCount } = await import("@/utils/locationHelpers");
-
-        await checkAndUpdateLocation(auth.currentUser!.uid, {
-          courseCity: selectedCourse.location?.city || "",
-          courseState: selectedCourse.location?.state || "",
-          courseLatitude: selectedCourse.location?.latitude,
-          courseLongitude: selectedCourse.location?.longitude,
+        await checkAndUpdateLocation(currentUserId, {
+          courseCity: fullCourseData.location?.city || "",
+          courseState: fullCourseData.location?.state || "",
+          courseLatitude: fullCourseData.location?.latitude,
+          courseLongitude: fullCourseData.location?.longitude,
           onScoreSubmission: true,
         });
-
-        await incrementLocationScoreCount(auth.currentUser!.uid);
+        await incrementLocationScoreCount(currentUserId);
       } catch (locationErr) {
         console.error("Location update failed:", locationErr);
       }
 
-      // ✅ Update user stats (birdies, eagles, albatross, hole-in-ones)
-      setSubmittingMessage("Updating stats...");
+      // NOTE: User career stats (totalRounds, totalBirdies, etc.) are now
+      // handled by the Cloud Function onScoreCreated trigger on scores/{scoreId}
 
-      const userUpdates: any = {};
-
-      if (birdies && parseInt(birdies) > 0) {
-        userUpdates.totalBirdies = increment(parseInt(birdies));
-      }
-      if (eagles && parseInt(eagles) > 0) {
-        userUpdates.totalEagles = increment(parseInt(eagles));
-      }
-      if (albatross && parseInt(albatross) > 0) {
-        userUpdates.totalAlbatross = increment(parseInt(albatross));
-      }
-      if (hadHoleInOne === "yes") {
-        userUpdates.totalHoleInOnes = increment(1);
-      }
-
-      if (Object.keys(userUpdates).length > 0) {
-        await updateDoc(doc(db, "users", auth.currentUser!.uid), userUpdates);
-      }
-
-      // ✅ Update course stats
+      // Update course stats
       try {
         const courseDocRef = doc(db, "courses", String(courseId));
         const courseUpdates: any = {};
-
-        if (birdies && parseInt(birdies) > 0) {
-          courseUpdates[`stats.birdies`] = increment(parseInt(birdies));
-        }
-        if (eagles && parseInt(eagles) > 0) {
-          courseUpdates[`stats.eagles`] = increment(parseInt(eagles));
-        }
-        if (albatross && parseInt(albatross) > 0) {
-          courseUpdates[`stats.albatross`] = increment(parseInt(albatross));
-        }
+        if (birdieCount > 0) courseUpdates["stats.birdies"] = increment(birdieCount);
+        if (eagleCount > 0) courseUpdates["stats.eagles"] = increment(eagleCount);
+        if (albatrossCount > 0) courseUpdates["stats.albatross"] = increment(albatrossCount);
 
         if (Object.keys(courseUpdates).length > 0) {
           await updateDoc(courseDocRef, courseUpdates);
@@ -850,733 +868,475 @@ export default function PostScoreScreen() {
 
       await updateRateLimitTimestamp("score");
 
-      // ✅ All handled by Cloud Functions:
-      // - onScoreCreated → creates thought, leaderboard updates, badges, partner notifications
-      // - onHoleInOneCreated → holeinone_pending_poster, holeinone_verification_request
       console.log("📬 Score submitted - Cloud Functions handle post creation, leaderboards, badges, and notifications");
 
-      soundPlayer.play('achievement');
+      soundPlayer.play("achievement");
       setSubmitting(false);
 
-      const alertMessage = hadHoleInOne === "yes"
+      const alertMessage = hadHoleInOne
         ? `Your hole-in-one is pending verification from ${selectedVerifier!.displayName}.`
         : "Your round has been logged!";
 
       Alert.alert(
-        hadHoleInOne === "yes" ? "Pending Verification 🎯" : "Score Posted! ⛳",
+        hadHoleInOne ? "Pending Verification 🎯" : "Score Posted! ⛳",
         alertMessage,
-        [
-          {
-            text: "OK",
-            onPress: () => router.push("/clubhouse"),
-          },
-        ]
+        [{ text: "OK", onPress: () => router.push("/clubhouse") }]
       );
     } catch (error) {
       console.error("Submit error:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       setSubmitting(false);
       Alert.alert("Error", "Failed to submit score. Please try again.");
     }
   };
 
-  const filteredPartners = allPartners.filter((p) =>
+  /* ================================================================ */
+  /* RENDER                                                           */
+  /* ================================================================ */
+
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color="#0D5C3A" />
+      </View>
+    );
+  }
+
+  if (loadingCourse) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color="#0D5C3A" />
+        <Text style={styles.loadingText}>Loading course data...</Text>
+      </View>
+    );
+  }
+
+  // ===== Course Selection =====
+  if (currentScreen === "course") {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.backButton} onPress={handleClose}>
+            <Ionicons name="close" size={28} color="#333" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Post Score</Text>
+          <View style={styles.headerRight} />
+        </View>
+
+        {/* Holes toggle */}
+        <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 }}>
+          <View style={{ flexDirection: "row", gap: 12 }}>
+            {([9, 18] as const).map((count) => (
+              <TouchableOpacity
+                key={count}
+                style={[
+                  styles.teeOption,
+                  { flex: 1, alignItems: "center" },
+                  holeCount === count && { borderColor: "#0D5C3A", backgroundColor: "#E8F5E9" },
+                ]}
+                onPress={() => {
+                  soundPlayer.play("click");
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setHoleCount(count);
+                  resetArrays(count);
+                }}
+              >
+                <Text
+                  style={[
+                    styles.teeOptionName,
+                    holeCount === count && { color: "#0D5C3A", fontWeight: "900" },
+                  ]}
+                >
+                  {count} Holes
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        <CourseSelector
+          availableCourses={availableCourses}
+          isRestricted={false}
+          userLocation={userLocation}
+          onSelectCourse={handleSelectCourse}
+          onBack={() => router.back()}
+        />
+      </View>
+    );
+  }
+
+  // ===== Tee Selection =====
+  if (currentScreen === "tee") {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        <View style={styles.header}>
+          <TouchableOpacity style={styles.backButton} onPress={handleChangeCourse}>
+            <Ionicons name="chevron-back" size={28} color="#333" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Select Tees</Text>
+          <View style={styles.headerRight} />
+        </View>
+
+        <TeeSelector
+          courseName={fullCourseData?.courseName || fullCourseData?.course_name || ""}
+          tees={availableTees}
+          handicapIndex={parseFloat(userData?.handicap) || undefined}
+          onSelectTee={handleSelectTee}
+          onBack={handleChangeCourse}
+        />
+      </View>
+    );
+  }
+
+  // ===== Scorecard Screen =====
+  if (!selectedTee) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <Text style={styles.noCourseText}>Something went wrong.</Text>
+        <TouchableOpacity style={styles.searchCourseButton} onPress={handleChangeCourse}>
+          <Text style={styles.searchCourseButtonText}>Start Over</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  const filteredVerifierPartners = allPartners.filter((p) =>
     p.displayName.toLowerCase().includes(verifierSearchQuery.toLowerCase())
   );
 
   return (
-    <ImageBackground
-      source={require("@/assets/images/PostScoreBackground.png")}
-      style={styles.background}
-      blurRadius={2}
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <SafeAreaView style={styles.container}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          style={{ flex: 1 }}
-          keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+      <View style={[styles.header, { paddingTop: insets.top }]}>
+        <TouchableOpacity style={styles.backButton} onPress={handleClose}>
+          <Ionicons name="close" size={28} color="#333" />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Scorecard</Text>
+        <TouchableOpacity
+          style={[styles.submitButton, submitting && styles.submitButtonDisabled]}
+          onPress={handleSubmit}
+          disabled={submitting}
         >
-          <View style={styles.header}>
-            <TouchableOpacity onPress={handleClose}>
-              <Image source={CloseIcon} style={styles.closeIcon} />
-            </TouchableOpacity>
-            <Text style={styles.headerTitle}>Post Score</Text>
-            <TouchableOpacity
-              style={styles.submitButton}
-              onPress={handleSubmit}
-              disabled={!canPost}
-            >
-              <Text style={styles.submitIcon}>⛳</Text>
-            </TouchableOpacity>
+          <Text style={styles.submitButtonText}>{submitting ? "..." : "Submit"}</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={styles.contentContainer}
+        keyboardShouldPersistTaps="handled"
+      >
+        {/* Scorecard Header */}
+        <View style={styles.scorecardHeader}>
+          <View style={styles.scorecardLogo}>
+            <Text style={styles.logoText}>⛳</Text>
           </View>
-
-          <ScrollView
-            ref={scrollViewRef}
-            style={styles.scrollView}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.scrollViewContent}
-          >
-            {!selectedCourse && !showCourseSearch && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Select Course</Text>
-                
-                {cachedCourses.length > 0 ? (
-                  <>
-                    <Text style={styles.subtitle}>Recently Played</Text>
-                    {cachedCourses.map((course, index) => (
-                      <TouchableOpacity
-                        key={`cached-${course.id || course.courseId}-${index}`}
-                        style={styles.courseCard}
-                        onPress={() => handleCourseSelect(course)}
-                      >
-                        <View style={styles.courseCardLeft}>
-                          <Text style={styles.courseCardName}>
-                            {course.course_name || course.courseName || "Unknown Course"}
-                          </Text>
-                          {course.location && (
-                            <Text style={styles.courseCardLocation}>
-                              {course.location.city}, {course.location.state}
-                            </Text>
-                          )}
-                        </View>
-                        {course.distance !== undefined && (
-                          <Text style={styles.courseCardDistance}>
-                            {course.distance.toFixed(1)} mi
-                          </Text>
-                        )}
-                      </TouchableOpacity>
-                    ))}
-                  </>
-                ) : (
-                  <Text style={styles.emptyText}>
-                    No cached courses. Search below to find a course.
-                  </Text>
-                )}
-
-                <TouchableOpacity
-                  style={styles.searchButton}
-                  onPress={() => {
-                    soundPlayer.play('click');
-                    setShowCourseSearch(true);
-                  }}
-                >
-                  <Text style={styles.searchButtonText}>🔍 Search for Course</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {showCourseSearch && !selectedCourse && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Search Course</Text>
-                
-                <View style={styles.searchContainer}>
-                  <TextInput
-                    style={styles.searchInput}
-                    placeholder="Enter course name or city..."
-                    placeholderTextColor="#999"
-                    value={searchQuery}
-                    onChangeText={setSearchQuery}
-                    onSubmitEditing={handleSearch}
-                    returnKeyType="search"
-                    autoFocus
-                  />
-                </View>
-
-                {searchResults.length > 0 && (
-                  <View style={styles.searchResultsContainer}>
-                    {searchResults.map((course, index) => (
-                      <TouchableOpacity
-                        key={`search-${course.id || course.courseId}-${index}`}
-                        style={styles.courseCard}
-                        onPress={() => handleCourseSelect(course)}
-                      >
-                        <View style={styles.courseCardLeft}>
-                          <Text style={styles.courseCardName}>{course.course_name}</Text>
-                          {course.location && (
-                            <Text style={styles.courseCardLocation}>
-                              {course.location.city}, {course.location.state}
-                            </Text>
-                          )}
-                        </View>
-                        {course.distance !== undefined && (
-                          <Text style={styles.courseCardDistance}>
-                            {course.distance.toFixed(1)} mi
-                          </Text>
-                        )}
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
-
-                <TouchableOpacity
-                  style={styles.backButton}
-                  onPress={() => {
-                    soundPlayer.play('click');
-                    setShowCourseSearch(false);
-                    setSearchResults([]);
-                    setSearchQuery("");
-                  }}
-                >
-                  <Text style={styles.backButtonText}>← Back</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {selectedCourse && (
-              <View style={styles.selectedCourseContainer}>
-                <Text style={styles.sectionTitle}>Course</Text>
-                <View style={styles.selectedCourseCard}>
-                  <Text style={styles.selectedCourseText}>
-                    {selectedCourse.course_name || selectedCourse.courseName || "Unknown Course"}
-                  </Text>
-                  {selectedCourse.location && (
-                    <Text style={styles.selectedCourseLocation}>
-                      {selectedCourse.location.city}, {selectedCourse.location.state}
-                    </Text>
-                  )}
-                </View>
-                <TouchableOpacity
-                  style={styles.changeButton}
-                  onPress={() => {
-                    soundPlayer.play('click');
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    setSelectedCourse(null);
-                    setSelectedTee(null);
-                    setTeeOptions([]);
-                  }}
-                >
-                  <Text style={styles.changeButtonText}>Change Course</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {selectedCourse && selectedTee && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Select Tee</Text>
-                
-                <TouchableOpacity
-                  style={styles.dropdownButton}
-                  onPress={() => {
-                    soundPlayer.play('click');
-                    setShowTeeDropdown(!showTeeDropdown);
-                  }}
-                >
-                  <Text style={styles.dropdownButtonText}>
-                    {selectedTee.name}
-                    {selectedTee.yardage ? ` • ${selectedTee.yardage} yds` : ""} • Par {selectedTee.par}
-                  </Text>
-                  <Text style={styles.dropdownArrow}>
-                    {showTeeDropdown ? "▲" : "▼"}
-                  </Text>
-                </TouchableOpacity>
-
-                {showTeeDropdown && (
-                  <View style={styles.dropdownList}>
-                    {teeOptions.map((tee, index) => (
-                      <TouchableOpacity
-                        key={`tee-${index}`}
-                        style={[
-                          styles.dropdownItem,
-                          selectedTee.name === tee.name && styles.dropdownItemSelected
-                        ]}
-                        onPress={() => {
-                          soundPlayer.play('click');
-                          setSelectedTee(tee);
-                          setShowTeeDropdown(false);
-                        }}
-                      >
-                        <Text style={[
-                          styles.dropdownItemText,
-                          selectedTee.name === tee.name && styles.dropdownItemTextSelected
-                        ]}>
-                          {tee.name}
-                          {tee.yardage ? ` • ${tee.yardage} yds` : ""} • Par {tee.par}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
-              </View>
-            )}
-
-            {selectedCourse && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Holes Played</Text>
-                
-                <View style={styles.sliderContainer}>
-                  <TouchableOpacity
-                    style={[
-                      styles.sliderOption,
-                      holeCount === 9 && styles.sliderOptionActive
-                    ]}
-                    onPress={() => {
-                      soundPlayer.play('click');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setHoleCount(9);
-                    }}
-                  >
-                    <Text style={[
-                      styles.sliderOptionText,
-                      holeCount === 9 && styles.sliderOptionTextActive
-                    ]}>
-                      9 Holes
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.sliderOption,
-                      holeCount === 18 && styles.sliderOptionActive
-                    ]}
-                    onPress={() => {
-                      soundPlayer.play('click');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setHoleCount(18);
-                    }}
-                  >
-                    <Text style={[
-                      styles.sliderOptionText,
-                      holeCount === 18 && styles.sliderOptionTextActive
-                    ]}>
-                      18 Holes
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
-
-            {selectedCourse && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Hole-in-One?</Text>
-                
-                <View style={styles.sliderContainer}>
-                  <TouchableOpacity
-                    style={[
-                      styles.sliderOption,
-                      hadHoleInOne === "no" && styles.sliderOptionActive
-                    ]}
-                    onPress={() => {
-                      soundPlayer.play('click');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setHadHoleInOne("no");
-                      setHoleNumber("");
-                      setSelectedVerifier(null);
-                    }}
-                  >
-                    <Text style={[
-                      styles.sliderOptionText,
-                      hadHoleInOne === "no" && styles.sliderOptionTextActive
-                    ]}>
-                      No
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.sliderOption,
-                      hadHoleInOne === "yes" && styles.sliderOptionActive
-                    ]}
-                    onPress={handleHoleInOneSelect}
-                  >
-                    <Text style={[
-                      styles.sliderOptionText,
-                      hadHoleInOne === "yes" && styles.sliderOptionTextActive
-                    ]}>
-                      Yes! 🎯
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
-
-            {hadHoleInOne === "yes" && (
-              <>
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>Which Hole?</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Hole number (1-18)"
-                    placeholderTextColor="#999"
-                    keyboardType="number-pad"
-                    value={holeNumber}
-                    onChangeText={setHoleNumber}
-                  />
-                </View>
-
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>Select Verifier</Text>
-                  <TouchableOpacity
-                    style={styles.verifierButton}
-                    onPress={() => {
-                      soundPlayer.play('click');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setShowVerifierModal(true);
-                    }}
-                  >
-                    <Text style={styles.verifierButtonText}>
-                      {selectedVerifier
-                        ? `Verifier: ${selectedVerifier.displayName}`
-                        : "Tap to Select Partner"}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-
-            {selectedCourse && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Score Details</Text>
-                
-                <View style={styles.scoreRow}>
-                  <View style={styles.scoreInputContainer}>
-                    <Text style={styles.scoreLabel}>Gross Score *</Text>
-                    <TextInput
-                      style={styles.scoreInput}
-                      placeholder="Score"
-                      placeholderTextColor="#999"
-                      keyboardType="number-pad"
-                      value={grossScore}
-                      onChangeText={setGrossScore}
-                      onFocus={() => {
-                        setTimeout(() => {
-                          scrollViewRef.current?.scrollTo({ y: 600, animated: true });
-                        }, 100);
-                      }}
-                    />
-                  </View>
-                </View>
-
-                <View style={styles.scoreRow}>
-                  <View style={styles.scoreInputContainer}>
-                    <Text style={styles.scoreLabel}>Birdies</Text>
-                    <TextInput
-                      style={styles.scoreInput}
-                      placeholder="0"
-                      placeholderTextColor="#999"
-                      keyboardType="number-pad"
-                      value={birdies}
-                      onChangeText={setBirdies}
-                      onFocus={() => {
-                        setTimeout(() => {
-                          scrollViewRef.current?.scrollTo({ y: 650, animated: true });
-                        }, 100);
-                      }}
-                    />
-                  </View>
-
-                  <View style={styles.scoreInputContainer}>
-                    <Text style={styles.scoreLabel}>Eagles</Text>
-                    <TextInput
-                      style={styles.scoreInput}
-                      placeholder="0"
-                      placeholderTextColor="#999"
-                      keyboardType="number-pad"
-                      value={eagles}
-                      onChangeText={setEagles}
-                      onFocus={() => {
-                        setTimeout(() => {
-                          scrollViewRef.current?.scrollTo({ y: 650, animated: true });
-                        }, 100);
-                      }}
-                    />
-                  </View>
-
-                  <View style={styles.scoreInputContainer}>
-                    <Text style={styles.scoreLabel}>Albatross</Text>
-                    <TextInput
-                      style={styles.scoreInput}
-                      placeholder="0"
-                      placeholderTextColor="#999"
-                      keyboardType="number-pad"
-                      value={albatross}
-                      onChangeText={setAlbatross}
-                      onFocus={() => {
-                        setTimeout(() => {
-                          scrollViewRef.current?.scrollTo({ y: 650, animated: true });
-                        }, 100);
-                      }}
-                    />
-                  </View>
-                </View>
-
-                {grossScore && selectedTee && (
-                  <Text style={styles.netScoreText}>
-                    Net Score: {parseInt(grossScore) - (userData?.handicap || 0)}
-                  </Text>
-                )}
-              </View>
-            )}
-
-            {selectedCourse && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>How was your round?</Text>
-                
-                <View style={styles.textInputContainer}>
-                  <TextInput
-                    style={[
-                      styles.input,
-                      styles.descriptionInput,
-                      roundDescription && styles.textInputWithContent,
-                    ]}
-                    placeholder="Share details... (mention partners with @)"
-                    placeholderTextColor="#999"
-                    multiline
-                    maxLength={MAX_CHARACTERS}
-                    value={roundDescription}
-                    onChangeText={handleDescriptionChange}
-                    onFocus={() => {
-                      setTimeout(() => {
-                        scrollViewRef.current?.scrollTo({ y: 800, animated: true });
-                      }, 100);
-                    }}
-                  />
-
-                  {roundDescription && (
-                    <View style={styles.textOverlay} pointerEvents="none">
-                      <Text style={styles.overlayText}>
-                        {renderDescriptionWithMentions()}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-
-                <Text style={styles.charCount}>
-                  {roundDescription.length}/{MAX_CHARACTERS}
-                </Text>
-
-                {showAutocomplete && autocompleteResults.length > 0 && (
-                  <View style={styles.autocompleteContainer}>
-                    <ScrollView
-                      style={styles.autocompleteScrollView}
-                      nestedScrollEnabled
-                      keyboardShouldPersistTaps="handled"
-                    >
-                      {autocompleteResults.map((item, idx) => (
-                        <TouchableOpacity
-                          key={`${item.userId}-${idx}`}
-                          style={styles.autocompleteItem}
-                          onPress={() => handleSelectMention(item)}
-                        >
-                          <Text style={styles.autocompleteName}>
-                            @{item.displayName}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </ScrollView>
-                  </View>
-                )}
-              </View>
-            )}
-
-            {selectedCourse && (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Upload Scorecard *</Text>
-                
-                <TouchableOpacity
-                  style={styles.imagePicker}
-                  onPress={pickScorecardImage}
-                >
-                  {scorecardImageUri ? (
-                    <Image
-                      source={{ uri: scorecardImageUri }}
-                      style={styles.scorecardPreview}
-                    />
-                  ) : (
-                    <View style={styles.imagePlaceholder}>
-                      <Text style={styles.imagePlaceholderIcon}>📸</Text>
-                      <Text style={styles.imagePlaceholderText}>
-                        Tap to Upload Scorecard
-                      </Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-
-                {scorecardImageUri && (
-                  <TouchableOpacity
-                    style={styles.removeImageButton}
-                    onPress={() => {
-                      soundPlayer.play('click');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setScorecardImageUri(null);
-                    }}
-                  >
-                    <Text style={styles.removeImageText}>✕ Change Photo</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            )}
-
-            <View style={{ height: 80 }} />
-          </ScrollView>
-        </KeyboardAvoidingView>
-
-        <Modal
-          visible={showVerifierModal}
-          animationType="slide"
-          transparent={true}
-          onRequestClose={() => setShowVerifierModal(false)}
-        >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContainer}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Select Verifier</Text>
-                <TouchableOpacity
-                  onPress={() => {
-                    soundPlayer.play('click');
-                    setShowVerifierModal(false);
-                  }}
-                >
-                  <Text style={styles.modalClose}>✕</Text>
-                </TouchableOpacity>
-              </View>
-
-              <TextInput
-                style={styles.modalSearch}
-                placeholder="Search partners..."
-                placeholderTextColor="#999"
-                value={verifierSearchQuery}
-                onChangeText={setVerifierSearchQuery}
-              />
-
-              <FlatList
-                data={filteredPartners}
-                keyExtractor={(item) => item.userId}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={styles.partnerItem}
-                    onPress={() => {
-                      soundPlayer.play('click');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setSelectedVerifier(item);
-                      setShowVerifierModal(false);
-                    }}
-                  >
-                    {item.avatar ? (
-                      <Image
-                        source={{ uri: item.avatar }}
-                        style={styles.partnerAvatar}
-                      />
-                    ) : (
-                      <View style={styles.partnerAvatarPlaceholder}>
-                        <Text style={styles.partnerAvatarText}>
-                          {item.displayName.charAt(0).toUpperCase()}
-                        </Text>
-                      </View>
-                    )}
-                    <Text style={styles.partnerName}>{item.displayName}</Text>
-                    {selectedVerifier?.userId === item.userId && (
-                      <Text style={styles.partnerSelected}>✓</Text>
-                    )}
-                  </TouchableOpacity>
-                )}
-                ListEmptyComponent={
-                  <Text style={styles.emptyText}>
-                    No partners found. Add partners to verify your hole-in-one!
-                  </Text>
-                }
-              />
-            </View>
+          <View style={styles.scorecardInfo}>
+            <Text style={styles.leagueName}>Post Score</Text>
+            <TouchableOpacity onPress={handleChangeCourse}>
+              <Text style={styles.courseName}>
+                {fullCourseData?.courseName || fullCourseData?.course_name}{" "}
+                <Ionicons name="pencil" size={12} color="#C8E6C9" />
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleChangeTee}>
+              <Text style={styles.teeInfo}>
+                {selectedTee.tee_name} • {selectedTee.total_yards?.toLocaleString()} yds{" "}
+                <Ionicons name="pencil" size={10} color="#A5D6A7" />
+              </Text>
+            </TouchableOpacity>
+            <Text style={styles.weekText}>{holesCount} Holes</Text>
           </View>
-        </Modal>
+        </View>
 
-        {submitting && (
-          <View style={styles.loadingOverlay}>
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#0D5C3A" />
-              <Text style={styles.loadingText}>{submittingMessage}</Text>
+        {/* Player Info */}
+        <View style={styles.playerInfo}>
+          <View style={styles.playerRow}>
+            <Text style={styles.playerLabel}>Player</Text>
+            <Text style={styles.playerValue}>{userData?.displayName || "Unknown"}</Text>
+          </View>
+          <View style={styles.playerRow}>
+            <Text style={styles.playerLabel}>Handicap Index</Text>
+            <Text style={styles.playerValue}>
+              {(parseFloat(userData?.handicap) || 0).toFixed(1)}
+            </Text>
+          </View>
+          <View style={styles.playerRow}>
+            <Text style={styles.playerLabel}>Course Handicap</Text>
+            <Text style={styles.playerValue}>{courseHandicap}</Text>
+          </View>
+          <View style={styles.playerRow}>
+            <Text style={styles.playerLabel}>Date</Text>
+            <Text style={styles.playerValue}>
+              {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+            </Text>
+          </View>
+        </View>
+
+        {/* Scorecard */}
+        <Scorecard
+          holes={selectedTee.holes}
+          holesCount={holesCount}
+          scores={scores}
+          adjScores={adjScores}
+          courseHandicap={courseHandicap}
+          showHandicap={true}
+          fir={fir}
+          gir={gir}
+          pnl={pnl}
+          onScoreChange={handleScoreChange}
+          onFirToggle={handleFirToggle}
+          onGirToggle={handleGirToggle}
+          onPnlChange={handlePnlChange}
+        />
+
+        {/* Score Summary */}
+        <ScoreSummary
+          scores={scores}
+          adjScores={adjScores}
+          holes={selectedTee.holes}
+          holesCount={holesCount}
+          courseHandicap={courseHandicap}
+          showHandicap={true}
+          fir={fir}
+          gir={gir}
+          pnl={pnl}
+        />
+
+        {/* ===== ROUND HIGHLIGHTS ===== */}
+        {(scoreCounts.birdies > 0 || scoreCounts.eagles > 0 || scoreCounts.albatross > 0 || scoreCounts.aces > 0) && (
+          <View style={styles.playerInfo}>
+            <Text style={[styles.playerLabel, { fontSize: 16, fontWeight: "900", color: "#0D5C3A", marginBottom: 12 }]}>
+              Round Highlights 🏆
+            </Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
+              {scoreCounts.aces > 0 && (
+                <View style={{ backgroundColor: "#FFD700", borderRadius: 12, paddingHorizontal: 16, paddingVertical: 10, alignItems: "center" }}>
+                  <Text style={{ fontSize: 20, fontWeight: "900", color: "#333" }}>{scoreCounts.aces}</Text>
+                  <Text style={{ fontSize: 12, fontWeight: "700", color: "#555" }}>Ace{scoreCounts.aces > 1 ? "s" : ""} 🎯</Text>
+                </View>
+              )}
+              {scoreCounts.albatross > 0 && (
+                <View style={{ backgroundColor: "#E1BEE7", borderRadius: 12, paddingHorizontal: 16, paddingVertical: 10, alignItems: "center" }}>
+                  <Text style={{ fontSize: 20, fontWeight: "900", color: "#333" }}>{scoreCounts.albatross}</Text>
+                  <Text style={{ fontSize: 12, fontWeight: "700", color: "#555" }}>Albatross</Text>
+                </View>
+              )}
+              {scoreCounts.eagles > 0 && (
+                <View style={{ backgroundColor: "#FFF9C4", borderRadius: 12, paddingHorizontal: 16, paddingVertical: 10, alignItems: "center" }}>
+                  <Text style={{ fontSize: 20, fontWeight: "900", color: "#333" }}>{scoreCounts.eagles}</Text>
+                  <Text style={{ fontSize: 12, fontWeight: "700", color: "#555" }}>Eagle{scoreCounts.eagles > 1 ? "s" : ""}</Text>
+                </View>
+              )}
+              {scoreCounts.birdies > 0 && (
+                <View style={{ backgroundColor: "#FFCDD2", borderRadius: 12, paddingHorizontal: 16, paddingVertical: 10, alignItems: "center" }}>
+                  <Text style={{ fontSize: 20, fontWeight: "900", color: "#333" }}>{scoreCounts.birdies}</Text>
+                  <Text style={{ fontSize: 12, fontWeight: "700", color: "#555" }}>Birdie{scoreCounts.birdies > 1 ? "s" : ""}</Text>
+                </View>
+              )}
             </View>
           </View>
         )}
-      </SafeAreaView>
-    </ImageBackground>
+
+        {/* ===== HOLE-IN-ONE VERIFICATION ===== */}
+        {hadHoleInOne && (
+          <View style={styles.playerInfo}>
+            <Text style={[styles.playerLabel, { fontSize: 16, fontWeight: "900", color: "#0D5C3A", marginBottom: 4 }]}>
+              Hole-in-One Verification 🎯
+            </Text>
+            <Text style={{ fontSize: 13, color: "#666", marginBottom: 16 }}>
+              Auto-detected from your scorecard — select a partner to verify.
+            </Text>
+
+            <View style={styles.playerRow}>
+              <Text style={styles.playerLabel}>Hole</Text>
+              <Text style={[styles.playerValue, { fontWeight: "900" }]}>{holeInOneHoleNumber}</Text>
+            </View>
+
+            <Text style={[styles.playerLabel, { marginTop: 12 }]}>Select Verifier *</Text>
+            <TouchableOpacity
+              style={[styles.teeOption, { marginTop: 8, alignItems: "center" }]}
+              onPress={() => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowVerifierModal(true);
+              }}
+            >
+              <Text style={[styles.teeOptionName, selectedVerifier && { color: "#0D5C3A", fontWeight: "900" }]}>
+                {selectedVerifier ? `✓ ${selectedVerifier.displayName}` : "Tap to Select Partner"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* ===== ROUND DESCRIPTION ===== */}
+        <View style={styles.playerInfo}>
+          <Text style={[styles.playerLabel, { fontSize: 16, fontWeight: "900", color: "#0D5C3A", marginBottom: 12 }]}>
+            How was your round?
+          </Text>
+
+          <View style={{ position: "relative" }}>
+            <TextInput
+              style={[
+                styles.searchInput,
+                { minHeight: 100, textAlignVertical: "top", paddingTop: 14 },
+                roundDescription && { color: "transparent" },
+              ]}
+              placeholder="Share details... (mention partners with @)"
+              placeholderTextColor="#999"
+              multiline
+              maxLength={MAX_CHARACTERS}
+              value={roundDescription}
+              onChangeText={handleDescriptionChange}
+            />
+            {roundDescription ? (
+              <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, padding: 14, paddingTop: 15 }} pointerEvents="none">
+                <Text style={{ fontSize: 16, color: "#333" }}>
+                  {renderDescriptionWithMentions()}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+
+          <Text style={{ fontSize: 12, color: "#999", textAlign: "right", marginTop: 4 }}>
+            {roundDescription.length}/{MAX_CHARACTERS}
+          </Text>
+
+          {showAutocomplete && autocompleteResults.length > 0 && (
+            <View style={{ backgroundColor: "#FFF", borderRadius: 8, marginTop: 8, borderWidth: 1, borderColor: "#E0E0E0", maxHeight: 200 }}>
+              <ScrollView style={{ maxHeight: 200 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                {autocompleteResults.map((item, idx) => (
+                  <TouchableOpacity
+                    key={`${item.userId}-${idx}`}
+                    style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" }}
+                    onPress={() => handleSelectMention(item)}
+                  >
+                    <Text style={{ fontSize: 14, fontWeight: "600", color: "#0D5C3A" }}>
+                      @{item.displayName}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+        </View>
+
+        {/* ===== SCORECARD IMAGE ===== */}
+        <View style={styles.playerInfo}>
+          <Text style={[styles.playerLabel, { fontSize: 16, fontWeight: "900", color: "#0D5C3A", marginBottom: 12 }]}>
+            Upload Scorecard *
+          </Text>
+
+          <TouchableOpacity
+            style={{
+              height: 200, borderRadius: 12, overflow: "hidden",
+              backgroundColor: "#F5F5F5", borderWidth: 2, borderColor: "#0D5C3A", borderStyle: "dashed",
+            }}
+            onPress={pickScorecardImage}
+          >
+            {scorecardImageUri ? (
+              <Image source={{ uri: scorecardImageUri }} style={{ width: "100%", height: "100%" }} resizeMode="cover" />
+            ) : (
+              <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+                <Text style={{ fontSize: 48, marginBottom: 8 }}>📸</Text>
+                <Text style={{ fontSize: 16, fontWeight: "700", color: "#0D5C3A" }}>
+                  Tap to Upload Scorecard
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+
+          {scorecardImageUri && (
+            <TouchableOpacity
+              style={{ marginTop: 8, alignSelf: "center", paddingVertical: 8, paddingHorizontal: 16, backgroundColor: "#0D5C3A", borderRadius: 8 }}
+              onPress={() => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setScorecardImageUri(null);
+              }}
+            >
+              <Text style={{ color: "#FFF", fontWeight: "600", fontSize: 14 }}>✕ Change Photo</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <View style={styles.bottomSpacer} />
+      </ScrollView>
+
+      {/* ===== VERIFIER MODAL ===== */}
+      <Modal
+        visible={showVerifierModal}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowVerifierModal(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
+          <View style={{ backgroundColor: "#FFF", borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: "80%", paddingBottom: 40 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1, borderBottomColor: "#E0E0E0" }}>
+              <Text style={{ fontSize: 18, fontWeight: "900", color: "#0D5C3A" }}>Select Verifier</Text>
+              <TouchableOpacity onPress={() => { soundPlayer.play("click"); setShowVerifierModal(false); }}>
+                <Text style={{ fontSize: 24, color: "#666", fontWeight: "600" }}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              style={{ margin: 16, padding: 12, backgroundColor: "#F5F5F5", borderRadius: 10, fontSize: 16 }}
+              placeholder="Search partners..."
+              placeholderTextColor="#999"
+              value={verifierSearchQuery}
+              onChangeText={setVerifierSearchQuery}
+            />
+
+            <FlatList
+              data={filteredVerifierPartners}
+              keyExtractor={(item) => item.userId}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={{ flexDirection: "row", alignItems: "center", padding: 16, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" }}
+                  onPress={() => {
+                    soundPlayer.play("click");
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setSelectedVerifier(item);
+                    setShowVerifierModal(false);
+                  }}
+                >
+                  {item.avatar ? (
+                    <Image source={{ uri: item.avatar }} style={{ width: 40, height: 40, borderRadius: 20, marginRight: 12 }} />
+                  ) : (
+                    <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: "#0D5C3A", alignItems: "center", justifyContent: "center", marginRight: 12 }}>
+                      <Text style={{ color: "#FFF", fontSize: 18, fontWeight: "700" }}>{item.displayName.charAt(0).toUpperCase()}</Text>
+                    </View>
+                  )}
+                  <Text style={{ flex: 1, fontSize: 16, fontWeight: "600", color: "#333" }}>{item.displayName}</Text>
+                  {selectedVerifier?.userId === item.userId && (
+                    <Text style={{ fontSize: 20, color: "#0D5C3A", fontWeight: "900" }}>✓</Text>
+                  )}
+                </TouchableOpacity>
+              )}
+              ListEmptyComponent={
+                <Text style={{ textAlign: "center", color: "#999", fontSize: 14, fontStyle: "italic", margin: 20 }}>
+                  No partners found.
+                </Text>
+              }
+            />
+          </View>
+        </View>
+      </Modal>
+
+      {/* ===== SUBMITTING OVERLAY ===== */}
+      {submitting && (
+        <View style={{
+          ...Platform.select({ ios: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }, android: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 } }),
+          backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "center", alignItems: "center", zIndex: 1000,
+        }}>
+          <View style={{ backgroundColor: "#FFF", borderRadius: 16, padding: 24, alignItems: "center", minWidth: 200 }}>
+            <ActivityIndicator size="large" color="#0D5C3A" />
+            <Text style={{ marginTop: 12, fontSize: 16, fontWeight: "700", color: "#0D5C3A" }}>{submittingMessage}</Text>
+          </View>
+        </View>
+      )}
+    </KeyboardAvoidingView>
   );
 }
-
-const styles = StyleSheet.create({
-  background: { flex: 1, width: "100%", height: "100%" },
-  container: { flex: 1 },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 12, backgroundColor: "rgba(13, 92, 58, 0.95)" },
-  closeIcon: { width: 28, height: 28, tintColor: "#FFF" },
-  headerTitle: { fontSize: 18, fontWeight: "900", color: "#FFF", flex: 1, textAlign: "center" },
-  submitButton: { width: 44, height: 44, backgroundColor: "#FFD700", borderRadius: 22, alignItems: "center", justifyContent: "center" },
-  submitIcon: { fontSize: 24 },
-  scrollView: { flex: 1 },
-  scrollViewContent: { paddingBottom: 100 },
-  section: { paddingHorizontal: 16, marginTop: 20 },
-  sectionTitle: { fontSize: 18, fontWeight: "900", color: "#0D5C3A", marginBottom: 12 },
-  subtitle: { fontSize: 14, fontWeight: "700", color: "#666", marginBottom: 8 },
-  courseCard: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 14, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 12, borderWidth: 2, borderColor: "#0D5C3A", marginBottom: 8 },
-  courseCardLeft: { flex: 1 },
-  courseCardName: { fontSize: 16, fontWeight: "900", color: "#0D5C3A", marginBottom: 4 },
-  courseCardLocation: { fontSize: 13, fontWeight: "600", color: "#666" },
-  courseCardDistance: { fontSize: 14, fontWeight: "700", color: "#0D5C3A", marginLeft: 12 },
-  searchButton: { marginTop: 12, padding: 16, backgroundColor: "#0D5C3A", borderRadius: 12, alignItems: "center" },
-  searchButtonText: { fontSize: 16, fontWeight: "700", color: "#FFF" },
-  backButton: { marginTop: 12, padding: 12, alignItems: "center" },
-  backButtonText: { fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
-  searchContainer: { marginBottom: 12 },
-  searchInput: { padding: 14, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 12, fontSize: 16, borderWidth: 1, borderColor: "rgba(255, 255, 255, 0.5)" },
-  searchResultsContainer: { marginBottom: 12 },
-  selectedCourseContainer: { paddingHorizontal: 16, marginTop: 20 },
-  selectedCourseCard: { padding: 16, borderRadius: 14, borderWidth: 3, borderColor: "#0D5C3A", backgroundColor: "rgba(200, 230, 201, 0.85)", marginBottom: 12 },
-  selectedCourseText: { fontWeight: "900", fontSize: 18, marginBottom: 4, color: "#0D5C3A" },
-  selectedCourseLocation: { fontSize: 14, color: "#0D5C3A", fontWeight: "700" },
-  changeButton: { paddingVertical: 12, paddingHorizontal: 20, backgroundColor: "#0D5C3A", borderRadius: 10, alignItems: "center" },
-  changeButtonText: { color: "#FFF", fontWeight: "700", fontSize: 15 },
-  dropdownButton: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 14, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 12, borderWidth: 2, borderColor: "#0D5C3A" },
-  dropdownButtonText: { fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
-  dropdownArrow: { fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
-  dropdownList: { marginTop: 8, backgroundColor: "#FFF", borderRadius: 12, borderWidth: 1, borderColor: "#E0E0E0", overflow: "hidden" },
-  dropdownItem: { padding: 14, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" },
-  dropdownItemSelected: { backgroundColor: "#E8F5E9" },
-  dropdownItemText: { fontSize: 16, fontWeight: "600", color: "#333" },
-  dropdownItemTextSelected: { fontWeight: "900", color: "#0D5C3A" },
-  sliderContainer: { flexDirection: "row", gap: 12 },
-  sliderOption: { flex: 1, padding: 16, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 12, borderWidth: 2, borderColor: "#E0E0E0", alignItems: "center" },
-  sliderOptionActive: { borderColor: "#0D5C3A", backgroundColor: "#E8F5E9" },
-  sliderOptionText: { fontSize: 16, fontWeight: "700", color: "#666" },
-  sliderOptionTextActive: { fontWeight: "900", color: "#0D5C3A" },
-  scoreRow: { flexDirection: "row", gap: 12, marginBottom: 12 },
-  scoreInputContainer: { flex: 1 },
-  scoreLabel: { fontSize: 14, fontWeight: "700", color: "#0D5C3A", marginBottom: 6 },
-  scoreInput: { padding: 12, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 10, fontSize: 16, borderWidth: 1, borderColor: "rgba(255, 255, 255, 0.5)", textAlign: "center", fontWeight: "700" },
-  netScoreText: { fontSize: 18, fontWeight: "900", color: "#0D5C3A", textAlign: "center", marginTop: 8 },
-  input: { padding: 14, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 12, fontSize: 16, borderWidth: 1, borderColor: "rgba(255, 255, 255, 0.5)" },
-  descriptionInput: { minHeight: 100, textAlignVertical: "top" },
-  textInputContainer: { position: "relative" },
-  textInputWithContent: { color: "transparent" },
-  textOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, padding: 14, paddingTop: 15 },
-  overlayText: { fontSize: 16, color: "#333" },
-  mentionText: { fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
-  charCount: { fontSize: 12, color: "#999", textAlign: "right", marginTop: 4 },
-  autocompleteContainer: { backgroundColor: "#FFF", borderRadius: 8, marginTop: 8, borderWidth: 1, borderColor: "#E0E0E0", maxHeight: 200 },
-  autocompleteScrollView: { maxHeight: 200 },
-  autocompleteItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" },
-  autocompleteName: { fontSize: 14, fontWeight: "600", color: "#0D5C3A" },
-  verifierButton: { padding: 16, backgroundColor: Platform.OS === "ios" ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.85)", borderRadius: 12, borderWidth: 2, borderColor: "#0D5C3A", alignItems: "center" },
-  verifierButtonText: { fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
-  imagePicker: { height: 200, borderRadius: 12, overflow: "hidden", backgroundColor: "#E8E8E8", borderWidth: 2, borderColor: "#0D5C3A", borderStyle: "dashed" },
-  scorecardPreview: { width: "100%", height: "100%", resizeMode: "cover" },
-  imagePlaceholder: { flex: 1, alignItems: "center", justifyContent: "center", padding: 20 },
-  imagePlaceholderIcon: { fontSize: 48, marginBottom: 8 },
-  imagePlaceholderText: { fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
-  removeImageButton: { marginTop: 8, alignSelf: "center", paddingVertical: 8, paddingHorizontal: 16, backgroundColor: "#0D5C3A", borderRadius: 8 },
-  removeImageText: { color: "#FFF", fontWeight: "600", fontSize: 14 },
-  emptyText: { textAlign: "center", color: "#999", fontSize: 14, fontStyle: "italic", marginVertical: 12 },
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0, 0, 0, 0.5)", justifyContent: "flex-end" },
-  modalContainer: { backgroundColor: "#FFF", borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: "80%", paddingBottom: 40 },
-  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1, borderBottomColor: "#E0E0E0" },
-  modalTitle: { fontSize: 18, fontWeight: "900", color: "#0D5C3A" },
-  modalClose: { fontSize: 24, color: "#666", fontWeight: "600" },
-  modalSearch: { margin: 16, padding: 12, backgroundColor: "#F5F5F5", borderRadius: 10, fontSize: 16 },
-  partnerItem: { flexDirection: "row", alignItems: "center", padding: 16, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" },
-  partnerAvatar: { width: 40, height: 40, borderRadius: 20, marginRight: 12 },
-  partnerAvatarPlaceholder: { width: 40, height: 40, borderRadius: 20, backgroundColor: "#0D5C3A", alignItems: "center", justifyContent: "center", marginRight: 12 },
-  partnerAvatarText: { color: "#FFF", fontSize: 18, fontWeight: "700" },
-  partnerName: { flex: 1, fontSize: 16, fontWeight: "600", color: "#333" },
-  partnerSelected: { fontSize: 20, color: "#0D5C3A", fontWeight: "900" },
-  loadingOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0, 0, 0, 0.7)", justifyContent: "center", alignItems: "center", zIndex: 1000 },
-  loadingContainer: { backgroundColor: "#FFF", borderRadius: 16, padding: 24, alignItems: "center", minWidth: 200 },
-  loadingText: { marginTop: 12, fontSize: 16, fontWeight: "700", color: "#0D5C3A" },
-});

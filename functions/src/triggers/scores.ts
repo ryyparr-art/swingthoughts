@@ -9,6 +9,7 @@
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import { createNotificationDocument } from "../notifications/helpers";
+import { updateUserCareerStats } from "./userStats";
 
 const db = getFirestore();
 
@@ -226,6 +227,22 @@ export const onScoreCreated = onDocumentCreated(
           }
           console.log("✅ Sent partner_holeinone notifications");
         }
+      }
+
+        // UPDATE USER CAREER STATS
+      try {
+        await updateUserCareerStats(userId, {
+          grossScore,
+          netScore,
+          holeScores: score.holeScores,
+          courseId,
+          fairwaysHit: score.fairwaysHit,
+          fairwaysPossible: score.fairwaysPossible,
+          greensInRegulation: score.greensInRegulation,
+          totalPenalties: score.totalPenalties,
+        });
+      } catch (statsErr) {
+        console.error("⚠️ Career stats update failed:", statsErr);
       }
 
       console.log("✅ Score processing complete");

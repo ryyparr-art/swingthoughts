@@ -21,6 +21,7 @@
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onDocumentCreated, onDocumentDeleted, onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { createNotificationDocument, generateGroupedMessage, getUserData } from "../notifications/helpers";
+import { updateUserCareerStats } from "./userStats";
 
 const db = getFirestore();
 
@@ -127,7 +128,7 @@ export const onLeagueScoreCreated = onDocumentCreated(
       if (!score) return;
 
       const leagueId = event.params.leagueId;
-      const { userId, displayName, avatar, netScore, week } = score;
+      const { userId, displayName, avatar, netScore, grossScore, week } = score;
       if (!userId) return;
 
       const leagueInfo = await getLeagueInfo(leagueId);
@@ -148,6 +149,24 @@ export const onLeagueScoreCreated = onDocumentCreated(
         });
       }
       console.log(`✅ League score notifications sent to ${memberIds.length} members`);
+
+      // ============================================
+      // UPDATE USER CAREER STATS
+      // ============================================
+      try {
+        await updateUserCareerStats(userId, {
+          grossScore: grossScore || 0,
+          netScore: netScore || grossScore || 0,
+          holeScores: score.holeScores,
+          courseId: score.courseId,
+          fairwaysHit: score.fairwaysHit,
+          fairwaysPossible: score.fairwaysPossible,
+          greensInRegulation: score.greensInRegulation,
+          totalPenalties: score.totalPenalties,
+        });
+      } catch (statsErr) {
+        console.error(`⚠️ Career stats update failed for ${userId}:`, statsErr);
+      }
     } catch (error) { console.error("🔥 onLeagueScoreCreated failed:", error); }
   }
 );

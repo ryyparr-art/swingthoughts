@@ -1,8 +1,14 @@
 /**
- * Helper functions for League Post Score
+ * Helper functions for Post Score (shared between League and Regular)
  */
 
-import { HoleInfo, League, TeeOption } from "./types";
+import { db } from "@/constants/firebaseConfig";
+import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+
+import { FullCourseData, HoleInfo, League, TeeOption } from "./types";
+
+const API_KEY = process.env.EXPO_PUBLIC_GOLFCOURSE_API_KEY;
+const API_BASE = "https://api.golfcourseapi.com/v1";
 
 /**
  * Get the number of holes for a league (supports both field names)
@@ -82,21 +88,29 @@ export const getTeeColor = (teeName: string): string => {
 /**
  * Extract and combine tees from course data
  * Returns all tees sorted by yardage (longest first)
+ *
+ * Handles both flat [{tee}] and nested [[{tee}]] structures
+ * that can come from API or Firestore cache.
  */
 export const extractTees = (tees?: {
-  male?: TeeOption[];
-  female?: TeeOption[];
+  male?: TeeOption[] | any[];
+  female?: TeeOption[] | any[];
 }): TeeOption[] => {
   const allTees: TeeOption[] = [];
 
-  if (tees?.male) {
-    for (const tee of tees.male) {
+  const normalize = (arr: any[]): TeeOption[] =>
+    arr
+      .map((t: any) => (Array.isArray(t) ? t[0] : t))
+      .filter((t: any) => t && typeof t === "object" && (t.tee_name || t.name));
+
+  if (tees?.male && Array.isArray(tees.male)) {
+    for (const tee of normalize(tees.male)) {
       allTees.push({ ...tee, source: "male" });
     }
   }
 
-  if (tees?.female) {
-    for (const tee of tees.female) {
+  if (tees?.female && Array.isArray(tees.female)) {
+    for (const tee of normalize(tees.female)) {
       // Avoid duplicates (same tee name)
       const exists = allTees.some((t) => t.tee_name === tee.tee_name);
       if (!exists) {
@@ -371,4 +385,104 @@ export const getPnlSliceCount = (
     if (arr[i] !== null && arr[i]! > 0) count += arr[i]!;
   }
   return count;
+};
+
+/* ================================================================ */
+/* COURSE DATA LOADING                                              */
+/* ================================================================ */
+
+/**
+ * Load full course data with tee information.
+ *
+ * Strategy:
+ * 1. Check Firestore cache — use if tees are present
+ * 2. Fallback to Golf Course API
+ * 3. Cache API result to Firestore (safe — skips undefined fields)
+ *
+ * Returns null if course data could not be loaded.
+ */
+export const loadFullCourseData = async (
+  courseId: number,
+  fallbackName?: string,
+  fallbackLocation?: FullCourseData["location"]
+): Promise<FullCourseData | null> => {
+  const courseDocRef = doc(db, "courses", String(courseId));
+
+  // Step 1: Try Firestore
+  try {
+    const courseSnap = await getDoc(courseDocRef);
+
+    if (courseSnap.exists()) {
+      const data = courseSnap.data();
+      const hasTees =
+        data.tees &&
+        ((Array.isArray(data.tees.male) && data.tees.male.length > 0) ||
+          (Array.isArray(data.tees.female) && data.tees.female.length > 0));
+
+      console.log("🔍 Firestore tees:", JSON.stringify(data.tees, null, 2)?.slice(0, 300));
+      console.log("🔍 hasTees:", hasTees);
+
+      if (hasTees) {
+        return {
+          id: courseId,
+          courseId: courseId,
+          courseName: data.courseName || data.course_name || fallbackName,
+          course_name: data.course_name || data.courseName || fallbackName,
+          location: data.location || fallbackLocation,
+          tees: data.tees,
+        };
+      }
+      // Doc exists but no tees — fall through to API
+    }
+  } catch (e) {
+    console.error("Firestore course lookup failed:", e);
+  }
+
+  // Step 2: Fallback to API
+  try {
+    const res = await fetch(`${API_BASE}/courses/${courseId}`, {
+      headers: { Authorization: `Key ${API_KEY}` },
+    });
+
+    if (!res.ok) return null;
+
+    const apiRaw = await res.json();
+    const apiData = apiRaw.course || apiRaw;
+    console.log("🔍 API raw response keys:", Object.keys(apiData));
+    console.log("🔍 API tees:", JSON.stringify(apiData.tees, null, 2)?.slice(0, 500));
+    const name = apiData.course_name || apiData.courseName || fallbackName;
+
+    const courseData: FullCourseData = {
+      id: courseId,
+      courseId: courseId,
+      courseName: name,
+      course_name: name,
+      location: apiData.location || fallbackLocation,
+      tees: apiData.tees,
+    };
+
+    // Step 3: Cache to Firestore (only defined fields)
+    try {
+      const cacheData: Record<string, any> = {
+        id: courseId,
+        courseId: courseId,
+        cachedAt: serverTimestamp(),
+      };
+      if (name) {
+        cacheData.courseName = name;
+        cacheData.course_name = name;
+      }
+      if (apiData.location) cacheData.location = apiData.location;
+      if (apiData.tees) cacheData.tees = apiData.tees;
+
+      await setDoc(courseDocRef, cacheData, { merge: true });
+    } catch (e) {
+      console.error("Failed to cache course:", e);
+    }
+
+    return courseData;
+  } catch (e) {
+    console.error("API course lookup failed:", e);
+    return null;
+  }
 };
