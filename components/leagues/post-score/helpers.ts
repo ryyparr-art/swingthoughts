@@ -316,12 +316,9 @@ export const countFairways = (
   let hit = 0;
   let possible = 0;
   for (let i = 0; i < holesCount; i++) {
-    // Par 3s don't have fairways
     if (holes[i]?.par <= 3) continue;
-    if (fir[i] !== null) {
-      possible++;
-      if (fir[i] === true) hit++;
-    }
+    possible++;
+    if (fir[i] === true) hit++;
   }
   return { hit, possible };
 };
@@ -334,14 +331,10 @@ export const countGreens = (
   holesCount: number
 ): { hit: number; possible: number } => {
   let hit = 0;
-  let possible = 0;
   for (let i = 0; i < holesCount; i++) {
-    if (gir[i] !== null) {
-      possible++;
-      if (gir[i] === true) hit++;
-    }
+    if (gir[i] === true) hit++;
   }
-  return { hit, possible };
+  return { hit, possible: holesCount };
 };
 
 /**
