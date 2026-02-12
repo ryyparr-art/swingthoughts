@@ -83,6 +83,25 @@ export interface Thought {
     totalVotes: number;
   };
   
+  // League Result
+  leagueResult?: {
+    leagueId: string;
+    leagueName: string;
+    leagueAvatar?: string | null;
+    week: number;
+    totalWeeks: number;
+    format: string;
+    isElevated: boolean;
+    prizeAwarded: number;
+    currency?: string;
+    winnerId?: string | null;
+    winnerName: string;
+    winnerAvatar?: string | null;
+    winnerScore?: number | null;
+    winnerCourseName?: string | null;
+    standings: Array<{ rank: number; name: string; userId?: string; points: number }>;
+  };
+  
   // Score reference
   scoreId?: string;
   
@@ -161,6 +180,8 @@ export const convertPostDataToThought = (postId: string, data: any): Thought => 
     
     isPoll: data.isPoll || false,
     poll: data.poll || null,
+    
+    leagueResult: data.leagueResult || undefined,
     
     scoreId: data.scoreId,
   };
@@ -290,6 +311,8 @@ export const convertCachedFeedToThoughts = (feedItems: FeedItem[]): Thought[] =>
         
         isPoll: postItem.isPoll || false,
         poll: postItem.poll || undefined,
+        
+        leagueResult: postItem.leagueResult || undefined,
         
         // Algorithm fields
         displayBracket: postItem.displayBracket,

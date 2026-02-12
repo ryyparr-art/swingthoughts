@@ -29,6 +29,7 @@
 
 import { getFirestore } from "firebase-admin/firestore";
 import { onDocumentCreated, onDocumentDeleted, onDocumentUpdated } from "firebase-functions/v2/firestore";
+import { createNotificationDocument, generateGroupedMessage, getUserData } from "../notifications/helpers";
 
 const db = getFirestore();
 
@@ -44,7 +45,7 @@ export const onPollVoteCreated = onDocumentCreated(
       if (!snap) return;
 
       const vote = snap.data();
-      const { thoughtId, userId, optionIndex } = vote;
+      const { thoughtId, userId, optionIndex, optionText } = vote;
 
       if (!thoughtId || !userId || optionIndex === undefined) {
         console.error("❌ Poll vote missing required fields:", vote);
@@ -52,6 +53,8 @@ export const onPollVoteCreated = onDocumentCreated(
       }
 
       const thoughtRef = db.doc(`thoughts/${thoughtId}`);
+      let postOwnerId: string | null = null;
+      let pollQuestion: string | null = null;
 
       await db.runTransaction(async (transaction) => {
         const thoughtDoc = await transaction.get(thoughtRef);
@@ -65,6 +68,10 @@ export const onPollVoteCreated = onDocumentCreated(
           console.error(`❌ Thought ${thoughtId} has no poll data`);
           return;
         }
+
+        // Capture for notification after transaction
+        postOwnerId = thought.userId;
+        pollQuestion = thought.poll.question;
 
         const options = [...thought.poll.options];
 
@@ -94,6 +101,41 @@ export const onPollVoteCreated = onDocumentCreated(
       });
 
       console.log(`✅ Poll vote recorded: user ${userId} → option ${optionIndex} on thought ${thoughtId}`);
+
+      // Send notification to poll creator
+      if (postOwnerId && postOwnerId !== userId) {
+        try {
+          const voterData = await getUserData(userId);
+          const voterName = voterData?.displayName || "Someone";
+          const voterAvatar = voterData?.avatar || null;
+
+          // Truncate question for the message
+          const pq = pollQuestion as string | null;
+          const shortQuestion = pq && pq.length > 40
+            ? pq.substring(0, 40) + "..."
+            : pq || "your poll";
+
+          const choiceText = optionText || `option ${optionIndex + 1}`;
+
+          await createNotificationDocument({
+            userId: postOwnerId,
+            type: "poll_vote",
+            actorId: userId,
+            actorName: voterName,
+            actorAvatar: voterAvatar ?? undefined,
+            postId: thoughtId,
+            message: generateGroupedMessage("poll_vote", voterName, 1, {
+              pollQuestion: shortQuestion,
+              pollChoice: choiceText,
+            }),
+          });
+
+          console.log(`✅ Poll vote notification sent to ${postOwnerId}`);
+        } catch (notifError) {
+          console.error("⚠️ Failed to send poll vote notification:", notifError);
+          // Don't throw — vote was already recorded successfully
+        }
+      }
     } catch (error) {
       console.error("🔥 onPollVoteCreated error:", error);
     }
@@ -171,6 +213,7 @@ export const onPollVoteUpdated = onDocumentUpdated(
       });
 
       console.log(`✅ Poll vote changed: user ${userId} moved ${oldIndex} → ${newIndex} on thought ${thoughtId}`);
+      // No notification on vote change — only on first vote
     } catch (error) {
       console.error("🔥 onPollVoteUpdated error:", error);
     }

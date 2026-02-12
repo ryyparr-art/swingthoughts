@@ -11,7 +11,7 @@ export const GROUPING_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 // Notification types that should be grouped
 export const GROUPABLE_TYPES = {
   // Group by: postId (same post, multiple actors)
-  POST_GROUPED: ["like", "comment", "comment_like", "share"],
+  POST_GROUPED: ["like", "comment", "comment_like", "share", "poll_vote"],
   
   // Group by: actorId (same person, multiple actions)
   ACTOR_GROUPED: ["message"],

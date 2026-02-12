@@ -25,6 +25,7 @@ import {
 import { getPostTypeLabel } from "@/constants/postTypes";
 import { getRelativeTime, Thought } from "@/utils/feedHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
+import FeedLeagueResultCard from "./FeedLeagueResultCard";
 import FeedPollCard from "./FeedPollCard";
 import FeedPostContent from "./FeedPostContent";
 import FeedPostMedia from "./FeedPostMedia";
@@ -77,6 +78,7 @@ export default function FeedPost({
   const isLowLeader = thought.postType === "low-leader";
   const isScore = thought.postType === "score";
   const isPoll = thought.isPoll === true && thought.poll != null;
+  const isLeagueResult = thought.postType === "league-week-result" && thought.leagueResult != null;
   
   const displayName = thought.userName || thought.displayName || "Unknown";
   const avatarUrl = thought.userAvatar || thought.avatarUrl || thought.avatar;
@@ -93,6 +95,8 @@ export default function FeedPost({
     thoughtTypeLabel = "Score";
   } else if (isPoll) {
     thoughtTypeLabel = "Poll";
+  } else if (isLeagueResult) {
+    thoughtTypeLabel = "League Results";
   }
 
   // Navigate to profile
@@ -131,7 +135,7 @@ export default function FeedPost({
             </View>
             
             <View style={styles.badgeRow}>
-              <View style={[styles.typeBadge, isPoll && styles.typeBadgePoll]}>
+              <View style={[styles.typeBadge, isPoll && styles.typeBadgePoll, isLeagueResult && styles.typeBadgeLeague]}>
                 <Text style={styles.typeText}>{thoughtTypeLabel}</Text>
               </View>
               <Text style={styles.timestamp}>
@@ -184,7 +188,13 @@ export default function FeedPost({
           thoughtId={thought.id}
           poll={thought.poll}
           currentUserId={currentUserId}
+          postUserId={thought.userId}
         />
+      )}
+
+      {/* League Result Card */}
+      {isLeagueResult && thought.leagueResult && (
+        <FeedLeagueResultCard leagueResult={thought.leagueResult} />
       )}
 
       {/* Content */}
@@ -318,6 +328,9 @@ const styles = StyleSheet.create({
   },
   typeBadgePoll: {
     backgroundColor: "#7C3AED",
+  },
+  typeBadgeLeague: {
+    backgroundColor: "#2E7D32",
   },
   typeText: {
     fontSize: 11,

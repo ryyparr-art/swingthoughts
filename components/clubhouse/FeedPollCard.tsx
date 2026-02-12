@@ -6,6 +6,7 @@
  * - Casting / changing / removing votes via poll_votes collection
  * - Showing results with animated bars and percentages after voting
  * - Highlighting the user's selected option
+ * - Poll authors always see results (even before voting)
  *
  * Vote flow:
  * 1. Client writes to poll_votes/{thoughtId}_{userId}
@@ -17,18 +18,18 @@
  * the Cloud Function runs.
  */
 
-import { auth, db } from "@/constants/firebaseConfig";
+import { db } from "@/constants/firebaseConfig";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { deleteDoc, doc, getDoc, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from "react-native";
 
 /* ================================================================ */
@@ -51,6 +52,7 @@ interface FeedPollCardProps {
   thoughtId: string;
   poll: PollData;
   currentUserId: string;
+  postUserId: string;
 }
 
 /* ================================================================ */
@@ -61,6 +63,7 @@ export default function FeedPollCard({
   thoughtId,
   poll,
   currentUserId,
+  postUserId,
 }: FeedPollCardProps) {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [localOptions, setLocalOptions] = useState<PollOption[]>(poll.options);
@@ -68,8 +71,9 @@ export default function FeedPollCard({
   const [isVoting, setIsVoting] = useState(false);
   const [hasCheckedVote, setHasCheckedVote] = useState(false);
 
-  // Determine if user already voted (from poll data or local state)
-  const hasVoted = selectedIndex !== null;
+  // Poll author always sees results, even before voting
+  const isAuthor = currentUserId === postUserId;
+  const hasVoted = selectedIndex !== null || isAuthor;
 
   /* ---------------------------------------------------------------- */
   /* CHECK EXISTING VOTE ON MOUNT                                     */
@@ -322,7 +326,7 @@ export default function FeedPollCard({
       {/* Vote count */}
       <Text style={styles.voteCount}>
         {localTotalVotes} {localTotalVotes === 1 ? "vote" : "votes"}
-        {hasVoted && " · Tap to change"}
+        {hasVoted && selectedIndex !== null && " · Tap to change"}
       </Text>
     </View>
   );

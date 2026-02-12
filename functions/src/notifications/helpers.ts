@@ -72,6 +72,8 @@ export function generateGroupedMessage(
     weekNumber?: number;
     netScore?: number;
     invitedUserName?: string;
+    pollQuestion?: string;   // Add
+    pollChoice?: string;     // Add
   }
 ): string {
   const othersCount = actorCount - 1;
@@ -124,6 +126,11 @@ export function generateGroupedMessage(
       return `${actorName} tagged you in a Swing Thought`;
     case "mention_comment":
       return `${actorName} tagged you in a comment`;
+
+    // After the "mention_comment" case:
+    case "poll_vote":
+      if (actorCount === 1) return `${actorName} voted on your poll`;
+      return `${actorName} and ${othersText} voted on your poll`;
     
     // Hole-in-one
     case "holeinone_pending_poster":

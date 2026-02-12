@@ -99,6 +99,25 @@ export interface FeedPost {
     totalVotes: number;
   };
   
+  // League Result
+  leagueResult?: {
+    leagueId: string;
+    leagueName: string;
+    leagueAvatar?: string | null;
+    week: number;
+    totalWeeks: number;
+    format: string;
+    isElevated: boolean;
+    prizeAwarded: number;
+    currency?: string;
+    winnerId?: string | null;
+    winnerName: string;
+    winnerAvatar?: string | null;
+    winnerScore?: number | null;
+    winnerCourseName?: string | null;
+    standings: Array<{ rank: number; name: string; userId?: string; points: number }>;
+  };
+  
   // Metadata
   createdAt: Timestamp;
   thoughtId?: string;
@@ -700,6 +719,9 @@ async function processPosts(
       // Poll
       isPoll: data.isPoll || false,
       poll: data.poll || null,
+      
+      // League Result
+      leagueResult: data.leagueResult || null,
       
       // Metadata
       createdAt: data.createdAt,

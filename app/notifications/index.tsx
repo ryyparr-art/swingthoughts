@@ -80,6 +80,7 @@ const NOTIFICATION_ICONS: Record<string, NotificationIconConfig> = {
   comment_like: { image: require("@/assets/icons/Throw Darts.png"), color: "#FF3B30" },
   reply: { image: require("@/assets/icons/Comments.png"), color: "#FFD700" },
   share: { icon: "share-social", color: "#5856D6" },
+  poll_vote: { icon: "stats-chart", color: "#7C3AED" },
 
   // Mentions
   mention_post: { image: require("@/assets/icons/Clubhouse.png"), color: "#5856D6" },
@@ -439,6 +440,15 @@ export default function NotificationsScreen() {
           });
         }
         break;
+        
+      case "poll_vote":
+        if (notification.postId) {
+          router.push({
+            pathname: "/clubhouse",
+            params: { highlightPostId: notification.postId },
+        });
+      }
+      break;
 
       case "partner_scored":
       case "partner_holeinone":
