@@ -6,6 +6,8 @@ export { default as ContentInput } from "./ContentInput";
 export { default as CropModal } from "./CropModal";
 export { default as MediaSection } from "./MediaSection";
 export { default as TypeSelector } from "./TypeSelector";
+export { default as PollBuilder } from "./PollBuilder";
+export type { PollData } from "./PollBuilder";
 
 export type {
   AutocompleteItem,
@@ -27,3 +29,4 @@ export {
   MAX_IMAGES,
   MAX_VIDEO_DURATION,
 } from "./types";
+

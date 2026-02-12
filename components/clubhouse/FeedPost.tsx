@@ -5,6 +5,7 @@
  * Includes:
  * - Header (avatar, name, type badge, timestamp)
  * - Media (images carousel or video)
+ * - Poll card (for poll-type posts)
  * - Content (text with @mentions and #hashtags)
  * - Footer (like and comment buttons)
  */
@@ -24,6 +25,7 @@ import {
 import { getPostTypeLabel } from "@/constants/postTypes";
 import { getRelativeTime, Thought } from "@/utils/feedHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
+import FeedPollCard from "./FeedPollCard";
 import FeedPostContent from "./FeedPostContent";
 import FeedPostMedia from "./FeedPostMedia";
 
@@ -74,6 +76,7 @@ export default function FeedPost({
   const isOwnPost = thought.userId === currentUserId;
   const isLowLeader = thought.postType === "low-leader";
   const isScore = thought.postType === "score";
+  const isPoll = thought.isPoll === true && thought.poll != null;
   
   const displayName = thought.userName || thought.displayName || "Unknown";
   const avatarUrl = thought.userAvatar || thought.avatarUrl || thought.avatar;
@@ -88,6 +91,8 @@ export default function FeedPost({
   } else if (isScore) {
     headerText = "Logged a new round";
     thoughtTypeLabel = "Score";
+  } else if (isPoll) {
+    thoughtTypeLabel = "Poll";
   }
 
   // Navigate to profile
@@ -126,7 +131,7 @@ export default function FeedPost({
             </View>
             
             <View style={styles.badgeRow}>
-              <View style={styles.typeBadge}>
+              <View style={[styles.typeBadge, isPoll && styles.typeBadgePoll]}>
                 <Text style={styles.typeText}>{thoughtTypeLabel}</Text>
               </View>
               <Text style={styles.timestamp}>
@@ -172,6 +177,15 @@ export default function FeedPost({
         onImagePress={onImagePress}
         onVideoPress={onVideoPress}
       />
+
+      {/* Poll Card */}
+      {isPoll && thought.poll && (
+        <FeedPollCard
+          thoughtId={thought.id}
+          poll={thought.poll}
+          currentUserId={currentUserId}
+        />
+      )}
 
       {/* Content */}
       <View style={styles.contentContainer}>
@@ -301,6 +315,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
+  },
+  typeBadgePoll: {
+    backgroundColor: "#7C3AED",
   },
   typeText: {
     fontSize: 11,

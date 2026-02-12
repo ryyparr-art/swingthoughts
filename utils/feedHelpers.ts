@@ -75,6 +75,14 @@ export interface Thought {
   mediaType?: "images" | "video" | null;
   mediaAspectRatio?: number;
   
+  // Poll
+  isPoll?: boolean;
+  poll?: {
+    question: string;
+    options: Array<{ text: string; votes: number; voterIds?: string[] }>;
+    totalVotes: number;
+  };
+  
   // Score reference
   scoreId?: string;
   
@@ -150,6 +158,9 @@ export const convertPostDataToThought = (postId: string, data: any): Thought => 
     hasMedia: data.hasMedia,
     mediaType: data.mediaType,
     mediaAspectRatio: data.mediaAspectRatio,
+    
+    isPoll: data.isPoll || false,
+    poll: data.poll || null,
     
     scoreId: data.scoreId,
   };
@@ -259,8 +270,8 @@ export const convertCachedFeedToThoughts = (feedItems: FeedItem[]): Thought[] =>
           courseName: c.courseName
         })),
         taggedPartners: postItem.taggedPartners || [],
-        taggedTournaments: (postItem as any).taggedTournaments || [],
-        taggedLeagues: (postItem as any).taggedLeagues || [],
+        taggedTournaments: postItem.taggedTournaments || [],
+        taggedLeagues: postItem.taggedLeagues || [],
         
         regionKey: postItem.regionKey,
         geohash: postItem.geohash,
@@ -273,9 +284,12 @@ export const convertCachedFeedToThoughts = (feedItems: FeedItem[]): Thought[] =>
         
         hasMedia: postItem.hasMedia,
         mediaType: (postItem.mediaType === "images" || postItem.mediaType === "video") ? postItem.mediaType : null,
-        mediaAspectRatio: (postItem as any).mediaAspectRatio,
+        mediaAspectRatio: postItem.mediaAspectRatio ?? undefined,
         engagementScore: postItem.engagementScore,
         viewCount: postItem.viewCount,
+        
+        isPoll: postItem.isPoll || false,
+        poll: postItem.poll || undefined,
         
         // Algorithm fields
         displayBracket: postItem.displayBracket,

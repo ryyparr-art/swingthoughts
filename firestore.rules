@@ -156,7 +156,57 @@ service cloud.firestore {
         allow read, list: if true;
         allow create, update, delete: if isSignedIn();
       }
-    }  
+    }
+
+    // ============================================================================
+    // POLL VOTES
+    // ============================================================================
+    // Separate collection for poll votes to avoid race conditions on the thought doc.
+    // Cloud Functions (Admin SDK) handle incrementing vote counts on the thought's
+    // poll.options[].votes, poll.totalVotes, and poll.options[].voterIds atomically.
+    //
+    // Document ID convention: {thoughtId}_{userId} (ensures one vote per user per poll)
+    //
+    // Document shape:
+    // {
+    //   thoughtId: string,       // the poll thought being voted on
+    //   userId: string,          // the voter
+    //   optionIndex: number,     // which option they chose (0-based)
+    //   optionText: string,      // denormalized for easy reads
+    //   displayName: string,     // voter's display name (denormalized)
+    //   userAvatar: string|null, // voter's avatar (denormalized)
+    //   createdAt: timestamp,
+    // }
+
+    match /poll_votes/{voteId} {
+      // Anyone signed in can read votes (needed to check if user already voted)
+      allow read, list: if isSignedIn();
+
+      // ✅ Create: User can vote once per poll
+      // - voteId must be {thoughtId}_{userId} to enforce uniqueness
+      // - userId must match authenticated user
+      // - Must reference a valid thought
+      // - Must include required fields
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.thoughtId is string &&
+        request.resource.data.optionIndex is int &&
+        request.resource.data.optionIndex >= 0 &&
+        voteId == request.resource.data.thoughtId + '_' + request.auth.uid;
+
+      // ✅ Update: User can change their vote (same field constraints)
+      allow update: if isSignedIn() &&
+        request.auth.uid == resource.data.userId &&
+        // Can only change the option selected and timestamp
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['optionIndex', 'optionText', 'updatedAt']);
+
+      // ✅ Delete: User can remove their vote, admin can remove any
+      allow delete: if isSignedIn() &&
+        (request.auth.uid == resource.data.userId || isAdmin());
+    }
+
     // ============================================================================
     // COMMENTS (TOP-LEVEL - FOR CLOUD FUNCTION TRIGGERS)
     // ============================================================================
@@ -929,7 +979,8 @@ service cloud.firestore {
           isAdmin()
         );
     }
-// ============================================================================
+
+    // ============================================================================
     // LEAGUE INVITES (MEMBER-TO-MEMBER INVITES)
     // ============================================================================
 
@@ -977,6 +1028,7 @@ service cloud.firestore {
           isAdmin()
         );
     }
+
     // ============================================================================
     // DEFAULT DENY
     // ============================================================================
@@ -986,7 +1038,6 @@ service cloud.firestore {
     }
   }
 }
-
 
 
 

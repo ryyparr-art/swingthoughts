@@ -6,7 +6,7 @@
  * - autocompleteHandlers (search mentions/hashtags)
  * - postBuilder (upload, extract tags, submit)
  * - editLoader (load existing post for editing)
- * - UI components (MediaSection, ContentInput, TypeSelector, CropModal)
+ * - UI components (MediaSection, ContentInput, TypeSelector, CropModal, PollBuilder)
  */
 
 import { auth, db } from "@/constants/firebaseConfig";
@@ -43,6 +43,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import ContentInput from "@/components/create-thought/ContentInput";
 import CropModal from "@/components/create-thought/CropModal";
 import MediaSection from "@/components/create-thought/MediaSection";
+import type { PollData } from "@/components/create-thought/PollBuilder";
+import PollBuilder from "@/components/create-thought/PollBuilder";
 import TypeSelector from "@/components/create-thought/TypeSelector";
 import {
   AutocompleteItem,
@@ -144,6 +146,12 @@ export default function CreateScreen() {
   // Image carousel
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
 
+  // Poll
+  const [pollData, setPollData] = useState<PollData>({
+    question: "",
+    options: ["Yes", "No"],
+  });
+
   /* ---------------------------------------------------------------- */
   /* LOAD USER DATA                                                   */
   /* ---------------------------------------------------------------- */
@@ -209,6 +217,11 @@ export default function CreateScreen() {
       setSelectedMentions(data.selectedMentions);
       setSelectedTournaments(data.selectedTournaments);
       setSelectedLeagues(data.selectedLeagues);
+
+      // Poll
+      if (data.pollData) {
+        setPollData(data.pollData);
+      }
 
       // Content LAST so cleanup doesn't remove tags
       setContent(data.content);
@@ -517,7 +530,13 @@ export default function CreateScreen() {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-    if (content.trim() || imageUris.length > 0 || videoUri) {
+    const hasUnsavedChanges =
+      content.trim() ||
+      imageUris.length > 0 ||
+      videoUri ||
+      (selectedType === "poll" && pollData.question.trim());
+
+    if (hasUnsavedChanges) {
       const shouldDiscard = await new Promise<boolean>((resolve) => {
         Alert.alert("Discard Thought?", "You have unsaved changes.", [
           { text: "Keep Editing", style: "cancel", onPress: () => resolve(false) },
@@ -608,7 +627,23 @@ export default function CreateScreen() {
       return;
     }
 
-    if (!content.trim()) {
+    // Poll-specific validation
+    if (selectedType === "poll") {
+      if (!pollData.question.trim()) {
+        soundPlayer.play("error");
+        Alert.alert("Missing Question", "Please add a poll question.");
+        return;
+      }
+      const filledOptions = pollData.options.filter((o) => o.trim());
+      if (filledOptions.length < 2) {
+        soundPlayer.play("error");
+        Alert.alert("Need Options", "Please add at least 2 poll options.");
+        return;
+      }
+    }
+
+    // Content is required for non-poll types; optional for polls
+    if (!content.trim() && selectedType !== "poll") {
       soundPlayer.play("error");
       Alert.alert("Empty Post", "Please add some content.");
       return;
@@ -654,6 +689,7 @@ export default function CreateScreen() {
         extractedTournaments: tournaments,
         extractedLeagues: leagues,
         mediaAspectRatio: mediaAspectRatio || undefined,
+        pollData: selectedType === "poll" ? pollData : undefined,
       });
 
       // Submit
@@ -770,6 +806,15 @@ export default function CreateScreen() {
           selectedType={selectedType}
           onSelectType={setSelectedType}
         />
+
+        {/* Poll Builder - only visible when poll type selected */}
+        {selectedType === "poll" && (
+          <PollBuilder
+            pollData={pollData}
+            onPollDataChange={setPollData}
+            writable={writable}
+          />
+        )}
 
         <ContentInput
           content={content}

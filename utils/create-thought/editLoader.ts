@@ -2,7 +2,7 @@
  * Edit Loader for Create Thought
  * 
  * Loads an existing post's data for editing, parsing media,
- * mentions, tournaments, and leagues back into component state.
+ * mentions, tournaments, leagues, and polls back into component state.
  */
 
 import { MAX_VIDEO_DURATION } from "@/components/create-thought/types";
@@ -33,6 +33,9 @@ export interface EditPostData {
   selectedMentions: string[];
   selectedTournaments: string[];
   selectedLeagues: string[];
+
+  // Poll
+  pollData?: { question: string; options: string[] };
 
   // Original data (preserved for edit)
   originalPostData: any;
@@ -111,6 +114,15 @@ export const loadPostForEdit = async (
       });
     }
 
+    // Parse poll
+    let pollData: { question: string; options: string[] } | undefined;
+    if (postData.poll) {
+      pollData = {
+        question: postData.poll.question || "",
+        options: (postData.poll.options || []).map((o: any) => o.text || ""),
+      };
+    }
+
     return {
       content: postData.content || "",
       postType: postData.postType || "swing-thought",
@@ -126,6 +138,7 @@ export const loadPostForEdit = async (
       selectedMentions,
       selectedTournaments,
       selectedLeagues,
+      pollData,
       originalPostData: { ...postData, id: editId },
     };
   } catch (error) {

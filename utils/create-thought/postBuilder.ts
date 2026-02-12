@@ -231,6 +231,7 @@ interface BuildPostParams {
   extractedTournaments: TaggedTournament[];
   extractedLeagues: TaggedLeague[];
   mediaAspectRatio?: number;
+  pollData?: { question: string; options: string[] };
 }
 
 export const buildPostData = async (params: BuildPostParams) => {
@@ -306,6 +307,23 @@ export const buildPostData = async (params: BuildPostParams) => {
       leagueId: l.leagueId,
       name: l.name,
     })),
+
+    // Add after the taggedLeagues field:
+    isPoll: params.selectedType === "poll",
+    poll: params.pollData
+      ? {
+        question: params.pollData.question.trim(),
+        options: params.pollData.options
+          .filter((o) => o.trim())
+          .map((text) => ({
+            text: text.trim(),
+            votes: 0,
+            voterIds: [],
+          })),
+        totalVotes: 0,
+        createdAt: serverTimestamp(),
+      }
+    : null,
 
     isReported: false,
     reportCount: 0,
@@ -398,5 +416,8 @@ export const buildOptimisticPost = (
     hasMedia: postData.hasMedia,
     mediaType: postData.mediaType,
     mediaAspectRatio: postData.mediaAspectRatio,
+
+    isPoll: postData.isPoll || false,
+    poll: postData.poll || null,
   };
 };

@@ -115,6 +115,11 @@ export { onUserUpdated } from "./triggers/users";
 
 export { onHandicapScoreCreated, onHandicapLeagueScoreCreated } from "./triggers/handicapCalculator";
 
+// ============================================================================
+// POLL VOTE TRIGGERS
+// ============================================================================
+export { onPollVoteCreated, onPollVoteUpdated, onPollVoteDeleted } from "./triggers/pollVotes";
+
 
 
 

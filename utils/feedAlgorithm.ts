@@ -66,6 +66,7 @@ export interface FeedPost {
   videoTrimEnd?: number | null;
   hasMedia?: boolean;
   mediaType?: string | null;
+  mediaAspectRatio?: number | null;
   
   // Engagement
   likes?: number;
@@ -89,6 +90,14 @@ export interface FeedPost {
   taggedPartners?: { userId: string; displayName: string }[];
   taggedTournaments?: { tournamentId: string; name: string }[];
   taggedLeagues?: { leagueId: string; name: string }[];
+  
+  // Poll
+  isPoll?: boolean;
+  poll?: {
+    question: string;
+    options: Array<{ text: string; votes: number; voterIds?: string[] }>;
+    totalVotes: number;
+  };
   
   // Metadata
   createdAt: Timestamp;
@@ -668,6 +677,7 @@ async function processPosts(
       videoTrimEnd: data.videoTrimEnd,
       hasMedia: data.hasMedia || false,
       mediaType: data.mediaType,
+      mediaAspectRatio: data.mediaAspectRatio,
       
       // Engagement
       likes: data.likes || 0,
@@ -686,6 +696,10 @@ async function processPosts(
       taggedPartners: data.taggedPartners || [],
       taggedTournaments: data.taggedTournaments || [],
       taggedLeagues: data.taggedLeagues || [],
+      
+      // Poll
+      isPoll: data.isPoll || false,
+      poll: data.poll || null,
       
       // Metadata
       createdAt: data.createdAt,

@@ -9,6 +9,7 @@ export const POST_TYPES = {
     { id: "swing-envy", label: "Swing Envy" },
     { id: "meme", label: "Meme" },
     { id: "advice", label: "Advice?" },
+    { id: "poll", label: "📊 Poll" },
   ],
   pro: [
     { id: "pro-tip", label: "Pro Tip" },
@@ -18,6 +19,7 @@ export const POST_TYPES = {
     { id: "swing-envy", label: "Swing Envy" },
     { id: "meme", label: "Meme" },
     { id: "advice", label: "Advice?" },
+    { id: "poll", label: "📊 Poll" },
   ],
   course: [
     { id: "course-announcement", label: "Course Announcement" },
@@ -26,6 +28,7 @@ export const POST_TYPES = {
     { id: "swing-envy", label: "Swing Envy" },
     { id: "meme", label: "Meme" },
     { id: "advice", label: "Advice?" },
+    { id: "poll", label: "📊 Poll" },
   ],
 };
 

@@ -76,6 +76,17 @@ export interface AutocompleteItem {
   startDate?: any;
 }
 
+export interface PollOption {
+  text: string;
+  votes: number;
+  voterIds: string[];
+}
+
+export interface PollData {
+  question: string;
+  options: string[];
+}
+
 /**
  * Check if user can write posts based on their verification status
  */
