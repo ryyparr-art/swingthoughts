@@ -78,6 +78,14 @@ export const onHoleInOneUpdated = onDocumentUpdated(
           actorAvatar: verifierData.avatar, postId, scoreId, courseId, courseName,
           message: `✅ ${verifierData.displayName || "Someone"} verified your hole-in-one on hole ${holeNumber}!`,
         });
+
+        // Evaluate Ace Hunter challenge
+        try {
+          const { evaluateAceHunter } = await import("./challengeEvaluator");
+          await evaluateAceHunter(userId);
+        } catch (aceErr) {
+          console.error("⚠️ Ace Hunter evaluation failed:", aceErr);
+        }
       }
 
       if (before.status !== "denied" && after.status === "denied") {

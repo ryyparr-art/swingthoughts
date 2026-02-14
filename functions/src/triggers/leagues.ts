@@ -167,6 +167,44 @@ export const onLeagueScoreCreated = onDocumentCreated(
       } catch (statsErr) {
         console.error(`⚠️ Career stats update failed for ${userId}:`, statsErr);
       }
+
+      // ============================================
+      // EVALUATE CHALLENGES
+      // ============================================
+      try {
+        const { evaluateChallenges } = await import("./challengeEvaluator");
+
+        // Build holePars from course data
+        const courseDoc = await db.collection("courses").doc(String(score.courseId)).get();
+        const courseTees = courseDoc.exists ? courseDoc.data()?.tees : null;
+        const allTees = [...(courseTees?.male || []), ...(courseTees?.female || [])];
+        const holePars = allTees[0]?.holes?.map((h: any) => h.par || 4) || [];
+
+        const fir = score.fir || [];
+        const gir = score.gir || [];
+        const hasFirData = fir.some((v: any) => v !== null);
+        const hasGirData = gir.some((v: any) => v !== null);
+
+        await evaluateChallenges({
+          userId,
+          grossScore: grossScore || 0,
+          holeScores: score.holeScores || [],
+          holePars: holePars.slice(0, score.holeScores?.length || 0),
+          holesCount: score.holeScores?.length || 0,
+          courseId: score.courseId,
+          courseName: score.courseName,
+          fairwaysHit: score.fairwaysHit,
+          fairwaysPossible: score.fairwaysPossible,
+          greensHit: score.greensInRegulation,
+          greensPossible: score.holeScores?.length || 0,
+          hasFirData,
+          hasGirData,
+          dtpMeasurements: score.dtpMeasurements,
+          scoreId: event.params.scoreId,
+        });
+      } catch (challengeErr) {
+        console.error(`⚠️ Challenge evaluation failed for ${userId}:`, challengeErr);
+      }
     } catch (error) { console.error("🔥 onLeagueScoreCreated failed:", error); }
   }
 );

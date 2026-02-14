@@ -245,6 +245,45 @@ export const onScoreCreated = onDocumentCreated(
         console.error("⚠️ Career stats update failed:", statsErr);
       }
 
+      // ============================================
+      // EVALUATE CHALLENGES
+      // ============================================
+      try {
+        const { evaluateChallenges } = await import("./challengeEvaluator");
+
+        // Build holePars from course data
+        const courseDoc = await db.collection("courses").doc(String(courseId)).get();
+        const courseTees = courseDoc.exists ? courseDoc.data()?.tees : null;
+        const allTees = [...(courseTees?.male || []), ...(courseTees?.female || [])];
+        const holePars = allTees[0]?.holes?.map((h: any) => h.par || 4) || [];
+
+        // Determine if user tracked FIR/GIR
+        const fir = score.fir || [];
+        const gir = score.gir || [];
+        const hasFirData = fir.some((v: any) => v !== null);
+        const hasGirData = gir.some((v: any) => v !== null);
+
+        await evaluateChallenges({
+          userId,
+          grossScore,
+          holeScores: score.holeScores || [],
+          holePars: holePars.slice(0, score.holeScores?.length || 0),
+          holesCount: score.holeScores?.length || 0,
+          courseId,
+          courseName,
+          fairwaysHit: score.fairwaysHit,
+          fairwaysPossible: score.fairwaysPossible,
+          greensHit: score.greensInRegulation,
+          greensPossible: score.holeScores?.length || 0,
+          hasFirData,
+          hasGirData,
+          dtpMeasurements: score.dtpMeasurements,
+          scoreId,
+        });
+      } catch (challengeErr) {
+        console.error("⚠️ Challenge evaluation failed:", challengeErr);
+      }
+
       console.log("✅ Score processing complete");
     } catch (err) {
       console.error("🔥 onScoreCreated failed:", err);

@@ -133,6 +133,12 @@ export const sendPushNotification = onDocumentCreated(
         case "league_team_edit_rejected": pushMessage.title = "Team Edit Update"; break;
         case "league_team_edit_request": pushMessage.title = "✏️ Team Edit Request"; break;
         case "league_announcement": pushMessage.title = "📢 League Announcement"; break;
+        // Challenge Notifications
+        case "challenge_earned": pushMessage.title = "🏆 Badge Earned!"; break;
+        case "challenge_tier": pushMessage.title = "⭐ Milestone Badge!"; break;
+        case "challenge_progress": pushMessage.title = "📈 Challenge Update"; break;
+        case "dtp_claimed": pushMessage.title = "🎯 Pin Claimed!"; break;
+        case "dtp_lost": pushMessage.title = "🎯 Pin Beaten!"; break;
         default: pushMessage.title = "⛳ Swing Thoughts";
       }
 

@@ -7,10 +7,10 @@
 
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import {
-    CreateNotificationParams,
-    GROUPABLE_TYPES,
-    GROUPING_WINDOW_MS,
-    UserData,
+  CreateNotificationParams,
+  GROUPABLE_TYPES,
+  GROUPING_WINDOW_MS,
+  UserData,
 } from "./config";
 
 const db = getFirestore();
@@ -205,6 +205,18 @@ export function generateGroupedMessage(
     // League - Announcements
     case "league_announcement":
       return `New announcement in ${extraData?.leagueName || "your league"}`;
+
+    // Challenge notifications
+    case "challenge_earned":
+      return message || `You earned a new badge! 🏆`;
+    case "challenge_tier":
+      return message || `You reached a new milestone! ⭐`;
+    case "challenge_progress":
+      return message || `Challenge progress update`;
+    case "dtp_claimed":
+      return message || `You claimed a pin! 🎯`;
+    case "dtp_lost":
+      return message || `Someone beat your pin! 🎯`;
     
     default:
       return `${actorName} interacted with you`;

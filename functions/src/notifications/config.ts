@@ -66,6 +66,12 @@ export const GROUPABLE_TYPES = {
     "league_invite_sent",
     "league_invite_accepted", 
     "league_invite_declined",
+    // Challenge notifications (always individual)
+    "challenge_earned",
+    "challenge_tier",
+    "challenge_progress",
+    "dtp_claimed",
+    "dtp_lost",
   ],
 };
 
