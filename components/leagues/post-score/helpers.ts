@@ -302,7 +302,7 @@ export const getTotalAdjScore = (adjScores: (number | null)[]): number | null =>
 };
 
 /* ================================================================ */
-/* STAT CALCULATIONS (FIR / GIR / PNL)                              */
+/* STAT CALCULATIONS (FIR / GIR)                                   */
 /* ================================================================ */
 
 /**
@@ -338,22 +338,6 @@ export const countGreens = (
 };
 
 /**
- * Count total penalties
- */
-export const countPenalties = (
-  pnl: (number | null)[],
-  holesCount: number
-): number => {
-  let total = 0;
-  for (let i = 0; i < holesCount; i++) {
-    if (pnl[i] !== null && pnl[i]! > 0) {
-      total += pnl[i]!;
-    }
-  }
-  return total;
-};
-
-/**
  * Sum stats for a 9-hole slice
  */
 export const getStatSliceCount = (
@@ -364,18 +348,6 @@ export const getStatSliceCount = (
   let count = 0;
   for (let i = start; i < end; i++) {
     if (arr[i] === true) count++;
-  }
-  return count;
-};
-
-export const getPnlSliceCount = (
-  arr: (number | null)[],
-  start: number,
-  end: number
-): number => {
-  let count = 0;
-  for (let i = start; i < end; i++) {
-    if (arr[i] !== null && arr[i]! > 0) count += arr[i]!;
   }
   return count;
 };

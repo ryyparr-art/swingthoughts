@@ -249,7 +249,7 @@ export const onScoreCreated = onDocumentCreated(
       // EVALUATE CHALLENGES
       // ============================================
       try {
-        const { evaluateChallenges } = await import("./challengeEvaluator");
+        const { evaluateChallenges } = await import("./challengeEvaluator.js");
 
         // Build holePars from course data
         const courseDoc = await db.collection("courses").doc(String(courseId)).get();

@@ -92,11 +92,10 @@ export interface UserProfile {
   cachedCourses?: any[];
 }
 
-/** Per-hole stats: FIR (Fairway in Reg), GIR (Green in Reg), PNL (Penalties) */
+/** Per-hole stats: FIR (Fairway in Reg), GIR (Green in Reg) */
 export interface HoleStats {
   fir: (boolean | null)[]; // null = not entered, true/false = checked
   gir: (boolean | null)[];
-  pnl: (number | null)[]; // null = not entered, number = penalty count
 }
 
 export interface ScoreData {
@@ -123,10 +122,8 @@ export interface ScoreData {
   fairwaysHit?: number;
   fairwaysPossible?: number;
   greensInRegulation?: number;
-  totalPenalties?: number;
   holeStats?: {
     fir: (boolean | null)[];
     gir: (boolean | null)[];
-    pnl: (number | null)[];
   };
 }

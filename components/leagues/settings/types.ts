@@ -59,6 +59,7 @@ export interface Member {
   odcuserId: string;
   displayName: string;
   avatar?: string;
+  challengeBadges?: string[];
   role: "commissioner" | "manager" | "member";
   leagueHandicap?: number;
   swingThoughtsHandicap?: number;

@@ -48,6 +48,12 @@ export interface Thought {
   displayName?: string;
   avatarUrl?: string;
   
+  // Challenge badges
+  challengeBadges?: string[];
+
+  // Game identity
+  gameIdentity?: string;
+  
   courseName?: string;
   taggedPartners?: Array<{ userId: string; displayName: string }>;
   taggedCourses?: Array<{ courseId: number; courseName: string }>;
@@ -159,6 +165,9 @@ export const convertPostDataToThought = (postId: string, data: any): Thought => 
     displayName: data.userName || data.displayName,
     avatarUrl: data.userAvatar || data.avatarUrl || data.avatar,
     
+    challengeBadges: data.challengeBadges || [],
+    gameIdentity: data.gameIdentity || "",
+    
     courseName: data.courseName,
     taggedPartners: data.taggedPartners || [],
     taggedCourses: data.taggedCourses || [],
@@ -176,10 +185,10 @@ export const convertPostDataToThought = (postId: string, data: any): Thought => 
     
     hasMedia: data.hasMedia,
     mediaType: data.mediaType,
-    mediaAspectRatio: data.mediaAspectRatio,
+    mediaAspectRatio: data.mediaAspectRatio ?? undefined,
     
     isPoll: data.isPoll || false,
-    poll: data.poll || null,
+    poll: data.poll || undefined,
     
     leagueResult: data.leagueResult || undefined,
     
@@ -283,6 +292,8 @@ export const convertCachedFeedToThoughts = (feedItems: FeedItem[]): Thought[] =>
         userName: postItem.displayName,
         userAvatar: postItem.avatar,
         avatar: postItem.avatar,
+        challengeBadges: postItem.challengeBadges || [],
+        gameIdentity: postItem.gameIdentity || "",
         userHandicap: postItem.handicap ? parseInt(postItem.handicap) : undefined,
         userVerified: postItem.verified,
         

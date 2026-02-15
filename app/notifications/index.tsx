@@ -159,6 +159,15 @@ const NOTIFICATION_ICONS: Record<string, NotificationIconConfig> = {
 
   // League - Announcements
   league_announcement: { icon: "megaphone", color: "#0D5C3A" },
+
+  // ==========================================
+  // CHALLENGE NOTIFICATIONS
+  // ==========================================
+  challenge_earned: { icon: "trophy", color: "#FFD700" },
+  challenge_tier: { icon: "star", color: "#FFD700" },
+  challenge_progress: { icon: "flag", color: "#0D5C3A" },
+  dtp_claimed: { icon: "location", color: "#D32F2F" },
+  dtp_lost: { icon: "location", color: "#D32F2F" },
   
   // System
   system: { icon: "information-circle", color: "#8E8E93" },
@@ -674,6 +683,17 @@ export default function NotificationsScreen() {
             params: { leagueId: notification.leagueId, tab: "teams" },
           });
         }
+        break;
+
+      // ==========================================
+      // CHALLENGE NOTIFICATIONS
+      // ==========================================
+      case "challenge_earned":
+      case "challenge_tier":
+      case "challenge_progress":
+      case "dtp_claimed":
+      case "dtp_lost":
+        router.push("/events" as any);
         break;
 
       default:

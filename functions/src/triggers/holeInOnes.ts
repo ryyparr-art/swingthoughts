@@ -81,7 +81,7 @@ export const onHoleInOneUpdated = onDocumentUpdated(
 
         // Evaluate Ace Hunter challenge
         try {
-          const { evaluateAceHunter } = await import("./challengeEvaluator");
+          const { evaluateAceHunter } = await import("./challengeEvaluator.js");
           await evaluateAceHunter(userId);
         } catch (aceErr) {
           console.error("⚠️ Ace Hunter evaluation failed:", aceErr);

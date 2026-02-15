@@ -1,573 +1,1387 @@
 /**
- * Members Tab Component
- * 
- * Displays pending join requests and current members.
- * Commissioners can approve/reject requests and manage members.
+ * League Hub - Standings Tab
+ *
+ * Shows:
+ * - Full leaderboard with position changes
+ * - Stroke: Player standings with avatar, rounds, points, wins
+ * - 2v2: Team standings with W-L record
+ * - User's row flashes with green border on load
+ * - Weekly Scores button navigates to week-scores screen
  */
 
+import BadgeRow from "@/components/challenges/BadgeRow";
+import { auth, db } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
-import React, { useState } from "react";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  orderBy,
+  query
+} from "firebase/firestore";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
+  Animated,
   Image,
-  KeyboardAvoidingView,
   Modal,
-  Platform,
+  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { styles } from "./styles";
-import {
-  JoinRequest,
-  League,
-  Member,
-  Team,
-  getRoleBadge,
-  getTimeAgo,
-} from "./types";
+/* ================================================================ */
+/* TYPES                                                            */
+/* ================================================================ */
 
-interface MembersTabProps {
-  league: League;
-  members: Member[];
-  teams: Team[];
-  pendingRequests: JoinRequest[];
-  isCommissioner: boolean;
-  isHost: boolean;
-  currentUserId: string;
-  refreshing: boolean;
-  saving: boolean;
-  onRefresh: () => void;
-  onApproveRequest: (request: JoinRequest) => Promise<void>;
-  onRejectRequest: (request: JoinRequest) => void;
-  onRemoveMember: (member: Member) => void;
-  onEditHandicap: (member: Member, handicap: number) => Promise<void>;
-  onAssignToTeam: (member: Member, teamId: string | null) => Promise<void>;
-  onPromoteToManager: (member: Member) => Promise<void>;
-  onDemoteManager: (member: Member) => Promise<void>;
+interface League {
+  id: string;
+  name: string;
+  avatar?: string;
+  format: "stroke" | "2v2";
+  status: "upcoming" | "active" | "completed";
+  currentWeek: number;
+  totalWeeks: number;
+  pointsPerWeek?: number;
+  hasElevatedEvents?: boolean;
+  elevatedWeeks?: number[];
+  elevatedMultiplier?: number;
+  purse?: {
+    seasonPurse: number;
+    weeklyPurse: number;
+    elevatedPurse: number;
+    currency?: string;
+  };
 }
 
-export default function MembersTab({
-  league,
-  members,
-  teams,
-  pendingRequests,
-  isCommissioner,
-  isHost,
-  currentUserId,
-  refreshing,
-  saving,
-  onRefresh,
-  onApproveRequest,
-  onRejectRequest,
-  onRemoveMember,
-  onEditHandicap,
-  onAssignToTeam,
-  onPromoteToManager,
-  onDemoteManager,
-}: MembersTabProps) {
+interface LeagueCard {
+  id: string;
+  name: string;
+  avatar?: string;
+  currentWeek: number;
+  totalWeeks: number;
+}
+
+interface PlayerStanding {
+  odcuserId: string;
+  displayName: string;
+  avatar?: string;
+  challengeBadges?: string[];
+  rank: number;
+  previousRank?: number;
+  roundsPlayed: number;
+  totalPoints: number;
+  wins: number;
+}
+
+interface TeamStanding {
+  teamId: string;
+  teamName: string;
+  teamAvatar?: string;
+  rank: number;
+  previousRank?: number;
+  wins: number;
+  losses: number;
+  totalPoints: number;
+}
+
+/* ================================================================ */
+/* MAIN COMPONENT                                                   */
+/* ================================================================ */
+
+export default function LeagueStandings() {
   const router = useRouter();
-  const is2v2 = league.format === "2v2";
+  const insets = useSafeAreaInsets();
+  const currentUserId = auth.currentUser?.uid;
 
-  // Local modal state
-  const [showMemberActions, setShowMemberActions] = useState(false);
-  const [selectedMember, setSelectedMember] = useState<Member | null>(null);
-  const [showHandicapEdit, setShowHandicapEdit] = useState(false);
-  const [handicapInput, setHandicapInput] = useState("");
-  const [showAssignTeam, setShowAssignTeam] = useState(false);
-  const [localSaving, setLocalSaving] = useState(false);
+  // Loading states
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const handleMemberPress = (member: Member) => {
-    if (!isCommissioner) return;
-    setSelectedMember(member);
-    setShowMemberActions(true);
-  };
+  // User's leagues
+  const [myLeagues, setMyLeagues] = useState<LeagueCard[]>([]);
+  const [selectedLeagueId, setSelectedLeagueId] = useState<string | null>(null);
+  const [selectedLeague, setSelectedLeague] = useState<League | null>(null);
+  const [showLeagueSelector, setShowLeagueSelector] = useState(false);
 
-  const handleEditHandicap = () => {
-    if (!selectedMember) return;
-    setHandicapInput(selectedMember.leagueHandicap?.toString() || "");
-    setShowMemberActions(false);
-    setShowHandicapEdit(true);
-  };
+  // Standings data
+  const [playerStandings, setPlayerStandings] = useState<PlayerStanding[]>([]);
+  const [teamStandings, setTeamStandings] = useState<TeamStanding[]>([]);
 
-  const handleSaveHandicap = async () => {
-    if (!selectedMember) return;
+  // Commissioner/Manager status
+  const [isCommissionerOrManager, setIsCommissionerOrManager] = useState(false);
 
-    const newHandicap = parseFloat(handicapInput);
-    if (isNaN(newHandicap) || newHandicap < -10 || newHandicap > 54) {
-      Alert.alert("Invalid Handicap", "Please enter a handicap between -10 and 54.");
-      return;
+  // Flash animation for user's row
+  const flashAnim = useRef(new Animated.Value(0)).current;
+  const [shouldFlash, setShouldFlash] = useState(true);
+
+  /* ================================================================ */
+  /* DATA LOADING                                                    */
+  /* ================================================================ */
+
+  useEffect(() => {
+    if (!currentUserId) return;
+    loadMyLeagues();
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (selectedLeagueId && currentUserId) {
+      const unsubscribers: (() => void)[] = [];
+
+      // Listen to league doc
+      const leagueUnsub = onSnapshot(
+        doc(db, "leagues", selectedLeagueId),
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const leagueData = { id: docSnap.id, ...docSnap.data() } as League;
+            setSelectedLeague(leagueData);
+          }
+        }
+      );
+      unsubscribers.push(leagueUnsub);
+
+      // Check membership role
+      getDoc(doc(db, "leagues", selectedLeagueId, "members", currentUserId)).then(
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const role = docSnap.data().role;
+            setIsCommissionerOrManager(
+              role === "commissioner" || role === "manager"
+            );
+          }
+        }
+      );
+
+      // Load standings
+      loadStandings(selectedLeagueId);
+
+      return () => {
+        unsubscribers.forEach((unsub) => unsub());
+      };
     }
+  }, [selectedLeagueId, currentUserId]);
+
+  // Trigger flash animation
+  useEffect(() => {
+    if (shouldFlash && !loading && (playerStandings.length > 0 || teamStandings.length > 0)) {
+      triggerFlash();
+      setShouldFlash(false);
+    }
+  }, [shouldFlash, loading, playerStandings, teamStandings]);
+
+  const triggerFlash = () => {
+    flashAnim.setValue(0);
+    Animated.sequence([
+      Animated.timing(flashAnim, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: false,
+      }),
+      Animated.timing(flashAnim, {
+        toValue: 0,
+        duration: 500,
+        useNativeDriver: false,
+      }),
+    ]).start();
+  };
+
+  const loadMyLeagues = async () => {
+    if (!currentUserId) return;
 
     try {
-      setLocalSaving(true);
-      await onEditHandicap(selectedMember, newHandicap);
-      setShowHandicapEdit(false);
-      setSelectedMember(null);
+      setLoading(true);
+
+      const leaguesSnap = await getDocs(collection(db, "leagues"));
+      const userLeagues: LeagueCard[] = [];
+
+      for (const leagueDoc of leaguesSnap.docs) {
+        const memberDoc = await getDoc(
+          doc(db, "leagues", leagueDoc.id, "members", currentUserId)
+        );
+
+        if (memberDoc.exists()) {
+          const leagueData = leagueDoc.data();
+          userLeagues.push({
+            id: leagueDoc.id,
+            name: leagueData.name,
+            avatar: leagueData.avatar,
+            currentWeek: leagueData.currentWeek || 0,
+            totalWeeks: leagueData.totalWeeks || 0,
+          });
+        }
+      }
+
+      setMyLeagues(userLeagues);
+
+      if (userLeagues.length > 0 && !selectedLeagueId) {
+        setSelectedLeagueId(userLeagues[0].id);
+      }
+    } catch (error) {
+      console.error("Error loading leagues:", error);
     } finally {
-      setLocalSaving(false);
+      setLoading(false);
     }
   };
 
-  const handleAssignToTeam = async (teamId: string | null) => {
-    if (!selectedMember) return;
-
+  const loadStandings = async (leagueId: string) => {
     try {
-      setLocalSaving(true);
-      await onAssignToTeam(selectedMember, teamId);
-      setShowAssignTeam(false);
-      setShowMemberActions(false);
-      setSelectedMember(null);
-    } finally {
-      setLocalSaving(false);
+      // Get league to determine format
+      const leagueDoc = await getDoc(doc(db, "leagues", leagueId));
+      if (!leagueDoc.exists()) return;
+
+      const leagueData = leagueDoc.data();
+      const format = leagueData.format;
+
+      if (format === "2v2") {
+        // Load team standings
+        const teamsSnap = await getDocs(
+          query(
+            collection(db, "leagues", leagueId, "teams"),
+            orderBy("totalPoints", "desc")
+          )
+        );
+
+        const teams: TeamStanding[] = [];
+        let rank = 1;
+        teamsSnap.forEach((docSnap) => {
+          const data = docSnap.data();
+          teams.push({
+            teamId: docSnap.id,
+            teamName: data.name,
+            teamAvatar: data.avatar,
+            rank: rank,
+            previousRank: data.previousRank,
+            wins: data.wins || 0,
+            losses: data.losses || 0,
+            totalPoints: data.totalPoints || 0,
+          });
+          rank++;
+        });
+
+        setTeamStandings(teams);
+        setPlayerStandings([]);
+      } else {
+        // Load player standings
+        const membersSnap = await getDocs(
+          query(
+            collection(db, "leagues", leagueId, "members"),
+            orderBy("totalPoints", "desc")
+          )
+        );
+
+        const players: PlayerStanding[] = [];
+        let rank = 1;
+        membersSnap.forEach((docSnap) => {
+          const data = docSnap.data();
+          players.push({
+            odcuserId: docSnap.id,
+            displayName: data.displayName,
+            avatar: data.avatar,
+            challengeBadges: data.challengeBadges || [],
+            rank: rank,
+            previousRank: data.previousRank,
+            roundsPlayed: data.roundsPlayed || 0,
+            totalPoints: data.totalPoints || 0,
+            wins: data.wins || 0,
+          });
+          rank++;
+        });
+
+        setPlayerStandings(players);
+        setTeamStandings([]);
+      }
+    } catch (error) {
+      console.error("Error loading standings:", error);
     }
   };
 
-  const handleRemoveMember = () => {
-    if (!selectedMember) return;
-
-    if (selectedMember.role === "commissioner") {
-      Alert.alert("Cannot Remove", "The commissioner cannot be removed from the league.");
-      return;
+  const onRefresh = async () => {
+    setRefreshing(true);
+    setShouldFlash(true);
+    await loadMyLeagues();
+    if (selectedLeagueId) {
+      await loadStandings(selectedLeagueId);
     }
+    setRefreshing(false);
+  };
 
-    Alert.alert(
-      "Remove Member",
-      `Are you sure you want to remove ${selectedMember.displayName} from the league?`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Remove",
-          style: "destructive",
-          onPress: () => {
-            onRemoveMember(selectedMember);
-            setShowMemberActions(false);
-            setSelectedMember(null);
-          },
-        },
-      ]
+  /* ================================================================ */
+  /* HANDLERS                                                        */
+  /* ================================================================ */
+
+  const handleSelectLeague = (leagueId: string) => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSelectedLeagueId(leagueId);
+    setShowLeagueSelector(false);
+    setShouldFlash(true);
+  };
+
+  const handleSettings = () => {
+    soundPlayer.play("click");
+    router.push(`/leagues/settings?id=${selectedLeagueId}`);
+  };
+
+  const handlePlayerPress = (odcuserId: string) => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push(`/profile/${odcuserId}`);
+  };
+
+  const handleTeamPress = (teamId: string) => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    // Could navigate to team detail page
+  };
+
+  const handleWeeklyScores = () => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    router.push(
+      `/leagues/week-scores?leagueId=${selectedLeagueId}&week=${selectedLeague?.currentWeek || 1}`
     );
   };
 
-  // Member Actions Modal
-  const renderMemberActionsModal = () => (
-    <Modal
-      visible={showMemberActions}
-      animationType="slide"
-      transparent
-      onRequestClose={() => setShowMemberActions(false)}
-    >
+  /* ================================================================ */
+  /* HELPERS                                                         */
+  /* ================================================================ */
+
+  const getPositionChange = (current: number, previous?: number) => {
+    if (previous === undefined || previous === null) {
+      return { type: "new", change: 0 };
+    }
+    if (current < previous) {
+      return { type: "up", change: previous - current };
+    }
+    if (current > previous) {
+      return { type: "down", change: current - previous };
+    }
+    return { type: "same", change: 0 };
+  };
+
+  const getLeaderPoints = () => {
+    if (selectedLeague?.format === "2v2") {
+      return teamStandings[0]?.totalPoints || 0;
+    }
+    return playerStandings[0]?.totalPoints || 0;
+  };
+
+  const getPointsBehind = (points: number, rank: number) => {
+    if (rank === 1) return "-";
+    const leader = getLeaderPoints();
+    return (leader - points).toString();
+  };
+
+  /* ================================================================ */
+  /* RENDER COMPONENTS                                               */
+  /* ================================================================ */
+
+  const renderHeader = () => (
+    <View style={[styles.header, { paddingTop: insets.top }]}>
       <TouchableOpacity
-        style={styles.modalOverlay}
-        activeOpacity={1}
-        onPress={() => setShowMemberActions(false)}
+        style={styles.headerButton}
+        onPress={() => router.push("/leaderboard")}
       >
-        <View style={styles.actionSheet}>
-          {selectedMember && (
-            <>
-              <View style={styles.actionSheetHeader}>
-                {selectedMember.avatar ? (
-                  <Image
-                    source={{ uri: selectedMember.avatar }}
-                    style={styles.actionSheetAvatar}
-                  />
-                ) : (
-                  <View style={[styles.actionSheetAvatar, avatarStyles.placeholder]}>
-                    <Text style={avatarStyles.initialLarge}>
-                      {selectedMember.displayName?.[0]?.toUpperCase() || "?"}
-                    </Text>
-                  </View>
-                )}
-                <Text style={styles.actionSheetName}>{selectedMember.displayName}</Text>
-              </View>
-
-              <TouchableOpacity
-                style={styles.actionItem}
-                onPress={() => {
-                  setShowMemberActions(false);
-                  router.push(`/locker/${selectedMember.odcuserId}`);
-                }}
-              >
-                <Ionicons name="person-outline" size={22} color="#0D5C3A" />
-                <Text style={styles.actionItemText}>View Profile</Text>
-              </TouchableOpacity>
-
-              {league.handicapSystem === "league_managed" && (
-                <TouchableOpacity style={styles.actionItem} onPress={handleEditHandicap}>
-                  <Ionicons name="golf-outline" size={22} color="#0D5C3A" />
-                  <Text style={styles.actionItemText}>Edit Handicap</Text>
-                </TouchableOpacity>
-              )}
-
-              {is2v2 && (
-                <TouchableOpacity
-                  style={styles.actionItem}
-                  onPress={() => {
-                    setShowMemberActions(false);
-                    setShowAssignTeam(true);
-                  }}
-                >
-                  <Ionicons name="people-outline" size={22} color="#0D5C3A" />
-                  <Text style={styles.actionItemText}>
-                    {selectedMember.teamId ? "Change Team" : "Assign to Team"}
-                  </Text>
-                </TouchableOpacity>
-              )}
-
-              {selectedMember.role === "member" && isHost && (
-                <TouchableOpacity
-                  style={styles.actionItem}
-                  onPress={() => {
-                    Alert.alert(
-                      "Promote to Manager",
-                      `Make ${selectedMember.displayName} a league manager?\n\nThey'll be able to:\n• Approve/reject join requests\n• Manage member handicaps\n• Post announcements`,
-                      [
-                        { text: "Cancel", style: "cancel" },
-                        {
-                          text: "Promote",
-                          onPress: async () => {
-                            setShowMemberActions(false);
-                            await onPromoteToManager(selectedMember);
-                            setSelectedMember(null);
-                          },
-                        },
-                      ]
-                    );
-                  }}
-                >
-                  <Ionicons name="shield-outline" size={22} color="#0D5C3A" />
-                  <Text style={styles.actionItemText}>Promote to Manager</Text>
-                </TouchableOpacity>
-              )}
-
-              {selectedMember.role === "manager" && isHost && (
-                <TouchableOpacity
-                  style={styles.actionItem}
-                  onPress={() => {
-                    Alert.alert(
-                      "Remove Manager Role",
-                      `Remove ${selectedMember.displayName}'s manager privileges?\n\nThey'll return to regular member status.`,
-                      [
-                        { text: "Cancel", style: "cancel" },
-                        {
-                          text: "Remove",
-                          style: "destructive",
-                          onPress: async () => {
-                            setShowMemberActions(false);
-                            await onDemoteManager(selectedMember);
-                            setSelectedMember(null);
-                          },
-                        },
-                      ]
-                    );
-                  }}
-                >
-                  <Ionicons name="shield-half-outline" size={22} color="#F59E0B" />
-                  <Text style={[styles.actionItemText, { color: "#F59E0B" }]}>
-                    Remove Manager Role
-                  </Text>
-                </TouchableOpacity>
-              )}
-
-              {selectedMember.role !== "commissioner" && (
-                <TouchableOpacity
-                  style={[styles.actionItem, styles.actionItemDanger]}
-                  onPress={handleRemoveMember}
-                >
-                  <Ionicons name="person-remove-outline" size={22} color="#FF6B6B" />
-                  <Text style={[styles.actionItemText, styles.actionItemTextDanger]}>
-                    Remove from League
-                  </Text>
-                </TouchableOpacity>
-              )}
-
-              <TouchableOpacity
-                style={styles.actionCancelButton}
-                onPress={() => setShowMemberActions(false)}
-              >
-                <Text style={styles.actionCancelText}>Cancel</Text>
-              </TouchableOpacity>
-            </>
-          )}
-        </View>
+        <Ionicons name="chevron-back" size={28} color="#F4EED8" />
       </TouchableOpacity>
+      <Text style={styles.headerTitle}>League Hub</Text>
+      {isCommissionerOrManager ? (
+        <TouchableOpacity style={styles.headerButton} onPress={handleSettings}>
+          <Ionicons name="settings-outline" size={24} color="#F4EED8" />
+        </TouchableOpacity>
+      ) : (
+        <View style={styles.headerRight} />
+      )}
+    </View>
+  );
+
+  const renderTabs = () => (
+    <View style={styles.tabBar}>
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => router.push("/leagues/home")}
+      >
+        <Text style={styles.tabText}>Home</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => router.push("/leagues/schedule")}
+      >
+        <Text style={styles.tabText}>Schedule</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={[styles.tab, styles.tabActive]}>
+        <Text style={[styles.tabText, styles.tabTextActive]}>Standings</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => router.push("/leagues/explore")}
+      >
+        <Text style={styles.tabText}>Explore</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  const renderLeagueSelector = () => {
+    if (myLeagues.length === 0) return null;
+
+    const selected = myLeagues.find((l) => l.id === selectedLeagueId);
+
+    return (
+      <TouchableOpacity
+        style={styles.leagueSelector}
+        onPress={() => {
+          if (myLeagues.length > 1) {
+            soundPlayer.play("click");
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setShowLeagueSelector(true);
+          }
+        }}
+        disabled={myLeagues.length <= 1}
+      >
+        <View style={styles.leagueSelectorContent}>
+          <View style={styles.leagueLogoPlaceholder}>
+            {selectedLeague?.avatar ? (
+              <Image source={{ uri: selectedLeague.avatar }} style={styles.leagueLogoImage} />
+            ) : (
+              <Text style={styles.leagueLogoText}>
+                {selected?.name?.charAt(0) || "L"}
+              </Text>
+            )}
+          </View>
+          <View style={styles.leagueSelectorText}>
+            <Text style={styles.leagueName}>
+              {selected?.name || "Select League"}
+            </Text>
+            <Text style={styles.leagueSubtitle}>
+              Week {selected?.currentWeek || 0} of {selected?.totalWeeks || 0}
+            </Text>
+          </View>
+        </View>
+        {myLeagues.length > 1 ? (
+          <Ionicons name="chevron-down" size={20} color="#0D5C3A" />
+        ) : null}
+      </TouchableOpacity>
+    );
+  };
+
+  const renderWeeklyScoresButton = () => {
+    if (!selectedLeague || !selectedLeagueId) return null;
+
+    return (
+      <TouchableOpacity
+        style={styles.weeklyScoresButton}
+        onPress={handleWeeklyScores}
+        activeOpacity={0.7}
+      >
+        <Ionicons name="calendar-outline" size={18} color="#0D5C3A" />
+        <Text style={styles.weeklyScoresButtonText}>Weekly Scores</Text>
+        <Ionicons name="chevron-forward" size={16} color="#999" />
+      </TouchableOpacity>
+    );
+  };
+
+  const renderPositionIndicator = (current: number, previous?: number) => {
+    const change = getPositionChange(current, previous);
+
+    if (change.type === "new") {
+      return (
+        <View style={styles.positionNew}>
+          <Text style={styles.positionNewText}>NEW</Text>
+        </View>
+      );
+    }
+
+    if (change.type === "up") {
+      return (
+        <View style={styles.positionChange}>
+          <Ionicons name="caret-up" size={14} color="#4CAF50" />
+          <Text style={styles.positionUpText}>{change.change}</Text>
+        </View>
+      );
+    }
+
+    if (change.type === "down") {
+      return (
+        <View style={styles.positionChange}>
+          <Ionicons name="caret-down" size={14} color="#F44336" />
+          <Text style={styles.positionDownText}>{change.change}</Text>
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.positionChange}>
+        <Text style={styles.positionSameText}>-</Text>
+      </View>
+    );
+  };
+
+  const renderStandingsHeader = () => {
+    const is2v2 = selectedLeague?.format === "2v2";
+
+    return (
+      <View style={styles.tableHeader}>
+        <Text style={styles.headerRank}>#</Text>
+        <Text style={styles.headerChange}>+/-</Text>
+        <Text style={styles.headerName}>{is2v2 ? "TEAM" : "PLAYER"}</Text>
+        {is2v2 ? (
+          <Text style={styles.headerWL}>W-L</Text>
+        ) : (
+          <Text style={styles.headerRounds}>RNDS</Text>
+        )}
+        <Text style={styles.headerPoints}>PTS</Text>
+        <Text style={styles.headerBehind}>BEHIND</Text>
+        {!is2v2 ? <Text style={styles.headerWins}>WINS</Text> : null}
+      </View>
+    );
+  };
+
+  const renderPlayerRow = (player: PlayerStanding) => {
+    const isCurrentUser = player.odcuserId === currentUserId;
+    const isLeader = player.rank === 1;
+
+    const borderColor = flashAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: ["transparent", "#0D5C3A"],
+    });
+
+    const RowContent = (
+      <TouchableOpacity
+        style={[
+          styles.tableRow,
+          isLeader && styles.leaderRow,
+        ]}
+        onPress={() => handlePlayerPress(player.odcuserId)}
+        activeOpacity={0.7}
+      >
+        <Text style={[styles.cellRank, isLeader && styles.leaderText]}>
+          {player.rank}
+        </Text>
+        <View style={styles.cellChange}>
+          {renderPositionIndicator(player.rank, player.previousRank)}
+        </View>
+        <View style={styles.cellName}>
+          {player.avatar ? (
+            <Image
+              source={{ uri: player.avatar }}
+              style={[styles.avatar, isLeader && styles.leaderAvatar]}
+            />
+          ) : (
+            <View style={[styles.avatarPlaceholder, isLeader && styles.leaderAvatar]}>
+              <Text style={styles.avatarText}>
+                {player.displayName?.charAt(0) || "?"}
+              </Text>
+            </View>
+          )}
+          <Text
+            style={[styles.nameText, isLeader && styles.leaderText]}
+            numberOfLines={1}
+          >
+            {isCurrentUser ? "You" : player.displayName}
+          </Text>
+          <BadgeRow challengeBadges={player.challengeBadges} size={12} />
+        </View>
+        <Text style={styles.cellRounds}>{player.roundsPlayed}</Text>
+        <Text style={[styles.cellPoints, isLeader && styles.leaderText]}>
+          {player.totalPoints}
+        </Text>
+        <Text style={styles.cellBehind}>
+          {getPointsBehind(player.totalPoints, player.rank)}
+        </Text>
+        <Text style={styles.cellWins}>{player.wins || "-"}</Text>
+      </TouchableOpacity>
+    );
+
+    if (isCurrentUser) {
+      return (
+        <Animated.View
+          key={player.odcuserId}
+          style={[styles.userRowWrapper, { borderColor: borderColor }]}
+        >
+          {RowContent}
+        </Animated.View>
+      );
+    }
+
+    return <View key={player.odcuserId}>{RowContent}</View>;
+  };
+
+  const renderTeamRow = (team: TeamStanding) => {
+    const isLeader = team.rank === 1;
+    // Check if current user is on this team - would need additional data
+    const isUserTeam = false; // TODO: Implement based on user's teamId
+
+    const borderColor = flashAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: ["transparent", "#0D5C3A"],
+    });
+
+    const RowContent = (
+      <TouchableOpacity
+        style={[
+          styles.tableRow,
+          isLeader && styles.leaderRow,
+        ]}
+        onPress={() => handleTeamPress(team.teamId)}
+        activeOpacity={0.7}
+      >
+        <Text style={[styles.cellRank, isLeader && styles.leaderText]}>
+          {team.rank}
+        </Text>
+        <View style={styles.cellChange}>
+          {renderPositionIndicator(team.rank, team.previousRank)}
+        </View>
+        <View style={styles.cellName}>
+          {team.teamAvatar ? (
+            <Image
+              source={{ uri: team.teamAvatar }}
+              style={[styles.avatar, isLeader && styles.leaderAvatar]}
+            />
+          ) : (
+            <View style={[styles.avatarPlaceholder, isLeader && styles.leaderAvatar]}>
+              <Text style={styles.avatarText}>
+                {team.teamName?.charAt(0) || "?"}
+              </Text>
+            </View>
+          )}
+          <Text
+            style={[styles.nameText, isLeader && styles.leaderText]}
+            numberOfLines={1}
+          >
+            {team.teamName}
+          </Text>
+        </View>
+        <Text style={styles.cellWL}>
+          {team.wins}-{team.losses}
+        </Text>
+        <Text style={[styles.cellPoints, isLeader && styles.leaderText]}>
+          {team.totalPoints}
+        </Text>
+        <Text style={styles.cellBehind}>
+          {getPointsBehind(team.totalPoints, team.rank)}
+        </Text>
+      </TouchableOpacity>
+    );
+
+    if (isUserTeam) {
+      return (
+        <Animated.View
+          key={team.teamId}
+          style={[styles.userRowWrapper, { borderColor: borderColor }]}
+        >
+          {RowContent}
+        </Animated.View>
+      );
+    }
+
+    return <View key={team.teamId}>{RowContent}</View>;
+  };
+
+  const renderLeagueSelectorModal = () => (
+    <Modal
+      visible={showLeagueSelector}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setShowLeagueSelector(false)}
+    >
+      <Pressable
+        style={styles.modalBackdrop}
+        onPress={() => setShowLeagueSelector(false)}
+      >
+        <View style={styles.selectorModalContent}>
+          <Text style={styles.selectorModalTitle}>Select League</Text>
+          {myLeagues.map((league) => (
+            <TouchableOpacity
+              key={league.id}
+              style={
+                league.id === selectedLeagueId
+                  ? styles.selectorOptionSelected
+                  : styles.selectorOption
+              }
+              onPress={() => handleSelectLeague(league.id)}
+            >
+              <View style={styles.selectorOptionContent}>
+                <View style={styles.selectorLogoPlaceholder}>
+                  {league.avatar ? (
+                    <Image source={{ uri: league.avatar }} style={styles.selectorLogoImage} />
+                  ) : (
+                    <Text style={styles.selectorLogoText}>
+                      {league.name?.charAt(0) || "L"}
+                    </Text>
+                  )}
+                </View>
+                <View>
+                  <Text style={styles.selectorOptionTitle}>{league.name}</Text>
+                  <Text style={styles.selectorOptionSubtitle}>
+                    Week {league.currentWeek} of {league.totalWeeks}
+                  </Text>
+                </View>
+              </View>
+              {league.id === selectedLeagueId ? (
+                <Ionicons name="checkmark" size={20} color="#0D5C3A" />
+              ) : null}
+            </TouchableOpacity>
+          ))}
+        </View>
+      </Pressable>
     </Modal>
   );
 
-  // Assign to Team Modal
-  const renderAssignTeamModal = () => (
-    <Modal
-      visible={showAssignTeam}
-      animationType="slide"
-      transparent
-      onRequestClose={() => setShowAssignTeam(false)}
-    >
-      <TouchableOpacity
-        style={styles.modalOverlay}
-        activeOpacity={1}
-        onPress={() => setShowAssignTeam(false)}
-      >
-        <View style={styles.actionSheet}>
-          <View style={styles.actionSheetHeader}>
-            <Text style={styles.actionSheetTitle}>Assign to Team</Text>
-          </View>
+  /* ================================================================ */
+  /* MAIN RENDER                                                     */
+  /* ================================================================ */
 
-          {selectedMember?.teamId && (
-            <TouchableOpacity
-              style={styles.actionItem}
-              onPress={() => handleAssignToTeam(null)}
-            >
-              <Ionicons name="close-circle-outline" size={22} color="#FF6B6B" />
-              <Text style={[styles.actionItemText, { color: "#FF6B6B" }]}>Remove from Team</Text>
-            </TouchableOpacity>
-          )}
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color="#0D5C3A" />
+      </View>
+    );
+  }
 
-          {teams.map((team) => {
-            const isCurrentTeam = selectedMember?.teamId === team.id;
-            return (
-              <TouchableOpacity
-                key={team.id}
-                style={[styles.actionItem, isCurrentTeam && styles.actionItemSelected]}
-                onPress={() => handleAssignToTeam(team.id)}
-                disabled={isCurrentTeam}
-              >
-                {team.avatar ? (
-                  <Image
-                    source={{ uri: team.avatar }}
-                    style={styles.actionItemAvatar}
-                  />
-                ) : (
-                  <View style={[styles.actionItemAvatar, avatarStyles.placeholder]}>
-                    <Text style={avatarStyles.initial}>
-                      {team.name?.[0]?.toUpperCase() || "?"}
-                    </Text>
-                  </View>
-                )}
-                <Text style={styles.actionItemText}>{team.name}</Text>
-                {isCurrentTeam && (
-                  <Ionicons name="checkmark-circle" size={22} color="#0D5C3A" />
-                )}
-              </TouchableOpacity>
-            );
-          })}
-
+  if (myLeagues.length === 0) {
+    return (
+      <View style={styles.container}>
+        {renderHeader()}
+        {renderTabs()}
+        <View style={styles.emptyStateContainer}>
+          <Text style={styles.emptyStateEmoji}>🏆</Text>
+          <Text style={styles.emptyStateTitle}>No Leagues Yet</Text>
+          <Text style={styles.emptyStateSubtitle}>
+            Join a league to see standings!
+          </Text>
           <TouchableOpacity
-            style={styles.actionCancelButton}
-            onPress={() => setShowAssignTeam(false)}
+            style={styles.emptyStateButton}
+            onPress={() => router.push("/leagues/explore")}
           >
-            <Text style={styles.actionCancelText}>Cancel</Text>
+            <Text style={styles.emptyStateButtonText}>Explore Leagues</Text>
           </TouchableOpacity>
         </View>
-      </TouchableOpacity>
-    </Modal>
-  );
+      </View>
+    );
+  }
 
-  // Handicap Edit Modal
-  const renderHandicapEditModal = () => (
-    <Modal
-      visible={showHandicapEdit}
-      animationType="slide"
-      transparent
-      onRequestClose={() => setShowHandicapEdit(false)}
-    >
-      <KeyboardAvoidingView
-        style={styles.modalOverlay}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>Edit Handicap</Text>
-          <Text style={styles.modalSubtitle}>{selectedMember?.displayName}</Text>
-
-          <TextInput
-            style={styles.handicapInput}
-            value={handicapInput}
-            onChangeText={setHandicapInput}
-            keyboardType="decimal-pad"
-            placeholder="Enter handicap"
-            placeholderTextColor="#999"
-            autoFocus
-          />
-
-          <View style={styles.modalButtonRow}>
-            <TouchableOpacity
-              style={styles.modalCancelButtonSmall}
-              onPress={() => {
-                setShowHandicapEdit(false);
-                setSelectedMember(null);
-              }}
-            >
-              <Text style={styles.modalCancelText}>Cancel</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.modalSaveButton}
-              onPress={handleSaveHandicap}
-              disabled={localSaving}
-            >
-              {localSaving ? (
-                <ActivityIndicator color="#FFF" size="small" />
-              ) : (
-                <Text style={styles.modalSaveText}>Save</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
+  const is2v2 = selectedLeague?.format === "2v2";
+  const hasStandings = is2v2 ? teamStandings.length > 0 : playerStandings.length > 0;
 
   return (
-    <>
+    <View style={styles.container}>
+      {renderHeader()}
+      {renderTabs()}
+
       <ScrollView
-        style={styles.tabContent}
-        showsVerticalScrollIndicator={false}
+        style={styles.content}
+        contentContainerStyle={styles.contentContainer}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0D5C3A" />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#0D5C3A"
+          />
         }
       >
-        {/* Pending Requests */}
-        {pendingRequests.length > 0 && (
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Pending Requests</Text>
-              <View style={styles.sectionBadge}>
-                <Text style={styles.sectionBadgeText}>{pendingRequests.length}</Text>
-              </View>
-            </View>
+        {renderLeagueSelector()}
+        {renderWeeklyScoresButton()}
 
-            {pendingRequests.map((request) => (
-              <View key={request.id} style={styles.requestCard}>
-                {request.avatar ? (
-                  <Image
-                    source={{ uri: request.avatar }}
-                    style={styles.avatar}
-                  />
-                ) : (
-                  <View style={[styles.avatar, avatarStyles.placeholder]}>
-                    <Text style={avatarStyles.initial}>
-                      {request.displayName?.[0]?.toUpperCase() || "?"}
-                    </Text>
-                  </View>
-                )}
-                <View style={styles.requestInfo}>
-                  <Text style={styles.requestName}>{request.displayName}</Text>
-                  <Text style={styles.requestMeta}>
-                    {request.handicap !== undefined && `${request.handicap} HCP • `}
-                    Applied {getTimeAgo(request.createdAt)}
-                  </Text>
-                </View>
-                <View style={styles.requestActions}>
-                  <TouchableOpacity
-                    style={styles.approveButton}
-                    onPress={() => onApproveRequest(request)}
-                  >
-                    <Ionicons name="checkmark" size={20} color="#FFF" />
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.rejectButton}
-                    onPress={() => onRejectRequest(request)}
-                  >
-                    <Ionicons name="close" size={20} color="#FFF" />
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ))}
-          </View>
-        )}
+        <View style={styles.standingsCard}>
+          <Text style={styles.standingsTitle}>Standings</Text>
 
-        {/* Current Members */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Members</Text>
-
-          {members.map((member) => {
-            const badge = getRoleBadge(member.role);
-            const handicap =
-              league.handicapSystem === "league_managed"
-                ? member.leagueHandicap
-                : member.swingThoughtsHandicap;
-            const memberTeam = member.teamId ? teams.find((t) => t.id === member.teamId) : null;
-
-            return (
-              <TouchableOpacity
-                key={member.id}
-                style={styles.memberCard}
-                onPress={() => handleMemberPress(member)}
-                disabled={!isCommissioner}
-                activeOpacity={isCommissioner ? 0.7 : 1}
-              >
-                {member.avatar ? (
-                  <Image
-                    source={{ uri: member.avatar }}
-                    style={styles.avatar}
-                  />
-                ) : (
-                  <View style={[styles.avatar, avatarStyles.placeholder]}>
-                    <Text style={avatarStyles.initial}>
-                      {member.displayName?.[0]?.toUpperCase() || "?"}
-                    </Text>
-                  </View>
-                )}
-                <View style={styles.memberInfo}>
-                  <View style={styles.memberNameRow}>
-                    <Text style={styles.memberName}>{member.displayName}</Text>
-                    {badge && (
-                      <View style={[styles.roleBadge, { backgroundColor: badge.color }]}>
-                        <Text style={styles.roleBadgeText}>{badge.label}</Text>
-                      </View>
-                    )}
-                  </View>
-                  <Text style={styles.memberMeta}>
-                    {handicap !== undefined && handicap !== null ? `${handicap} HCP` : "No HCP"}
-                    {is2v2 && memberTeam && ` • ${memberTeam.name}`}
-                    {member.roundsPlayed > 0 && ` • ${member.roundsPlayed} rounds`}
-                  </Text>
-                </View>
-                {isCommissioner && member.role !== "commissioner" && (
-                  <Ionicons name="chevron-forward" size={20} color="#CCC" />
-                )}
-              </TouchableOpacity>
-            );
-          })}
-
-          {members.length === 0 && (
-            <View style={styles.emptyState}>
-              <Ionicons name="people-outline" size={48} color="#CCC" />
-              <Text style={styles.emptyText}>No members yet</Text>
+          {hasStandings ? (
+            <>
+              {renderStandingsHeader()}
+              {is2v2
+                ? teamStandings.map(renderTeamRow)
+                : playerStandings.map(renderPlayerRow)}
+            </>
+          ) : (
+            <View style={styles.noStandings}>
+              <Ionicons name="podium-outline" size={48} color="#CCC" />
+              <Text style={styles.noStandingsText}>
+                No standings yet - check back after scores are posted!
+              </Text>
             </View>
           )}
         </View>
 
-        <View style={{ height: 100 }} />
+        {/* Purse Summary */}
+        {selectedLeague?.purse && (selectedLeague.purse.seasonPurse > 0 || selectedLeague.purse.weeklyPurse > 0 || selectedLeague.purse.elevatedPurse > 0) ? (
+          <View style={styles.purseCard}>
+            <View style={styles.purseCardHeader}>
+              <Text style={styles.purseCardTitle}>💰 Prize Purse</Text>
+              <Text style={styles.purseCardTotal}>
+                ${(() => {
+                  const p = selectedLeague.purse!;
+                  let total = p.seasonPurse || 0;
+                  total += (p.weeklyPurse || 0) * (selectedLeague.totalWeeks || 0);
+                  const elevatedCount = selectedLeague.elevatedWeeks?.length ?? 0;
+                  total += (p.elevatedPurse || 0) * elevatedCount;
+                  return total.toLocaleString();
+                })()}
+              </Text>
+            </View>
+            <View style={styles.purseCardBreakdown}>
+              {selectedLeague.purse.seasonPurse > 0 ? (
+                <View style={styles.purseCardRow}>
+                  <Text style={styles.purseCardLabel}>🏆 Championship</Text>
+                  <Text style={styles.purseCardAmount}>${selectedLeague.purse.seasonPurse.toLocaleString()}</Text>
+                </View>
+              ) : null}
+              {selectedLeague.purse.weeklyPurse > 0 ? (
+                <View style={styles.purseCardRow}>
+                  <Text style={styles.purseCardLabel}>📅 Weekly ({selectedLeague.totalWeeks} wks)</Text>
+                  <Text style={styles.purseCardAmount}>${selectedLeague.purse.weeklyPurse.toLocaleString()}/wk</Text>
+                </View>
+              ) : null}
+              {selectedLeague.purse.elevatedPurse > 0 && (selectedLeague.elevatedWeeks?.length ?? 0) > 0 ? (
+                <View style={styles.purseCardRow}>
+                  <Text style={styles.purseCardLabel}>🏅 Elevated ({selectedLeague.elevatedWeeks?.length} evts)</Text>
+                  <Text style={styles.purseCardAmount}>${selectedLeague.purse.elevatedPurse.toLocaleString()}/evt</Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
+        ) : null}
+
+        <View style={styles.bottomSpacer} />
       </ScrollView>
 
-      {renderMemberActionsModal()}
-      {renderAssignTeamModal()}
-      {renderHandicapEditModal()}
-    </>
+      {renderLeagueSelectorModal()}
+    </View>
   );
 }
 
-const avatarStyles = StyleSheet.create({
-  placeholder: {
-    backgroundColor: "#0D5C3A",
+/* ================================================================ */
+/* STYLES                                                           */
+/* ================================================================ */
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#F5F5F0",
+  },
+  loadingContainer: {
     justifyContent: "center",
     alignItems: "center",
   },
-  initial: {
+
+  // Header
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    backgroundColor: "#0D5C3A",
+  },
+  headerButton: {
+    padding: 8,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#F4EED8",
+  },
+  headerRight: {
+    width: 40,
+  },
+
+  // Tabs
+  tabBar: {
+    flexDirection: "row",
+    backgroundColor: "#FFF",
+    marginHorizontal: 16,
+    marginTop: 12,
+    borderRadius: 12,
+    padding: 4,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: "center",
+    borderRadius: 8,
+  },
+  tabActive: {
+    backgroundColor: "#0D5C3A",
+  },
+  tabText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#666",
+  },
+  tabTextActive: {
+    color: "#FFF",
+  },
+
+  // Content
+  content: {
+    flex: 1,
+  },
+  contentContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+
+  // League Selector
+  leagueSelector: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#FFF",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  leagueSelectorContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+  },
+  leagueLogoPlaceholder: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#0D5C3A",
+    justifyContent: "center",
+    alignItems: "center",
+    overflow: "hidden",
+  },
+  leagueLogoText: {
     fontSize: 18,
     fontWeight: "700",
     color: "#FFF",
   },
-  initialLarge: {
-    fontSize: 24,
+  leagueLogoImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+  },
+  leagueSelectorText: {
+    marginLeft: 12,
+  },
+  leagueName: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#333",
+  },
+  leagueSubtitle: {
+    fontSize: 13,
+    color: "#666",
+    marginTop: 2,
+  },
+
+  // Weekly Scores Button
+  weeklyScoresButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF",
+    padding: 14,
+    borderRadius: 12,
+    marginBottom: 16,
+    gap: 8,
+  },
+  weeklyScoresButtonText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#0D5C3A",
+    flex: 1,
+  },
+
+  // Standings Card
+  standingsCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    padding: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  standingsTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#333",
+    marginBottom: 16,
+  },
+
+  // Table Header
+  tableHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderBottomWidth: 2,
+    borderBottomColor: "#E0E0E0",
+    marginBottom: 4,
+  },
+  headerRank: {
+    width: 30,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+  },
+  headerChange: {
+    width: 36,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    textAlign: "center",
+  },
+  headerName: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    marginLeft: 8,
+  },
+  headerRounds: {
+    width: 44,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    textAlign: "center",
+  },
+  headerWL: {
+    width: 44,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    textAlign: "center",
+  },
+  headerPoints: {
+    width: 50,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    textAlign: "center",
+  },
+  headerBehind: {
+    width: 50,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    textAlign: "center",
+  },
+  headerWins: {
+    width: 40,
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#999",
+    textAlign: "center",
+  },
+
+  // Table Row
+  tableRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F0F0F0",
+  },
+  leaderRow: {
+    backgroundColor: "#FFFBEB",
+  },
+  userRowWrapper: {
+    borderWidth: 2,
+    borderRadius: 8,
+    marginVertical: 2,
+  },
+
+  // Cells
+  cellRank: {
+    width: 30,
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
+  },
+  cellChange: {
+    width: 36,
+    alignItems: "center",
+  },
+  cellName: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    marginLeft: 8,
+  },
+  cellRounds: {
+    width: 44,
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
+  },
+  cellWL: {
+    width: 44,
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
+  },
+  cellPoints: {
+    width: 50,
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
+    textAlign: "center",
+  },
+  cellBehind: {
+    width: 50,
+    fontSize: 14,
+    color: "#999",
+    textAlign: "center",
+  },
+  cellWins: {
+    width: 40,
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
+  },
+
+  // Avatar
+  avatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    marginRight: 8,
+  },
+  avatarPlaceholder: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#0D5C3A",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 8,
+  },
+  avatarText: {
+    fontSize: 13,
     fontWeight: "700",
     color: "#FFF",
+  },
+  leaderAvatar: {
+    borderWidth: 2,
+    borderColor: "#C9A227",
+  },
+  nameText: {
+    fontSize: 14,
+    fontWeight: "500",
+    color: "#333",
+    flex: 1,
+  },
+  leaderText: {
+    fontWeight: "700",
+  },
+
+  // Position Indicators
+  positionChange: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  positionUpText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#4CAF50",
+    marginLeft: 1,
+  },
+  positionDownText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#F44336",
+    marginLeft: 1,
+  },
+  positionSameText: {
+    fontSize: 14,
+    color: "#999",
+  },
+  positionNew: {
+    backgroundColor: "#E3F2FD",
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  positionNewText: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#2196F3",
+  },
+
+  // No Standings
+  noStandings: {
+    alignItems: "center",
+    paddingVertical: 40,
+  },
+  noStandingsText: {
+    fontSize: 14,
+    color: "#999",
+    textAlign: "center",
+    marginTop: 12,
+  },
+
+  // Modal
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    justifyContent: "flex-end",
+  },
+  selectorModalContent: {
+    backgroundColor: "#FFF",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 16,
+  },
+  selectorModalTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#333",
+    marginBottom: 16,
+    textAlign: "center",
+  },
+  selectorOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  selectorOptionSelected: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+    backgroundColor: "#E8F5E9",
+  },
+  selectorOptionContent: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  selectorLogoPlaceholder: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#0D5C3A",
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 12,
+    overflow: "hidden",
+  },
+  selectorLogoImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+  selectorLogoText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFF",
+  },
+  selectorOptionTitle: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#333",
+  },
+  selectorOptionSubtitle: {
+    fontSize: 13,
+    color: "#666",
+    marginTop: 2,
+  },
+
+  // Empty State
+  emptyStateContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 32,
+  },
+  emptyStateEmoji: {
+    fontSize: 64,
+    marginBottom: 16,
+  },
+  emptyStateTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#333",
+    marginBottom: 8,
+  },
+  emptyStateSubtitle: {
+    fontSize: 15,
+    color: "#666",
+    textAlign: "center",
+    marginBottom: 24,
+  },
+  emptyStateButton: {
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  emptyStateButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFF",
+  },
+
+  bottomSpacer: {
+    height: 100,
+  },
+
+  // Purse Card
+  purseCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  purseCardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  purseCardTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#333",
+  },
+  purseCardTotal: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#0D5C3A",
+  },
+  purseCardBreakdown: {
+    borderTopWidth: 1,
+    borderTopColor: "#F0F0F0",
+    paddingTop: 10,
+    gap: 8,
+  },
+  purseCardRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  purseCardLabel: {
+    fontSize: 14,
+    color: "#666",
+  },
+  purseCardAmount: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
   },
 });

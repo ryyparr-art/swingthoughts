@@ -10,13 +10,13 @@
  *   3. For each active challenge, evaluate the score
  *   4. Update progress in challenges/{id}/participants/{userId}
  *   5. If threshold met → award badge, check cumulative tiers
- *   6. Send notifications
+ *   6. Send notifications (earned, progress milestones, DTP pin claimed/lost)
  *
  * File: functions/src/triggers/challengeEvaluator.ts
  */
 
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
-import { createNotificationDocument, getUserData } from "../notifications/helpers";
+import { createNotificationDocument, getUserData } from "../notifications/helpers.js";
 
 const db = getFirestore();
 
@@ -160,7 +160,8 @@ async function evaluatePar3(
   const newHoles = par3Holes.length;
   const newScore = par3Holes.reduce((sum, s) => sum + s, 0);
 
-  const totalHoles = (participant.totalPar3Holes || 0) + newHoles;
+  const previousHoles = participant.totalPar3Holes || 0;
+  const totalHoles = previousHoles + newHoles;
   const totalScore = (participant.totalPar3Score || 0) + newScore;
   const currentAverage = totalScore / totalHoles;
 
@@ -179,6 +180,16 @@ async function evaluatePar3(
     console.log(`🏆 Par 3 Champion earned! Avg: ${currentAverage.toFixed(2)}`);
     return true;
   }
+
+  // Check progress milestones (based on hole count toward 50)
+  await checkProgressMilestones(
+    score.userId,
+    "par3",
+    totalHoles,
+    50,
+    previousHoles,
+    `${totalHoles}/50 holes`
+  );
 
   await ref.update(updates);
   return false;
@@ -200,7 +211,8 @@ async function evaluateFIR(
   const newHit = score.fairwaysHit;
   const newPossible = score.fairwaysPossible || 0;
 
-  const totalRounds = (participant.qualifyingRounds || 0) + newRounds;
+  const previousRounds = participant.qualifyingRounds || 0;
+  const totalRounds = previousRounds + newRounds;
   const totalHit = (participant.totalFairwaysHit || 0) + newHit;
   const totalPossible = (participant.totalFairwaysPossible || 0) + newPossible;
   const currentPct = totalPossible > 0 ? (totalHit / totalPossible) * 100 : 0;
@@ -222,6 +234,16 @@ async function evaluateFIR(
     return true;
   }
 
+  // Check progress milestones (based on round count toward 10)
+  await checkProgressMilestones(
+    score.userId,
+    "fir",
+    totalRounds,
+    10,
+    previousRounds,
+    `${totalRounds}/10 rounds`
+  );
+
   await ref.update(updates);
   return false;
 }
@@ -242,7 +264,8 @@ async function evaluateGIR(
   const newHit = score.greensHit;
   const newPossible = score.greensPossible || score.holesCount;
 
-  const totalRounds = (participant.qualifyingRounds || 0) + newRounds;
+  const previousRounds = participant.qualifyingRounds || 0;
+  const totalRounds = previousRounds + newRounds;
   const totalHit = (participant.totalGreensHit || 0) + newHit;
   const totalPossible = (participant.totalGreensPossible || 0) + newPossible;
   const currentPct = totalPossible > 0 ? (totalHit / totalPossible) * 100 : 0;
@@ -263,6 +286,16 @@ async function evaluateGIR(
     console.log(`🏆 GIR Master earned! GIR: ${currentPct.toFixed(1)}%`);
     return true;
   }
+
+  // Check progress milestones (based on round count toward 10)
+  await checkProgressMilestones(
+    score.userId,
+    "gir",
+    totalRounds,
+    10,
+    previousRounds,
+    `${totalRounds}/10 rounds`
+  );
 
   await ref.update(updates);
   return false;
@@ -308,6 +341,8 @@ async function evaluateBirdieStreak(
     return true;
   }
 
+  // No progress milestones for birdie streak — single-round achievement
+
   await ref.update(updates);
   return false;
 }
@@ -350,6 +385,16 @@ async function evaluateIronPlayer(
     return true;
   }
 
+  // Check progress milestones (based on consecutive count toward 5)
+  await checkProgressMilestones(
+    score.userId,
+    "iron_player",
+    newCount,
+    5,
+    currentCount,
+    `${newCount}/5 consecutive rounds`
+  );
+
   await ref.update(updates);
   return false;
 }
@@ -368,6 +413,9 @@ async function evaluateDTP(
   const courseId = String(score.courseId);
   const userId = score.userId;
   let pinClaimed = false;
+  let claimedCourseName = score.courseName || "a course";
+  let claimedHole = 0;
+  let claimedDistance = 0;
 
   for (const measurement of score.dtpMeasurements) {
     const courseRef = db
@@ -380,6 +428,8 @@ async function evaluateDTP(
 
     if (!courseDoc.exists) {
       // First DTP entry at this course — this hole becomes the designated hole
+      const userInfo = await getUserData(userId);
+
       await courseRef.set({
         courseName: score.courseName || "",
         designatedHole: measurement.hole,
@@ -387,8 +437,8 @@ async function evaluateDTP(
         setByUserId: userId,
         setAt: FieldValue.serverTimestamp(),
         currentHolderId: userId,
-        currentHolderName: (await getUserData(userId))?.displayName || "Unknown",
-        currentHolderAvatar: (await getUserData(userId))?.avatar || null,
+        currentHolderName: userInfo?.displayName || "Unknown",
+        currentHolderAvatar: userInfo?.avatar || null,
         currentDistance: measurement.distance,
         currentScoreId: score.scoreId || "",
         recordedAt: FieldValue.serverTimestamp(),
@@ -396,6 +446,10 @@ async function evaluateDTP(
       });
 
       pinClaimed = true;
+      claimedCourseName = score.courseName || "a course";
+      claimedHole = measurement.hole;
+      claimedDistance = measurement.distance;
+
       console.log(
         `📍 DTP: ${userId} set designated hole #${measurement.hole} at ${courseId} — ${measurement.distance}ft`
       );
@@ -445,6 +499,10 @@ async function evaluateDTP(
         });
 
         pinClaimed = true;
+        claimedCourseName = courseData.courseName || score.courseName || "a course";
+        claimedHole = courseData.designatedHole;
+        claimedDistance = measurement.distance;
+
         console.log(
           `📍 DTP: ${userId} claimed pin at ${courseId} hole #${measurement.hole} — ${measurement.distance}ft (was ${courseData.currentDistance}ft)`
         );
@@ -453,6 +511,13 @@ async function evaluateDTP(
   }
 
   if (pinClaimed) {
+    // Notify the winner they claimed a pin
+    await createNotificationDocument({
+      userId,
+      type: "dtp_claimed",
+      message: `You claimed the pin at ${claimedCourseName} Hole #${claimedHole} — ${claimedDistance}ft! 🎯`,
+    });
+
     // Update this user's pin count and check badge status
     const earned = await updateDTPPinCount(userId);
     return earned;
@@ -546,6 +611,52 @@ async function notifyPinLost(
 }
 
 // ============================================================================
+// PROGRESS MILESTONE NOTIFICATIONS
+// ============================================================================
+
+/**
+ * Check if a user has crossed the 50% or 75% progress milestone
+ * and send a notification if so.
+ *
+ * Compares previous value to current value against the target
+ * to detect when a milestone threshold is freshly crossed.
+ */
+async function checkProgressMilestones(
+  userId: string,
+  challengeId: string,
+  currentValue: number,
+  targetValue: number,
+  previousValue: number,
+  metricLabel: string
+): Promise<void> {
+  try {
+    const pct = (currentValue / targetValue) * 100;
+    const prevPct = (previousValue / targetValue) * 100;
+
+    const milestones = [
+      { threshold: 50, label: "halfway" },
+      { threshold: 75, label: "75%" },
+    ];
+
+    for (const milestone of milestones) {
+      // Only notify when freshly crossing the threshold
+      if (pct >= milestone.threshold && prevPct < milestone.threshold) {
+        await createNotificationDocument({
+          userId,
+          type: "challenge_progress",
+          message: `You're ${milestone.label} to the ${getBadgeName(challengeId)} badge! ${metricLabel} 📈`,
+        });
+        console.log(
+          `📈 ${challengeId} progress: ${milestone.label} for ${userId}`
+        );
+      }
+    }
+  } catch (err) {
+    console.error("Failed to send progress notification:", err);
+  }
+}
+
+// ============================================================================
 // BADGE AWARDING & CUMULATIVE TIERS
 // ============================================================================
 
@@ -560,9 +671,9 @@ async function awardBadges(
   newBadgeIds: string[]
 ): Promise<void> {
   try {
-    // Update user doc — add to earnedBadges
+    // Update user doc — add to earnedChallengeBadges
     await db.collection("users").doc(userId).update({
-      earnedBadges: FieldValue.arrayUnion(...newBadgeIds),
+      earnedChallengeBadges: FieldValue.arrayUnion(...newBadgeIds),
     });
 
     // Update challenge docs — increment earnedCount
@@ -584,7 +695,7 @@ async function awardBadges(
     // Check cumulative tiers
     const userDoc = await db.collection("users").doc(userId).get();
     const userData = userDoc.data()!;
-    const earnedBadges: string[] = userData.earnedBadges || [];
+    const earnedBadges: string[] = userData.earnedChallengeBadges || [];
     const dtpPinsHeld: number = userData.dtpPinsHeld || 0;
 
     // Count active badges (exclude tiers, DTP only counts if pins > 0)
@@ -613,7 +724,7 @@ async function awardBadges(
 
     if (newTiers.length > 0) {
       await db.collection("users").doc(userId).update({
-        earnedBadges: FieldValue.arrayUnion(...newTiers),
+        earnedChallengeBadges: FieldValue.arrayUnion(...newTiers),
       });
 
       for (const tierId of newTiers) {

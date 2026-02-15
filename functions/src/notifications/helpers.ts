@@ -74,6 +74,7 @@ export function generateGroupedMessage(
     invitedUserName?: string;
     pollQuestion?: string;   // Add
     pollChoice?: string;     // Add
+    message?: string;
   }
 ): string {
   const othersCount = actorCount - 1;
@@ -208,15 +209,15 @@ export function generateGroupedMessage(
 
     // Challenge notifications
     case "challenge_earned":
-      return message || `You earned a new badge! 🏆`;
+      return extraData?.message || `You earned a new badge! 🏆`;
     case "challenge_tier":
-      return message || `You reached a new milestone! ⭐`;
+      return extraData?.message || `You reached a new milestone! ⭐`;
     case "challenge_progress":
-      return message || `Challenge progress update`;
+      return extraData?.message || `Challenge progress update`;
     case "dtp_claimed":
-      return message || `You claimed a pin! 🎯`;
+      return extraData?.message || `You claimed a pin! 🎯`;
     case "dtp_lost":
-      return message || `Someone beat your pin! 🎯`;
+      return extraData?.message || `Someone beat your pin! 🎯`;
     
     default:
       return `${actorName} interacted with you`;

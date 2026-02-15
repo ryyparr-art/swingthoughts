@@ -24,6 +24,7 @@ interface Score {
   createdAt: any;
   userName?: string;
   userAvatar?: string | null;
+  challengeBadges?: string[];
   hadHoleInOne?: boolean;
 }
 
@@ -459,6 +460,7 @@ export async function rebuildLeaderboards(
         createdAt: data.createdAt,
         userName: userProfile?.displayName || "[Deleted User]",
         userAvatar: userProfile?.avatar || null,
+        challengeBadges: userProfile?.challengeBadges || [],
       };
 
       const key = `${data.regionKey}_${data.courseId}`;

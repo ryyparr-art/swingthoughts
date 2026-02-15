@@ -1,3 +1,4 @@
+import BadgeRow from "@/components/challenges/BadgeRow";
 import PartnersModal from "@/components/modals/PartnersModal";
 import UserPostsGalleryModal from "@/components/modals/UserPostsGalleryModal";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
@@ -33,6 +34,7 @@ interface UserProfile {
   handicap: number;
   badges: string[];
   selectedBadges?: string[];
+  challengeBadges?: string[];
   personalDetails?: {
     firstName?: string;
     lastName?: string;
@@ -136,6 +138,7 @@ export default function ProfileScreen() {
           handicap: data.handicap,
           badges: data.badges || [],
           selectedBadges: data.selectedBadges || [],
+          challengeBadges: data.challengeBadges || [],
           personalDetails: data.personalDetails || {},
         });
         setViewedPrivacy(data.accountPrivacy || "public");
@@ -209,6 +212,7 @@ export default function ProfileScreen() {
             handicap: data.handicap,
             badges: data.badges || [],
             selectedBadges: data.selectedBadges || [],
+            challengeBadges: data.challengeBadges || [],
             personalDetails: data.personalDetails || {},
           },
           posts: postsData,
@@ -517,6 +521,7 @@ export default function ProfileScreen() {
                     <Text style={styles.displayName} numberOfLines={1}>
                       {profile.displayName}
                     </Text>
+                    <BadgeRow challengeBadges={profile.challengeBadges} size={16} />
                   </View>
 
                   {/* RIGHT: Club Card label, real name, HCI */}

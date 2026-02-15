@@ -460,6 +460,7 @@ export const styles = StyleSheet.create({
     borderRadius: 4,
     borderWidth: 1,
     borderColor: "#E0E0E0",
+    color: "#333",
   },
   totalCell: {
     width: 44,
@@ -558,7 +559,7 @@ export const styles = StyleSheet.create({
     color: "#0D5C3A",
   },
 
-  // Stat Rows (FIR / GIR / PNL)
+  // Stat Rows (FIR / GIR)
   statRow: {
     backgroundColor: "#FAFAFA",
   },
@@ -598,18 +599,27 @@ export const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#666",
   },
-  pnlInput: {
-    width: 24,
+  // DTP Row
+  dtpRow: {
+    backgroundColor: "#FFF5F5",
+  },
+  dtpInput: {
+    width: 30,
     height: 22,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "600",
     textAlign: "center",
     backgroundColor: "#FFF",
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: "#DDD",
+    borderColor: "#D32F2F",
     color: "#D32F2F",
     padding: 0,
+  },
+  dtpUnit: {
+    fontSize: 10,
+    color: "#D32F2F",
+    fontWeight: "600",
   },
 
   // Score Styles

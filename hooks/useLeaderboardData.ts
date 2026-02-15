@@ -51,6 +51,7 @@ export interface Score {
   displayName?: string;  // Used in UI
   userName?: string;     // From leaderboardHelpers
   userAvatar?: string | null;
+  challengeBadges?: string[];
 }
 
 export interface CourseBoard {

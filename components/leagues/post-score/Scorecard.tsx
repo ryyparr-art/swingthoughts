@@ -1,37 +1,36 @@
 /**
  * Scorecard - Score input grid with front/back 9 tab toggle
  *
- * Rows: Hole | Yards | Par | Stroke Index | Score | Adj. Score | FIR | GIR | PNL
+ * Rows: Hole | Yards | Par | Stroke Index | Score | Adj. Score | FIR | GIR | DTP
  * Features: Tab toggle for 18-hole rounds, auto-flips to back 9 when front 9 complete
  */
 
 import { Ionicons } from "@expo/vector-icons";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-    Modal,
-    ScrollView,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Modal,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 import {
-    getBack9AdjScore,
-    getBack9Par,
-    getBack9Score,
-    getBack9Yardage,
-    getFront9AdjScore,
-    getFront9Par,
-    getFront9Score,
-    getFront9Yardage,
-    getPnlSliceCount,
-    getStatSliceCount,
-    getStrokesForHole,
-    getTotalAdjScore,
-    getTotalPar,
-    getTotalScore,
-    getTotalYardage,
+  getBack9AdjScore,
+  getBack9Par,
+  getBack9Score,
+  getBack9Yardage,
+  getFront9AdjScore,
+  getFront9Par,
+  getFront9Score,
+  getFront9Yardage,
+  getStatSliceCount,
+  getStrokesForHole,
+  getTotalAdjScore,
+  getTotalPar,
+  getTotalScore,
+  getTotalYardage,
 } from "./helpers";
 import { styles } from "./styles";
 import { HoleInfo } from "./types";
@@ -45,11 +44,15 @@ interface ScorecardProps {
   showHandicap: boolean;
   fir: (boolean | null)[];
   gir: (boolean | null)[];
-  pnl: (number | null)[];
   onScoreChange: (holeIndex: number, value: string) => void;
   onFirToggle: (holeIndex: number) => void;
   onGirToggle: (holeIndex: number) => void;
-  onPnlChange: (holeIndex: number, value: string) => void;
+  // DTP Challenge
+  dtpEligibleHoles?: Set<number>;
+  dtpValues?: (string | null)[];
+  onDtpChange?: (holeIndex: number, value: string) => void;
+  dtpCurrentDistance?: number | null;
+  dtpCurrentHolderName?: string | null;
 }
 
 /** Info modal content for stat row abbreviations */
@@ -74,10 +77,10 @@ const STAT_INFO: Record<string, { title: string; description: string }> = {
     description:
       "Did the ball reach the putting green in the expected number of strokes (par minus 2)? For example, reaching a par 4 green in 2 shots. Tap to toggle. Optional.",
   },
-  PNL: {
-    title: "Penalties",
+  DTP: {
+    title: "Distance to Pin (DTP)",
     description:
-      "Number of penalty strokes on the hole (OB, water, lost ball, unplayable, etc.). Enter the count \u2014 leave blank if none. Optional.",
+      "Closest to Pin challenge \u2014 enter your distance from the pin in feet after your tee shot on this par 3. If no one has claimed this course\u2019s pin yet, your entry sets the designated hole. Beat the current holder to claim the pin!",
   },
 };
 
@@ -92,14 +95,17 @@ export default function Scorecard({
   showHandicap,
   fir,
   gir,
-  pnl,
   onScoreChange,
   onFirToggle,
   onGirToggle,
-  onPnlChange,
+  dtpEligibleHoles,
+  dtpValues,
+  onDtpChange,
+  dtpCurrentDistance,
+  dtpCurrentHolderName,
 }: ScorecardProps) {
   const inputRefs = useRef<Record<number, TextInput | null>>({});
-  const pnlInputRefs = useRef<Record<number, TextInput | null>>({});
+  const dtpInputRefs = useRef<Record<number, TextInput | null>>({});
   const is18Holes = holesCount === 18;
   const [infoModal, setInfoModal] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<NineTab>("front");
@@ -423,7 +429,7 @@ export default function Scorecard({
             </View>
 
             {/* GIR - Green in Regulation */}
-            <View style={[styles.tableRow, styles.statRow]}>
+            <View style={[styles.tableRow, styles.statRow, !(dtpEligibleHoles && dtpEligibleHoles.size > 0) && styles.lastStatRow]}>
               {renderLabelCell("GIR", "GIR")}
               {sliceHoles.map((_, idx) => {
                 const i = startIdx + idx;
@@ -462,41 +468,45 @@ export default function Scorecard({
               )}
             </View>
 
-            {/* PNL - Penalties */}
-            <View style={[styles.tableRow, styles.statRow, styles.lastStatRow]}>
-              {renderLabelCell("PNL", "PNL")}
-              {sliceHoles.map((_, idx) => {
-                const i = startIdx + idx;
-                return (
-                  <View key={`pnl-${i}`} style={styles.statCell}>
-                    <TextInput
-                      ref={(ref) => {
-                        pnlInputRefs.current[i] = ref;
-                      }}
-                      style={styles.pnlInput}
-                      value={pnl[i] !== null ? pnl[i]!.toString() : ""}
-                      onChangeText={(v) => onPnlChange(i, v)}
-                      keyboardType="number-pad"
-                      maxLength={1}
-                      selectTextOnFocus
-                      placeholder=""
-                    />
-                  </View>
-                );
-              })}
-              <View style={styles.totalCell}>
-                <Text style={styles.statTotal}>
-                  {getPnlSliceCount(pnl, startIdx, endIdx) || ""}
-                </Text>
-              </View>
-              {isBack && (
-                <View style={styles.grandTotalCell}>
-                  <Text style={styles.statTotal}>
-                    {getPnlSliceCount(pnl, 0, holesCount) || ""}
-                  </Text>
+            {/* DTP - Distance to Pin (only if user is registered for DTP challenge) */}
+            {dtpEligibleHoles && dtpEligibleHoles.size > 0 && dtpValues && onDtpChange && (
+              <View style={[styles.tableRow, styles.statRow, styles.lastStatRow, styles.dtpRow]}>
+                {renderLabelCell("DTP", "DTP")}
+                {sliceHoles.map((_, idx) => {
+                  const i = startIdx + idx;
+                  const isEligible = dtpEligibleHoles.has(i);
+                  return (
+                    <View key={`dtp-${i}`} style={styles.statCell}>
+                      {isEligible ? (
+                        <TextInput
+                          ref={(ref) => {
+                            dtpInputRefs.current[i] = ref;
+                          }}
+                          style={styles.dtpInput}
+                          value={dtpValues[i] || ""}
+                          onChangeText={(v) => onDtpChange(i, v)}
+                          keyboardType="decimal-pad"
+                          maxLength={4}
+                          selectTextOnFocus
+                          placeholder="ft"
+                          placeholderTextColor="#CCC"
+                        />
+                      ) : (
+                        <Text style={styles.statDash}>{"\u2014"}</Text>
+                      )}
+                    </View>
+                  );
+                })}
+                <View style={styles.totalCell}>
+                  <Text style={styles.dtpUnit}>ft</Text>
                 </View>
-              )}
-            </View>
+                {isBack && (
+                  <View style={styles.grandTotalCell}>
+                    <Text style={styles.dtpUnit}>ft</Text>
+                  </View>
+                )}
+              </View>
+            )}
           </View>
         </ScrollView>
       </View>

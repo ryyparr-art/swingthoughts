@@ -1,3 +1,4 @@
+import BadgeRow from "@/components/challenges/BadgeRow";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
@@ -53,6 +54,7 @@ interface Thread {
   participants: string[];
   participantNames?: Record<string, string>;
   participantAvatars?: Record<string, string | null>;
+  participantBadges?: Record<string, string[]>;
   isGroup?: boolean;           // ✅ NEW: Group chat flag
   groupName?: string;          // ✅ NEW: Group display name
   lastMessage?: any;
@@ -102,6 +104,11 @@ function ThreadRow({
     return otherUserId ? (item.participantAvatars?.[otherUserId] || null) : null;
   });
 
+  const [challengeBadges, setDisplayBadges] = useState<string[]>(() => {
+    if (isGroup || !otherUserId) return [];
+    return item.participantBadges?.[otherUserId] || [];
+  });
+
   // ✅ Only fetch from users collection if denormalized data is missing (1:1 only)
   useEffect(() => {
     if (isGroup || !otherUserId) return;
@@ -121,6 +128,7 @@ function ThreadRow({
         const u = snap.data();
         setName(u.displayName || "User");
         setAvatar(u.avatar || null);
+        setDisplayBadges(u.challengeBadges || []);
       }
     })();
 
@@ -253,6 +261,7 @@ function ThreadRow({
                 <Text style={styles.senderName} numberOfLines={1}>
                   {name}
                 </Text>
+                {!isGroup && <BadgeRow challengeBadges={challengeBadges} size={12} />}
                 {unread > 0 && (
                   <View style={styles.unreadBadge}>
                     <Text style={styles.unreadBadgeText}>{unread}</Text>

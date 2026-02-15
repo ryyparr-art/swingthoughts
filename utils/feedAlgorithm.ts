@@ -50,6 +50,12 @@ export interface FeedPost {
   userType?: string;
   verified?: boolean;
   
+  // Challenge badges
+  challengeBadges?: string[];
+
+  // Game Identity
+  gameIdentity?: string;
+
   // Content
   content: string;
   caption?: string;
@@ -137,6 +143,7 @@ export interface FeedScore {
   displayName: string;
   avatar?: string;
   userType?: string;
+  challengeBadges?: string[];
   courseId: number;
   courseName: string;
   grossScore: number;
@@ -679,6 +686,8 @@ async function processPosts(
       handicap: data.handicap || profile?.handicap,
       userType: data.userType || profile?.userType || "Golfer",
       verified: data.verified || profile?.verified || false,
+      challengeBadges: data.challengeBadges || profile?.challengeBadges || [],
+      gameIdentity: data.gameIdentity || "",
       
       // Content
       content: data.content || data.caption || "",
@@ -766,6 +775,7 @@ async function batchGetUserProfiles(userIds: string[]): Promise<Map<string, any>
         userType: userDoc.data()?.userType || "Golfer",
         handicap: userDoc.data()?.handicap,
         verified: userDoc.data()?.verified || false,
+        challengeBadges: userDoc.data()?.challengeBadges || [],
       };
       userProfileCache.set(userId, profile);
       return { userId, profile };

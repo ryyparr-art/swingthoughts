@@ -8,7 +8,6 @@ import { Text, View } from "react-native";
 import {
     countFairways,
     countGreens,
-    countPenalties,
     getTotalAdjScore,
     getTotalPar,
     getTotalScore,
@@ -25,7 +24,6 @@ interface ScoreSummaryProps {
   showHandicap: boolean;
   fir: (boolean | null)[];
   gir: (boolean | null)[];
-  pnl: (number | null)[];
 }
 
 export default function ScoreSummary({
@@ -37,7 +35,6 @@ export default function ScoreSummary({
   showHandicap,
   fir,
   gir,
-  pnl,
 }: ScoreSummaryProps) {
   const totalScore = getTotalScore(scores);
   const totalAdj = getTotalAdjScore(adjScores);
@@ -45,11 +42,9 @@ export default function ScoreSummary({
 
   const fairways = countFairways(fir, holes, holesCount);
   const greens = countGreens(gir, holesCount);
-  const penalties = countPenalties(pnl, holesCount);
 
   const hasFirData = fir.some((v) => v !== null);
   const hasGirData = gir.some((v) => v !== null);
-  const hasPnlData = pnl.some((v) => v !== null && v > 0);
 
   return (
     <>
@@ -97,7 +92,7 @@ export default function ScoreSummary({
       </View>
 
       {/* Stats Summary (only show if user entered any) */}
-      {(hasFirData || hasGirData || hasPnlData) && (
+      {(hasFirData || hasGirData) && (
         <View style={styles.statsSummary}>
           <Text style={styles.statsSummaryTitle}>Round Stats</Text>
           <View style={styles.statsGrid}>
@@ -125,14 +120,6 @@ export default function ScoreSummary({
                     {Math.round((greens.hit / greens.possible) * 100)}%
                   </Text>
                 )}
-              </View>
-            )}
-            {hasPnlData && (
-              <View style={styles.statsItem}>
-                <Text style={[styles.statsItemValue, styles.statsItemPenalty]}>
-                  {penalties}
-                </Text>
-                <Text style={styles.statsItemLabel}>Penalties</Text>
               </View>
             )}
           </View>

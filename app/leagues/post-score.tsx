@@ -36,7 +36,6 @@ import {
   calculateCourseHandicap,
   countFairways,
   countGreens,
-  countPenalties,
   extractTees,
   generateDefaultHoles,
   getHolesCount,
@@ -58,6 +57,7 @@ import {
   TeeOption,
   UserProfile,
 } from "@/components/leagues/post-score/types";
+import { DtpCourseInfo, getDtpCourseInfo, getDtpEligibleHoles } from "@/utils/dtpHelpers";
 
 type Screen = "course" | "tee" | "scorecard";
 
@@ -89,10 +89,14 @@ export default function LeaguePostScore() {
   // Score state
   const [scores, setScores] = useState<(number | null)[]>([]);
 
-  // Stat state (FIR / GIR / PNL)
+  // Stat state (FIR / GIR)
   const [fir, setFir] = useState<(boolean | null)[]>([]);
   const [gir, setGir] = useState<(boolean | null)[]>([]);
-  const [pnl, setPnl] = useState<(number | null)[]>([]);
+
+  // DTP Challenge state
+  const [isDtpRegistered, setIsDtpRegistered] = useState(false);
+  const [dtpCourseInfo, setDtpCourseInfo] = useState<DtpCourseInfo | null>(null);
+  const [dtpValues, setDtpValues] = useState<(string | null)[]>([]);
 
   // UI state
   const [loading, setLoading] = useState(true);
@@ -130,6 +134,11 @@ export default function LeaguePostScore() {
       holesCount
     );
   }, [scores, selectedTee, courseHandicap, holesCount]);
+
+  const dtpEligibleHoles = useMemo(() => {
+    if (!isDtpRegistered || !selectedTee) return new Set<number>();
+    return getDtpEligibleHoles(selectedTee.holes, holesCount, dtpCourseInfo);
+  }, [isDtpRegistered, selectedTee, holesCount, dtpCourseInfo]);
 
   /* ================================================================ */
   /* DATA LOADING                                                     */
@@ -169,6 +178,10 @@ export default function LeaguePostScore() {
             longitude: userData.location.longitude,
           });
         }
+
+        // Check DTP challenge registration
+        const activeChallenges: string[] = (userDoc.data() as any).activeChallenges ?? [];
+        setIsDtpRegistered(activeChallenges.includes("dtp"));
       }
 
       // Load league
@@ -218,7 +231,7 @@ export default function LeaguePostScore() {
     setScores(new Array(hc).fill(null));
     setFir(new Array(hc).fill(null));
     setGir(new Array(hc).fill(null));
-    setPnl(new Array(hc).fill(null));
+    setDtpValues(new Array(hc).fill(null));
   };
 
   const loadCourses = async (leagueData: League, userData: UserProfile | null) => {
@@ -312,6 +325,12 @@ export default function LeaguePostScore() {
         console.log("🔍 courseData.tees:", JSON.stringify(courseData.tees, null, 2)?.slice(0, 500));
         const tees = extractTees(courseData.tees);
 
+        // Fetch DTP info if registered
+        if (isDtpRegistered) {
+          const dtpInfo = await getDtpCourseInfo(courseId);
+          setDtpCourseInfo(dtpInfo);
+        }
+
         if (tees.length > 0) {
           setAvailableTees(tees);
           setCurrentScreen("tee");
@@ -398,14 +417,11 @@ export default function LeaguePostScore() {
     });
   }, []);
 
-  const handlePnlChange = useCallback((holeIndex: number, value: string) => {
-    const numValue = value === "" ? null : parseInt(value, 10);
-    if (numValue !== null && (isNaN(numValue) || numValue < 0 || numValue > 9)) {
-      return;
-    }
-    setPnl((prev) => {
+  const handleDtpChange = useCallback((holeIndex: number, value: string) => {
+    if (value !== "" && !/^\d{0,3}\.?\d{0,1}$/.test(value)) return;
+    setDtpValues((prev) => {
       const next = [...prev];
-      next[holeIndex] = numValue;
+      next[holeIndex] = value || null;
       return next;
     });
   }, []);
@@ -438,16 +454,14 @@ export default function LeaguePostScore() {
       // Calculate stats
       const fairways = countFairways(fir, selectedTee.holes, holesCount);
       const greens = countGreens(gir, holesCount);
-      const penalties = countPenalties(pnl, holesCount);
 
       const hasFirData = fir.some((v) => v !== null);
       const hasGirData = gir.some((v) => v !== null);
-      const hasPnlData = pnl.some((v) => v !== null && v! > 0);
 
       const scoreDoc: Record<string, any> = {
         userId: currentUserId,
         displayName: member?.displayName || userProfile?.displayName || "Unknown",
-        avatar: member?.avatar || userProfile?.avatar,
+        avatar: member?.avatar || userProfile?.avatar || null,
         teamId: team?.id || null,
         teamName: team?.name || null,
         week: league.currentWeek,
@@ -475,8 +489,8 @@ export default function LeaguePostScore() {
       }
 
       // Only include stats if user entered any
-      if (hasFirData || hasGirData || hasPnlData) {
-        scoreDoc.holeStats = { fir, gir, pnl };
+      if (hasFirData || hasGirData) {
+        scoreDoc.holeStats = { fir, gir };
         if (hasFirData) {
           scoreDoc.fairwaysHit = fairways.hit;
           scoreDoc.fairwaysPossible = fairways.possible;
@@ -484,8 +498,21 @@ export default function LeaguePostScore() {
         if (hasGirData) {
           scoreDoc.greensInRegulation = greens.hit;
         }
-        if (hasPnlData) {
-          scoreDoc.totalPenalties = penalties;
+      }
+
+      // DTP measurements (if any entered)
+      if (isDtpRegistered && dtpValues.some((v) => v !== null && v !== "")) {
+        const dtpMeasurements: Record<string, number> = {};
+        for (let i = 0; i < holesCount; i++) {
+          if (dtpValues[i] && dtpEligibleHoles.has(i)) {
+            const distance = parseFloat(dtpValues[i]!);
+            if (!isNaN(distance) && distance > 0) {
+              dtpMeasurements[String(i + 1)] = distance;
+            }
+          }
+        }
+        if (Object.keys(dtpMeasurements).length > 0) {
+          scoreDoc.dtpMeasurements = dtpMeasurements;
         }
       }
 
@@ -725,11 +752,14 @@ export default function LeaguePostScore() {
           showHandicap={useSwingThoughtsHandicap}
           fir={fir}
           gir={gir}
-          pnl={pnl}
           onScoreChange={handleScoreChange}
           onFirToggle={handleFirToggle}
           onGirToggle={handleGirToggle}
-          onPnlChange={handlePnlChange}
+          dtpEligibleHoles={dtpEligibleHoles}
+          dtpValues={dtpValues}
+          onDtpChange={handleDtpChange}
+          dtpCurrentDistance={dtpCourseInfo?.currentDistance}
+          dtpCurrentHolderName={dtpCourseInfo?.currentHolderName}
         />
 
         {/* Score Summary */}
@@ -742,7 +772,6 @@ export default function LeaguePostScore() {
           showHandicap={useSwingThoughtsHandicap}
           fir={fir}
           gir={gir}
-          pnl={pnl}
         />
 
         <View style={styles.bottomSpacer} />

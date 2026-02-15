@@ -22,6 +22,7 @@ import {
   View,
 } from "react-native";
 
+import BadgeRow from "@/components/challenges/BadgeRow";
 import { getPostTypeLabel } from "@/constants/postTypes";
 import { getRelativeTime, Thought } from "@/utils/feedHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -129,6 +130,10 @@ export default function FeedPost({
           <View style={styles.headerInfo}>
             <View style={styles.headerTextContainer}>
               <Text style={styles.displayName}>{displayName}</Text>
+              <BadgeRow challengeBadges={thought.challengeBadges} size={14} />
+              {thought.gameIdentity ? (
+                <Text style={styles.gameIdentity}>— {thought.gameIdentity}</Text>
+              ) : null}
               {headerText && (
                 <Text style={styles.headerActionText}> {headerText}</Text>
               )}
@@ -185,12 +190,12 @@ export default function FeedPost({
       {/* Poll Card */}
       {isPoll && thought.poll && (
         <FeedPollCard
-          thoughtId={thought.id}
-          poll={thought.poll}
-          currentUserId={currentUserId}
-          postUserId={thought.userId}
-        />
-      )}
+        thoughtId={thought.id}
+        postUserId={thought.userId}
+        poll={thought.poll}
+        currentUserId={currentUserId}
+      />
+    )}
 
       {/* League Result Card */}
       {isLeagueResult && thought.leagueResult && (
@@ -350,6 +355,15 @@ const styles = StyleSheet.create({
     height: 20,
     tintColor: "#666",
   },
+
+  gameIdentity: {
+  fontSize: 10,
+  fontStyle: "italic",
+  color: "#C5A55A",
+  marginLeft: 6,
+  letterSpacing: 0.5,
+},
+
   
   // Content
   contentContainer: {

@@ -8,6 +8,7 @@ import {
   updateRateLimitTimestamp,
 } from "@/utils/rateLimitHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
+import BadgeRow from "@/components/challenges/BadgeRow";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -60,6 +61,7 @@ interface ThreadData {
   participants: string[];
   participantNames?: Record<string, string>;
   participantAvatars?: Record<string, string | null>;
+  participantBadges?: Record<string, string[]>;
   isGroup?: boolean;        // ✅ NEW: Group chat flag
   groupName?: string;       // ✅ NEW: Group display name
   lastMessage?: any;
@@ -89,6 +91,7 @@ export default function MessageThreadScreen() {
   const [otherUserId, setOtherUserId] = useState<string | null>(null);
   const [otherUserName, setOtherUserName] = useState("User");
   const [otherUserAvatar, setOtherUserAvatar] = useState<string | null>(null);
+  const [otherUserBadges, setOtherUserBadges] = useState<string[]>([]);
   const [threadExists, setThreadExists] = useState(false);
   
   // ✅ Track if we've already marked messages as read this session
@@ -165,6 +168,9 @@ export default function MessageThreadScreen() {
             if (data.participantAvatars?.[partnerId]) {
               setOtherUserAvatar(data.participantAvatars[partnerId]);
             }
+            if (data.participantBadges?.[partnerId]) {
+              setOtherUserBadges(data.participantBadges[partnerId]);
+            }
           }
         }
         
@@ -192,6 +198,7 @@ export default function MessageThreadScreen() {
             const partnerData = partnerDoc.data();
             setOtherUserName(partnerData.displayName || "User");
             setOtherUserAvatar(partnerData.avatar || null);
+            setOtherUserBadges(partnerData.challengeBadges || []);
             console.log("✅ Partner data loaded:", partnerData.displayName);
           }
         }
@@ -204,6 +211,7 @@ export default function MessageThreadScreen() {
           const partnerData = partnerDoc.data();
           setOtherUserName(partnerData.displayName || "User");
           setOtherUserAvatar(partnerData.avatar || null);
+          setOtherUserBadges(partnerData.challengeBadges || []);
           console.log("✅ Partner data loaded from users collection:", partnerData.displayName);
         }
       }
@@ -794,7 +802,10 @@ export default function MessageThreadScreen() {
                   <Ionicons name="pencil" size={14} color="rgba(255,255,255,0.7)" />
                 </TouchableOpacity>
               ) : (
-                <Text style={styles.headerName}>{otherUserName}</Text>
+                <View style={{ flexDirection: "row", alignItems: "center" }}>
+                  <Text style={styles.headerName}>{otherUserName}</Text>
+                  <BadgeRow challengeBadges={otherUserBadges} size={12} />
+                </View>
               )}
               {/* ✅ NEW: Show member count for groups */}
               {isGroup && threadData && (

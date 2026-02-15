@@ -44,6 +44,7 @@ import { soundPlayer } from "@/utils/soundPlayer";
 
 // Components
 import AllCoursesLeaderboardModal from "@/components/modals/AllCoursesLeaderboardModal";
+import BadgeRow from "@/components/challenges/BadgeRow";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import LowmanCarousel from "@/components/navigation/LowmanCarousel";
 import SwingFooter from "@/components/navigation/SwingFooter";
@@ -506,6 +507,7 @@ export default function LeaderboardScreen() {
                   >
                     {s.displayName || s.userName}
                   </Text>
+                  <BadgeRow challengeBadges={s.challengeBadges} size={12} />
                 </TouchableOpacity>
 
                 <Text style={styles.colScore}>{s.grossScore}</Text>

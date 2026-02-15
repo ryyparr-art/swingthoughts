@@ -114,11 +114,13 @@ export {
 export { onUserUpdated } from "./triggers/users";
 
 export { onHandicapScoreCreated, onHandicapLeagueScoreCreated } from "./triggers/handicapCalculator";
+export { onUserProfileChanged } from "./triggers/userProfileSync";
 
 // ============================================================================
 // POLL VOTE TRIGGERS
 // ============================================================================
 export { onPollVoteCreated, onPollVoteUpdated, onPollVoteDeleted } from "./triggers/pollVotes";
+
 
 
 

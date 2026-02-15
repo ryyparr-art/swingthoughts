@@ -410,13 +410,7 @@ service cloud.firestore {
     // ============================================================================
 
     match /partners/{partnerId} {
-      allow read, list: if isSignedIn() &&
-        (
-          request.auth.uid == resource.data.user1Id ||
-          request.auth.uid == resource.data.user2Id ||
-          request.auth.uid in resource.data.users ||
-          isAdmin()
-        );
+      allow read, list: if isSignedIn();
 
       allow create: if isSignedIn() &&
         isEmailVerified() &&
@@ -1027,6 +1021,43 @@ service cloud.firestore {
           isLeagueManager(resource.data.leagueId) ||
           isAdmin()
         );
+    }
+
+// ============================================================================
+    // CHALLENGES
+    // ============================================================================
+
+    match /challenges/{challengeId} {
+      allow read, list: if isSignedIn();
+
+      // Only Cloud Functions write challenge docs (via Admin SDK)
+      allow create, update, delete: if false;
+
+      // Participants subcollection
+      match /participants/{userId} {
+        allow read: if isSignedIn();
+
+        // Users can register themselves
+        allow create: if isSignedIn() &&
+          isEmailVerified() &&
+          userId == request.auth.uid;
+
+        // Users can update their own progress, Cloud Functions also update
+        allow update: if isSignedIn() &&
+          userId == request.auth.uid;
+
+        // Users can deregister themselves
+        allow delete: if isSignedIn() &&
+          userId == request.auth.uid;
+      }
+
+      // DTP courses subcollection
+      match /courses/{courseId} {
+        allow read, list: if isSignedIn();
+
+        // Only Cloud Functions write (via Admin SDK)
+        allow create, update, delete: if false;
+      }
     }
 
     // ============================================================================

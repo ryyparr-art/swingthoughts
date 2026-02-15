@@ -54,6 +54,7 @@ import {
   View
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import BadgeRow from "@/components/challenges/BadgeRow";
 
 interface Props {
   visible: boolean;
@@ -83,6 +84,7 @@ interface Comment {
 interface UserProfile {
   displayName: string;
   avatar?: string;
+  challengeBadges?: string[];
 }
 export default function CommentsModal({
   visible,
@@ -131,6 +133,7 @@ export default function CommentsModal({
           [currentUserId]: {
             displayName: userProfile.displayName,
             avatar: userProfile.avatar || undefined,
+            challengeBadges: userProfile.challengeBadges || [],
           },
         }));
       } catch (error) {
@@ -208,6 +211,7 @@ export default function CommentsModal({
             userData[uid] = {
               displayName: userProfile.displayName,
               avatar: userProfile.avatar || undefined,
+              challengeBadges: userProfile.challengeBadges || [],
             };
           } catch {
             userData[uid] = { displayName: "[Deleted User]", avatar: undefined };
@@ -804,7 +808,10 @@ export default function CommentsModal({
                           </TouchableOpacity>
                           <View style={styles.commentBody}>
                             <TouchableOpacity onPress={() => { soundPlayer.play('click'); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); router.push(`/locker/${comment.userId}`); }}>
-                              <Text style={styles.name}>{comment.userId === currentUserId ? "You" : user?.displayName || "Anonymous"}</Text>
+                              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                                <Text style={styles.name}>{comment.userId === currentUserId ? "You" : user?.displayName || "Anonymous"}</Text>
+                                <BadgeRow challengeBadges={user?.challengeBadges} size={12} />
+                              </View>
                             </TouchableOpacity>
                             {renderCommentWithTags(comment)}
                             {comment.imageUrl && (

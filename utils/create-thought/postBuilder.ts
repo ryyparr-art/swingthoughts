@@ -268,6 +268,8 @@ export const buildPostData = async (params: BuildPostParams) => {
     handicap: userData.handicap || null,
     userType: userData.userType || "Golfer",
     verified: userData.verified === true || userData.verification?.status === "approved",
+    challengeBadges: userData.challengeBadges || [],
+    gameIdentity: userData.gameIdentity || "",
 
     hasMedia: params.uploadedImageUrls.length > 0 || params.uploadedVideoUrl !== null,
     mediaType: params.uploadedImageUrls.length > 0 ? "images" : params.uploadedVideoUrl ? "video" : null,
@@ -404,6 +406,8 @@ export const buildOptimisticPost = (
     userAvatar: userData.avatar || null,
     avatarUrl: userData.avatar || null,
     userVerified: userData.verified === true,
+    challengeBadges: userData.challengeBadges || [],
+    gameIdentity: userData.gameIdentity || "",
 
     taggedPartners: postData.taggedPartners,
     taggedCourses: postData.taggedCourses,

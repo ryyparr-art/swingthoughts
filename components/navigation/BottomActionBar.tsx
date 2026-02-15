@@ -243,14 +243,14 @@ export default function BottomActionBar({
             </TouchableOpacity>
 
             <TouchableOpacity
-              onPress={() => handleNavigation("/leagues")}
+              onPress={() => handleNavigation("/events")}
               style={styles.action}
             >
               <Image
                 source={require("@/assets/icons/LowLeaderTrophy.png")}
                 style={styles.icon}
               />
-              <Text style={styles.label}>Leagues</Text>
+              <Text style={styles.label}>Events</Text>
             </TouchableOpacity>
           </>
         );

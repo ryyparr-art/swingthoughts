@@ -68,7 +68,6 @@ import {
   calculateCourseHandicap,
   countFairways,
   countGreens,
-  countPenalties,
   extractTees,
   generateDefaultHoles,
   getTotalAdjScore,
@@ -83,6 +82,7 @@ import {
   FullCourseData,
   TeeOption,
 } from "@/components/leagues/post-score/types";
+import { getDtpCourseInfo, getDtpEligibleHoles, DtpCourseInfo } from "@/utils/dtpHelpers";
 
 console.log("✅ PostScoreScreen module loaded successfully");
 
@@ -174,7 +174,6 @@ export default function PostScoreScreen() {
   const [scores, setScores] = useState<(number | null)[]>(new Array(18).fill(null));
   const [fir, setFir] = useState<(boolean | null)[]>(new Array(18).fill(null));
   const [gir, setGir] = useState<(boolean | null)[]>(new Array(18).fill(null));
-  const [pnl, setPnl] = useState<(number | null)[]>(new Array(18).fill(null));
 
   /* ---------------------------------------------------------------- */
   /* HOLE-IN-ONE STATE                                                */
@@ -185,6 +184,14 @@ export default function PostScoreScreen() {
   const [selectedVerifier, setSelectedVerifier] = useState<Partner | null>(null);
   const [showVerifierModal, setShowVerifierModal] = useState(false);
   const [verifierSearchQuery, setVerifierSearchQuery] = useState("");
+
+  /* ---------------------------------------------------------------- */
+  /* DTP CHALLENGE STATE                                              */
+  /* ---------------------------------------------------------------- */
+
+  const [isDtpRegistered, setIsDtpRegistered] = useState(false);
+  const [dtpCourseInfo, setDtpCourseInfo] = useState<DtpCourseInfo | null>(null);
+  const [dtpValues, setDtpValues] = useState<(string | null)[]>(new Array(18).fill(null));
 
   /* ---------------------------------------------------------------- */
   /* ROUND DETAILS STATE                                              */
@@ -223,6 +230,11 @@ export default function PostScoreScreen() {
     return calculateAllAdjustedScores(scores, selectedTee.holes, courseHandicap, holesCount);
   }, [scores, selectedTee, courseHandicap, holesCount]);
 
+  const dtpEligibleHoles = useMemo(() => {
+    if (!isDtpRegistered || !selectedTee) return new Set<number>();
+    return getDtpEligibleHoles(selectedTee.holes, holesCount, dtpCourseInfo);
+  }, [isDtpRegistered, selectedTee, holesCount, dtpCourseInfo]);
+
   /* ================================================================ */
   /* DATA LOADING                                                     */
   /* ================================================================ */
@@ -243,6 +255,10 @@ export default function PostScoreScreen() {
       const data = snap.data();
       setUserData(data);
       setUserRegionKey(data.regionKey || null);
+
+      // Check DTP challenge registration
+      const activeChallenges: string[] = data.activeChallenges ?? [];
+      setIsDtpRegistered(activeChallenges.includes("dtp"));
 
       if (data.location?.latitude && data.location?.longitude) {
         setUserLocation({
@@ -311,7 +327,7 @@ export default function PostScoreScreen() {
     setScores(new Array(hc).fill(null));
     setFir(new Array(hc).fill(null));
     setGir(new Array(hc).fill(null));
-    setPnl(new Array(hc).fill(null));
+    setDtpValues(new Array(hc).fill(null));
   };
 
   /* ================================================================ */
@@ -353,6 +369,13 @@ export default function PostScoreScreen() {
         setFullCourseData(courseData);
         const tees = extractTees(courseData.tees);
         console.log("🏌️ extractTees returned:", tees.length, "tees");
+
+        // Fetch DTP info if registered
+        if (isDtpRegistered) {
+          const dtpInfo = await getDtpCourseInfo(courseId as number);
+          setDtpCourseInfo(dtpInfo);
+          console.log("📍 DTP course info:", dtpInfo);
+        }
 
         if (tees.length > 0) {
           setAvailableTees(tees);
@@ -495,10 +518,10 @@ export default function PostScoreScreen() {
     });
   }, []);
 
-  const handlePnlChange = useCallback((holeIndex: number, value: string) => {
-    const numValue = value === "" ? null : parseInt(value, 10);
-    if (numValue !== null && (isNaN(numValue) || numValue < 0 || numValue > 9)) return;
-    setPnl((prev) => { const next = [...prev]; next[holeIndex] = numValue; return next; });
+  const handleDtpChange = useCallback((holeIndex: number, value: string) => {
+    // Allow digits and decimal point, max 4 chars (e.g. "12.5")
+    if (value !== "" && !/^\d{0,3}\.?\d{0,1}$/.test(value)) return;
+    setDtpValues((prev) => { const next = [...prev]; next[holeIndex] = value || null; return next; });
   }, []);
 
   /* ================================================================ */
@@ -757,10 +780,8 @@ export default function PostScoreScreen() {
       // Calculate stats
       const fairways = countFairways(fir, selectedTee.holes, holesCount);
       const greens = countGreens(gir, holesCount);
-      const penalties = countPenalties(pnl, holesCount);
       const hasFirData = fir.some((v) => v !== null);
       const hasGirData = gir.some((v) => v !== null);
-      const hasPnlData = pnl.some((v) => v !== null && v! > 0);
 
       // Score data — Cloud Function will create thought, update leaderboards, award badges
       const scoreData: any = {
@@ -797,15 +818,30 @@ export default function PostScoreScreen() {
       };
 
       // Stats
-      if (hasFirData || hasGirData || hasPnlData) {
-        scoreData.holeStats = { fir: fir.slice(0, holesCount), gir: gir.slice(0, holesCount), pnl: pnl.slice(0, holesCount) };
+      if (hasFirData || hasGirData) {
+        scoreData.holeStats = { fir: fir.slice(0, holesCount), gir: gir.slice(0, holesCount) };
         if (hasFirData) { scoreData.fairwaysHit = fairways.hit; scoreData.fairwaysPossible = fairways.possible; }
         if (hasGirData) { scoreData.greensInRegulation = greens.hit; }
-        if (hasPnlData) { scoreData.totalPenalties = penalties; }
       }
 
       if (hadHoleInOne) {
         scoreData.holeNumber = parseInt(holeInOneHoleNumber);
+      }
+
+      // DTP measurements (if any entered)
+      if (isDtpRegistered && dtpValues.some((v) => v !== null && v !== "")) {
+        const dtpMeasurements: Record<string, number> = {};
+        for (let i = 0; i < holesCount; i++) {
+          if (dtpValues[i] && dtpEligibleHoles.has(i)) {
+            const distance = parseFloat(dtpValues[i]!);
+            if (!isNaN(distance) && distance > 0) {
+              dtpMeasurements[String(i + 1)] = distance; // 1-indexed hole number as key
+            }
+          }
+        }
+        if (Object.keys(dtpMeasurements).length > 0) {
+          scoreData.dtpMeasurements = dtpMeasurements;
+        }
       }
 
       const scoreRef = await addDoc(collection(db, "scores"), scoreData);
@@ -1085,11 +1121,14 @@ export default function PostScoreScreen() {
           showHandicap={true}
           fir={fir}
           gir={gir}
-          pnl={pnl}
           onScoreChange={handleScoreChange}
           onFirToggle={handleFirToggle}
           onGirToggle={handleGirToggle}
-          onPnlChange={handlePnlChange}
+          dtpEligibleHoles={dtpEligibleHoles}
+          dtpValues={dtpValues}
+          onDtpChange={handleDtpChange}
+          dtpCurrentDistance={dtpCourseInfo?.currentDistance}
+          dtpCurrentHolderName={dtpCourseInfo?.currentHolderName}
         />
 
         {/* Score Summary */}
@@ -1102,7 +1141,6 @@ export default function PostScoreScreen() {
           showHandicap={true}
           fir={fir}
           gir={gir}
-          pnl={pnl}
         />
 
         {/* ===== ROUND HIGHLIGHTS ===== */}

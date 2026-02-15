@@ -154,6 +154,7 @@ export default function LeagueHome() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const currentUserId = auth.currentUser?.uid;
+  const [userHandicap, setUserHandicap] = useState<string>("-");
 
   // Loading states
   const [loading, setLoading] = useState(true);
@@ -188,7 +189,13 @@ export default function LeagueHome() {
   useEffect(() => {
     if (!currentUserId) return;
     loadMyLeagues();
-  }, [currentUserId]);
+    
+    getDoc(doc(db, "users", currentUserId)).then((snap) => {
+      if (snap.exists()) {
+        setUserHandicap(snap.data()?.handicap || "-");
+      }
+    });
+}, [currentUserId]);
 
   useEffect(() => {
     if (selectedLeagueId && currentUserId) {
@@ -223,7 +230,7 @@ export default function LeagueHome() {
               totalPoints: docData.totalPoints || 0,
               roundsPlayed: docData.roundsPlayed || 0,
               wins: docData.wins || 0,
-              currentRank: docData.currentRank,
+              currentRank: docData.currentPosition,
             };
             setMyMembership(memberData);
             setIsCommissionerOrManager(
@@ -495,9 +502,7 @@ const getHandicapDisplay = () => {
       ? myMembership.leagueHandicap.toString() 
       : "-";
   }
-  return myMembership.swingThoughtsHandicap != null 
-    ? myMembership.swingThoughtsHandicap.toString() 
-    : "-";
+  return userHandicap;
 };
 
   const formatDateShort = (timestamp: Timestamp) => {
@@ -519,7 +524,7 @@ const getHandicapDisplay = () => {
       >
         <Ionicons name="chevron-back" size={28} color="#F4EED8" />
       </TouchableOpacity>
-      <Text style={styles.headerTitle}>League Hub</Text>
+      <Text style={styles.headerTitle}>League Center</Text>
       {isCommissionerOrManager ? (
         <TouchableOpacity style={styles.headerButton} onPress={handleSettings}>
           <Ionicons name="settings-outline" size={24} color="#F4EED8" />

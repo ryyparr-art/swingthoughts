@@ -9,6 +9,7 @@
  * - Weekly Scores button navigates to week-scores screen
  */
 
+import BadgeRow from "@/components/challenges/BadgeRow";
 import { auth, db } from "@/constants/firebaseConfig";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
@@ -75,6 +76,7 @@ interface PlayerStanding {
   odcuserId: string;
   displayName: string;
   avatar?: string;
+  challengeBadges?: string[];
   rank: number;
   previousRank?: number;
   roundsPlayed: number;
@@ -285,6 +287,7 @@ export default function LeagueStandings() {
             odcuserId: docSnap.id,
             displayName: data.displayName,
             avatar: data.avatar,
+            challengeBadges: data.challengeBadges || [],
             rank: rank,
             previousRank: data.previousRank,
             roundsPlayed: data.roundsPlayed || 0,
@@ -586,6 +589,7 @@ export default function LeagueStandings() {
           >
             {isCurrentUser ? "You" : player.displayName}
           </Text>
+          <BadgeRow challengeBadges={player.challengeBadges} size={12} />
         </View>
         <Text style={styles.cellRounds}>{player.roundsPlayed}</Text>
         <Text style={[styles.cellPoints, isLeader && styles.leaderText]}>
