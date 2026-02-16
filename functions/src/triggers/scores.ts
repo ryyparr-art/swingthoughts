@@ -10,6 +10,12 @@ import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import { createNotificationDocument } from "../notifications/helpers";
 import { updateUserCareerStats } from "./userStats";
+import {
+  writeLowLeaderChangeActivity,
+  writeLowRoundActivity,
+  writeScratchEarnedActivity,
+  writeAceTierEarnedActivity,
+} from "./feedActivity";
 
 const db = getFirestore();
 
@@ -120,6 +126,16 @@ export const onScoreCreated = onDocumentCreated(
           await userRef.update({ Badges: [...currentBadges, lowmanBadge] });
           console.log("✅ Lowman badge awarded");
 
+          // Feed activity: low leader change
+          await writeLowLeaderChangeActivity(
+            userId,
+            userData?.displayName || "Unknown",
+            userData?.avatar || null,
+            courseName,
+            netScore,
+            regionKey || ""
+          );
+
           // Tier upgrades
           const leaderboardsSnap = await db
             .collection("leaderboards")
@@ -141,11 +157,45 @@ export const onScoreCreated = onDocumentCreated(
               Badges: [...filteredBadges, { type: "ace", courseId: 0, courseName: "Multiple Courses", achievedAt: Timestamp.now(), displayName: "Ace" }],
             });
             console.log("🏆 Upgraded to Ace badge!");
+
+            // Feed activity: ace tier earned
+            const aceCourseNames: string[] = [];
+            leaderboardsSnap.forEach((lbDoc) => {
+              const lbData = lbDoc.data();
+              const top = lbData.topScores18 || [];
+              if (top.length > 0 && top[0].userId === userId) {
+                aceCourseNames.push(lbData.courseName || "Unknown");
+              }
+            });
+            await writeAceTierEarnedActivity(
+              userId,
+              userData?.displayName || "Unknown",
+              userData?.avatar || null,
+              aceCourseNames.slice(0, 3),
+              regionKey || ""
+            );
           } else if (lowmanCount >= 2) {
             await userRef.update({
               Badges: [...filteredBadges, { type: "scratch", courseId: 0, courseName: "Multiple Courses", achievedAt: Timestamp.now(), displayName: "Scratch" }],
             });
             console.log("🏆 Upgraded to Scratch badge!");
+
+            // Feed activity: scratch earned
+            const scratchCourseNames: string[] = [];
+            leaderboardsSnap.forEach((lbDoc) => {
+              const lbData = lbDoc.data();
+              const top = lbData.topScores18 || [];
+              if (top.length > 0 && top[0].userId === userId) {
+                scratchCourseNames.push(lbData.courseName || "Unknown");
+              }
+            });
+            await writeScratchEarnedActivity(
+              userId,
+              userData?.displayName || "Unknown",
+              userData?.avatar || null,
+              scratchCourseNames.slice(0, 2),
+              regionKey || ""
+            );
           }
         }
       }
@@ -201,6 +251,20 @@ export const onScoreCreated = onDocumentCreated(
           });
         }
         console.log("✅ Sent partner_scored notifications to", partners.length, "partners");
+
+        // Feed activity: career best round
+        const prevBest = userData?.personalDetails?.bestRound ?? 999;
+        if (grossScore < prevBest && holeCount === 18) {
+          await writeLowRoundActivity(
+            userId,
+            userName || userData?.displayName || "Unknown",
+            userData?.avatar || null,
+            grossScore,
+            courseName,
+            scoreId,
+            regionKey || ""
+          );
+        }
 
         if (isNewLowman) {
           for (const partnerId of partners) {

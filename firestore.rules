@@ -617,15 +617,11 @@ service cloud.firestore {
 
     // ============================================================================
     // HOLE-IN-ONE VERIFICATION
+    // ✅ UPDATED: Any signed-in user can read (needed for feed HIO card)
     // ============================================================================
 
     match /hole_in_ones/{holeInOneId} {
-      allow read, list: if isSignedIn() &&
-        (
-          request.auth.uid == resource.data.userId ||
-          request.auth.uid == resource.data.verifierId ||
-          isAdmin()
-        );
+      allow read, list: if isSignedIn();
 
       allow create: if isSignedIn() &&
         isEmailVerified() &&
@@ -1023,7 +1019,7 @@ service cloud.firestore {
         );
     }
 
-// ============================================================================
+    // ============================================================================
     // CHALLENGES
     // ============================================================================
 
@@ -1061,6 +1057,18 @@ service cloud.firestore {
     }
 
     // ============================================================================
+    // FEED ACTIVITY (for feed insert cards, TTL auto-deletes after 7 days)
+    // ✅ NEW: Top-level collection for "From the Field" activity carousel
+    // ============================================================================
+
+    match /feedActivity/{docId} {
+      allow read, list: if isSignedIn();
+
+      // Only Cloud Functions write (via Admin SDK)
+      allow create, update, delete: if false;
+    }
+
+    // ============================================================================
     // DEFAULT DENY
     // ============================================================================
 
@@ -1069,6 +1077,8 @@ service cloud.firestore {
     }
   }
 }
+
+
 
 
 

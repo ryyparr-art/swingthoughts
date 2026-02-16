@@ -94,7 +94,7 @@ export default function Challenges({ userId }: ChallengesProps) {
         if (!hasVisited) {
           Alert.alert(
             "How Challenges Work",
-            "Tap any badge to learn more and register. Your progress tracks automatically as you post rounds.\n\nEarned badges appear next to your name across SwingThoughts."
+            "Tap any badge to learn more and register. Your progress tracks automatically as you post rounds.\n\nEarned badges appear next to your name across Swing Thoughts."
           );
           await AsyncStorage.setItem("challenges_tab_visited", "true");
         }
@@ -293,7 +293,7 @@ export default function Challenges({ userId }: ChallengesProps) {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                 Alert.alert(
                   "How Challenges Work",
-                  "Tap any badge to learn more and register. Your progress tracks automatically as you post rounds.\n\nEarned badges appear next to your name across SwingThoughts."
+                  "Tap any badge to learn more and register. Your progress tracks automatically as you post rounds.\n\nEarned badges appear next to your name across Swing Thoughts."
                 );
               }}
               hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}

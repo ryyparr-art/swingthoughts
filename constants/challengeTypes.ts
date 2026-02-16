@@ -55,7 +55,7 @@ export interface ChallengeDefinition {
   description: string;
   shortDescription: string;
   minSample: number;
-  minSampleUnit: string; // "par 3 holes" | "rounds" | "round" | "consecutive rounds" | "pin" | "verified ace"
+  minSampleUnit: string; // "par 3 holes" | "Rounds" | "Round" | "consecutive Rounds" | "pin" | "verified ace"
   isConsecutive: boolean;
   hasHCIScaling: boolean;
   thresholds: ChallengeThresholds;
@@ -98,7 +98,7 @@ export const CHALLENGES: ChallengeDefinition[] = [
       "Keep it in the short grass. Maintain your target FIR% across 10 qualifying rounds. Only rounds where you track fairways count.",
     shortDescription: "Hit fairways consistently",
     minSample: 10,
-    minSampleUnit: "rounds",
+    minSampleUnit: "Rounds",
     isConsecutive: false,
     hasHCIScaling: true,
     thresholds: { elite: 70, low: 60, mid: 50, high: 40, beginner: 30 },
@@ -114,7 +114,7 @@ export const CHALLENGES: ChallengeDefinition[] = [
       "Hit more greens in regulation. Maintain your target GIR% across 10 qualifying rounds. Only rounds where you track greens count.",
     shortDescription: "Hit greens in regulation consistently",
     minSample: 10,
-    minSampleUnit: "rounds",
+    minSampleUnit: "Rounds",
     isConsecutive: false,
     hasHCIScaling: true,
     thresholds: { elite: 65, low: 55, mid: 45, high: 35, beginner: 25 },
@@ -128,9 +128,9 @@ export const CHALLENGES: ChallengeDefinition[] = [
     name: "Birdie Streak",
     description:
       "Catch fire on the course. Make consecutive birdies (or better) in a single round. One hot streak is all it takes.",
-    shortDescription: "Consecutive birdies in one round",
+    shortDescription: "Consecutive birdies in one Round",
     minSample: 1,
-    minSampleUnit: "round",
+    minSampleUnit: "Round",
     isConsecutive: false,
     hasHCIScaling: true,
     thresholds: { elite: 4, low: 3, mid: 3, high: 2, beginner: 2 },
@@ -146,7 +146,7 @@ export const CHALLENGES: ChallengeDefinition[] = [
       "Consistency is king. Break your target score in 5 consecutive 18-hole rounds. One bad round resets the counter.",
     shortDescription: "Break target score 5 rounds in a row",
     minSample: 5,
-    minSampleUnit: "consecutive rounds",
+    minSampleUnit: "consecutive Rounds",
     isConsecutive: true,
     hasHCIScaling: true,
     thresholds: { elite: 75, low: 80, mid: 90, high: 100, beginner: 110 },
@@ -304,7 +304,7 @@ export function getThresholdDisplay(
     case "birdie_streak":
       return `${value} consecutive birdies`;
     case "iron_player":
-      return `Break ${value} in 5 consecutive rounds`;
+      return `Break ${value} in 5 consecutive Rounds`;
     default:
       return `${value}`;
   }

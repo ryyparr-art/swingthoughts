@@ -17,6 +17,7 @@
 
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { createNotificationDocument, getUserData } from "../notifications/helpers.js";
+import { writeBadgeEarnedActivity, writeDTPClaimedActivity } from "./feedActivity";
 
 const db = getFirestore();
 
@@ -518,6 +519,23 @@ async function evaluateDTP(
       message: `You claimed the pin at ${claimedCourseName} Hole #${claimedHole} — ${claimedDistance}ft! 🎯`,
     });
 
+    // Feed activity: DTP pin claimed
+    try {
+      const dtpUserSnap = await db.collection("users").doc(userId).get();
+      const dtpUserData = dtpUserSnap.data();
+      await writeDTPClaimedActivity(
+        userId,
+        dtpUserData?.displayName || "Someone",
+        dtpUserData?.avatar || null,
+        claimedCourseName,
+        claimedHole,
+        claimedDistance,
+        dtpUserData?.regionKey || ""
+      );
+    } catch (feedErr) {
+      console.warn("⚠️ Failed to write DTP claimed feed activity:", feedErr);
+    }
+
     // Update this user's pin count and check badge status
     const earned = await updateDTPPinCount(userId);
     return earned;
@@ -688,6 +706,22 @@ async function awardBadges(
         type: "challenge_earned",
         message: `You earned the ${getBadgeName(badgeId)} badge! 🏆`,
       });
+
+      // Feed activity: badge earned
+      try {
+        const badgeUserSnap = await db.collection("users").doc(userId).get();
+        const badgeUserData = badgeUserSnap.data();
+        await writeBadgeEarnedActivity(
+          userId,
+          badgeUserData?.displayName || "Someone",
+          badgeUserData?.avatar || null,
+          badgeId,
+          getBadgeName(badgeId),
+          badgeUserData?.regionKey || ""
+        );
+      } catch (feedErr) {
+        console.warn("⚠️ Failed to write badge earned feed activity:", feedErr);
+      }
 
       console.log(`🏆 Badge awarded: ${badgeId} → ${userId}`);
     }

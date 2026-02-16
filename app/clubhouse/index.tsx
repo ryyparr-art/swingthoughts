@@ -49,10 +49,14 @@ import { useFeed } from "@/hooks/useFeed";
 import { useFeedInteractions } from "@/hooks/useFeedInteractions";
 import { usePendingPosts } from "@/hooks/usePendingPosts";
 import { useBackgroundPreload } from "@/hooks/useBackgroundPreload";
+import { useFeedInserts, FeedListItem } from "@/hooks/useFeedInserts";
 
 // Components
 import FeedHeader from "@/components/clubhouse/FeedHeader";
 import FeedPost from "@/components/clubhouse/FeedPost";
+import FeedDiscoveryCarousel from "@/components/clubhouse/FeedDiscoveryCarousel";
+import FeedActivityCarousel from "@/components/clubhouse/FeedActivityCarousel";
+import FeedHoleInOneCard from "@/components/clubhouse/FeedHoleInOneCard";
 import { FullscreenVideoPlayer } from "@/components/video/VideoComponents";
 import AdminPanelButton from "@/components/navigation/AdminPanelButton";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
@@ -245,6 +249,22 @@ export default function ClubhouseScreen() {
   );
 
   /* ---------------------------------------------------------------- */
+  /* FEED INSERTS (discovery, activity, HIO cards)                    */
+  /* ---------------------------------------------------------------- */
+
+  const {
+    feedWithInserts,
+    handleDismissInsert,
+    refreshInserts,
+  } = useFeedInserts({
+    thoughts,
+    currentUserId,
+    currentUserData,
+    loading,
+    hasActiveFilters,
+  });
+
+  /* ---------------------------------------------------------------- */
   /* MEDIA VIEWER STATE                                               */
   /* ---------------------------------------------------------------- */
 
@@ -388,11 +408,13 @@ export default function ClubhouseScreen() {
   useEffect(() => {
     const scrollTargetId = targetPostId || foundPostIdFromScore;
 
-    if (!scrollTargetId || loading || thoughts.length === 0) return;
+    if (!scrollTargetId || loading || feedWithInserts.length === 0) return;
 
     console.log("🎯 Scrolling to post:", scrollTargetId, shouldHighlight ? "(highlighted)" : "");
 
-    const postIndex = thoughts.findIndex((t) => t.id === scrollTargetId);
+    const postIndex = feedWithInserts.findIndex(
+      (item) => item._feedItemType === "post" && item.id === scrollTargetId
+    );
 
     if (postIndex !== -1) {
       console.log("✅ Post found at index:", postIndex);
@@ -416,13 +438,43 @@ export default function ClubhouseScreen() {
       soundPlayer.play('error');
       Alert.alert("Post Not Found", "This post may have been deleted.");
     }
-  }, [targetPostId, foundPostIdFromScore, loading, thoughts.length, shouldHighlight]);
+  }, [targetPostId, foundPostIdFromScore, loading, feedWithInserts.length, shouldHighlight]);
 
   /* ---------------------------------------------------------------- */
   /* RENDER POST                                                      */
   /* ---------------------------------------------------------------- */
 
-  const renderThought = useCallback(({ item }: { item: Thought }) => {
+  const renderFeedItem = useCallback(({ item }: { item: FeedListItem }) => {
+    // Feed insert card
+    if (item._feedItemType === "insert") {
+      switch (item.type) {
+        case "discovery":
+          return (
+            <FeedDiscoveryCarousel
+              insert={item}
+              onDismiss={handleDismissInsert}
+            />
+          );
+        case "activity":
+          return (
+            <FeedActivityCarousel
+              insert={item}
+              onDismiss={handleDismissInsert}
+            />
+          );
+        case "hole_in_one":
+          return (
+            <FeedHoleInOneCard
+              insert={item}
+              onDismiss={handleDismissInsert}
+            />
+          );
+        default:
+          return null;
+      }
+    }
+
+    // Regular post
     const isHighlighted = shouldHighlight && (
       highlightPostId === item.id || foundPostIdFromScore === item.id
     );
@@ -453,6 +505,7 @@ export default function ClubhouseScreen() {
     handleImagePress,
     handleVideoPress,
     handleHashtagPress,
+    handleDismissInsert,
   ]);
 
   /* ---------------------------------------------------------------- */
@@ -503,9 +556,13 @@ export default function ClubhouseScreen() {
       ) : (
         <FlatList
           ref={flatListRef}
-          data={thoughts}
-          renderItem={renderThought}
-          keyExtractor={(item) => item.id}
+          data={feedWithInserts}
+          renderItem={renderFeedItem}
+          keyExtractor={(item) =>
+            item._feedItemType === "insert"
+              ? (item as any)._insertId
+              : item.id
+          }
           contentContainerStyle={styles.listContent}
           onScrollToIndexFailed={(info) => {
             setTimeout(() => {
@@ -518,7 +575,10 @@ export default function ClubhouseScreen() {
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
-              onRefresh={onRefresh}
+              onRefresh={async () => {
+                await onRefresh();
+                await refreshInserts();
+              }}
               tintColor="#0D5C3A"
               colors={["#0D5C3A"]}
             />
@@ -553,7 +613,9 @@ export default function ClubhouseScreen() {
           soundPlayer.play('click');
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
-          const postIndex = thoughts.findIndex((t) => t.id === postId);
+          const postIndex = feedWithInserts.findIndex(
+            (item) => item._feedItemType === "post" && item.id === postId
+          );
 
           if (postIndex !== -1) {
             setTimeout(() => {

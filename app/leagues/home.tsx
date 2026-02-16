@@ -520,9 +520,16 @@ const getHandicapDisplay = () => {
     <View style={[styles.header, { paddingTop: insets.top }]}>
       <TouchableOpacity
         style={styles.headerButton}
-        onPress={() => router.push("/leaderboard")}
+        onPress={() => {
+          soundPlayer.play("click");
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          router.back();
+        }}
       >
-        <Ionicons name="chevron-back" size={28} color="#F4EED8" />
+        <Image
+          source={require("@/assets/icons/Back.png")}
+          style={styles.backIcon}
+        />
       </TouchableOpacity>
       <Text style={styles.headerTitle}>League Center</Text>
       {isCommissionerOrManager ? (
@@ -1078,6 +1085,11 @@ const styles = StyleSheet.create({
   },
   headerButton: {
     padding: 8,
+  },
+  backIcon: {
+    width: 24,
+    height: 24,
+    tintColor: "#F4EED8",
   },
   headerTitle: {
     fontSize: 18,

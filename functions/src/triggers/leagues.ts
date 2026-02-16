@@ -21,6 +21,7 @@
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onDocumentCreated, onDocumentDeleted, onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { createNotificationDocument, generateGroupedMessage, getUserData } from "../notifications/helpers";
+import { writeJoinedLeagueActivity, writeLeagueResultActivity } from "./feedActivity";
 import { updateUserCareerStats } from "./userStats";
 
 const db = getFirestore();
@@ -299,6 +300,19 @@ export const onLeagueMemberCreated = onDocumentCreated(
           leagueId, leagueName: leagueInfo.name,
           message: generateGroupedMessage("league_join_approved", "", 1, { leagueName: leagueInfo.name }),
         });
+
+        // Feed activity: joined league
+        const memberUserSnap = await db.collection("users").doc(memberId).get();
+        const memberRegionKey = memberUserSnap.exists ? memberUserSnap.data()?.regionKey || "" : "";
+        await writeJoinedLeagueActivity(
+          memberId,
+          displayName || memberUserSnap.data()?.displayName || "Someone",
+          avatar || memberUserSnap.data()?.avatar || null,
+          leagueId,
+          leagueInfo.name,
+          leagueInfo.avatar || null,
+          memberRegionKey
+        );
       }
     } catch (error) { console.error("🔥 onLeagueMemberCreated failed:", error); }
   }
@@ -325,6 +339,19 @@ export const onLeagueMemberUpdated = onDocumentUpdated(
           leagueId, leagueName: leagueInfo.name,
           message: generateGroupedMessage("league_join_approved", "", 1, { leagueName: leagueInfo.name }),
         });
+
+        // Feed activity: joined league
+        const approvedUserSnap = await db.collection("users").doc(memberId).get();
+        const approvedRegionKey = approvedUserSnap.exists ? approvedUserSnap.data()?.regionKey || "" : "";
+        await writeJoinedLeagueActivity(
+          memberId,
+          after.displayName || approvedUserSnap.data()?.displayName || "Someone",
+          after.avatar || approvedUserSnap.data()?.avatar || null,
+          leagueId,
+          leagueInfo.name,
+          leagueInfo.avatar || null,
+          approvedRegionKey
+        );
       }
 
       if (before.status === "pending" && after.status === "rejected") {
@@ -435,6 +462,19 @@ export const onWeekResultCreated = onDocumentCreated(
         });
       }
       console.log(`✅ Week complete notifications sent to ${membersSnap.size} members`);
+
+      // Feed activity: league weekly result
+      const leagueDoc = await db.collection("leagues").doc(leagueId).get();
+      const leagueRegionKey = leagueDoc.exists ? leagueDoc.data()?.regionKey || "" : "";
+      await writeLeagueResultActivity(
+        leagueId,
+        leagueInfo.name,
+        leagueInfo.avatar || null,
+        week,
+        displayName || teamName || "Someone",
+        score,
+        leagueRegionKey
+      );
     } catch (error) { console.error("🔥 onWeekResultCreated failed:", error); }
   }
 );
