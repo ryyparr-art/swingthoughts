@@ -6,14 +6,15 @@
  * updates to all locations where they are displayed.
  *
  * Synced fields:
+ *   - displayName (user's display name)
  *   - challengeBadges (up to 3 selected for display)
  *   - gameIdentity (user's golf tagline)
  *
  * Denormalized locations:
- *   1. thoughts (feed posts) — challengeBadges, gameIdentity on thought doc
- *   2. messageThreads — participantChallengeBadges map
- *   3. league members — challengeBadges on member subdoc
- *   4. leaderboards — challengeBadges in topScores arrays
+ *   1. thoughts (feed posts) — displayName, challengeBadges, gameIdentity
+ *   2. messageThreads — participantDisplayNames + participantChallengeBadges maps
+ *   3. league members — displayName, challengeBadges on member subdoc
+ *   4. leaderboards — displayName, challengeBadges in topScores arrays
  *
  * File: functions/src/triggers/userProfileSync.ts
  */
@@ -37,6 +38,10 @@ export const onUserProfileChanged = onDocumentUpdated(
     const userId = event.params.userId;
 
     // Detect what changed
+    const beforeName: string = beforeData.displayName ?? "";
+    const afterName: string = afterData.displayName ?? "";
+    const nameChanged = beforeName !== afterName;
+
     const beforeBadges: string[] = beforeData.challengeBadges ?? [];
     const afterBadges: string[] = afterData.challengeBadges ?? [];
     const badgesChanged = !arraysEqual(beforeBadges, afterBadges);
@@ -46,31 +51,33 @@ export const onUserProfileChanged = onDocumentUpdated(
     const identityChanged = beforeIdentity !== afterIdentity;
 
     // Nothing we care about changed
-    if (!badgesChanged && !identityChanged) return;
+    if (!nameChanged && !badgesChanged && !identityChanged) return;
 
     const changes: string[] = [];
+    if (nameChanged) changes.push(`displayName: "${beforeName}" → "${afterName}"`);
     if (badgesChanged) changes.push(`badges: [${beforeBadges}] → [${afterBadges}]`);
     if (identityChanged) changes.push(`identity: "${beforeIdentity}" → "${afterIdentity}"`);
     console.log(`🔄 Profile sync for ${userId}: ${changes.join(", ")}`);
 
     // Build the update payload for thoughts (includes all synced fields)
     const thoughtUpdates: Record<string, any> = {};
+    if (nameChanged) thoughtUpdates.displayName = afterName;
     if (badgesChanged) thoughtUpdates.challengeBadges = afterBadges;
     if (identityChanged) thoughtUpdates.gameIdentity = afterIdentity;
 
     // Fan out all updates in parallel
     const tasks: Promise<void>[] = [];
 
-    // Thoughts always get both fields
+    // Thoughts always get all changed fields
     if (Object.keys(thoughtUpdates).length > 0) {
       tasks.push(syncThoughts(userId, thoughtUpdates));
     }
 
-    // Badges fan out to additional locations
-    if (badgesChanged) {
-      tasks.push(syncMessageThreads(userId, afterBadges));
-      tasks.push(syncLeagueMembers(userId, afterBadges));
-      tasks.push(syncLeaderboards(userId, afterBadges));
+    // displayName + badges fan out to additional locations
+    if (nameChanged || badgesChanged) {
+      tasks.push(syncMessageThreads(userId, nameChanged ? afterName : null, badgesChanged ? afterBadges : null));
+      tasks.push(syncLeagueMembers(userId, nameChanged ? afterName : null, badgesChanged ? afterBadges : null));
+      tasks.push(syncLeaderboards(userId, nameChanged ? afterName : null, badgesChanged ? afterBadges : null));
     }
 
     await Promise.all(tasks);
@@ -134,12 +141,14 @@ async function syncThoughts(
 // ============================================================================
 
 /**
- * Update challengeBadges in messageThreads where this user is a participant.
+ * Update displayName and/or challengeBadges in messageThreads
+ * where this user is a participant.
  * Threads store participant metadata in maps keyed by userId.
  */
 async function syncMessageThreads(
   userId: string,
-  challengeBadges: string[]
+  displayName: string | null,
+  challengeBadges: string[] | null
 ): Promise<void> {
   try {
     const threadsSnap = await db
@@ -153,9 +162,14 @@ async function syncMessageThreads(
     let count = 0;
 
     for (const threadDoc of threadsSnap.docs) {
-      batch.update(threadDoc.ref, {
-        [`participantChallengeBadges.${userId}`]: challengeBadges,
-      });
+      const updates: Record<string, any> = {};
+      if (displayName !== null) {
+        updates[`participantDisplayNames.${userId}`] = displayName;
+      }
+      if (challengeBadges !== null) {
+        updates[`participantChallengeBadges.${userId}`] = challengeBadges;
+      }
+      batch.update(threadDoc.ref, updates);
       count++;
     }
 
@@ -171,12 +185,13 @@ async function syncMessageThreads(
 // ============================================================================
 
 /**
- * Update challengeBadges on all league member subdocs for this user.
- * Uses collection group query on "members" subcollections.
+ * Update displayName and/or challengeBadges on all league member subdocs
+ * for this user. Uses collection group query on "members" subcollections.
  */
 async function syncLeagueMembers(
   userId: string,
-  challengeBadges: string[]
+  displayName: string | null,
+  challengeBadges: string[] | null
 ): Promise<void> {
   try {
     const membersSnap = await db
@@ -190,7 +205,10 @@ async function syncLeagueMembers(
     let count = 0;
 
     for (const memberDoc of membersSnap.docs) {
-      batch.update(memberDoc.ref, { challengeBadges });
+      const updates: Record<string, any> = {};
+      if (displayName !== null) updates.displayName = displayName;
+      if (challengeBadges !== null) updates.challengeBadges = challengeBadges;
+      batch.update(memberDoc.ref, updates);
       count++;
     }
 
@@ -206,12 +224,14 @@ async function syncLeagueMembers(
 // ============================================================================
 
 /**
- * Update challengeBadges on all leaderboard docs where this user has a top score.
- * Leaderboards store score arrays with denormalized user data including badges.
+ * Update displayName and/or challengeBadges on all leaderboard docs
+ * where this user has a top score.
+ * Leaderboards store score arrays with denormalized user data.
  */
 async function syncLeaderboards(
   userId: string,
-  challengeBadges: string[]
+  displayName: string | null,
+  challengeBadges: string[] | null
 ): Promise<void> {
   try {
     const leaderboardsSnap = await db.collection("leaderboards").get();
@@ -229,7 +249,10 @@ async function syncLeaderboards(
         return scores.map((s: any) => {
           if (s.userId === userId) {
             changed = true;
-            return { ...s, challengeBadges };
+            const updated = { ...s };
+            if (displayName !== null) updated.displayName = displayName;
+            if (challengeBadges !== null) updated.challengeBadges = challengeBadges;
+            return updated;
           }
           return s;
         });

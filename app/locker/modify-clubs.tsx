@@ -185,16 +185,20 @@ export default function ModifyLockerScreen() {
         updatedAt: new Date().toISOString(),
       };
 
-      // Home course
+      // Home course – guard against undefined courseId (legacy docs)
       if (selectedCourse) {
-        updateData.homeCourse = {
-          courseId: selectedCourse.id || selectedCourse.courseId,
-          courseName:
-            selectedCourse.course_name || selectedCourse.courseName,
-          location: selectedCourse.location || null,
-        };
-        updateData.homeCourseName =
-          selectedCourse.course_name || selectedCourse.courseName;
+        const courseId = selectedCourse.id || selectedCourse.courseId;
+        if (courseId) {
+          updateData.homeCourse = {
+            courseId,
+            courseName:
+              selectedCourse.course_name || selectedCourse.courseName,
+            location: selectedCourse.location || null,
+          };
+          updateData.homeCourseName =
+            selectedCourse.course_name || selectedCourse.courseName;
+        }
+        // No valid courseId → skip homeCourse update entirely
       } else {
         updateData.homeCourse = null;
         updateData.homeCourseName = null;
