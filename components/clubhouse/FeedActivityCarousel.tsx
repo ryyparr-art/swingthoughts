@@ -5,12 +5,12 @@
  * Bundles all activity types into one feed slot so the feed isn't cluttered.
  *
  * Card types:
- *   - badge_earned (partner)
- *   - dtp_claimed (partner/regional)
+ *   - badge_earned (regional)
+ *   - dtp_claimed (regional)
  *   - joined_league (partner)
  *   - challenge_progress (personal nudge)
  *   - dtp_available (personal)
- *   - low_round (partner career best)
+ *   - low_round (regional)
  *   - low_leader_change (regional)
  *   - scratch_earned (everyone)
  *   - ace_tier_earned (everyone)
@@ -20,35 +20,33 @@
  */
 
 import BadgeIcon from "@/components/challenges/BadgeIcon";
-import { dismissFeedInsert } from "@/utils/feedInsertProvider";
 import type {
-    ActivityAceTierEarned,
-    ActivityBadgeEarned,
-    ActivityChallengeProgress,
-    ActivityDTPAvailable,
-    ActivityDTPClaimed,
-    ActivityInsert,
-    ActivityItem,
-    ActivityJoinedLeague,
-    ActivityLeagueResult,
-    ActivityLowLeaderChange,
-    ActivityLowRound,
-    ActivityScratchEarned,
+  ActivityAceTierEarned,
+  ActivityBadgeEarned,
+  ActivityChallengeProgress,
+  ActivityDTPAvailable,
+  ActivityDTPClaimed,
+  ActivityInsert,
+  ActivityItem,
+  ActivityJoinedLeague,
+  ActivityLeagueResult,
+  ActivityLowLeaderChange,
+  ActivityLowRound,
+  ActivityScratchEarned,
 } from "@/utils/feedInsertTypes";
 import { soundPlayer } from "@/utils/soundPlayer";
-import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import React, { useCallback, useRef, useState } from "react";
 import {
-    Dimensions,
-    FlatList,
-    Image,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
-    ViewToken,
+  Dimensions,
+  FlatList,
+  Image,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+  ViewToken,
 } from "react-native";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
@@ -57,18 +55,10 @@ const CARD_MARGIN = 5;
 
 interface Props {
   insert: ActivityInsert;
-  onDismiss: (dismissKey: string) => void;
 }
 
-export default function FeedActivityCarousel({ insert, onDismiss }: Props) {
+export default function FeedActivityCarousel({ insert }: Props) {
   const [activeIndex, setActiveIndex] = useState(0);
-
-  const handleDismiss = () => {
-    soundPlayer.play("click");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    dismissFeedInsert(insert.dismissKey);
-    onDismiss(insert.dismissKey);
-  };
 
   const onViewableItemsChanged = useCallback(
     ({ viewableItems }: { viewableItems: ViewToken[] }) => {
@@ -94,13 +84,6 @@ export default function FeedActivityCarousel({ insert, onDismiss }: Props) {
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>{insert.title}</Text>
-        <TouchableOpacity
-          style={styles.dismissBtn}
-          onPress={handleDismiss}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <Ionicons name="close" size={14} color="#BBB" />
-        </TouchableOpacity>
       </View>
 
       <FlatList
@@ -577,14 +560,6 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#333",
     fontFamily: "serif",
-  },
-  dismissBtn: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: "#F0F0F0",
-    alignItems: "center",
-    justifyContent: "center",
   },
   scroll: {
     paddingHorizontal: 16,

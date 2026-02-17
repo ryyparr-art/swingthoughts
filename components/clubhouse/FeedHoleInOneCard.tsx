@@ -9,7 +9,6 @@
  * Gold left border with warm background.
  */
 
-import { dismissFeedInsert } from "@/utils/feedInsertProvider";
 import type { HoleInOneInsert } from "@/utils/feedInsertTypes";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
@@ -20,18 +19,10 @@ import { Image, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 interface Props {
   insert: HoleInOneInsert;
-  onDismiss: (dismissKey: string) => void;
 }
 
-export default function FeedHoleInOneCard({ insert, onDismiss }: Props) {
+export default function FeedHoleInOneCard({ insert }: Props) {
   const router = useRouter();
-
-  const handleDismiss = () => {
-    soundPlayer.play("click");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    dismissFeedInsert(insert.dismissKey);
-    onDismiss(insert.dismissKey);
-  };
 
   const handlePress = () => {
     soundPlayer.play("click");
@@ -47,15 +38,6 @@ export default function FeedHoleInOneCard({ insert, onDismiss }: Props) {
       activeOpacity={0.9}
       onPress={handlePress}
     >
-      {/* Dismiss */}
-      <TouchableOpacity
-        style={styles.dismissBtn}
-        onPress={handleDismiss}
-        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-      >
-        <Ionicons name="close" size={12} color="#CCC" />
-      </TouchableOpacity>
-
       {/* Center content */}
       <View style={styles.center}>
         {/* HoleinOne.png icon */}
@@ -108,18 +90,6 @@ const styles = StyleSheet.create({
     borderLeftColor: "#FFD700",
     paddingVertical: 20,
     paddingHorizontal: 16,
-    position: "relative",
-  },
-  dismissBtn: {
-    position: "absolute",
-    top: 12,
-    right: 12,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 1,
   },
   center: {
     alignItems: "center",

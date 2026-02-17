@@ -416,13 +416,13 @@ export default function LeagueStandings() {
     <View style={styles.tabBar}>
       <TouchableOpacity
         style={styles.tab}
-        onPress={() => router.push("/leagues/home")}
+        onPress={() => router.replace("/leagues/home")}
       >
         <Text style={styles.tabText}>Home</Text>
       </TouchableOpacity>
       <TouchableOpacity
         style={styles.tab}
-        onPress={() => router.push("/leagues/schedule")}
+        onPress={() => router.replace("/leagues/schedule")}
       >
         <Text style={styles.tabText}>Schedule</Text>
       </TouchableOpacity>
@@ -431,7 +431,7 @@ export default function LeagueStandings() {
       </TouchableOpacity>
       <TouchableOpacity
         style={styles.tab}
-        onPress={() => router.push("/leagues/explore")}
+        onPress={() => router.replace("/leagues/explore")}
       >
         <Text style={styles.tabText}>Explore</Text>
       </TouchableOpacity>
@@ -769,7 +769,7 @@ export default function LeagueStandings() {
           </Text>
           <TouchableOpacity
             style={styles.emptyStateButton}
-            onPress={() => router.push("/leagues/explore")}
+            onPress={() => router.replace("/leagues/explore")}
           >
             <Text style={styles.emptyStateButtonText}>Explore Leagues</Text>
           </TouchableOpacity>

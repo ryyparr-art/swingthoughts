@@ -549,19 +549,19 @@ const getHandicapDisplay = () => {
       </TouchableOpacity>
       <TouchableOpacity
         style={styles.tab}
-        onPress={() => router.push("/leagues/schedule")}
+        onPress={() => router.replace("/leagues/schedule")}
       >
         <Text style={styles.tabText}>Schedule</Text>
       </TouchableOpacity>
       <TouchableOpacity
         style={styles.tab}
-        onPress={() => router.push("/leagues/standings")}
+        onPress={() => router.replace("/leagues/standings")}
       >
         <Text style={styles.tabText}>Standings</Text>
       </TouchableOpacity>
       <TouchableOpacity
         style={styles.tab}
-        onPress={() => router.push("/leagues/explore")}
+        onPress={() => router.replace("/leagues/explore")}
       >
         <Text style={styles.tabText}>Explore</Text>
       </TouchableOpacity>
@@ -1009,7 +1009,7 @@ const getHandicapDisplay = () => {
           </Text>
           <TouchableOpacity
             style={styles.emptyStateButton}
-            onPress={() => router.push("/leagues/explore")}
+            onPress={() => router.replace("/leagues/explore")}
           >
             <Text style={styles.emptyStateButtonText}>Explore Leagues</Text>
           </TouchableOpacity>

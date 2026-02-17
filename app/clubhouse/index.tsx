@@ -452,21 +452,18 @@ export default function ClubhouseScreen() {
           return (
             <FeedDiscoveryCarousel
               insert={item}
-              onDismiss={handleDismissInsert}
             />
           );
         case "activity":
           return (
             <FeedActivityCarousel
               insert={item}
-              onDismiss={handleDismissInsert}
             />
           );
         case "hole_in_one":
           return (
             <FeedHoleInOneCard
               insert={item}
-              onDismiss={handleDismissInsert}
             />
           );
         default:

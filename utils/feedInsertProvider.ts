@@ -623,7 +623,8 @@ async function fetchActivityItems(
 
 /**
  * Visibility rules for activity items:
- * - badge_earned, joined_league, low_round: partners only
+ * - badge_earned, low_round: partners + regional (community celebration)
+ * - joined_league: partners only
  * - dtp_claimed, low_leader_change: partners + regional
  * - scratch_earned, ace_tier_earned: anyone (achievement)
  * - league_result: league members only
@@ -642,13 +643,13 @@ function shouldShowActivity(
 
   switch (data.activityType) {
     case "badge_earned":
-    case "joined_league":
     case "low_round":
-      return isPartner;
-
     case "dtp_claimed":
     case "low_leader_change":
       return isPartner || isRegional;
+
+    case "joined_league":
+      return isPartner;
 
     case "scratch_earned":
     case "ace_tier_earned":

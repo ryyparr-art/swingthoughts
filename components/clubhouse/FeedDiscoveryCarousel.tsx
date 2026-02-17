@@ -3,7 +3,7 @@
  *
  * Horizontal scrollable discovery card inserted between feed posts.
  * Renders different item cards based on subtype:
- *   - challenges: Badge icons with scarcity counts
+ *   - challenges: Badge icons with scarcity counts (tap to register inline)
  *   - leagues: League avatar + info + CTA
  *   - courses: Course hero with avatar
  *   - partners: Avatar + context + Add button
@@ -12,8 +12,38 @@
  * Dismissible via ✕ button. Dismiss state persisted in AsyncStorage.
  */
 
-import React from "react";
+import BadgeIcon from "@/components/challenges/BadgeIcon";
 import {
+  CHALLENGES,
+  getHCIBracket,
+  getThresholdForBracket,
+} from "@/constants/challengeTypes";
+import { auth, db } from "@/constants/firebaseConfig";
+import {
+  DiscoveryChallengeItem,
+  DiscoveryCourseItem,
+  DiscoveryDTPItem,
+  DiscoveryInsert,
+  DiscoveryLeagueItem,
+  DiscoveryPartnerItem,
+} from "@/utils/feedInsertTypes";
+import { soundPlayer } from "@/utils/soundPlayer";
+import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import { useRouter } from "expo-router";
+import {
+  arrayUnion,
+  doc,
+  getDoc,
+  increment,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+} from "firebase/firestore";
+import React, { useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
   FlatList,
   Image,
   StyleSheet,
@@ -21,40 +51,18 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
-import { soundPlayer } from "@/utils/soundPlayer";
-import { useRouter } from "expo-router";
-import BadgeIcon from "@/components/challenges/BadgeIcon";
-import {
-  DiscoveryInsert,
-  DiscoveryChallengeItem,
-  DiscoveryLeagueItem,
-  DiscoveryCourseItem,
-  DiscoveryPartnerItem,
-  DiscoveryDTPItem,
-} from "@/utils/feedInsertTypes";
-import { dismissFeedInsert } from "@/utils/feedInsertProvider";
 
 interface Props {
   insert: DiscoveryInsert;
-  onDismiss: (dismissKey: string) => void;
 }
 
-export default function FeedDiscoveryCarousel({ insert, onDismiss }: Props) {
+export default function FeedDiscoveryCarousel({ insert }: Props) {
   const router = useRouter();
-
-  const handleDismiss = () => {
-    soundPlayer.play("click");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    dismissFeedInsert(insert.dismissKey);
-    onDismiss(insert.dismissKey);
-  };
 
   const renderItem = ({ item }: { item: any }) => {
     switch (insert.subtype) {
       case "challenges":
-        return <ChallengeCard item={item as DiscoveryChallengeItem} />;
+        return <ChallengeCard item={item as DiscoveryChallengeItem} onRegistered={handleChallengeRegistered} />;
       case "leagues":
         return <LeagueCard item={item as DiscoveryLeagueItem} />;
       case "courses":
@@ -68,21 +76,33 @@ export default function FeedDiscoveryCarousel({ insert, onDismiss }: Props) {
     }
   };
 
+  // When a challenge card registers successfully, remove it from the carousel
+  const [hiddenChallenges, setHiddenChallenges] = useState<Set<string>>(new Set());
+
+  const handleChallengeRegistered = (challengeId: string) => {
+    setHiddenChallenges((prev) => {
+      const next = new Set(prev);
+      next.add(challengeId);
+      return next;
+    });
+  };
+
+  // Filter out registered challenges from items
+  const visibleItems = insert.subtype === "challenges"
+    ? insert.items.filter((item: any) => !hiddenChallenges.has(item.id))
+    : insert.items;
+
+  // If all challenge cards are gone, hide the whole carousel
+  if (visibleItems.length === 0) return null;
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>{insert.title}</Text>
-        <TouchableOpacity
-          style={styles.dismissBtn}
-          onPress={handleDismiss}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <Ionicons name="close" size={14} color="#BBB" />
-        </TouchableOpacity>
       </View>
 
       <FlatList
-        data={insert.items}
+        data={visibleItems}
         renderItem={renderItem}
         keyExtractor={(item: any) => item.id || item.courseId || item.userId}
         horizontal
@@ -95,30 +115,112 @@ export default function FeedDiscoveryCarousel({ insert, onDismiss }: Props) {
 }
 
 // ============================================================================
-// CHALLENGE CARD
+// CHALLENGE CARD (inline registration)
 // ============================================================================
 
-function ChallengeCard({ item }: { item: DiscoveryChallengeItem }) {
+function ChallengeCard({
+  item,
+  onRegistered,
+}: {
+  item: DiscoveryChallengeItem;
+  onRegistered: (challengeId: string) => void;
+}) {
   const router = useRouter();
+  const [registering, setRegistering] = useState(false);
+
+  const handlePress = async () => {
+    const userId = auth.currentUser?.uid;
+    if (!userId || registering) return;
+
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    // DTP requires the onboarding modal — navigate to detail screen
+    if (item.id === "dtp") {
+      router.push({
+        pathname: "/events/challenge/[id]" as any,
+        params: { id: "dtp" },
+      });
+      return;
+    }
+
+    setRegistering(true);
+
+    try {
+      const challengeDef = CHALLENGES.find((c) => c.id === item.id);
+      if (!challengeDef) throw new Error("Challenge not found");
+
+      // Check if already registered
+      const participantRef = doc(db, "challenges", item.id, "participants", userId);
+      const existingDoc = await getDoc(participantRef);
+      if (existingDoc.exists()) {
+        // Already registered — just remove the card silently
+        onRegistered(item.id);
+        setRegistering(false);
+        return;
+      }
+
+      // Get user's handicap for bracket
+      const userDoc = await getDoc(doc(db, "users", userId));
+      const hci = userDoc.exists() ? (userDoc.data().handicap ?? 20) : 20;
+      const bracket = getHCIBracket(hci);
+      const threshold = challengeDef.hasHCIScaling
+        ? getThresholdForBracket(challengeDef, bracket)
+        : 0;
+
+      // Create participant doc
+      await setDoc(participantRef, {
+        registeredAt: serverTimestamp(),
+        hciBracket: bracket,
+        hciAtRegistration: hci,
+        targetThreshold: threshold,
+        earned: false,
+      });
+
+      // Add to user's active challenges
+      await updateDoc(doc(db, "users", userId), {
+        activeChallenges: arrayUnion(item.id),
+      });
+
+      // Increment registered count
+      await updateDoc(doc(db, "challenges", item.id), {
+        registeredCount: increment(1),
+      });
+
+      soundPlayer.play("postThought");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      Alert.alert(
+        "Registered! 🎯",
+        `You're now tracking ${challengeDef.name}. Your progress will update automatically as you post rounds.`
+      );
+
+      onRegistered(item.id);
+    } catch (error) {
+      console.error("Inline challenge registration error:", error);
+      soundPlayer.play("error");
+      Alert.alert("Error", "Failed to register. Please try again.");
+    } finally {
+      setRegistering(false);
+    }
+  };
 
   return (
     <TouchableOpacity
-      style={styles.challengeCard}
+      style={[styles.challengeCard, registering && styles.challengeCardRegistering]}
       activeOpacity={0.8}
-      onPress={() => {
-        soundPlayer.play("click");
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        router.push({
-          pathname: "/events/challenge/[id]" as any,
-          params: { id: item.id },
-        });
-      }}
+      onPress={handlePress}
+      disabled={registering}
     >
-      <View style={styles.challengeBadge}>
-        <BadgeIcon badgeId={item.id} size={36} />
-      </View>
+      {registering ? (
+        <ActivityIndicator size="small" color="#FFD700" style={{ marginBottom: 8 }} />
+      ) : (
+        <View style={styles.challengeBadge}>
+          <BadgeIcon badgeId={item.id} size={36} />
+        </View>
+      )}
       <Text style={styles.challengeName} numberOfLines={2}>
-        {item.name}
+        {registering ? "Registering..." : item.name}
       </Text>
       <Text style={styles.challengeScarcity}>
         {item.earnedCount === 0 ? "Be the first" : `${item.earnedCount} earned`}
@@ -322,14 +424,6 @@ const styles = StyleSheet.create({
     color: "#333",
     fontFamily: "serif",
   },
-  dismissBtn: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    backgroundColor: "#F0F0F0",
-    alignItems: "center",
-    justifyContent: "center",
-  },
   scroll: {
     paddingLeft: 16,
     paddingRight: 16,
@@ -343,6 +437,9 @@ const styles = StyleSheet.create({
     padding: 16,
     alignItems: "center",
     gap: 8,
+  },
+  challengeCardRegistering: {
+    opacity: 0.7,
   },
   challengeBadge: {
     width: 44,
