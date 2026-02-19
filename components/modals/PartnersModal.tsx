@@ -1,14 +1,28 @@
+/**
+ * PartnersModal — Partners & Courses modal with Foursome and Favorites
+ *
+ * New features:
+ *   - "My Foursome" numbered badge (①②③) on partner avatar — max 3
+ *   - "Usual Suspects" gold ribbon on favorited partners
+ *   - Both persist to user doc: foursomePartners[], favoritedPartners[]
+ *
+ * File: components/modals/PartnersModal.tsx
+ */
+
 import { db } from "@/constants/firebaseConfig";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import {
+  arrayRemove,
+  arrayUnion,
   collection,
   deleteDoc,
   doc,
   getDoc,
   getDocs,
   query,
+  updateDoc,
   where,
 } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
@@ -24,13 +38,19 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import BadgeRow from "@/components/challenges/BadgeRow";
+
+// ============================================================================
+// TYPES
+// ============================================================================
 
 interface Partner {
   userId: string;
   displayName: string;
   avatar?: string;
   handicap: number;
-  partnerId: string; // Firestore document ID for deletion
+  partnerId: string;
+  earnedChallengeBadges?: string[];
 }
 
 interface Course {
@@ -45,9 +65,22 @@ interface Course {
 interface Props {
   visible: boolean;
   onClose: () => void;
-  userId: string; // User whose partners we're viewing
-  isOwnProfile: boolean; // Whether viewing own profile or another user's
+  userId: string;
+  isOwnProfile: boolean;
 }
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+const GREEN = "#0D5C3A";
+const CREAM = "#F4EED8";
+const GOLD = "#C5A55A";
+const MAX_FOURSOME = 3;
+
+// ============================================================================
+// COMPONENT
+// ============================================================================
 
 export default function PartnersModal({
   visible,
@@ -64,6 +97,10 @@ export default function PartnersModal({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Foursome & favorites
+  const [foursomePartners, setFoursomePartners] = useState<string[]>([]);
+  const [favoritedPartners, setFavoritedPartners] = useState<string[]>([]);
+
   useEffect(() => {
     if (visible) {
       loadAllData();
@@ -73,10 +110,10 @@ export default function PartnersModal({
   const loadAllData = async () => {
     setLoading(true);
     await Promise.all([
-      loadUserDisplayName(),
+      loadUserData(),
       loadPartners(),
       loadPlayerCourses(),
-      loadMemberCourses()
+      loadMemberCourses(),
     ]);
     setLoading(false);
   };
@@ -84,23 +121,26 @@ export default function PartnersModal({
   const refreshData = async () => {
     setRefreshing(true);
     await Promise.all([
-      loadUserDisplayName(),
+      loadUserData(),
       loadPartners(),
       loadPlayerCourses(),
-      loadMemberCourses()
+      loadMemberCourses(),
     ]);
     setRefreshing(false);
   };
 
-  /* ========================= LOAD USER DISPLAY NAME ========================= */
-  const loadUserDisplayName = async () => {
+  /* ========================= LOAD USER DATA ========================= */
+  const loadUserData = async () => {
     try {
       const userDoc = await getDoc(doc(db, "users", userId));
       if (userDoc.exists()) {
-        setDisplayName(userDoc.data().displayName || "User");
+        const data = userDoc.data();
+        setDisplayName(data.displayName || "User");
+        setFoursomePartners(data.foursomePartners || []);
+        setFavoritedPartners(data.favoritedPartners || []);
       }
     } catch (error) {
-      console.error("Error loading user display name:", error);
+      console.error("Error loading user data:", error);
       setDisplayName("User");
     }
   };
@@ -108,7 +148,6 @@ export default function PartnersModal({
   /* ========================= LOAD PARTNERS ========================= */
   const loadPartners = async () => {
     try {
-      // Query partners collection where userId is either user1Id or user2Id
       const partnersQuery1 = query(
         collection(db, "partners"),
         where("user1Id", "==", userId)
@@ -125,36 +164,26 @@ export default function PartnersModal({
 
       const partnerUserIds: { userId: string; partnerId: string }[] = [];
 
-      // Extract partner user IDs from both queries
-      snap1.forEach((doc) => {
-        const data = doc.data();
-        partnerUserIds.push({
-          userId: data.user2Id, // Other user is user2Id
-          partnerId: doc.id,
-        });
+      snap1.forEach((d) => {
+        partnerUserIds.push({ userId: d.data().user2Id, partnerId: d.id });
+      });
+      snap2.forEach((d) => {
+        partnerUserIds.push({ userId: d.data().user1Id, partnerId: d.id });
       });
 
-      snap2.forEach((doc) => {
-        const data = doc.data();
-        partnerUserIds.push({
-          userId: data.user1Id, // Other user is user1Id
-          partnerId: doc.id,
-        });
-      });
-
-      // Fetch user profiles for all partners
       const partnerProfiles: Partner[] = [];
 
-      for (const { userId: partnerUserId, partnerId } of partnerUserIds) {
-        const userDoc = await getDoc(doc(db, "users", partnerUserId));
+      for (const { userId: puid, partnerId } of partnerUserIds) {
+        const userDoc = await getDoc(doc(db, "users", puid));
         if (userDoc.exists()) {
           const data = userDoc.data();
           partnerProfiles.push({
-            userId: partnerUserId,
+            userId: puid,
             displayName: data.displayName || "Unknown",
             avatar: data.avatar,
             handicap: data.handicap || 0,
-            partnerId: partnerId,
+            partnerId,
+            earnedChallengeBadges: data.earnedChallengeBadges || [],
           });
         }
       }
@@ -166,40 +195,28 @@ export default function PartnersModal({
     }
   };
 
-  /* ========================= LOAD PLAYER COURSES ========================= */
+  /* ========================= LOAD COURSES ========================= */
   const loadPlayerCourses = async () => {
     try {
       const userDoc = await getDoc(doc(db, "users", userId));
-      if (!userDoc.exists()) {
-        setPlayerCourses([]);
-        return;
-      }
+      if (!userDoc.exists()) { setPlayerCourses([]); return; }
 
-      const playerCourseIds = userDoc.data().playerCourses || [];
-      if (playerCourseIds.length === 0) {
-        setPlayerCourses([]);
-        return;
-      }
+      const ids = userDoc.data().playerCourses || [];
+      if (ids.length === 0) { setPlayerCourses([]); return; }
 
-      // Fetch course details for each courseId
       const courses: Course[] = [];
-      for (const courseId of playerCourseIds) {
-        const coursesQuery = query(
-          collection(db, "courses"),
-          where("id", "==", courseId)
-        );
-        const coursesSnap = await getDocs(coursesQuery);
-
-        if (!coursesSnap.empty) {
-          const courseData = coursesSnap.docs[0].data();
+      for (const courseId of ids) {
+        const q = query(collection(db, "courses"), where("id", "==", courseId));
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          const d = snap.docs[0].data();
           courses.push({
-            courseId: courseId,
-            courseName: courseData.courseName || courseData.course_name || "Course",
-            location: courseData.location,
+            courseId,
+            courseName: d.courseName || d.course_name || "Course",
+            location: d.location,
           });
         }
       }
-
       setPlayerCourses(courses);
     } catch (error) {
       console.error("Error loading player courses:", error);
@@ -207,44 +224,88 @@ export default function PartnersModal({
     }
   };
 
-  /* ========================= LOAD MEMBER COURSES ========================= */
   const loadMemberCourses = async () => {
     try {
       const userDoc = await getDoc(doc(db, "users", userId));
-      if (!userDoc.exists()) {
-        setMemberCourses([]);
-        return;
-      }
+      if (!userDoc.exists()) { setMemberCourses([]); return; }
 
-      const memberCourseIds = userDoc.data().declaredMemberCourses || [];
-      if (memberCourseIds.length === 0) {
-        setMemberCourses([]);
-        return;
-      }
+      const ids = userDoc.data().declaredMemberCourses || [];
+      if (ids.length === 0) { setMemberCourses([]); return; }
 
-      // Fetch course details for each courseId
       const courses: Course[] = [];
-      for (const courseId of memberCourseIds) {
-        const coursesQuery = query(
-          collection(db, "courses"),
-          where("id", "==", courseId)
-        );
-        const coursesSnap = await getDocs(coursesQuery);
-
-        if (!coursesSnap.empty) {
-          const courseData = coursesSnap.docs[0].data();
+      for (const courseId of ids) {
+        const q = query(collection(db, "courses"), where("id", "==", courseId));
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          const d = snap.docs[0].data();
           courses.push({
-            courseId: courseId,
-            courseName: courseData.courseName || courseData.course_name || "Course",
-            location: courseData.location,
+            courseId,
+            courseName: d.courseName || d.course_name || "Course",
+            location: d.location,
           });
         }
       }
-
       setMemberCourses(courses);
     } catch (error) {
       console.error("Error loading member courses:", error);
       setMemberCourses([]);
+    }
+  };
+
+  /* ========================= TOGGLE FOURSOME ========================= */
+  const handleToggleFoursome = async (partner: Partner) => {
+    const isInFoursome = foursomePartners.includes(partner.userId);
+
+    if (!isInFoursome && foursomePartners.length >= MAX_FOURSOME) {
+      Alert.alert(
+        "Foursome Full",
+        "You can only have 3 partners in your foursome (you're the 4th!). Remove someone first."
+      );
+      return;
+    }
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    const newList = isInFoursome
+      ? foursomePartners.filter((id) => id !== partner.userId)
+      : [...foursomePartners, partner.userId];
+
+    setFoursomePartners(newList);
+
+    try {
+      await updateDoc(doc(db, "users", userId), {
+        foursomePartners: isInFoursome
+          ? arrayRemove(partner.userId)
+          : arrayUnion(partner.userId),
+      });
+    } catch (err) {
+      console.error("Error toggling foursome:", err);
+      // Revert
+      setFoursomePartners(foursomePartners);
+    }
+  };
+
+  /* ========================= TOGGLE FAVORITE ========================= */
+  const handleToggleFavorite = async (partner: Partner) => {
+    const isFav = favoritedPartners.includes(partner.userId);
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    const newList = isFav
+      ? favoritedPartners.filter((id) => id !== partner.userId)
+      : [...favoritedPartners, partner.userId];
+
+    setFavoritedPartners(newList);
+
+    try {
+      await updateDoc(doc(db, "users", userId), {
+        favoritedPartners: isFav
+          ? arrayRemove(partner.userId)
+          : arrayUnion(partner.userId),
+      });
+    } catch (err) {
+      console.error("Error toggling favorite:", err);
+      setFavoritedPartners(favoritedPartners);
     }
   };
 
@@ -256,22 +317,27 @@ export default function PartnersModal({
       "Remove Partner?",
       `Remove ${partner.displayName} from your partners?`,
       [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
+        { text: "Cancel", style: "cancel" },
         {
           text: "Remove",
           style: "destructive",
           onPress: async () => {
             try {
-              // Delete the partnership document
               await deleteDoc(doc(db, "partners", partner.partnerId));
+              // Also remove from foursome/favorites if present
+              const updates: any = {};
+              if (foursomePartners.includes(partner.userId)) {
+                updates.foursomePartners = arrayRemove(partner.userId);
+              }
+              if (favoritedPartners.includes(partner.userId)) {
+                updates.favoritedPartners = arrayRemove(partner.userId);
+              }
+              if (Object.keys(updates).length > 0) {
+                await updateDoc(doc(db, "users", userId), updates);
+              }
 
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               Alert.alert("✅ Partner Removed", `${partner.displayName} removed from partners`);
-
-              // Refresh the list
               await refreshData();
             } catch (error) {
               console.error("Error removing partner:", error);
@@ -283,41 +349,98 @@ export default function PartnersModal({
     );
   };
 
-  /* ========================= RENDER ITEMS ========================= */
-  const renderPartner = ({ item }: { item: Partner }) => (
-    <TouchableOpacity
-      style={styles.listItem}
-      onPress={() => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        onClose();
-        router.push(`/locker/${item.userId}`);
-      }}
-      onLongPress={() => {
-        if (isOwnProfile) {
-          handleRemovePartner(item);
-        }
-      }}
-      delayLongPress={500}
-    >
-      {item.avatar ? (
-        <Image source={{ uri: item.avatar }} style={styles.avatar} />
-      ) : (
-        <View style={styles.avatarPlaceholder}>
-          <Text style={styles.avatarText}>
-            {item.displayName[0]?.toUpperCase() || "?"}
+  /* ========================= RENDER PARTNER ========================= */
+  const renderPartner = ({ item }: { item: Partner }) => {
+    const foursomeIndex = foursomePartners.indexOf(item.userId);
+    const isInFoursome = foursomeIndex !== -1;
+    const isFavorite = favoritedPartners.includes(item.userId);
+
+    return (
+      <TouchableOpacity
+        style={styles.listItem}
+        onPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          onClose();
+          router.push(`/locker/${item.userId}`);
+        }}
+        onLongPress={() => {
+          if (isOwnProfile) handleRemovePartner(item);
+        }}
+        delayLongPress={500}
+      >
+        {/* Avatar with foursome badge */}
+        <View style={styles.avatarContainer}>
+          {item.avatar ? (
+            <Image source={{ uri: item.avatar }} style={styles.avatar} />
+          ) : (
+            <View style={styles.avatarPlaceholder}>
+              <Text style={styles.avatarText}>
+                {item.displayName[0]?.toUpperCase() || "?"}
+              </Text>
+            </View>
+          )}
+
+          {/* Foursome numbered badge */}
+          {isInFoursome && (
+            <View style={styles.foursomeBadge}>
+              <Text style={styles.foursomeBadgeText}>{foursomeIndex + 1}</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Info */}
+        <View style={styles.listItemContent}>
+          <View style={styles.nameRow}>
+            <Text style={styles.listItemName} numberOfLines={1}>
+              {item.displayName}
+            </Text>
+            <BadgeRow challengeBadges={item.earnedChallengeBadges} size={14} />
+          </View>
+          <Text style={styles.listItemDetail}>
+            HCP {item.handicap}
           </Text>
         </View>
-      )}
 
-      <View style={styles.listItemContent}>
-        <Text style={styles.listItemName}>{item.displayName}</Text>
-        <Text style={styles.listItemDetail}>Handicap: {item.handicap}</Text>
-      </View>
+        {/* Favorite ribbon + foursome toggle (own profile only) */}
+        {isOwnProfile && (
+          <View style={styles.actionIcons}>
+            <TouchableOpacity
+              onPress={() => handleToggleFavorite(item)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons
+                name={isFavorite ? "ribbon" : "ribbon-outline"}
+                size={22}
+                color={isFavorite ? GOLD : "#CCC"}
+              />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => handleToggleFoursome(item)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <View style={[
+                styles.foursomeToggle,
+                isInFoursome && styles.foursomeToggleActive,
+              ]}>
+                <Text style={[
+                  styles.foursomeToggleText,
+                  isInFoursome && styles.foursomeToggleTextActive,
+                ]}>
+                  4
+                </Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        )}
 
-      <Ionicons name="chevron-forward" size={20} color="#999" />
-    </TouchableOpacity>
-  );
+        {!isOwnProfile && (
+          <Ionicons name="chevron-forward" size={20} color="#999" />
+        )}
+      </TouchableOpacity>
+    );
+  };
 
+  /* ========================= RENDER COURSE ========================= */
   const renderCourse = ({ item }: { item: Course }) => (
     <TouchableOpacity
       style={styles.listItem}
@@ -328,9 +451,8 @@ export default function PartnersModal({
       }}
     >
       <View style={styles.courseIconContainer}>
-        <Ionicons name="flag" size={24} color="#0D5C3A" />
+        <Ionicons name="flag" size={24} color={GREEN} />
       </View>
-
       <View style={styles.listItemContent}>
         <Text style={styles.listItemName}>{item.courseName}</Text>
         {item.location && (
@@ -339,7 +461,6 @@ export default function PartnersModal({
           </Text>
         )}
       </View>
-
       <Ionicons name="chevron-forward" size={20} color="#999" />
     </TouchableOpacity>
   );
@@ -354,9 +475,8 @@ export default function PartnersModal({
       }}
     >
       <View style={styles.courseIconContainer}>
-        <Ionicons name="flag" size={24} color="#0D5C3A" />
+        <Ionicons name="flag" size={24} color={GREEN} />
       </View>
-
       <View style={styles.listItemContent}>
         <View style={styles.courseNameRow}>
           <Text style={styles.listItemName}>{item.courseName}</Text>
@@ -370,7 +490,6 @@ export default function PartnersModal({
           </Text>
         )}
       </View>
-
       <Ionicons name="chevron-forward" size={20} color="#999" />
     </TouchableOpacity>
   );
@@ -378,7 +497,6 @@ export default function PartnersModal({
   /* ========================= EMPTY STATES ========================= */
   const renderEmptyState = () => {
     const hasAnyData = partners.length > 0 || playerCourses.length > 0 || memberCourses.length > 0;
-
     if (hasAnyData) return null;
 
     return (
@@ -399,6 +517,27 @@ export default function PartnersModal({
     </View>
   );
 
+  /* ========================= SORTED PARTNERS ========================= */
+  // Sort: foursome first, then favorites, then rest
+  const sortedPartners = [...partners].sort((a, b) => {
+    const aFoursome = foursomePartners.indexOf(a.userId);
+    const bFoursome = foursomePartners.indexOf(b.userId);
+    const aFav = favoritedPartners.includes(a.userId);
+    const bFav = favoritedPartners.includes(b.userId);
+
+    // Foursome members first (by position)
+    if (aFoursome !== -1 && bFoursome === -1) return -1;
+    if (aFoursome === -1 && bFoursome !== -1) return 1;
+    if (aFoursome !== -1 && bFoursome !== -1) return aFoursome - bFoursome;
+
+    // Then favorites
+    if (aFav && !bFav) return -1;
+    if (!aFav && bFav) return 1;
+
+    // Then alphabetical
+    return a.displayName.localeCompare(b.displayName);
+  });
+
   /* ========================= UI ========================= */
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet">
@@ -406,11 +545,9 @@ export default function PartnersModal({
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.headerButton} />
-
           <Text style={styles.headerTitle}>
             {isOwnProfile ? "My Partners & Courses" : `${displayName}'s Partners & Courses`}
           </Text>
-
           <TouchableOpacity onPress={onClose} style={styles.headerButton}>
             <Ionicons name="close" size={28} color="#FFFFFF" />
           </TouchableOpacity>
@@ -418,7 +555,7 @@ export default function PartnersModal({
 
         {loading ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#0D5C3A" />
+            <ActivityIndicator size="large" color={GREEN} />
           </View>
         ) : (
           <FlatList
@@ -430,13 +567,18 @@ export default function PartnersModal({
             ListEmptyComponent={renderEmptyState()}
             renderItem={() => (
               <>
-                {/* SECTION 1: Partners */}
-                {partners.length > 0 && (
+                {/* Partners */}
+                {sortedPartners.length > 0 && (
                   <View style={styles.section}>
                     <Text style={styles.sectionTitle}>
                       Partners of {isOwnProfile ? "You" : displayName}
                     </Text>
-                    {partners.map((partner) => (
+                    {isOwnProfile && (
+                      <Text style={styles.sectionHint}>
+                        Tap the ribbon to favorite • Tap ④ for your foursome
+                      </Text>
+                    )}
+                    {sortedPartners.map((partner) => (
                       <View key={partner.userId}>
                         {renderPartner({ item: partner })}
                       </View>
@@ -444,7 +586,7 @@ export default function PartnersModal({
                   </View>
                 )}
 
-                {/* SECTION 2: Player Of */}
+                {/* Player Of */}
                 {playerCourses.length > 0 && (
                   <View style={styles.section}>
                     <Text style={styles.sectionTitle}>Player Of</Text>
@@ -456,7 +598,7 @@ export default function PartnersModal({
                   </View>
                 )}
 
-                {/* SECTION 3: Declared Members Of */}
+                {/* Declared Members Of */}
                 {memberCourses.length > 0 && (
                   <View style={styles.section}>
                     <Text style={styles.sectionTitle}>Declared Members Of</Text>
@@ -468,7 +610,7 @@ export default function PartnersModal({
                   </View>
                 )}
 
-                {/* Show individual empty states if user has some data but not all */}
+                {/* Empty states for individual sections */}
                 {partners.length === 0 && (playerCourses.length > 0 || memberCourses.length > 0) && (
                   <View style={styles.section}>
                     <Text style={styles.sectionTitle}>
@@ -506,26 +648,21 @@ export default function PartnersModal({
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F4EED8",
-  },
+// ============================================================================
+// STYLES
+// ============================================================================
 
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: CREAM },
   header: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: "#0D5C3A",
+    backgroundColor: GREEN,
   },
-
-  headerButton: {
-    width: 40,
-    alignItems: "center",
-  },
-
+  headerButton: { width: 40, alignItems: "center" },
   headerTitle: {
     fontSize: 18,
     fontWeight: "700",
@@ -533,40 +670,25 @@ const styles = StyleSheet.create({
     textAlign: "center",
     flex: 1,
   },
+  loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
+  scrollContent: { padding: 16, paddingBottom: 40 },
 
-  loadingContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-
-  section: {
-    marginBottom: 32,
-  },
-
+  section: { marginBottom: 32 },
   sectionTitle: {
     fontSize: 18,
     fontWeight: "700",
-    color: "#0D5C3A",
+    color: GREEN,
+    marginBottom: 4,
+  },
+  sectionHint: {
+    fontSize: 12,
+    color: "#999",
     marginBottom: 12,
   },
+  sectionEmpty: { padding: 20, alignItems: "center" },
+  sectionEmptyText: { fontSize: 14, color: "#999", fontStyle: "italic" },
 
-  sectionEmpty: {
-    padding: 20,
-    alignItems: "center",
-  },
-
-  sectionEmptyText: {
-    fontSize: 14,
-    color: "#999",
-    fontStyle: "italic",
-  },
-
+  // ── Partner Row ──────────────────────────────────────────────
   listItem: {
     flexDirection: "row",
     alignItems: "center",
@@ -576,29 +698,90 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     gap: 12,
   },
-
+  avatarContainer: {
+    position: "relative",
+  },
   avatar: {
     width: 50,
     height: 50,
     borderRadius: 25,
     backgroundColor: "#E0E0E0",
   },
-
   avatarPlaceholder: {
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: "#0D5C3A",
+    backgroundColor: GREEN,
     justifyContent: "center",
     alignItems: "center",
   },
-
   avatarText: {
     fontSize: 20,
     fontWeight: "700",
     color: "#FFFFFF",
   },
+  foursomeBadge: {
+    position: "absolute",
+    bottom: -2,
+    right: -2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: GREEN,
+    borderWidth: 2,
+    borderColor: "#FFF",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  foursomeBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+    color: "#FFF",
+  },
 
+  nameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  listItemContent: { flex: 1 },
+  listItemName: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#333",
+    marginBottom: 2,
+  },
+  listItemDetail: { fontSize: 13, color: "#666" },
+
+  // ── Action Icons (favorite ribbon + foursome toggle) ──────
+  actionIcons: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  foursomeToggle: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 2,
+    borderColor: "#DDD",
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "transparent",
+  },
+  foursomeToggleActive: {
+    borderColor: GREEN,
+    backgroundColor: GREEN,
+  },
+  foursomeToggleText: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#DDD",
+  },
+  foursomeToggleTextActive: {
+    color: "#FFF",
+  },
+
+  // ── Course items ──────────────────────────────────────────
   courseIconContainer: {
     width: 50,
     height: 50,
@@ -607,19 +790,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-
-  listItemContent: {
-    flex: 1,
-  },
-
   courseNameRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
   },
-
   verifiedBadge: {
-    backgroundColor: "#0D5C3A",
+    backgroundColor: GREEN,
     borderRadius: 10,
     width: 20,
     height: 20,
@@ -627,18 +804,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
-  listItemName: {
-    fontSize: 16,
-    fontWeight: "600",
-    color: "#333",
-    marginBottom: 2,
-  },
-
-  listItemDetail: {
-    fontSize: 13,
-    color: "#666",
-  },
-
+  // ── Empty state ──────────────────────────────────────────
   emptyState: {
     flex: 1,
     justifyContent: "center",
@@ -646,7 +812,6 @@ const styles = StyleSheet.create({
     paddingVertical: 60,
     paddingHorizontal: 40,
   },
-
   emptyTitle: {
     fontSize: 16,
     fontWeight: "600",

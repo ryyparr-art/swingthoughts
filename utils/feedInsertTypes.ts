@@ -172,6 +172,33 @@ export interface ActivityLeagueResult extends BaseActivity {
   winnerScore: number;
 }
 
+export interface ActivityRoundComplete extends BaseActivity {
+  activityType: "round_complete";
+  userId: string;
+  displayName: string;
+  avatar?: string | null;
+  roundId: string;
+  courseId: number;
+  courseName: string;
+  holeCount: 9 | 18;
+  formatId: string;
+  playerCount: number;
+  isSimulator: boolean;
+  playerSummaries: {
+    playerId: string;
+    displayName: string;
+    avatar?: string | null;
+    isGhost: boolean;
+    grossScore: number;
+    netScore: number;
+    scoreToPar: number;
+    courseHandicap: number;
+  }[];
+  winnerName: string | null;
+  roundDescription?: string | null;
+  roundImageUrl?: string | null;
+}
+
 export type ActivityItem =
   | ActivityBadgeEarned
   | ActivityDTPClaimed
@@ -182,7 +209,8 @@ export type ActivityItem =
   | ActivityLowLeaderChange
   | ActivityScratchEarned
   | ActivityAceTierEarned
-  | ActivityLeagueResult;
+  | ActivityLeagueResult
+  | ActivityRoundComplete;
 
 /**
  * The "From the Field" activity carousel.

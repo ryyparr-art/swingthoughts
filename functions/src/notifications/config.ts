@@ -72,6 +72,10 @@ export const GROUPABLE_TYPES = {
     "challenge_progress",
     "dtp_claimed",
     "dtp_lost",
+    // Round notifications (always individual)
+    "round_invite",
+    "round_complete",
+    "round_notable",
   ],
 };
 
@@ -103,6 +107,7 @@ export interface CreateNotificationParams {
   teamName?: string;
   weekNumber?: number;
   inviteId?: string;
+  roundId?: string;
   message: string;
   regionKey?: string;
 }

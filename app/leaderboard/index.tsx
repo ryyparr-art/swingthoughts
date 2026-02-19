@@ -390,7 +390,7 @@ export default function LeaderboardScreen() {
   const goToPostScore = (courseId: number) => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push({ pathname: "/post-score", params: { courseId } });
+    router.push({ pathname: "/scoring", params: { courseId } });
   };
 
   /* ---------------------------------------------------------------- */

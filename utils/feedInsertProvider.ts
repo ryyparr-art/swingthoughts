@@ -604,6 +604,27 @@ async function fetchActivityItems(
             winnerScore: data.winnerScore,
           });
           break;
+
+        case "round_complete":
+          items.push({
+            ...baseItem,
+            activityType: "round_complete",
+            userId: data.userId,
+            displayName: data.displayName,
+            avatar: data.avatar,
+            roundId: data.roundId,
+            courseId: data.courseId,
+            courseName: data.courseName,
+            holeCount: data.holeCount,
+            formatId: data.formatId,
+            playerCount: data.playerCount,
+            isSimulator: data.isSimulator || false,
+            playerSummaries: data.playerSummaries || [],
+            winnerName: data.winnerName || null,
+            roundDescription: data.roundDescription || null,
+            roundImageUrl: data.roundImageUrl || null,
+          });
+          break;
       }
     });
 
@@ -657,6 +678,12 @@ function shouldShowActivity(
 
     case "league_result":
       return ctx.leagueIds.includes(data.leagueId);
+
+    case "round_complete":
+      // Show if posted by a partner, or same region, respecting privacy
+      if (data.privacy === "private") return false;
+      if (data.privacy === "partners") return isPartner;
+      return isPartner || isRegional;
 
     default:
       return false;

@@ -218,6 +218,16 @@ export function generateGroupedMessage(
       return extraData?.message || `You claimed a pin! 🎯`;
     case "dtp_lost":
       return extraData?.message || `Someone beat your pin! 🎯`;
+
+    // Round notifications
+    case "round_invite":
+      return `${actorName} started a round at ${extraData?.courseName || "a course"}`;
+    case "round_complete":
+      return extraData?.message || `Your round at ${extraData?.courseName || "the course"} is complete`;
+    case "round_notable":
+      return extraData?.holeNumber
+        ? `${actorName}'s group is on Hole ${extraData.holeNumber} at ${extraData?.courseName || "the course"}`
+        : `${actorName}'s group is playing at ${extraData?.courseName || "the course"}`;
     
     default:
       return `${actorName} interacted with you`;
@@ -246,6 +256,7 @@ export async function createNotificationDocument(params: CreateNotificationParam
     teamName,
     weekNumber,
     inviteId,
+    roundId,
     message,
     regionKey,
   } = params;
@@ -365,6 +376,7 @@ export async function createNotificationDocument(params: CreateNotificationParam
     if (weekNumber) notificationData.weekNumber = weekNumber;
     if (regionKey) notificationData.regionKey = regionKey;
     if (inviteId) notificationData.inviteId = inviteId;
+    if (roundId) notificationData.roundId = roundId;
 
     await db.collection("notifications").add(notificationData);
     console.log("✅ Created new grouped notification");
@@ -397,6 +409,7 @@ export async function createNotificationDocument(params: CreateNotificationParam
   if (weekNumber) notificationData.weekNumber = weekNumber;
   if (regionKey) notificationData.regionKey = regionKey;
   if (inviteId) notificationData.inviteId = inviteId;
+  if (roundId) notificationData.roundId = roundId;
 
   await db.collection("notifications").add(notificationData);
   console.log("✅ Created notification");

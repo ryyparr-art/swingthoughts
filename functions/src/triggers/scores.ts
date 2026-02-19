@@ -2,20 +2,28 @@
  * Score Triggers
  * 
  * Handles: onScoreCreated
- * Creates clubhouse posts, updates leaderboards, awards badges,
- * and sends partner notifications.
+ * Updates leaderboards, awards badges, sends partner notifications,
+ * and updates career stats.
+ * 
+ * Thought (clubhouse post) creation is REMOVED — feed is now driven
+ * entirely by feedActivity cards written by rounds.ts on completion.
+ * 
+ * Eligibility checks:
+ *   - isLeaderboardEligible === false → skip leaderboard update
+ *   - countsForHandicap === false → skip career stats + handicap
+ *   - isSimulator === true → skip leaderboard + career stats
  */
 
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import { createNotificationDocument } from "../notifications/helpers";
-import { updateUserCareerStats } from "./userStats";
 import {
+  writeAceTierEarnedActivity,
   writeLowLeaderChangeActivity,
   writeLowRoundActivity,
   writeScratchEarnedActivity,
-  writeAceTierEarnedActivity,
 } from "./feedActivity";
+import { updateUserCareerStats } from "./userStats";
 
 const db = getFirestore();
 
@@ -32,10 +40,16 @@ export const onScoreCreated = onDocumentCreated(
       const scoreId = event.params.scoreId;
       console.log("📝 New score created:", scoreId);
 
+      // Ghost scores (from multiplayer rounds) — skip entire pipeline
+      if (score.isGhost) {
+        console.log("👻 Ghost score — skipping onScoreCreated pipeline");
+        return;
+      }
+
       const {
         userId, courseId, courseName, netScore, grossScore, userName,
-        holeCount, regionKey, location, scorecardImageUrl, roundDescription,
-        hadHoleInOne, holeNumber, taggedPartners, tee, teeYardage, geohash,
+        holeCount, regionKey, location,
+        hadHoleInOne, holeNumber, tee, teeYardage,
       } = score;
 
       if (!userId || courseId === undefined || !courseName || typeof netScore !== "number" || typeof grossScore !== "number") {
@@ -52,15 +66,25 @@ export const onScoreCreated = onDocumentCreated(
         return;
       }
 
-      // DETERMINE POST TYPE
-      let isNewLowman = false;
-      let postType = "score";
-      let achievementType: string | null = null;
+      // ── ELIGIBILITY FLAGS ─────────────────────────────────────
+      // Set by rounds.ts for multiplayer scores.
+      // Legacy solo scores won't have these → default to eligible.
+      const isSimulator = score.isSimulator === true;
+      const isLeaderboardEligible = score.isLeaderboardEligible !== false;
+      const countsForHandicap = score.countsForHandicap !== false;
 
-      if (holeCount === 18 && regionKey) {
+      // ── LEADERBOARD UPDATE ────────────────────────────────────
+      let isNewLowman = false;
+
+      if ((holeCount === 18 || holeCount === 9) && regionKey && isLeaderboardEligible && !isSimulator) {
         const leaderboardId = `${regionKey}_${courseId}`;
         const leaderboardRef = db.collection("leaderboards").doc(leaderboardId);
         const leaderboardSnap = await leaderboardRef.get();
+
+        const is18 = holeCount === 18;
+        const scoresKey = is18 ? "topScores18" : "topScores9";
+        const lowNetKey = is18 ? "lowNetScore18" : "lowNetScore9";
+        const totalKey = is18 ? "totalScores18" : "totalScores9";
 
         const newScoreEntry = {
           userId,
@@ -68,55 +92,65 @@ export const onScoreCreated = onDocumentCreated(
           userAvatar: userData?.avatar || null,
           grossScore, netScore, courseId, courseName,
           tees: tee || null, teeYardage: teeYardage || null,
-          teePar: score.par || 72, par: score.par || 72,
+          teePar: score.par || (is18 ? 72 : 36), par: score.par || (is18 ? 72 : 36),
           scoreId, createdAt: Timestamp.now(),
         };
 
         if (!leaderboardSnap.exists) {
-          await leaderboardRef.set({
+          const newDoc: Record<string, any> = {
             regionKey, courseId, courseName, location: location || null,
-            topScores18: [newScoreEntry], lowNetScore18: netScore,
-            totalScores18: 1, topScores9: [], lowNetScore9: null,
-            totalScores9: 0, totalScores: 1, holesInOne: [],
+            topScores18: [], lowNetScore18: null, totalScores18: 0,
+            topScores9: [], lowNetScore9: null, totalScores9: 0,
+            totalScores: 1, holesInOne: [],
             createdAt: Timestamp.now(), lastUpdated: Timestamp.now(),
-          });
-          isNewLowman = true;
-          console.log("✅ New leaderboard created, user is lowman");
+          };
+          // Set the relevant hole count fields
+          newDoc[scoresKey] = [newScoreEntry];
+          newDoc[lowNetKey] = netScore;
+          newDoc[totalKey] = 1;
+
+          await leaderboardRef.set(newDoc);
+
+          if (is18) {
+            isNewLowman = true;
+            console.log("✅ New leaderboard created, user is lowman (18-hole)");
+          } else {
+            console.log("✅ New leaderboard created with 9-hole score");
+          }
         } else {
           const leaderboardData = leaderboardSnap.data();
-          const topScores18 = leaderboardData?.topScores18 || [];
-          const previousLowNetScore = leaderboardData?.lowNetScore18 || 999;
+          const topScores = leaderboardData?.[scoresKey] || [];
+          const previousLowNet = leaderboardData?.[lowNetKey] || 999;
 
-          topScores18.push(newScoreEntry);
-          topScores18.sort((a: any, b: any) => {
+          topScores.push(newScoreEntry);
+          topScores.sort((a: any, b: any) => {
             if (a.netScore !== b.netScore) return a.netScore - b.netScore;
             if (a.grossScore !== b.grossScore) return a.grossScore - b.grossScore;
             return a.createdAt.toMillis() - b.createdAt.toMillis();
           });
 
-          const updatedTopScores18 = topScores18.slice(0, 10);
-          const newLowNetScore = updatedTopScores18[0].netScore;
+          const updatedTopScores = topScores.slice(0, 10);
+          const newLowNet = updatedTopScores[0].netScore;
 
-          if (updatedTopScores18[0].userId === userId && newLowNetScore < previousLowNetScore) {
+          // Lowman only for 18-hole
+          if (is18 && updatedTopScores[0].userId === userId && newLowNet < previousLowNet) {
             isNewLowman = true;
             console.log("🏆 NEW LOWMAN! User:", userId);
           }
 
           await leaderboardRef.update({
-            topScores18: updatedTopScores18,
-            lowNetScore18: newLowNetScore,
-            totalScores18: FieldValue.increment(1),
+            [scoresKey]: updatedTopScores,
+            [lowNetKey]: newLowNet,
+            [totalKey]: FieldValue.increment(1),
             totalScores: FieldValue.increment(1),
             lastUpdated: Timestamp.now(),
           });
-          console.log("✅ Leaderboard updated");
+          console.log(`✅ Leaderboard updated (${holeCount}-hole)`);
         }
 
-        // AWARD BADGES
-        if (isNewLowman) {
+        // AWARD BADGES (18-hole only)
+        if (isNewLowman && is18) {
           console.log("🏆 Awarding badges...");
-          postType = "low-leader";
-          achievementType = "lowman";
 
           const lowmanBadge = {
             type: "lowman", courseId, courseName,
@@ -158,7 +192,6 @@ export const onScoreCreated = onDocumentCreated(
             });
             console.log("🏆 Upgraded to Ace badge!");
 
-            // Feed activity: ace tier earned
             const aceCourseNames: string[] = [];
             leaderboardsSnap.forEach((lbDoc) => {
               const lbData = lbDoc.data();
@@ -180,7 +213,6 @@ export const onScoreCreated = onDocumentCreated(
             });
             console.log("🏆 Upgraded to Scratch badge!");
 
-            // Feed activity: scratch earned
             const scratchCourseNames: string[] = [];
             leaderboardsSnap.forEach((lbDoc) => {
               const lbData = lbDoc.data();
@@ -198,47 +230,12 @@ export const onScoreCreated = onDocumentCreated(
             );
           }
         }
+      } else if ((holeCount === 18 || holeCount === 9) && regionKey && (!isLeaderboardEligible || isSimulator)) {
+        console.log("⏭️ Score not leaderboard eligible (format or simulator) — skipping leaderboard");
       }
 
-      // CREATE CLUBHOUSE POST
-      console.log("📝 Creating clubhouse post...");
-      const teeDetails = teeYardage ? `from "${tee}", ${teeYardage} yards` : tee ? `from "${tee}"` : "";
-      const postContent = `Shot a ${grossScore} @${courseName} ${teeDetails}! ${roundDescription || ""}`.trim();
-
-      const thoughtData: any = {
-        thoughtId: `thought_${Date.now()}`, userId,
-        userName: userData?.displayName || "Unknown",
-        displayName: userData?.displayName || "Unknown",
-        userAvatar: userData?.avatar || null, avatar: userData?.avatar || null,
-        userHandicap: userData?.handicap || 0,
-        userType: userData?.userType || "Golfer",
-        userVerified: userData?.verified || false,
-        postType, achievementType, content: postContent, scoreId,
-        imageUrl: scorecardImageUrl || null,
-        regionKey: regionKey || null, geohash: geohash || null,
-        location: location || null,
-        taggedPartners: taggedPartners || [],
-        taggedCourses: [{ courseId, courseName }],
-        createdAt: Timestamp.now(), createdAtTimestamp: Date.now(),
-        likes: 0, likedBy: [], comments: 0, engagementScore: 0, viewCount: 0,
-        lastActivityAt: Timestamp.now(),
-        hasMedia: !!scorecardImageUrl,
-        mediaType: scorecardImageUrl ? "images" : null,
-        imageUrls: scorecardImageUrl ? [scorecardImageUrl] : [],
-        imageCount: scorecardImageUrl ? 1 : 0,
-        contentLowercase: postContent.toLowerCase(),
-        createdByScoreFunction: true,
-      };
-
-      let thoughtId: string | undefined;
-      try {
-        const thoughtRef = await db.collection("thoughts").add(thoughtData);
-        thoughtId = thoughtRef.id;
-        console.log("✅ Clubhouse post created:", thoughtId);
-        try { await snap.ref.update({ thoughtId }); } catch (e) { console.error("❌ Error updating score with thoughtId:", e); }
-      } catch (e) { console.error("❌ Error creating thought:", e); }
-
-      // PARTNER NOTIFICATIONS
+      // ── PARTNER NOTIFICATIONS ─────────────────────────────────
+      // Always send regardless of format/simulator
       const partners = userData?.partners || [];
       if (Array.isArray(partners) && partners.length > 0) {
         for (const partnerId of partners) {
@@ -246,24 +243,26 @@ export const onScoreCreated = onDocumentCreated(
             userId: partnerId, type: "partner_scored",
             actorId: userId, actorName: userName || userData?.displayName,
             actorAvatar: userData?.avatar || undefined,
-            postId: thoughtId, scoreId, courseId, courseName, regionKey,
+            scoreId, courseId, courseName, regionKey,
             message: `${userName || userData?.displayName} logged a round at ${courseName}`,
           });
         }
         console.log("✅ Sent partner_scored notifications to", partners.length, "partners");
 
-        // Feed activity: career best round
-        const prevBest = userData?.personalDetails?.bestRound ?? 999;
-        if (grossScore < prevBest && holeCount === 18) {
-          await writeLowRoundActivity(
-            userId,
-            userName || userData?.displayName || "Unknown",
-            userData?.avatar || null,
-            grossScore,
-            courseName,
-            scoreId,
-            regionKey || ""
-          );
+        // Feed activity: career best round (only for eligible scores)
+        if (countsForHandicap) {
+          const prevBest = userData?.personalDetails?.bestRound ?? 999;
+          if (grossScore < prevBest && holeCount === 18) {
+            await writeLowRoundActivity(
+              userId,
+              userName || userData?.displayName || "Unknown",
+              userData?.avatar || null,
+              grossScore,
+              courseName,
+              scoreId,
+              regionKey || ""
+            );
+          }
         }
 
         if (isNewLowman) {
@@ -272,7 +271,7 @@ export const onScoreCreated = onDocumentCreated(
               userId: partnerId, type: "partner_lowman",
               actorId: userId, actorName: userName || userData?.displayName,
               actorAvatar: userData?.avatar || undefined,
-              postId: thoughtId, scoreId, courseId, courseName, regionKey,
+              scoreId, courseId, courseName, regionKey,
               message: `${userName || userData?.displayName} became the low leader @${courseName}`,
             });
           }
@@ -285,7 +284,7 @@ export const onScoreCreated = onDocumentCreated(
               userId: partnerId, type: "partner_holeinone",
               actorId: userId, actorName: userName || userData?.displayName,
               actorAvatar: userData?.avatar || undefined,
-              postId: thoughtId, scoreId, courseId, courseName, regionKey,
+              scoreId, courseId, courseName, regionKey,
               message: `${userName || userData?.displayName} hit a hole-in-one on hole ${holeNumber} at ${courseName}!`,
             });
           }
@@ -293,35 +292,36 @@ export const onScoreCreated = onDocumentCreated(
         }
       }
 
-        // UPDATE USER CAREER STATS
-      try {
-        await updateUserCareerStats(userId, {
-          grossScore,
-          netScore,
-          holeScores: score.holeScores,
-          courseId,
-          fairwaysHit: score.fairwaysHit,
-          fairwaysPossible: score.fairwaysPossible,
-          greensInRegulation: score.greensInRegulation,
-          totalPenalties: score.totalPenalties,
-        });
-      } catch (statsErr) {
-        console.error("⚠️ Career stats update failed:", statsErr);
+      // ── UPDATE USER CAREER STATS ──────────────────────────────
+      if (countsForHandicap) {
+        try {
+          await updateUserCareerStats(userId, {
+            grossScore,
+            netScore,
+            holeScores: score.holeScores,
+            courseId,
+            fairwaysHit: score.fairwaysHit,
+            fairwaysPossible: score.fairwaysPossible,
+            greensInRegulation: score.greensInRegulation,
+            totalPenalties: score.totalPenalties,
+          });
+        } catch (statsErr) {
+          console.error("⚠️ Career stats update failed:", statsErr);
+        }
+      } else {
+        console.log("⏭️ Score does not count for handicap — skipping career stats");
       }
 
-      // ============================================
-      // EVALUATE CHALLENGES
-      // ============================================
+      // ── EVALUATE CHALLENGES ───────────────────────────────────
+      // Challenges run for all scores (some may apply to any format)
       try {
         const { evaluateChallenges } = await import("./challengeEvaluator.js");
 
-        // Build holePars from course data
         const courseDoc = await db.collection("courses").doc(String(courseId)).get();
         const courseTees = courseDoc.exists ? courseDoc.data()?.tees : null;
         const allTees = [...(courseTees?.male || []), ...(courseTees?.female || [])];
         const holePars = allTees[0]?.holes?.map((h: any) => h.par || 4) || [];
 
-        // Determine if user tracked FIR/GIR
         const fir = score.fir || [];
         const gir = score.gir || [];
         const hasFirData = fir.some((v: any) => v !== null);

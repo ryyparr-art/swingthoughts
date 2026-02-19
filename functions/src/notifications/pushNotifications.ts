@@ -76,6 +76,7 @@ export const sendPushNotification = onDocumentCreated(
           courseId: notification.courseId,
           threadId: notification.threadId,
           leagueId: notification.leagueId,
+          roundId: notification.roundId,
         },
         badge: unreadCount,
       };
@@ -139,6 +140,10 @@ export const sendPushNotification = onDocumentCreated(
         case "challenge_progress": pushMessage.title = "📈 Challenge Update"; break;
         case "dtp_claimed": pushMessage.title = "🎯 Pin Claimed!"; break;
         case "dtp_lost": pushMessage.title = "🎯 Pin Beaten!"; break;
+        // Round Notifications
+        case "round_invite": pushMessage.title = "⛳ Live Round"; break;
+        case "round_complete": pushMessage.title = "🏁 Round Complete"; break;
+        case "round_notable": pushMessage.title = "⛳ Round Update"; break;
         default: pushMessage.title = "⛳ Swing Thoughts";
       }
 

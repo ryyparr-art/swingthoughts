@@ -66,6 +66,7 @@ import ReportModal from "@/components/modals/ReportModal";
 import TournamentChatModal from "@/components/modals/TournamentChatModal";
 import FilterBottomSheet from "@/components/ui/FilterBottomSheet";
 import FilterFAB from "@/components/ui/FilterFAB";
+import LiveRoundFAB from "@/components/scoring/LiveRoundFAB";
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const SCREEN_HEIGHT = Dimensions.get('window').height;
@@ -746,6 +747,9 @@ export default function ClubhouseScreen() {
           onClose={() => setExpandedVideo(null)}
         />
       )}
+
+      {/* Live Round FAB */}
+      {currentUserId ? <LiveRoundFAB userId={currentUserId} /> : null}
 
       {/* Bottom Navigation */}
       <BottomActionBar disabled={!canWrite} />

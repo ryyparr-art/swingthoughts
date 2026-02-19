@@ -15,6 +15,7 @@
  *   - scratch_earned (everyone)
  *   - ace_tier_earned (everyone)
  *   - league_result (members)
+ *   - round_complete (partners + regional, respects privacy)
  *
  * Uses FlatList with pagingEnabled for snap-to-card behavior.
  */
@@ -32,6 +33,7 @@ import type {
   ActivityLeagueResult,
   ActivityLowLeaderChange,
   ActivityLowRound,
+  ActivityRoundComplete,
   ActivityScratchEarned,
 } from "@/utils/feedInsertTypes";
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -162,6 +164,9 @@ function ActivityCard({ item }: { item: ActivityItem }) {
       case "league_result":
         router.push(`/leagues/home` as any);
         break;
+      case "round_complete":
+        router.push(`/round/${(item as ActivityRoundComplete).roundId}` as any);
+        break;
     }
   };
 
@@ -171,6 +176,7 @@ function ActivityCard({ item }: { item: ActivityItem }) {
   const isNudge = item.activityType === "challenge_progress";
   const isDTPAvailable = item.activityType === "dtp_available";
   const isLeagueResult = item.activityType === "league_result";
+  const isRoundComplete = item.activityType === "round_complete";
 
   return (
     <TouchableOpacity
@@ -179,6 +185,7 @@ function ActivityCard({ item }: { item: ActivityItem }) {
         isNudge && styles.cardNudge,
         isDTPAvailable && styles.cardDTP,
         isLeagueResult && styles.cardLeagueResult,
+        isRoundComplete && styles.cardRoundComplete,
       ]}
       activeOpacity={0.8}
       onPress={handlePress}
@@ -225,6 +232,8 @@ function renderActivityContent(item: ActivityItem) {
       return <AceTierContent item={item} />;
     case "league_result":
       return <LeagueResultContent item={item} />;
+    case "round_complete":
+      return <RoundCompleteContent item={item} />;
     default:
       return null;
   }
@@ -478,6 +487,146 @@ function LeagueResultContent({ item }: { item: ActivityLeagueResult }) {
   );
 }
 
+// -- Round Complete (solo & group) --
+function RoundCompleteContent({ item }: { item: ActivityRoundComplete }) {
+  const isSolo = item.playerCount === 1;
+  const topPlayers = item.playerSummaries.slice(0, 4);
+
+  const scoreToParLabel = (stp: number) => {
+    if (stp === 0) return "E";
+    return stp > 0 ? `+${stp}` : `${stp}`;
+  };
+
+  const FORMAT_LABELS: Record<string, string> = {
+    stroke_play: "Stroke Play",
+    individual_stableford: "Stableford",
+    par_bogey: "Par/Bogey",
+    match_play: "Match Play",
+    four_ball: "Four-Ball",
+    foursomes: "Foursomes",
+    scramble: "Scramble",
+    best_ball: "Best Ball",
+    skins: "Skins",
+    nassau: "Nassau",
+  };
+
+  // Build header text: "Ryan P., Mike D. and 2 others played ..."
+  const headerNames = (() => {
+    if (isSolo) return <Text style={styles.bold}>{item.displayName}</Text>;
+
+    // Marker is always the card owner (item.displayName)
+    // Winner is first in playerSummaries (sorted by net)
+    const winner = item.playerSummaries[0];
+    const winnerIsDifferent = winner && winner.displayName !== item.displayName;
+    const othersCount = item.playerCount - (winnerIsDifferent ? 2 : 1);
+
+    if (!winnerIsDifferent) {
+      // Marker is the winner
+      if (othersCount === 1) {
+        return (
+          <>
+            <Text style={styles.bold}>{item.displayName}</Text>
+            {" and 1 other"}
+          </>
+        );
+      }
+      return (
+        <>
+          <Text style={styles.bold}>{item.displayName}</Text>
+          {` and ${othersCount} others`}
+        </>
+      );
+    }
+
+    if (othersCount === 0) {
+      // Just 2 players
+      return (
+        <>
+          <Text style={styles.bold}>{item.displayName}</Text>
+          {" and "}
+          <Text style={styles.bold}>{winner.displayName}</Text>
+        </>
+      );
+    }
+
+    return (
+      <>
+        <Text style={styles.bold}>{item.displayName}</Text>
+        {", "}
+        <Text style={styles.bold}>{winner.displayName}</Text>
+        {othersCount === 1 ? " and 1 other" : ` and ${othersCount} others`}
+      </>
+    );
+  })();
+
+  return (
+    <View style={{ gap: 8 }}>
+      {/* Header row: avatar + course */}
+      <View style={styles.contentRow}>
+        <Avatar uri={item.avatar} name={item.displayName} />
+        <View style={styles.contentBody}>
+          <Text style={styles.contentText}>
+            {headerNames}
+            {" played "}
+            <Text style={styles.hl}>{item.courseName}</Text>
+          </Text>
+          <Text style={styles.timeText}>
+            {item.holeCount} holes • {FORMAT_LABELS[item.formatId] || item.formatId}
+            {item.isSimulator ? " • Sim" : ""}
+            {" • "}{formatTime(item.timestamp)}
+          </Text>
+        </View>
+        {item.roundImageUrl ? (
+          <Image source={{ uri: item.roundImageUrl }} style={rcStyles.thumbImage} />
+        ) : (
+          <View style={rcStyles.accentGolf}>
+            <Text style={{ fontSize: 16 }}>⛳</Text>
+          </View>
+        )}
+      </View>
+
+      {/* Scoreboard mini-table */}
+      <View style={rcStyles.scoreboard}>
+        {/* Header */}
+        <View style={rcStyles.scoreRow}>
+          <Text style={[rcStyles.scoreColPlayer, rcStyles.scoreHeader]}>PLAYER</Text>
+          <Text style={[rcStyles.scoreColNum, rcStyles.scoreHeader]}>GRS</Text>
+          <Text style={[rcStyles.scoreColNum, rcStyles.scoreHeader]}>NET</Text>
+          <Text style={[rcStyles.scoreColNum, rcStyles.scoreHeader]}>+/-</Text>
+        </View>
+        {/* Player rows */}
+        {topPlayers.map((p, i) => {
+          const isWinner = i === 0 && item.playerCount > 1;
+          return (
+            <View key={p.playerId} style={rcStyles.scoreRow}>
+              <View style={[rcStyles.scoreColPlayer, { flexDirection: "row", alignItems: "center", gap: 6 }]}>
+                {isWinner && <Text style={{ fontSize: 10 }}>🏆</Text>}
+                <Text style={[rcStyles.playerName, isWinner && styles.gold]} numberOfLines={1}>
+                  {p.displayName}
+                </Text>
+              </View>
+              <Text style={[rcStyles.scoreColNum, rcStyles.scoreVal]}>{p.grossScore}</Text>
+              <Text style={[rcStyles.scoreColNum, rcStyles.scoreVal, isWinner && styles.gold]}>
+                {p.netScore}
+              </Text>
+              <Text style={[rcStyles.scoreColNum, rcStyles.scoreValPar]}>
+                {scoreToParLabel(p.scoreToPar)}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+
+      {/* Description (if provided) */}
+      {item.roundDescription ? (
+        <Text style={rcStyles.description} numberOfLines={2}>
+          {item.roundDescription}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
 // ============================================================================
 // SHARED COMPONENTS
 // ============================================================================
@@ -519,6 +668,8 @@ function getTypeInfo(type: string): { typeLabel: string; dotColor: string } {
       return { typeLabel: "Achievement", dotColor: "#C5A55A" };
     case "league_result":
       return { typeLabel: "League Result", dotColor: "#0D5C3A" };
+    case "round_complete":
+      return { typeLabel: "Round Posted", dotColor: "#147A52" };
     default:
       return { typeLabel: "Activity", dotColor: "#999" };
   }
@@ -591,6 +742,10 @@ const styles = StyleSheet.create({
   cardLeagueResult: {
     borderLeftWidth: 3,
     borderLeftColor: "#0D5C3A",
+  },
+  cardRoundComplete: {
+    borderLeftWidth: 3,
+    borderLeftColor: "#147A52",
   },
 
   // Type label
@@ -753,5 +908,70 @@ const styles = StyleSheet.create({
   dotActive: {
     backgroundColor: "#0D5C3A",
     width: 16,
+  },
+});
+
+// ── Round Complete card styles ────────────────────────────────────
+const rcStyles = StyleSheet.create({
+  thumbImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+  },
+  accentGolf: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: "rgba(13, 92, 58, 0.08)",
+    borderWidth: 1.5,
+    borderColor: "rgba(13, 92, 58, 0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scoreboard: {
+    backgroundColor: "rgba(0,0,0,0.03)",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  scoreRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 3,
+  },
+  scoreHeader: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: "#BBB",
+    letterSpacing: 0.5,
+  },
+  scoreColPlayer: {
+    flex: 1,
+  },
+  scoreColNum: {
+    width: 36,
+    textAlign: "center",
+  },
+  playerName: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#333",
+    flexShrink: 1,
+  },
+  scoreVal: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#333",
+  },
+  scoreValPar: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#999",
+  },
+  description: {
+    fontSize: 12,
+    color: "#666",
+    fontStyle: "italic",
+    lineHeight: 17,
   },
 });

@@ -1,7 +1,9 @@
+import type { ProfileRound } from "@/app/profile/[userId]";
 import CoursePlayersModal from "@/components/modals/CoursePlayersModal";
 import CoursePostsGalleryModal from "@/components/modals/CoursePostsGalleryModal";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
+import ProfileRoundCard from "@/components/profile/ProfileRoundCard";
 import { auth, db } from "@/constants/firebaseConfig";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -9,7 +11,15 @@ import { batchGetUserProfiles } from "@/utils/userProfileHelpers";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  orderBy,
+  query,
+  where,
+} from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -20,11 +30,11 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-const SCREEN_WIDTH = Dimensions.get('window').width;
+const SCREEN_WIDTH = Dimensions.get("window").width;
 
 interface CourseProfile {
   courseId: number;
@@ -62,6 +72,8 @@ interface Stats {
   totalMembers: number;
 }
 
+type CourseTab = "posts" | "rounds";
+
 export default function CourseProfileScreen() {
   const router = useRouter();
   const { courseId } = useLocalSearchParams();
@@ -70,19 +82,25 @@ export default function CourseProfileScreen() {
 
   const [profile, setProfile] = useState<CourseProfile | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
-  const [stats, setStats] = useState<Stats>({ 
-    totalRounds: 0, 
+  const [rounds, setRounds] = useState<ProfileRound[]>([]);
+  const [stats, setStats] = useState<Stats>({
+    totalRounds: 0,
     holeInOnes: 0,
     totalPlayers: 0,
-    totalMembers: 0
+    totalMembers: 0,
   });
   const [playersModalVisible, setPlayersModalVisible] = useState(false);
   const [galleryModalVisible, setGalleryModalVisible] = useState(false);
-  const [selectedPostId, setSelectedPostId] = useState<string | undefined>(undefined);
+  const [selectedPostId, setSelectedPostId] = useState<string | undefined>(
+    undefined
+  );
   const [loading, setLoading] = useState(true);
   const [showingCached, setShowingCached] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [isOwnCourse, setIsOwnCourse] = useState(false);
+  const [activeTab, setActiveTab] = useState<CourseTab>("posts");
+  const [roundsLoading, setRoundsLoading] = useState(false);
+  const [roundsLoaded, setRoundsLoaded] = useState(false);
 
   useEffect(() => {
     if (courseId && typeof courseId === "string") {
@@ -90,12 +108,26 @@ export default function CourseProfileScreen() {
     }
   }, [courseId]);
 
+  // Lazy-load rounds when tab switches
+  useEffect(() => {
+    if (
+      activeTab === "rounds" &&
+      !roundsLoaded &&
+      courseId &&
+      typeof courseId === "string"
+    ) {
+      fetchCourseRounds(Number(courseId));
+    }
+  }, [activeTab, roundsLoaded, courseId]);
+
   /* ========================= FETCH WITH CACHE ========================= */
 
   const fetchCourseDataWithCache = async (targetCourseId: string) => {
     try {
-      const cached = await getCache(CACHE_KEYS.COURSE_PROFILE(targetCourseId));
-      
+      const cached = await getCache(
+        CACHE_KEYS.COURSE_PROFILE(targetCourseId)
+      );
+
       if (cached) {
         console.log("⚡ Course profile cache hit:", targetCourseId);
         setProfile(cached.profile);
@@ -117,7 +149,10 @@ export default function CourseProfileScreen() {
     }
   };
 
-  const fetchCourseData = async (targetCourseId: string, isBackgroundRefresh: boolean = false) => {
+  const fetchCourseData = async (
+    targetCourseId: string,
+    isBackgroundRefresh: boolean = false
+  ) => {
     try {
       if (!isBackgroundRefresh) {
         setLoading(true);
@@ -128,7 +163,7 @@ export default function CourseProfileScreen() {
         where("id", "==", Number(targetCourseId))
       );
       const coursesSnap = await getDocs(coursesQuery);
-      
+
       if (coursesSnap.empty) {
         setShowingCached(false);
         setLoading(false);
@@ -136,10 +171,11 @@ export default function CourseProfileScreen() {
       }
 
       const courseData = coursesSnap.docs[0].data();
-      
+
       const profileData: CourseProfile = {
         courseId: Number(targetCourseId),
-        courseName: courseData.courseName || courseData.course_name || "Course",
+        courseName:
+          courseData.courseName || courseData.course_name || "Course",
         location: courseData.location,
         par: courseData.par,
         slope: courseData.slope,
@@ -149,9 +185,10 @@ export default function CourseProfileScreen() {
 
       setProfile(profileData);
 
-      let courseOwnerId: string | null = courseData.claimedByUserId || null;
+      let courseOwnerId: string | null =
+        courseData.claimedByUserId || null;
       let isOwned = false;
-      
+
       if (currentUserId) {
         const userDoc = await getDoc(doc(db, "users", currentUserId));
         if (userDoc.exists()) {
@@ -175,9 +212,9 @@ export default function CourseProfileScreen() {
 
       const leaderRef = doc(db, "course_leaders", targetCourseId);
       const leaderSnap = await getDoc(leaderRef);
-      
+
       let holeInOnesCount = 0;
-      
+
       if (leaderSnap.exists()) {
         const leaderData = leaderSnap.data();
         holeInOnesCount = leaderData.holeinones?.length || 0;
@@ -187,8 +224,8 @@ export default function CourseProfileScreen() {
       let playersCount = 0;
       let membersCount = 0;
 
-      usersSnap.forEach((doc) => {
-        const userData = doc.data();
+      usersSnap.forEach((docSnap) => {
+        const userData = docSnap.data();
         const playerCourses = userData.playerCourses || [];
         const memberCourses = userData.declaredMemberCourses || [];
 
@@ -212,27 +249,34 @@ export default function CourseProfileScreen() {
 
       const postsQuery = query(collection(db, "thoughts"));
       const postsSnap = await getDocs(postsQuery);
-      
+
       const postsData: Post[] = [];
       const userIds = new Set<string>();
 
-      postsSnap.forEach((doc) => {
-        const data = doc.data();
-        
+      postsSnap.forEach((docSnap) => {
+        const data = docSnap.data();
+
         const taggedCourses = data.taggedCourses || [];
-        const isTagged = taggedCourses.some((c: any) => c.courseId === Number(targetCourseId));
-        const isCreatedByCourseOwner = courseOwnerId && data.userId === courseOwnerId;
-        
+        const isTagged = taggedCourses.some(
+          (c: any) => c.courseId === Number(targetCourseId)
+        );
+        const isCreatedByCourseOwner =
+          courseOwnerId && data.userId === courseOwnerId;
+
         if (isTagged || isCreatedByCourseOwner) {
           let images: string[] = [];
-          if (data.imageUrls && Array.isArray(data.imageUrls) && data.imageUrls.length > 0) {
+          if (
+            data.imageUrls &&
+            Array.isArray(data.imageUrls) &&
+            data.imageUrls.length > 0
+          ) {
             images = data.imageUrls;
           } else if (data.imageUrl) {
             images = [data.imageUrl];
           }
-          
+
           postsData.push({
-            postId: doc.id,
+            postId: docSnap.id,
             userId: data.userId,
             imageUrls: images,
             imageCount: images.length,
@@ -251,18 +295,22 @@ export default function CourseProfileScreen() {
       });
 
       if (userIds.size > 0) {
-        const profilesMap = await batchGetUserProfiles(Array.from(userIds));
+        const profilesMap = await batchGetUserProfiles(
+          Array.from(userIds)
+        );
         const profiles: Record<string, any> = {};
 
-        profilesMap.forEach((profile, oduserId) => {
-          profiles[oduserId] = {
-            displayName: profile.displayName,
-            avatar: profile.avatar,
+        profilesMap.forEach((prof, uid) => {
+          profiles[uid] = {
+            displayName: prof.displayName,
+            avatar: prof.avatar,
           };
         });
 
         postsData.forEach((post: any) => {
-          const postData = postsSnap.docs.find(d => d.id === post.postId)?.data();
+          const postData = postsSnap.docs
+            .find((d) => d.id === post.postId)
+            ?.data();
           if (postData && postData.userId) {
             if (!post.userName && profiles[postData.userId]) {
               post.userName = profiles[postData.userId].displayName;
@@ -292,9 +340,69 @@ export default function CourseProfileScreen() {
       setLoading(false);
     } catch (error) {
       console.error("Error fetching course data:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       setShowingCached(false);
       setLoading(false);
+    }
+  };
+
+  /* ========================= FETCH COURSE ROUNDS ========================= */
+
+  const fetchCourseRounds = async (numericCourseId: number) => {
+    setRoundsLoading(true);
+    try {
+      const roundsQuery = query(
+        collection(db, "feedActivity"),
+        where("courseId", "==", numericCourseId),
+        where("activityType", "==", "round_complete"),
+        orderBy("createdAt", "desc")
+      );
+
+      const snap = await getDocs(roundsQuery);
+      const roundsData: ProfileRound[] = [];
+      const seenRoundIds = new Set<string>();
+
+      snap.forEach((docSnap) => {
+        const d = docSnap.data();
+
+        // Deduplicate — multiple players in same round each write a feedActivity
+        if (seenRoundIds.has(d.roundId)) return;
+        seenRoundIds.add(d.roundId);
+
+        // Skip private rounds on course profile (show public + partners)
+        const privacy = d.privacy || "public";
+        if (privacy === "private") return;
+
+        roundsData.push({
+          id: docSnap.id,
+          activityType: "round_complete",
+          timestamp: d.timestamp || d.createdAt?.toMillis?.() || 0,
+          userId: d.userId,
+          displayName: d.displayName || "",
+          avatar: d.avatar || null,
+          roundId: d.roundId,
+          courseId: d.courseId,
+          courseName: d.courseName || "",
+          holeCount: d.holeCount || 18,
+          formatId: d.formatId || "stroke_play",
+          playerCount: d.playerCount || 1,
+          isSimulator: d.isSimulator || false,
+          privacy: privacy,
+          playerSummaries: d.playerSummaries || [],
+          winnerName: d.winnerName || null,
+          roundDescription: d.roundDescription || null,
+          roundImageUrl: d.roundImageUrl || null,
+        });
+      });
+
+      setRounds(roundsData);
+      setRoundsLoaded(true);
+    } catch (error) {
+      console.error("Error fetching course rounds:", error);
+      setRounds([]);
+      setRoundsLoaded(true);
+    } finally {
+      setRoundsLoading(false);
     }
   };
 
@@ -302,23 +410,37 @@ export default function CourseProfileScreen() {
 
   const onRefresh = async () => {
     if (!courseId || typeof courseId !== "string") return;
-    
+
     setRefreshing(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    
+
     setShowingCached(false);
     await fetchCourseData(courseId);
-    
+
+    if (roundsLoaded) {
+      setRoundsLoaded(false);
+      await fetchCourseRounds(Number(courseId));
+    }
+
     setRefreshing(false);
   };
 
   /* ========================= HANDLERS ========================= */
 
   const handleEditPost = (postId: string) => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/create?editId=${postId}`);
   };
+
+  const handleTabPress = (tab: CourseTab) => {
+    if (tab === activeTab) return;
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setActiveTab(tab);
+  };
+
+  /* ========================= RENDER POST ========================= */
 
   const renderPost = ({ item }: { item: Post }) => {
     const isOwnPost = currentUserId && item.userId === currentUserId;
@@ -327,10 +449,10 @@ export default function CourseProfileScreen() {
     const hasMultipleImages = images.length > 1;
 
     return (
-      <TouchableOpacity 
+      <TouchableOpacity
         style={styles.postCard}
         onPress={() => {
-          soundPlayer.play('click');
+          soundPlayer.play("click");
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           setSelectedPostId(item.postId);
           setGalleryModalVisible(true);
@@ -338,19 +460,27 @@ export default function CourseProfileScreen() {
       >
         {item.videoThumbnailUrl ? (
           <>
-            <Image source={{ uri: item.videoThumbnailUrl }} style={styles.postImage} />
+            <Image
+              source={{ uri: item.videoThumbnailUrl }}
+              style={styles.postImage}
+            />
             <View style={styles.videoIndicator}>
               <Ionicons name="play-circle" size={40} color="#FFF" />
             </View>
           </>
         ) : firstImage ? (
           <>
-            <Image source={{ uri: firstImage }} style={styles.postImage} />
-            
+            <Image
+              source={{ uri: firstImage }}
+              style={styles.postImage}
+            />
+
             {hasMultipleImages && (
               <View style={styles.multiImageIndicator}>
                 <Ionicons name="images" size={16} color="#FFF" />
-                <Text style={styles.multiImageText}>{images.length}</Text>
+                <Text style={styles.multiImageText}>
+                  {images.length}
+                </Text>
               </View>
             )}
           </>
@@ -361,7 +491,7 @@ export default function CourseProfileScreen() {
             </Text>
           </View>
         )}
-        
+
         {isOwnPost && (
           <TouchableOpacity
             style={styles.editButton}
@@ -373,11 +503,14 @@ export default function CourseProfileScreen() {
             <Ionicons name="create-outline" size={20} color="#0D5C3A" />
           </TouchableOpacity>
         )}
-        
+
         {item.userName && (
           <View style={styles.postOverlay}>
             {item.userAvatar ? (
-              <Image source={{ uri: item.userAvatar }} style={styles.postUserAvatar} />
+              <Image
+                source={{ uri: item.userAvatar }}
+                style={styles.postUserAvatar}
+              />
             ) : (
               <View style={styles.postUserAvatarPlaceholder}>
                 <Ionicons name="person" size={12} color="#FFF" />
@@ -391,6 +524,21 @@ export default function CourseProfileScreen() {
       </TouchableOpacity>
     );
   };
+
+  /* ========================= RENDER ROUND ========================= */
+
+  const renderRound = ({ item }: { item: ProfileRound }) => (
+    <ProfileRoundCard
+      round={item}
+      onPress={() => {
+        soundPlayer.play("click");
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        router.push(`/round/${item.roundId}` as any);
+      }}
+    />
+  );
+
+  /* ========================= SCREEN ========================= */
 
   if (loading && !showingCached) {
     return (
@@ -408,17 +556,162 @@ export default function CourseProfileScreen() {
     );
   }
 
+  /* ========================= LIST HEADER ========================= */
+
+  const ListHeader = (
+    <>
+      {/* Course Card */}
+      <View style={styles.profileCard}>
+        <View style={styles.profileCardInner}>
+          <View style={styles.iconContainer}>
+            <View style={styles.courseIconInner}>
+              <Ionicons name="flag" size={50} color="#0D5C3A" />
+            </View>
+          </View>
+
+          <Text style={styles.courseName}>{profile.courseName}</Text>
+
+          {profile.location && (
+            <Text style={styles.courseLocation}>
+              {profile.location.city}, {profile.location.state}
+            </Text>
+          )}
+
+          {(profile.par || profile.slope) && (
+            <Text style={styles.courseDetails}>
+              {profile.par ? `Par ${profile.par}` : ""}
+              {profile.par && profile.slope ? " • " : ""}
+              {profile.slope ? `Slope ${profile.slope}` : ""}
+            </Text>
+          )}
+
+          <View style={styles.statsBar}>
+            <View style={styles.statItem}>
+              <Text style={styles.statValue}>{stats.totalRounds}</Text>
+              <Text style={styles.statLabel}>ROUNDS</Text>
+            </View>
+
+            <View style={styles.statDivider} />
+
+            <View style={styles.statItem}>
+              <Text style={styles.statValue}>{stats.holeInOnes}</Text>
+              <Text style={styles.statLabel}>ACES</Text>
+            </View>
+
+            <View style={styles.statDivider} />
+
+            <TouchableOpacity
+              style={styles.statItem}
+              onPress={() => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setPlayersModalVisible(true);
+              }}
+            >
+              <Text style={styles.statValue}>{stats.totalPlayers}</Text>
+              <View style={styles.statLabelRow}>
+                <Text style={styles.statLabel}>PLAYERS</Text>
+                <Ionicons
+                  name="chevron-forward"
+                  size={10}
+                  color="#999"
+                />
+              </View>
+            </TouchableOpacity>
+
+            <View style={styles.statDivider} />
+
+            <TouchableOpacity
+              style={styles.statItem}
+              onPress={() => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setPlayersModalVisible(true);
+              }}
+            >
+              <Text style={styles.statValue}>{stats.totalMembers}</Text>
+              <View style={styles.statLabelRow}>
+                <Text style={styles.statLabel}>MEMBERS</Text>
+                <Ionicons
+                  name="chevron-forward"
+                  size={10}
+                  color="#999"
+                />
+              </View>
+            </TouchableOpacity>
+          </View>
+
+          {!profile.claimed && (
+            <View style={styles.unclaimedBanner}>
+              <Ionicons
+                name="information-circle-outline"
+                size={18}
+                color="#666"
+              />
+              <Text style={styles.unclaimedText}>
+                This course hasn't claimed their profile yet
+              </Text>
+            </View>
+          )}
+        </View>
+      </View>
+
+      {/* Tab Bar */}
+      <View style={styles.tabBar}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === "posts" && styles.tabActive]}
+          onPress={() => handleTabPress("posts")}
+        >
+          <Ionicons
+            name="chatbubble-outline"
+            size={16}
+            color={activeTab === "posts" ? "#0D5C3A" : "#999"}
+          />
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === "posts" && styles.tabTextActive,
+            ]}
+          >
+            Thoughts
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.tab, activeTab === "rounds" && styles.tabActive]}
+          onPress={() => handleTabPress("rounds")}
+        >
+          <Ionicons
+            name="golf-outline"
+            size={16}
+            color={activeTab === "rounds" ? "#0D5C3A" : "#999"}
+          />
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === "rounds" && styles.tabTextActive,
+            ]}
+          >
+            Rounds
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </>
+  );
+
+  /* ========================= MAIN RENDER ========================= */
+
   return (
     <View style={styles.container}>
       <SafeAreaView edges={["top"]} style={styles.safeTop} />
 
       <View style={styles.header}>
-        <TouchableOpacity 
+        <TouchableOpacity
           onPress={() => {
-            soundPlayer.play('click');
+            soundPlayer.play("click");
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             router.back();
-          }} 
+          }}
           style={styles.headerButton}
         >
           <Image
@@ -433,7 +726,7 @@ export default function CourseProfileScreen() {
         {isOwnCourse ? (
           <TouchableOpacity
             onPress={() => {
-              soundPlayer.play('click');
+              soundPlayer.play("click");
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               router.push("/profile/settings");
             }}
@@ -453,133 +746,73 @@ export default function CourseProfileScreen() {
         </View>
       )}
 
-      <FlatList
-        data={posts}
-        renderItem={renderPost}
-        keyExtractor={(item) => item.postId}
-        numColumns={3}
-        contentContainerStyle={styles.postsGrid}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor="#0D5C3A"
-            colors={["#0D5C3A"]}
-          />
-        }
-        ListHeaderComponent={
-          <>
-            {/* ✅ NEW: Golf Membership Card Style Header */}
-            <View style={styles.profileCard}>
-              <View style={styles.profileCardInner}>
-                {/* Course Icon with Gold Ring */}
-                <View style={styles.iconContainer}>
-                  <View style={styles.courseIconInner}>
-                    <Ionicons name="flag" size={50} color="#0D5C3A" />
-                  </View>
-                </View>
-
-                {/* Course Name */}
-                <Text style={styles.courseName}>{profile.courseName}</Text>
-
-                {/* Location & Details */}
-                {profile.location && (
-                  <Text style={styles.courseLocation}>
-                    {profile.location.city}, {profile.location.state}
-                  </Text>
-                )}
-
-                {(profile.par || profile.slope) && (
-                  <Text style={styles.courseDetails}>
-                    {profile.par ? `Par ${profile.par}` : ""}
-                    {profile.par && profile.slope ? " • " : ""}
-                    {profile.slope ? `Slope ${profile.slope}` : ""}
-                  </Text>
-                )}
-
-                {/* Stats Row - Connected Bar */}
-                <View style={styles.statsBar}>
-                  <View style={styles.statItem}>
-                    <Text style={styles.statValue}>{stats.totalRounds}</Text>
-                    <Text style={styles.statLabel}>ROUNDS</Text>
-                  </View>
-
-                  <View style={styles.statDivider} />
-
-                  <View style={styles.statItem}>
-                    <Text style={styles.statValue}>{stats.holeInOnes}</Text>
-                    <Text style={styles.statLabel}>ACES</Text>
-                  </View>
-
-                  <View style={styles.statDivider} />
-
-                  <TouchableOpacity 
-                    style={styles.statItem}
-                    onPress={() => {
-                      soundPlayer.play('click');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setPlayersModalVisible(true);
-                    }}
-                  >
-                    <Text style={styles.statValue}>{stats.totalPlayers}</Text>
-                    <View style={styles.statLabelRow}>
-                      <Text style={styles.statLabel}>PLAYERS</Text>
-                      <Ionicons name="chevron-forward" size={10} color="#999" />
-                    </View>
-                  </TouchableOpacity>
-
-                  <View style={styles.statDivider} />
-
-                  <TouchableOpacity 
-                    style={styles.statItem}
-                    onPress={() => {
-                      soundPlayer.play('click');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setPlayersModalVisible(true);
-                    }}
-                  >
-                    <Text style={styles.statValue}>{stats.totalMembers}</Text>
-                    <View style={styles.statLabelRow}>
-                      <Text style={styles.statLabel}>MEMBERS</Text>
-                      <Ionicons name="chevron-forward" size={10} color="#999" />
-                    </View>
-                  </TouchableOpacity>
-                </View>
-
-                {/* Unclaimed Banner */}
-                {!profile.claimed && (
-                  <View style={styles.unclaimedBanner}>
-                    <Ionicons name="information-circle-outline" size={18} color="#666" />
-                    <Text style={styles.unclaimedText}>
-                      This course hasn't claimed their profile yet
-                    </Text>
-                  </View>
-                )}
-              </View>
-            </View>
-
-            <View style={styles.postsHeader}>
-              <Text style={styles.postsTitle}>
-                {posts.length > 0 ? "Thoughts Tagged Here" : "No Posts Yet"}
+      {/* Posts Tab */}
+      {activeTab === "posts" && (
+        <FlatList
+          data={posts}
+          renderItem={renderPost}
+          keyExtractor={(item) => item.postId}
+          numColumns={3}
+          contentContainerStyle={styles.postsGrid}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor="#0D5C3A"
+              colors={["#0D5C3A"]}
+            />
+          }
+          ListHeaderComponent={ListHeader}
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Ionicons name="images-outline" size={64} color="#CCC" />
+              <Text style={styles.emptyText}>
+                No posts tagged at this course yet
               </Text>
             </View>
-          </>
-        }
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Ionicons name="images-outline" size={64} color="#CCC" />
-            <Text style={styles.emptyText}>
-              No posts tagged at this course yet
-            </Text>
-          </View>
-        }
-      />
+          }
+        />
+      )}
 
+      {/* Rounds Tab */}
+      {activeTab === "rounds" && (
+        <FlatList
+          data={rounds}
+          renderItem={renderRound}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.roundsGrid}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor="#0D5C3A"
+              colors={["#0D5C3A"]}
+            />
+          }
+          ListHeaderComponent={ListHeader}
+          ListEmptyComponent={
+            roundsLoading ? (
+              <View style={styles.emptyContainer}>
+                <ActivityIndicator size="large" color="#0D5C3A" />
+              </View>
+            ) : (
+              <View style={styles.emptyContainer}>
+                <Ionicons name="golf-outline" size={64} color="#CCC" />
+                <Text style={styles.emptyText}>
+                  No rounds posted at this course yet
+                </Text>
+              </View>
+            )
+          }
+        />
+      )}
+
+      {/* Modals */}
       {profile && (
         <CoursePlayersModal
           visible={playersModalVisible}
           onClose={() => {
-            soundPlayer.play('click');
+            soundPlayer.play("click");
             setPlayersModalVisible(false);
           }}
           courseId={profile.courseId}
@@ -594,7 +827,7 @@ export default function CourseProfileScreen() {
           courseName={profile.courseName}
           initialPostId={selectedPostId}
           onClose={() => {
-            soundPlayer.play('click');
+            soundPlayer.play("click");
             setGalleryModalVisible(false);
             setSelectedPostId(undefined);
           }}
@@ -606,6 +839,10 @@ export default function CourseProfileScreen() {
     </View>
   );
 }
+
+// ============================================================================
+// STYLES
+// ============================================================================
 
 const styles = StyleSheet.create({
   container: {
@@ -653,14 +890,14 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#FFECB5",
   },
-  
+
   cacheText: {
     fontSize: 12,
     color: "#664D03",
     fontWeight: "600",
   },
 
-  /* ✅ NEW: Golf Membership Card Styles */
+  /* Course Card */
   profileCard: {
     marginHorizontal: 16,
     marginTop: 20,
@@ -728,7 +965,7 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
 
-  /* Stats Bar - Connected */
+  /* Stats Bar */
   statsBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -796,28 +1033,51 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  postsHeader: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+  /* Tab Bar */
+  tabBar: {
+    flexDirection: "row",
     borderTopWidth: 1,
     borderTopColor: "#E0E0E0",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E0E0E0",
+    backgroundColor: "#F4EED8",
   },
 
-  postsTitle: {
-    fontSize: 16,
-    fontWeight: "700",
+  tab: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    borderBottomWidth: 2,
+    borderBottomColor: "transparent",
+  },
+
+  tabActive: {
+    borderBottomColor: "#0D5C3A",
+  },
+
+  tabText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#999",
+  },
+
+  tabTextActive: {
     color: "#0D5C3A",
   },
 
+  /* Posts */
   postsGrid: {
     paddingBottom: 140,
   },
 
   postCard: {
-    width: '33.33%',
+    width: "33.33%",
     aspectRatio: 1,
     padding: 1,
-    position: 'relative',
+    position: "relative",
   },
 
   editButton: {
@@ -846,7 +1106,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "rgba(0, 0, 0, 0.3)",
   },
-  
+
   multiImageIndicator: {
     position: "absolute",
     top: 6,
@@ -859,7 +1119,7 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 10,
   },
-  
+
   multiImageText: {
     color: "#FFF",
     fontSize: 11,
@@ -916,6 +1176,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  /* Rounds */
+  roundsGrid: {
+    paddingHorizontal: 16,
+    paddingBottom: 140,
+  },
+
+  /* Empty / Loading */
   emptyContainer: {
     alignItems: "center",
     paddingVertical: 60,

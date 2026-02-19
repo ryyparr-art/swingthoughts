@@ -4,13 +4,22 @@ import UserPostsGalleryModal from "@/components/modals/UserPostsGalleryModal";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import ClubCardModal from "@/components/profile/ClubCardModal";
+import ProfileRoundCard from "@/components/profile/ProfileRoundCard";
 import { auth, db } from "@/constants/firebaseConfig";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  orderBy,
+  query,
+  where,
+} from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -22,11 +31,15 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-const SCREEN_WIDTH = Dimensions.get('window').width;
+const SCREEN_WIDTH = Dimensions.get("window").width;
+
+// ============================================================================
+// TYPES
+// ============================================================================
 
 interface UserProfile {
   displayName: string;
@@ -57,15 +70,53 @@ interface Post {
   mediaType?: "images" | "video" | null;
 }
 
+export interface ProfileRound {
+  id: string;
+  activityType: "round_complete";
+  timestamp: number;
+  userId: string;
+  displayName: string;
+  avatar?: string | null;
+  roundId: string;
+  courseId: number;
+  courseName: string;
+  holeCount: 9 | 18;
+  formatId: string;
+  playerCount: number;
+  isSimulator: boolean;
+  privacy: "public" | "partners" | "private";
+  playerSummaries: {
+    playerId: string;
+    displayName: string;
+    avatar?: string | null;
+    isGhost: boolean;
+    grossScore: number;
+    netScore: number;
+    scoreToPar: number;
+    courseHandicap: number;
+  }[];
+  winnerName: string | null;
+  roundDescription?: string | null;
+  roundImageUrl?: string | null;
+}
+
 interface Stats {
   swingThoughts: number;
   leaderboardScores: number;
+  roundCount: number;
 }
 
 const DEFAULT_STATS: Stats = {
   swingThoughts: 0,
   leaderboardScores: 0,
+  roundCount: 0,
 };
+
+type ProfileTab = "thoughts" | "rounds";
+
+// ============================================================================
+// COMPONENT
+// ============================================================================
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -76,18 +127,26 @@ export default function ProfileScreen() {
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
+  const [rounds, setRounds] = useState<ProfileRound[]>([]);
   const [stats, setStats] = useState<Stats>(DEFAULT_STATS);
   const [partnerCount, setPartnerCount] = useState(0);
   const [partnersModalVisible, setPartnersModalVisible] = useState(false);
   const [galleryModalVisible, setGalleryModalVisible] = useState(false);
-  const [selectedPostId, setSelectedPostId] = useState<string | undefined>(undefined);
+  const [selectedPostId, setSelectedPostId] = useState<string | undefined>(
+    undefined
+  );
   const [clubCardModalVisible, setClubCardModalVisible] = useState(false);
   const [memberSince, setMemberSince] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [showingCached, setShowingCached] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [isPartner, setIsPartner] = useState(false);
-  const [viewedPrivacy, setViewedPrivacy] = useState<"public" | "private">("public");
+  const [viewedPrivacy, setViewedPrivacy] = useState<"public" | "private">(
+    "public"
+  );
+  const [activeTab, setActiveTab] = useState<ProfileTab>("thoughts");
+  const [roundsLoading, setRoundsLoading] = useState(false);
+  const [roundsLoaded, setRoundsLoaded] = useState(false);
 
   useEffect(() => {
     if (userId && typeof userId === "string") {
@@ -96,12 +155,19 @@ export default function ProfileScreen() {
     }
   }, [userId]);
 
+  // Lazy-load rounds when tab switches
+  useEffect(() => {
+    if (activeTab === "rounds" && !roundsLoaded && userId && typeof userId === "string") {
+      fetchRounds(userId);
+    }
+  }, [activeTab, roundsLoaded, userId]);
+
   /* ========================= FETCH WITH CACHE ========================= */
 
   const fetchProfileDataWithCache = async (targetUserId: string) => {
     try {
       const cached = await getCache(CACHE_KEYS.USER_PROFILE(targetUserId));
-      
+
       if (cached) {
         console.log("⚡ User profile cache hit:", targetUserId);
         setProfile(cached.profile);
@@ -122,14 +188,17 @@ export default function ProfileScreen() {
     }
   };
 
-  const fetchProfileData = async (targetUserId: string, isBackgroundRefresh: boolean = false) => {
+  const fetchProfileData = async (
+    targetUserId: string,
+    isBackgroundRefresh: boolean = false
+  ) => {
     try {
       if (!isBackgroundRefresh) {
         setLoading(true);
       }
 
       const userDoc = await getDoc(doc(db, "users", targetUserId));
-      
+
       if (userDoc.exists()) {
         const data = userDoc.data();
         setProfile({
@@ -144,7 +213,7 @@ export default function ProfileScreen() {
         setViewedPrivacy(data.accountPrivacy || "public");
         setMemberSince(data.createdAt || null);
       } else {
-        soundPlayer.play('error');
+        soundPlayer.play("error");
         setProfile(null);
         setShowingCached(false);
         setLoading(false);
@@ -157,19 +226,23 @@ export default function ProfileScreen() {
       );
       const postsSnap = await getDocs(postsQuery);
       const postsData: Post[] = [];
-      
-      postsSnap.forEach((doc) => {
-        const data = doc.data();
-        
+
+      postsSnap.forEach((docSnap) => {
+        const data = docSnap.data();
+
         let images: string[] = [];
-        if (data.imageUrls && Array.isArray(data.imageUrls) && data.imageUrls.length > 0) {
+        if (
+          data.imageUrls &&
+          Array.isArray(data.imageUrls) &&
+          data.imageUrls.length > 0
+        ) {
           images = data.imageUrls;
         } else if (data.imageUrl) {
           images = [data.imageUrl];
         }
-        
+
         postsData.push({
-          postId: doc.id,
+          postId: docSnap.id,
           imageUrls: images,
           imageCount: images.length,
           imageUrl: data.imageUrl,
@@ -199,6 +272,7 @@ export default function ProfileScreen() {
       const statsData: Stats = {
         swingThoughts: postsData.length,
         leaderboardScores: scoresSnap.size,
+        roundCount: 0, // Updated when rounds load
       };
 
       setStats(statsData);
@@ -225,9 +299,68 @@ export default function ProfileScreen() {
       setLoading(false);
     } catch (error) {
       console.error("Error fetching profile data:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       setShowingCached(false);
       setLoading(false);
+    }
+  };
+
+  /* ========================= FETCH ROUNDS ========================= */
+
+  const fetchRounds = async (targetUserId: string) => {
+    setRoundsLoading(true);
+    try {
+      const roundsQuery = query(
+        collection(db, "feedActivity"),
+        where("userId", "==", targetUserId),
+        where("activityType", "==", "round_complete"),
+        orderBy("createdAt", "desc")
+      );
+
+      const snap = await getDocs(roundsQuery);
+      const roundsData: ProfileRound[] = [];
+
+      snap.forEach((docSnap) => {
+        const d = docSnap.data();
+
+        // Privacy filter for other users' profiles
+        if (!isOwnProfile) {
+          const privacy = d.privacy || "public";
+          if (privacy === "private") return;
+          if (privacy === "partners" && !isPartner) return;
+        }
+
+        roundsData.push({
+          id: docSnap.id,
+          activityType: "round_complete",
+          timestamp: d.timestamp || d.createdAt?.toMillis?.() || 0,
+          userId: d.userId,
+          displayName: d.displayName || "",
+          avatar: d.avatar || null,
+          roundId: d.roundId,
+          courseId: d.courseId,
+          courseName: d.courseName || "",
+          holeCount: d.holeCount || 18,
+          formatId: d.formatId || "stroke_play",
+          playerCount: d.playerCount || 1,
+          isSimulator: d.isSimulator || false,
+          privacy: d.privacy || "public",
+          playerSummaries: d.playerSummaries || [],
+          winnerName: d.winnerName || null,
+          roundDescription: d.roundDescription || null,
+          roundImageUrl: d.roundImageUrl || null,
+        });
+      });
+
+      setRounds(roundsData);
+      setStats((prev) => ({ ...prev, roundCount: roundsData.length }));
+      setRoundsLoaded(true);
+    } catch (error) {
+      console.error("Error fetching rounds:", error);
+      setRounds([]);
+      setRoundsLoaded(true);
+    } finally {
+      setRoundsLoading(false);
     }
   };
 
@@ -235,13 +368,19 @@ export default function ProfileScreen() {
 
   const onRefresh = async () => {
     if (!userId || typeof userId !== "string") return;
-    
+
     setRefreshing(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    
+
     setShowingCached(false);
     await fetchProfileData(userId);
-    
+
+    // Also refresh rounds if they've been loaded
+    if (roundsLoaded) {
+      setRoundsLoaded(false);
+      await fetchRounds(userId);
+    }
+
     setRefreshing(false);
   };
 
@@ -253,29 +392,31 @@ export default function ProfileScreen() {
         collection(db, "partners"),
         where("user1Id", "==", userId)
       );
-      
+
       const partnersQuery2 = query(
         collection(db, "partners"),
         where("user2Id", "==", userId)
       );
-      
+
       const [snap1, snap2] = await Promise.all([
         getDocs(partnersQuery1),
-        getDocs(partnersQuery2)
+        getDocs(partnersQuery2),
       ]);
-      
+
       const partnerDocIds = new Set<string>();
       let foundPartner = false;
 
-      snap1.forEach(doc => {
-        partnerDocIds.add(doc.id);
-        if (currentUserId && doc.data().user2Id === currentUserId) foundPartner = true;
+      snap1.forEach((docSnap) => {
+        partnerDocIds.add(docSnap.id);
+        if (currentUserId && docSnap.data().user2Id === currentUserId)
+          foundPartner = true;
       });
-      snap2.forEach(doc => {
-        partnerDocIds.add(doc.id);
-        if (currentUserId && doc.data().user1Id === currentUserId) foundPartner = true;
+      snap2.forEach((docSnap) => {
+        partnerDocIds.add(docSnap.id);
+        if (currentUserId && docSnap.data().user1Id === currentUserId)
+          foundPartner = true;
       });
-      
+
       setPartnerCount(partnerDocIds.size);
       setIsPartner(foundPartner);
     } catch (error) {
@@ -285,13 +426,13 @@ export default function ProfileScreen() {
   };
 
   const handleEditPost = (postId: string) => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/create?editId=${postId}`);
   };
 
   /* ========================= HELPERS ========================= */
-  
+
   const formatStatValue = (value: number | undefined | null): string => {
     if (value === undefined || value === null) return "—";
     return value.toString();
@@ -303,7 +444,6 @@ export default function ProfileScreen() {
     const last = pd?.lastName?.trim() || "";
     const hasName = first || last;
 
-    // If viewing someone else's private profile and not a partner, hide real name
     if (!isOwnProfile && viewedPrivacy === "private" && !isPartner) {
       return null;
     }
@@ -312,7 +452,6 @@ export default function ProfileScreen() {
       return { text: `${first} ${last}`.trim(), isPlaceholder: false };
     }
 
-    // Own profile with no name set — show placeholder
     if (isOwnProfile) {
       return { text: "Add your name in Settings", isPlaceholder: true };
     }
@@ -328,18 +467,27 @@ export default function ProfileScreen() {
     );
   };
 
+  /* ========================= TAB SWITCH ========================= */
+
+  const handleTabPress = (tab: ProfileTab) => {
+    if (tab === activeTab) return;
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setActiveTab(tab);
+  };
+
   /* ========================= RENDER POST ========================= */
 
   const renderPost = ({ item }: { item: Post }) => {
     const images = item.imageUrls || (item.imageUrl ? [item.imageUrl] : []);
     const firstImage = images[0];
     const hasMultipleImages = images.length > 1;
-    
+
     return (
-      <TouchableOpacity 
+      <TouchableOpacity
         style={styles.postCard}
         onPress={() => {
-          soundPlayer.play('click');
+          soundPlayer.play("click");
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           setSelectedPostId(item.postId);
           setGalleryModalVisible(true);
@@ -347,12 +495,15 @@ export default function ProfileScreen() {
       >
         {item.videoThumbnailUrl ? (
           <>
-            <Image source={{ uri: item.videoThumbnailUrl }} style={styles.postImage} />
+            <Image
+              source={{ uri: item.videoThumbnailUrl }}
+              style={styles.postImage}
+            />
             <View style={styles.videoIndicator}>
               <Ionicons name="play-circle" size={40} color="#FFF" />
             </View>
             {isOwnProfile && (
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={styles.editIcon}
                 onPress={(e) => {
                   e.stopPropagation();
@@ -366,16 +517,16 @@ export default function ProfileScreen() {
         ) : firstImage ? (
           <>
             <Image source={{ uri: firstImage }} style={styles.postImage} />
-            
+
             {hasMultipleImages && (
               <View style={styles.multiImageIndicator}>
                 <Ionicons name="images" size={16} color="#FFF" />
                 <Text style={styles.multiImageText}>{images.length}</Text>
               </View>
             )}
-            
+
             {isOwnProfile && (
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={styles.editIcon}
                 onPress={(e) => {
                   e.stopPropagation();
@@ -392,7 +543,7 @@ export default function ProfileScreen() {
               {item.caption}
             </Text>
             {isOwnProfile && (
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={styles.editIconText}
                 onPress={(e) => {
                   e.stopPropagation();
@@ -407,6 +558,19 @@ export default function ProfileScreen() {
       </TouchableOpacity>
     );
   };
+
+  /* ========================= RENDER ROUND ========================= */
+
+  const renderRound = ({ item }: { item: ProfileRound }) => (
+    <ProfileRoundCard
+      round={item}
+      onPress={() => {
+        soundPlayer.play("click");
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        router.push(`/round/${item.roundId}` as any);
+      }}
+    />
+  );
 
   /* ========================= SCREEN ========================= */
 
@@ -428,17 +592,214 @@ export default function ProfileScreen() {
 
   const realName = getRealName();
 
+  /* ========================= LIST HEADER (Club Card + Tabs) ========================= */
+
+  const ListHeader = (
+    <>
+      {/* ===== CLUB CARD ===== */}
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onPress={() => {
+          soundPlayer.play("click");
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          setClubCardModalVisible(true);
+        }}
+      >
+        <View style={styles.clubCard}>
+          <View style={styles.cardEdgeTop} />
+
+          <View style={styles.clubCardInner}>
+            <View style={styles.cardTopRow}>
+              <View style={styles.cardLeftCol}>
+                <View style={styles.avatarRing}>
+                  {profile.avatar ? (
+                    <Image
+                      source={{ uri: profile.avatar }}
+                      style={styles.avatar}
+                    />
+                  ) : (
+                    <View style={styles.avatarPlaceholder}>
+                      <Text style={styles.avatarInitial}>
+                        {profile.displayName[0]?.toUpperCase() || "?"}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.displayName} numberOfLines={1}>
+                  {profile.displayName}
+                </Text>
+                <BadgeRow
+                  challengeBadges={profile.challengeBadges}
+                  size={16}
+                />
+              </View>
+
+              <View style={styles.cardRightCol}>
+                <Text style={styles.clubCardLabel}>CLUB CARD</Text>
+                {realName && (
+                  <Text
+                    style={[
+                      styles.realName,
+                      realName.isPlaceholder && styles.realNamePlaceholder,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {realName.text}
+                  </Text>
+                )}
+                <View style={styles.hciRow}>
+                  <Text style={styles.hciLabel}>HCI</Text>
+                  <TouchableOpacity
+                    onPress={() => {
+                      soundPlayer.play("click");
+                      showHciInfo();
+                    }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Ionicons
+                      name="information-circle-outline"
+                      size={14}
+                      color="#C5A55A"
+                    />
+                  </TouchableOpacity>
+                  <Text style={styles.hciValue}>
+                    {profile.handicap !== undefined &&
+                    profile.handicap !== null
+                      ? profile.handicap
+                      : "—"}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.cardDivider} />
+
+            <View style={styles.statsBar}>
+              <View style={styles.statItem}>
+                <View style={styles.statValueRow}>
+                  <Ionicons
+                    name="chatbubble-outline"
+                    size={14}
+                    color="#C5A55A"
+                    style={styles.statIcon}
+                  />
+                  <Text style={styles.statValue}>
+                    {formatStatValue(stats?.swingThoughts)}
+                  </Text>
+                </View>
+                <Text style={styles.statLabel}>THOUGHTS</Text>
+              </View>
+
+              <View style={styles.statDivider} />
+
+              <TouchableOpacity
+                style={styles.statItem}
+                onPress={() => {
+                  soundPlayer.play("click");
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  setPartnersModalVisible(true);
+                }}
+              >
+                <View style={styles.statValueRow}>
+                  <Ionicons
+                    name="people-outline"
+                    size={14}
+                    color="#C5A55A"
+                    style={styles.statIcon}
+                  />
+                  <Text style={styles.statValue}>
+                    {formatStatValue(partnerCount)}
+                  </Text>
+                </View>
+                <View style={styles.statLabelRow}>
+                  <Text style={styles.statLabel}>PARTNERS</Text>
+                  <Ionicons
+                    name="chevron-forward"
+                    size={10}
+                    color="#8B7355"
+                  />
+                </View>
+              </TouchableOpacity>
+
+              <View style={styles.statDivider} />
+
+              <View style={styles.statItem}>
+                <View style={styles.statValueRow}>
+                  <Ionicons
+                    name="trophy-outline"
+                    size={14}
+                    color="#C5A55A"
+                    style={styles.statIcon}
+                  />
+                  <Text style={styles.statValue}>
+                    {formatStatValue(stats?.leaderboardScores)}
+                  </Text>
+                </View>
+                <Text style={styles.statLabel}>SCORES</Text>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.cardEdgeBottom} />
+        </View>
+      </TouchableOpacity>
+
+      {/* ===== TAB BAR ===== */}
+      <View style={styles.tabBar}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === "thoughts" && styles.tabActive]}
+          onPress={() => handleTabPress("thoughts")}
+        >
+          <Ionicons
+            name="chatbubble-outline"
+            size={16}
+            color={activeTab === "thoughts" ? "#0D5C3A" : "#999"}
+          />
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === "thoughts" && styles.tabTextActive,
+            ]}
+          >
+            Thoughts
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.tab, activeTab === "rounds" && styles.tabActive]}
+          onPress={() => handleTabPress("rounds")}
+        >
+          <Ionicons
+            name="golf-outline"
+            size={16}
+            color={activeTab === "rounds" ? "#0D5C3A" : "#999"}
+          />
+          <Text
+            style={[
+              styles.tabText,
+              activeTab === "rounds" && styles.tabTextActive,
+            ]}
+          >
+            Rounds
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </>
+  );
+
+  /* ========================= MAIN RENDER ========================= */
+
   return (
     <View style={styles.container}>
       <SafeAreaView edges={["top"]} style={styles.safeTop} />
 
       <View style={styles.header}>
-        <TouchableOpacity 
+        <TouchableOpacity
           onPress={() => {
-            soundPlayer.play('click');
+            soundPlayer.play("click");
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             router.back();
-          }} 
+          }}
           style={styles.headerButton}
         >
           <Image
@@ -453,7 +814,7 @@ export default function ProfileScreen() {
         {isOwnProfile ? (
           <TouchableOpacity
             onPress={() => {
-              soundPlayer.play('click');
+              soundPlayer.play("click");
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
               router.push("/profile/settings");
             }}
@@ -473,175 +834,73 @@ export default function ProfileScreen() {
         </View>
       )}
 
-      <FlatList
-        data={posts}
-        renderItem={renderPost}
-        keyExtractor={(item) => item.postId}
-        numColumns={3}
-        contentContainerStyle={styles.postsGrid}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor="#0D5C3A"
-            colors={["#0D5C3A"]}
-          />
-        }
-        ListHeaderComponent={
-          <>
-            {/* ===== CLUB CARD ===== */}
-            <TouchableOpacity
-              activeOpacity={0.85}
-              onPress={() => {
-                soundPlayer.play('click');
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                setClubCardModalVisible(true);
-              }}
-            >
-            <View style={styles.clubCard}>
-              {/* Top edge detail */}
-              <View style={styles.cardEdgeTop} />
+      {/* ===== THOUGHTS TAB ===== */}
+      {activeTab === "thoughts" && (
+        <FlatList
+          data={posts}
+          renderItem={renderPost}
+          keyExtractor={(item) => item.postId}
+          numColumns={3}
+          contentContainerStyle={styles.postsGrid}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor="#0D5C3A"
+              colors={["#0D5C3A"]}
+            />
+          }
+          ListHeaderComponent={ListHeader}
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Ionicons name="images-outline" size={64} color="#CCC" />
+              <Text style={styles.emptyText}>No posts yet</Text>
+            </View>
+          }
+        />
+      )}
 
-              <View style={styles.clubCardInner}>
-                {/* Avatar row: avatar left, info right */}
-                <View style={styles.cardTopRow}>
-                  {/* LEFT: Avatar + displayName */}
-                  <View style={styles.cardLeftCol}>
-                    <View style={styles.avatarRing}>
-                      {profile.avatar ? (
-                        <Image source={{ uri: profile.avatar }} style={styles.avatar} />
-                      ) : (
-                        <View style={styles.avatarPlaceholder}>
-                          <Text style={styles.avatarInitial}>
-                            {profile.displayName[0]?.toUpperCase() || "?"}
-                          </Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={styles.displayName} numberOfLines={1}>
-                      {profile.displayName}
-                    </Text>
-                    <BadgeRow challengeBadges={profile.challengeBadges} size={16} />
-                  </View>
-
-                  {/* RIGHT: Club Card label, real name, HCI */}
-                  <View style={styles.cardRightCol}>
-                    <Text style={styles.clubCardLabel}>CLUB CARD</Text>
-                    {realName && (
-                      <Text
-                        style={[
-                          styles.realName,
-                          realName.isPlaceholder && styles.realNamePlaceholder,
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {realName.text}
-                      </Text>
-                    )}
-                    <View style={styles.hciRow}>
-                      <Text style={styles.hciLabel}>HCI</Text>
-                      <TouchableOpacity
-                        onPress={() => {
-                          soundPlayer.play("click");
-                          showHciInfo();
-                        }}
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                      >
-                        <Ionicons
-                          name="information-circle-outline"
-                          size={14}
-                          color="#C5A55A"
-                        />
-                      </TouchableOpacity>
-                      <Text style={styles.hciValue}>
-                        {profile.handicap !== undefined && profile.handicap !== null
-                          ? profile.handicap
-                          : "—"}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-
-                {/* Divider */}
-                <View style={styles.cardDivider} />
-
-                {/* Stats Bar */}
-                <View style={styles.statsBar}>
-                  {/* Thoughts */}
-                  <View style={styles.statItem}>
-                    <View style={styles.statValueRow}>
-                      <Ionicons name="chatbubble-outline" size={14} color="#C5A55A" style={styles.statIcon} />
-                      <Text style={styles.statValue}>
-                        {formatStatValue(stats?.swingThoughts)}
-                      </Text>
-                    </View>
-                    <Text style={styles.statLabel}>THOUGHTS</Text>
-                  </View>
-
-                  <View style={styles.statDivider} />
-
-                  {/* Partners */}
-                  <TouchableOpacity 
-                    style={styles.statItem}
-                    onPress={() => {
-                      soundPlayer.play('click');
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setPartnersModalVisible(true);
-                    }}
-                  >
-                    <View style={styles.statValueRow}>
-                      <Ionicons name="people-outline" size={14} color="#C5A55A" style={styles.statIcon} />
-                      <Text style={styles.statValue}>
-                        {formatStatValue(partnerCount)}
-                      </Text>
-                    </View>
-                    <View style={styles.statLabelRow}>
-                      <Text style={styles.statLabel}>PARTNERS</Text>
-                      <Ionicons name="chevron-forward" size={10} color="#8B7355" />
-                    </View>
-                  </TouchableOpacity>
-
-                  <View style={styles.statDivider} />
-
-                  {/* Scores */}
-                  <View style={styles.statItem}>
-                    <View style={styles.statValueRow}>
-                      <Ionicons name="trophy-outline" size={14} color="#C5A55A" style={styles.statIcon} />
-                      <Text style={styles.statValue}>
-                        {formatStatValue(stats?.leaderboardScores)}
-                      </Text>
-                    </View>
-                    <Text style={styles.statLabel}>SCORES</Text>
-                  </View>
-                </View>
+      {/* ===== ROUNDS TAB ===== */}
+      {activeTab === "rounds" && (
+        <FlatList
+          data={rounds}
+          renderItem={renderRound}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.roundsGrid}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor="#0D5C3A"
+              colors={["#0D5C3A"]}
+            />
+          }
+          ListHeaderComponent={ListHeader}
+          ListEmptyComponent={
+            roundsLoading ? (
+              <View style={styles.emptyContainer}>
+                <ActivityIndicator size="large" color="#0D5C3A" />
               </View>
+            ) : (
+              <View style={styles.emptyContainer}>
+                <Ionicons name="golf-outline" size={64} color="#CCC" />
+                <Text style={styles.emptyText}>No rounds posted yet</Text>
+              </View>
+            )
+          }
+        />
+      )}
 
-              {/* Bottom edge detail */}
-              <View style={styles.cardEdgeBottom} />
-            </View>
-            </TouchableOpacity>
-
-            <View style={styles.postsHeader}>
-              <Text style={styles.postsTitle}>Thoughts</Text>
-            </View>
-          </>
-        }
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Ionicons name="images-outline" size={64} color="#CCC" />
-            <Text style={styles.emptyText}>No posts yet</Text>
-          </View>
-        }
-      />
+      {/* ===== MODALS ===== */}
 
       {userId && (
         <PartnersModal
           visible={partnersModalVisible}
           onClose={() => {
-            soundPlayer.play('click');
+            soundPlayer.play("click");
             setPartnersModalVisible(false);
           }}
-          userId={Array.isArray(userId) ? userId[0] : (userId || '')}
+          userId={Array.isArray(userId) ? userId[0] : userId || ""}
           isOwnProfile={isOwnProfile}
         />
       )}
@@ -649,11 +908,11 @@ export default function ProfileScreen() {
       {userId && profile && (
         <UserPostsGalleryModal
           visible={galleryModalVisible}
-          userId={Array.isArray(userId) ? userId[0] : (userId || '')}
+          userId={Array.isArray(userId) ? userId[0] : userId || ""}
           initialPostId={selectedPostId}
           userName={profile.displayName}
           onClose={() => {
-            soundPlayer.play('click');
+            soundPlayer.play("click");
             setGalleryModalVisible(false);
             setSelectedPostId(undefined);
           }}
@@ -666,7 +925,7 @@ export default function ProfileScreen() {
       <ClubCardModal
         visible={clubCardModalVisible}
         onClose={() => {
-          soundPlayer.play('click');
+          soundPlayer.play("click");
           setClubCardModalVisible(false);
         }}
         displayName={profile.displayName}
@@ -686,6 +945,10 @@ export default function ProfileScreen() {
     </View>
   );
 }
+
+// ============================================================================
+// STYLES
+// ============================================================================
 
 const styles = StyleSheet.create({
   container: {
@@ -733,7 +996,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#FFECB5",
   },
-  
+
   cacheText: {
     fontSize: 12,
     color: "#664D03",
@@ -771,7 +1034,6 @@ const styles = StyleSheet.create({
     paddingTop: 20,
     paddingBottom: 16,
     paddingHorizontal: 18,
-    // Subtle grain-like overlay via inner border
     borderLeftWidth: 1,
     borderRightWidth: 1,
     borderColor: "rgba(197, 165, 90, 0.15)",
@@ -783,7 +1045,6 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
 
-  /* LEFT: Avatar + Display Name */
   cardLeftCol: {
     alignItems: "center",
     marginRight: 18,
@@ -828,7 +1089,6 @@ const styles = StyleSheet.create({
     maxWidth: 90,
   },
 
-  /* RIGHT: Club Card info */
   cardRightCol: {
     flex: 1,
     paddingTop: 4,
@@ -876,14 +1136,12 @@ const styles = StyleSheet.create({
     color: "#C5A55A",
   },
 
-  /* DIVIDER */
   cardDivider: {
     height: 1,
     backgroundColor: "rgba(197, 165, 90, 0.25)",
     marginBottom: 14,
   },
 
-  /* STATS BAR */
   statsBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -936,26 +1194,48 @@ const styles = StyleSheet.create({
     gap: 2,
   },
 
-  /* ===== POSTS ===== */
-  postsHeader: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+  /* ===== TAB BAR ===== */
+  tabBar: {
+    flexDirection: "row",
     borderTopWidth: 1,
     borderTopColor: "#E0E0E0",
+    borderBottomWidth: 1,
+    borderBottomColor: "#E0E0E0",
+    backgroundColor: "#F4EED8",
   },
 
-  postsTitle: {
-    fontSize: 16,
-    fontWeight: "700",
+  tab: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    borderBottomWidth: 2,
+    borderBottomColor: "transparent",
+  },
+
+  tabActive: {
+    borderBottomColor: "#0D5C3A",
+  },
+
+  tabText: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#999",
+  },
+
+  tabTextActive: {
     color: "#0D5C3A",
   },
 
+  /* ===== POSTS (Thoughts tab) ===== */
   postsGrid: {
     paddingBottom: 140,
   },
 
   postCard: {
-    width: '33.33%',
+    width: "33.33%",
     aspectRatio: 1,
     padding: 1,
   },
@@ -976,7 +1256,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: "rgba(0, 0, 0, 0.3)",
   },
-  
+
   multiImageIndicator: {
     position: "absolute",
     top: 6,
@@ -989,7 +1269,7 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 10,
   },
-  
+
   multiImageText: {
     color: "#FFF",
     fontSize: 11,
@@ -1030,6 +1310,13 @@ const styles = StyleSheet.create({
     padding: 6,
   },
 
+  /* ===== ROUNDS (Rounds tab) ===== */
+  roundsGrid: {
+    paddingHorizontal: 16,
+    paddingBottom: 140,
+  },
+
+  /* ===== EMPTY / LOADING ===== */
   emptyContainer: {
     alignItems: "center",
     paddingVertical: 60,

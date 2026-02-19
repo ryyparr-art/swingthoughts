@@ -1069,6 +1069,99 @@ service cloud.firestore {
     }
 
     // ============================================================================
+// UPDATED ROUNDS RULES — Replace the existing rounds block in firestore.rules
+// Changes: Allow any player in the round to transfer markerId to themselves
+// ============================================================================
+
+     match /rounds/{roundId} {
+      // Anyone signed in can read rounds (needed for LiveRoundViewer, spectators)
+      allow read, list: if isSignedIn();
+
+      // Marker creates the round
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.markerId == request.auth.uid &&
+        request.resource.data.status == "live";
+
+      // Marker can update anything (scores, status, privacy, etc.)
+      // OR any signed-in player can transfer markerId to themselves
+      allow update: if isSignedIn() &&
+        (
+          // Current marker can update anything
+          resource.data.markerId == request.auth.uid ||
+          // Any authenticated user can ONLY update marker transfer fields
+          // (markerId must be set to their own UID)
+          (
+            request.resource.data.markerId == request.auth.uid &&
+            request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['markerId', 'markerTransferredAt', 'previousMarkerId'])
+          )
+        );
+
+      // Only admin can delete rounds
+      allow delete: if isAdmin();
+
+      // ========================================================================
+      // ROUND CHAT MESSAGES SUBCOLLECTION
+      // ========================================================================
+      match /messages/{messageId} {
+        allow read, list: if isSignedIn();
+
+        allow create: if isSignedIn() &&
+          isEmailVerified() &&
+          request.resource.data.userId == request.auth.uid &&
+          request.resource.data.content.size() <= 500;
+
+        allow update: if false;
+
+        allow delete: if isSignedIn() &&
+          (request.auth.uid == resource.data.userId || isAdmin());
+      }
+    }
+
+
+    // ============================================================================
+    // GHOST CLAIMS (MULTIPLAYER GHOST USER SCORE CLAIMING)
+    // ============================================================================
+
+    match /ghostClaims/{claimToken} {
+      // Anyone signed in can read (needed during signup claim flow)
+      allow read: if isSignedIn();
+
+      // Only Cloud Functions create claims (via Admin SDK in rounds.ts)
+      allow create: if false;
+
+      // Authenticated user can claim (update claimed status)
+      // Only if not already claimed
+      allow update: if isSignedIn() &&
+        resource.data.claimed == false &&
+        request.resource.data.claimed == true &&
+        request.resource.data.claimedBy == request.auth.uid;
+
+      // No deletes (TTL handles expiry)
+      allow delete: if false;
+    }
+
+    // ============================================================================
+    // NOTIFICATION THROTTLES (ROUND NOTIFICATION SPAM PREVENTION)
+    // ============================================================================
+
+    match /notificationThrottles/{throttleId} {
+      // Only Cloud Functions read/write (via Admin SDK)
+      allow read, write: if false;
+    }
+
+    // ============================================================================
+    // MAIL (FIREBASE SEND EMAIL EXTENSION - GHOST INVITES)
+    // ============================================================================
+
+    match /mail/{mailId} {
+      // Only Cloud Functions write email docs (via Admin SDK in ghostInvite.ts)
+      // The firebase-send-email extension reads and updates these
+      allow read, write: if false;
+    }
+
+    // ============================================================================
     // DEFAULT DENY
     // ============================================================================
 

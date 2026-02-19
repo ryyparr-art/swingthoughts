@@ -141,7 +141,7 @@ export default function BottomActionBar({
       );
       return;
     }
-    handleNavigation("/post-score");
+    handleNavigation("/scoring");
   };
 
   /* ---------------- RENDER ---------------- */

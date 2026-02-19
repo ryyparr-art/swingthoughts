@@ -1,13 +1,16 @@
 import { CacheProvider } from "@/contexts/CacheContext";
 import { NewPostProvider } from "@/contexts/NewPostContext";
+import { claimGhostScores } from "@/utils/ghostClaim";
 import { markNotificationAsRead } from "@/utils/notificationHelpers";
 import { registerForPushNotificationsAsync, setupNotificationResponseListener } from "@/utils/pushNotificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
+import ResumeRoundSheet from "@/components/scoring/ResumeRoundSheet";
 import { Caveat_400Regular, Caveat_700Bold, useFonts } from '@expo-google-fonts/caveat';
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Notifications from 'expo-notifications';
 import { Slot, router, usePathname } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Linking, Text, View } from "react-native";
 
 export default function RootLayout() {
   const [initializing, setInitializing] = useState(true);
@@ -200,6 +203,25 @@ export default function RootLayout() {
             router.replace("/welcome-tour" as any);
             setInitializing(false);
             return;
+          }
+
+          // 👻 CHECK FOR PENDING GHOST CLAIM
+          try {
+            const pendingToken = await AsyncStorage.getItem("pendingClaimToken");
+            if (pendingToken) {
+              await AsyncStorage.removeItem("pendingClaimToken");
+              const result = await claimGhostScores(pendingToken, user.uid);
+              if (result.success) {
+                setTimeout(() => {
+                  Alert.alert(
+                    "Welcome! Scores Claimed!",
+                    `${result.scoresUpdated} score(s) from ${result.courseName} added to your profile.`
+                  );
+                }, 1000);
+              }
+            }
+          } catch (claimErr) {
+            console.error("⚠️ Ghost claim check failed (non-critical):", claimErr);
           }
 
           // 🔊 PLAY APP OPEN SOUND (ONLY ONCE on initial app launch)
@@ -425,6 +447,22 @@ export default function RootLayout() {
           break;
 
         // ============================================
+        // ROUND NOTIFICATIONS - Go to round viewer or scoring
+        // ============================================
+        case "round_invite":
+          if (data.roundId) {
+            router.push(`/scoring?roundId=${data.roundId}`);
+          }
+          break;
+
+        case "round_complete":
+        case "round_notable":
+          if (data.roundId) {
+            router.push(`/round/${data.roundId}`);
+          }
+          break;
+
+        // ============================================
         // FALLBACK - Use generic routing based on available data
         // ============================================
         default:
@@ -464,6 +502,39 @@ export default function RootLayout() {
     };
   }, []);
 
+  // 👻 GHOST CLAIM DEEP LINK HANDLER
+  useEffect(() => {
+    const handleDeepLink = async (event: { url: string }) => {
+      const claimMatch = event.url.match(/\/claim\/([a-f0-9]+)/);
+      if (!claimMatch) return;
+
+      const token = claimMatch[1];
+      const { auth } = await import("../constants/firebaseConfig");
+      const user = auth.currentUser;
+
+      if (user) {
+        const result = await claimGhostScores(token, user.uid);
+        if (result.success) {
+          Alert.alert(
+            "Scores Claimed!",
+            `${result.scoresUpdated} score(s) from ${result.courseName} added to your profile.`
+          );
+        } else {
+          Alert.alert("Claim Failed", result.error || "Something went wrong.");
+        }
+      } else {
+        await AsyncStorage.setItem("pendingClaimToken", token);
+      }
+    };
+
+    const sub = Linking.addEventListener("url", handleDeepLink);
+    Linking.getInitialURL().then((url) => {
+      if (url) handleDeepLink({ url });
+    });
+
+    return () => sub.remove();
+  }, []);
+
   if (!fontsLoaded || initializing) {
     return (
       <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
@@ -477,6 +548,7 @@ export default function RootLayout() {
     <CacheProvider>
       <NewPostProvider>
         <Slot />
+        <ResumeRoundSheet />
       </NewPostProvider>
     </CacheProvider>
   );
