@@ -168,6 +168,8 @@ export const onRoundUpdated = onDocumentUpdated(
           // Metadata
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           source: "multiplayer_round",
+          holeCount: after.holeCount,
+          userName: player.displayName,
         };
 
         batch.set(scoreRef, scoreData);
@@ -208,17 +210,44 @@ export const onRoundUpdated = onDocumentUpdated(
       }
     }
 
-    // ── 4. Send round_complete notifications ────────────────────
+   // ── 4. Send round_complete notifications ────────────────────
     const onPlatformPlayers = after.players.filter((p) => !p.isGhost && !p.isMarker);
+    // Collect all player IDs in round (for dedup in scores.ts)
+    const roundPlayerIds = after.players.filter((p) => !p.isGhost).map((p) => p.playerId);
+
     for (const player of onPlatformPlayers) {
       try {
+        // Build "with X" string — pick another player to name
+        const others = after.players.filter((p) => p.playerId !== player.playerId);
+        const namedPlayer = others.find((p) => !p.isGhost) || others[0];
+        const remainingCount = others.length - 1;
+        let withString = "";
+        if (namedPlayer) {
+          withString = ` with ${namedPlayer.displayName}`;
+          if (remainingCount === 1) {
+            const third = others.find((p) => p.playerId !== namedPlayer.playerId);
+            withString += ` & ${third?.displayName || "1 other"}`;
+          } else if (remainingCount > 1) {
+            withString += ` & ${remainingCount} other${remainingCount > 1 ? "s" : ""}`;
+          }
+        }
+
+        const grossScore = calculateGrossScore(player, after);
+
         await sendRoundNotification({
           type: "round_complete",
           recipientUserId: player.playerId,
           roundId,
           courseName: after.courseName,
-          grossScore: calculateGrossScore(player, after),
+          grossScore,
           markerName: after.players.find((p) => p.isMarker)?.displayName || "Unknown",
+          message: `Your round at ${after.courseName}${withString} is complete — you shot ${grossScore}.`,
+          // Navigation data
+          navigationTarget: "profile",
+          navigationUserId: player.playerId,
+          navigationTab: "rounds",
+          // Dedup: list of all on-platform player IDs in this round
+          roundPlayerIds,
         });
       } catch (err) {
         logger.error(`Notification failed for ${player.displayName}:`, err);

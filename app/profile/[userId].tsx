@@ -11,6 +11,7 @@ import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import RoundScorecardViewer from "@/components/scoring/RoundScorecardViewer";
 import {
   collection,
   doc,
@@ -120,7 +121,7 @@ type ProfileTab = "thoughts" | "rounds";
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { userId } = useLocalSearchParams();
+  const { userId, tab } = useLocalSearchParams();
   const currentUserId = auth.currentUser?.uid;
   const isOwnProfile = userId === currentUserId;
   const { getCache, setCache, cleanupOldProfiles } = useCache();
@@ -144,9 +145,12 @@ export default function ProfileScreen() {
   const [viewedPrivacy, setViewedPrivacy] = useState<"public" | "private">(
     "public"
   );
-  const [activeTab, setActiveTab] = useState<ProfileTab>("thoughts");
+  const [activeTab, setActiveTab] = useState<ProfileTab>(
+    tab === "rounds" ? "rounds" : "thoughts"
+  );
   const [roundsLoading, setRoundsLoading] = useState(false);
   const [roundsLoaded, setRoundsLoaded] = useState(false);
+  const [scorecardRoundId, setScorecardRoundId] = useState<string | null>(null);
 
   useEffect(() => {
     if (userId && typeof userId === "string") {
@@ -567,7 +571,7 @@ export default function ProfileScreen() {
       onPress={() => {
         soundPlayer.play("click");
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        router.push(`/round/${item.roundId}` as any);
+        setScorecardRoundId(item.roundId);
       }}
     />
   );
@@ -941,6 +945,11 @@ export default function ProfileScreen() {
           setClubCardModalVisible(false);
           setTimeout(() => setPartnersModalVisible(true), 300);
         }}
+      />
+    <RoundScorecardViewer
+        visible={!!scorecardRoundId}
+        roundId={scorecardRoundId}
+        onClose={() => setScorecardRoundId(null)}
       />
     </View>
   );

@@ -554,6 +554,7 @@ export default function ClubhouseScreen() {
       ) : (
         <FlatList
           ref={flatListRef}
+          removeClippedSubviews={false}
           data={feedWithInserts}
           renderItem={renderFeedItem}
           keyExtractor={(item) =>

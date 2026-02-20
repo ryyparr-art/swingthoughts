@@ -27,6 +27,7 @@
     },
     "android": {
       "package": "com.swingthoughts.app",
+      "softwareKeyboardLayoutMode": "adjustResize",
       "adaptiveIcon": {
         "backgroundColor": "#0D5C3A",
         "foregroundImage": "./assets/images/AppIcon.png"

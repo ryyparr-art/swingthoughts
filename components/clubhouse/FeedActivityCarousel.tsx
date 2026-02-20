@@ -20,6 +20,7 @@
  * Uses FlatList with pagingEnabled for snap-to-card behavior.
  */
 
+import RoundScorecardViewer from "@/components/scoring/RoundScorecardViewer";
 import BadgeIcon from "@/components/challenges/BadgeIcon";
 import type {
   ActivityAceTierEarned,
@@ -122,6 +123,7 @@ export default function FeedActivityCarousel({ insert }: Props) {
 
 function ActivityCard({ item }: { item: ActivityItem }) {
   const router = useRouter();
+  const [scorecardRoundId, setScorecardRoundId] = useState<string | null>(null);
 
   const handlePress = () => {
     soundPlayer.play("click");
@@ -165,7 +167,7 @@ function ActivityCard({ item }: { item: ActivityItem }) {
         router.push(`/leagues/home` as any);
         break;
       case "round_complete":
-        router.push(`/round/${(item as ActivityRoundComplete).roundId}` as any);
+        setScorecardRoundId((item as ActivityRoundComplete).roundId);
         break;
     }
   };
@@ -202,6 +204,12 @@ function ActivityCard({ item }: { item: ActivityItem }) {
 
       {/* Content — varies by type */}
       {renderActivityContent(item)}
+
+      <RoundScorecardViewer
+        visible={!!scorecardRoundId}
+        roundId={scorecardRoundId}
+        onClose={() => setScorecardRoundId(null)}
+      />
     </TouchableOpacity>
   );
 }

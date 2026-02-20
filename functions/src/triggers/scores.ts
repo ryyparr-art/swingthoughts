@@ -234,20 +234,75 @@ export const onScoreCreated = onDocumentCreated(
         console.log("⏭️ Score not leaderboard eligible (format or simulator) — skipping leaderboard");
       }
 
-      // ── PARTNER NOTIFICATIONS ─────────────────────────────────
+     // ── PARTNER NOTIFICATIONS ─────────────────────────────────
       // Always send regardless of format/simulator
       const partners = userData?.partners || [];
       if (Array.isArray(partners) && partners.length > 0) {
+        // Get round data if this score came from a multiplayer round
+        const roundId = score.roundId || null;
+        let roundPlayers: any[] = [];
+        let roundPlayerIdSet = new Set<string>();
+
+        if (roundId) {
+          try {
+            const roundSnap = await db.collection("rounds").doc(roundId).get();
+            const roundData = roundSnap.data();
+            if (roundData?.players) {
+              roundPlayers = roundData.players;
+              roundPlayerIdSet = new Set(
+                roundData.players
+                  .filter((p: any) => !p.isGhost)
+                  .map((p: any) => p.playerId)
+              );
+            }
+          } catch (e) {
+            console.error("⚠️ Failed to fetch round for partner notification:", e);
+          }
+        }
+
+        // Build dynamic "with X" string
+        const actorName = userName || userData?.displayName || "Unknown";
+        let withString = "";
+        if (roundPlayers.length > 1) {
+          const others = roundPlayers.filter((p: any) => p.playerId !== userId);
+          // Prefer on-platform users, fall back to ghosts
+          const namedPlayer = others.find((p: any) => !p.isGhost) || others[0];
+          const remainingCount = others.length - 1;
+
+          if (namedPlayer) {
+            withString = ` with ${namedPlayer.displayName}`;
+            if (remainingCount === 1) {
+              const third = others.find((p: any) => p.playerId !== namedPlayer.playerId);
+              withString += ` & ${third?.displayName || "1 other"}`;
+            } else if (remainingCount > 1) {
+              withString += ` & ${remainingCount} other${remainingCount > 1 ? "s" : ""}`;
+            }
+          }
+        }
+
+        const message = `${actorName} played a round at ${courseName}${withString}`;
+
         for (const partnerId of partners) {
+          // DEDUP: Skip if this partner was IN the round
+          // (they already got a round_complete notification from rounds.ts)
+          if (roundPlayerIdSet.has(partnerId)) {
+            console.log(`⏭️ Skipping partner_scored for ${partnerId} — was in the round`);
+            continue;
+          }
+
           await createNotificationDocument({
             userId: partnerId, type: "partner_scored",
-            actorId: userId, actorName: userName || userData?.displayName,
+            actorId: userId, actorName,
             actorAvatar: userData?.avatar || undefined,
             scoreId, courseId, courseName, regionKey,
-            message: `${userName || userData?.displayName} logged a round at ${courseName}`,
+            message,
+            // Navigation data
+            navigationTarget: "profile",
+            navigationUserId: userId,
+            navigationTab: "rounds",
           });
         }
-        console.log("✅ Sent partner_scored notifications to", partners.length, "partners");
+        console.log("✅ Sent partner_scored notifications to partners (with dedup)");
 
         // Feed activity: career best round (only for eligible scores)
         if (countsForHandicap) {

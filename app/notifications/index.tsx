@@ -56,6 +56,11 @@ interface Notification {
   leagueId?: string;        // For league notifications
   inviteId?: string;        // For league invite notifications
 
+  // Navigation
+  navigationTarget?: string;
+  navigationUserId?: string;
+  navigationTab?: string;
+
   // Grouping
   groupKey?: string;
   lastActorId?: string;
@@ -460,6 +465,12 @@ export default function NotificationsScreen() {
       break;
 
       case "partner_scored":
+        const scoredActorId = notification.navigationUserId || notification.actorId;
+        if (scoredActorId) {
+          router.push(`/profile/${scoredActorId}?tab=rounds`);
+        }
+        break;
+
       case "partner_holeinone":
       case "holeinone_verified":
       case "holeinone_pending_poster":
@@ -694,6 +705,13 @@ export default function NotificationsScreen() {
       case "dtp_claimed":
       case "dtp_lost":
         router.push("/events" as any);
+        break;
+      
+      case "round_complete":
+        const myUid = auth.currentUser?.uid;
+        if (myUid) {
+          router.push(`/profile/${myUid}?tab=rounds`);
+        }
         break;
 
       default:
@@ -957,6 +975,7 @@ export default function NotificationsScreen() {
           </View>
         ) : (
           <FlatList
+            removeClippedSubviews={false}
             data={groupNotificationsByDate(archivedNotifications)}
             renderItem={({ item: section }) => (
               <>
@@ -1066,6 +1085,7 @@ export default function NotificationsScreen() {
       ) : (
         <>
           <FlatList
+            removeClippedSubviews={false}
             data={groupedData}
             renderItem={({ item: section }) => (
               <>

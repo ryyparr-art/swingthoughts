@@ -10,10 +10,11 @@
  * - Pull-to-refresh support
  * - Algorithmic feed with shuffle
  * - Filter support
+ * - App resume deferral (prevents watchdog kills from CPU pressure)
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert } from "react-native";
+import { Alert, AppState, AppStateStatus } from "react-native";
 import { collection, doc, getDoc, getDocs, orderBy, query, where } from "firebase/firestore";
 
 import { auth, db } from "@/constants/firebaseConfig";
@@ -90,6 +91,44 @@ export function useFeed({
   
   // Score ID lookup
   const [foundPostIdFromScore, setFoundPostIdFromScore] = useState<string | null>(null);
+
+  // ── App resume guard ──────────────────────────────────────────────
+  // Defers background refresh for 1.5s after app comes to foreground
+  // to let the UI settle and prevent watchdog kills (0x8BADF00D)
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const isResumingRef = useRef(false);
+  const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRefreshRef = useRef(false);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
+      if (appStateRef.current.match(/inactive|background/) && nextState === "active") {
+        console.log("⏸️ App resuming — deferring background work for 1.5s");
+        isResumingRef.current = true;
+
+        // Clear any existing timer
+        if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
+
+        resumeTimerRef.current = setTimeout(() => {
+          isResumingRef.current = false;
+          console.log("▶️ Resume cooldown complete — background work allowed");
+
+          // If a background refresh was deferred, run it now
+          if (pendingRefreshRef.current) {
+            pendingRefreshRef.current = false;
+            console.log("🔄 Running deferred background refresh");
+            loadFeed(true);
+          }
+        }, 1500);
+      }
+      appStateRef.current = nextState;
+    });
+
+    return () => {
+      sub.remove();
+      if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
+    };
+  }, []);
 
   /* ---------------------------------------------------------------- */
   /* INITIAL LOAD WITH CACHE CHECK                                    */
@@ -196,6 +235,13 @@ export function useFeed({
   /* ---------------------------------------------------------------- */
 
   const loadFeed = useCallback(async (isBackgroundRefresh: boolean = false) => {
+    // ── Resume guard: defer background refresh while app is settling ──
+    if (isBackgroundRefresh && isResumingRef.current) {
+      console.log("⏸️ Deferring background refresh — app resuming");
+      pendingRefreshRef.current = true;
+      return;
+    }
+
     try {
       if (!isBackgroundRefresh && !hasLoadedOnce) {
         setLoading(true);

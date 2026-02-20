@@ -72,8 +72,8 @@ export function generateGroupedMessage(
     weekNumber?: number;
     netScore?: number;
     invitedUserName?: string;
-    pollQuestion?: string;   // Add
-    pollChoice?: string;     // Add
+    pollQuestion?: string;
+    pollChoice?: string;
     message?: string;
   }
 ): string {
@@ -116,7 +116,7 @@ export function generateGroupedMessage(
     case "partner_posted":
       return `${actorName} has a new Swing Thought`;
     case "partner_scored":
-      return `${actorName} logged a round${extraData?.courseName ? ` at ${extraData.courseName}` : ""}`;
+      return extraData?.message || `${actorName} logged a round${extraData?.courseName ? ` at ${extraData.courseName}` : ""}`;
     case "partner_lowman":
       return `${actorName} became the low leader${extraData?.courseName ? ` @${extraData.courseName}` : ""}`;
     case "partner_holeinone":
@@ -377,6 +377,9 @@ export async function createNotificationDocument(params: CreateNotificationParam
     if (regionKey) notificationData.regionKey = regionKey;
     if (inviteId) notificationData.inviteId = inviteId;
     if (roundId) notificationData.roundId = roundId;
+    if (params.navigationTarget) notificationData.navigationTarget = params.navigationTarget;
+    if (params.navigationUserId) notificationData.navigationUserId = params.navigationUserId;
+    if (params.navigationTab) notificationData.navigationTab = params.navigationTab;
 
     await db.collection("notifications").add(notificationData);
     console.log("✅ Created new grouped notification");
@@ -410,6 +413,9 @@ export async function createNotificationDocument(params: CreateNotificationParam
   if (regionKey) notificationData.regionKey = regionKey;
   if (inviteId) notificationData.inviteId = inviteId;
   if (roundId) notificationData.roundId = roundId;
+  if (params.navigationTarget) notificationData.navigationTarget = params.navigationTarget;
+  if (params.navigationUserId) notificationData.navigationUserId = params.navigationUserId;
+  if (params.navigationTab) notificationData.navigationTab = params.navigationTab;
 
   await db.collection("notifications").add(notificationData);
   console.log("✅ Created notification");

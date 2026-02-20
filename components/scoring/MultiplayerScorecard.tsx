@@ -23,33 +23,33 @@
  * File: components/scoring/MultiplayerScorecard.tsx
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Modal,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from "react-native";
+    getBack9Par,
+    getBack9Yardage,
+    getFront9Par,
+    getFront9Yardage,
+    getStrokesForHole,
+    getTotalPar,
+    getTotalYardage,
+} from "@/components/leagues/post-score/helpers";
+import type { HoleInfo } from "@/components/leagues/post-score/types";
+import { getFormatById } from "@/constants/gameFormats";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { soundPlayer } from "@/utils/soundPlayer";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  getStrokesForHole,
-  getFront9Par,
-  getBack9Par,
-  getTotalPar,
-  getFront9Yardage,
-  getBack9Yardage,
-  getTotalYardage,
-} from "@/components/leagues/post-score/helpers";
-import { getFormatById, getStablefordPoints } from "@/constants/gameFormats";
-import type { HoleInfo } from "@/components/leagues/post-score/types";
-import type { PlayerSlot, HolePlayerData } from "./scoringTypes";
+    Modal,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
+} from "react-native";
 import PostHoleStatsSheet from "./PostHoleStatsSheet";
+import type { HolePlayerData, PlayerSlot } from "./scoringTypes";
 
 // ============================================================================
 // TYPES
@@ -117,6 +117,10 @@ export default function MultiplayerScorecard({
     Record<string, { fir: boolean | null; gir: boolean | null; dtp: string | null }>
   >({});
   const [infoModal, setInfoModal] = useState<string | null>(null);
+  // Track which holes have already triggered stats so we don't re-trigger
+  const completedStatsHoles = useRef<Set<number>>(new Set());
+  // Track whether round is fully complete (all holes scored)
+  const [roundComplete, setRoundComplete] = useState(false);
 
   const inputRefs = useRef<Record<string, TextInput | null>>({});
   const hasAutoFlipped = useRef(false);
@@ -214,26 +218,39 @@ export default function MultiplayerScorecard({
     [players, getScore]
   );
 
-  // ── Auto-advance logic ────────────────────────────────────
+  // ── Auto-advance logic (BUG 1 FIX) ───────────────────────
+  // Only trigger stats/advance if:
+  //   - We're in edit mode
+  //   - The active hole is complete
+  //   - We haven't already triggered stats for this hole
+  //   - The stats sheet isn't already showing
+  //   - The round isn't already complete
   useEffect(() => {
     if (!isEdit) return;
+    if (roundComplete) return;
+    if (showStatsSheet) return;
+    if (!isHoleComplete(activeHole)) return;
+    if (completedStatsHoles.current.has(activeHole)) return;
 
-    if (isHoleComplete(activeHole) && !showStatsSheet && pendingStatsHole !== activeHole) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    // Mark this hole so we never re-trigger it
+    completedStatsHoles.current.add(activeHole);
 
-      if (statsSheetSuppressed || consecutiveSkips >= 3) {
-        advanceToNextHole(activeHole);
-      } else {
-        initStatsForHole(activeHole);
-        setPendingStatsHole(activeHole);
-        setShowStatsSheet(true);
-      }
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    if (statsSheetSuppressed || consecutiveSkips >= 3) {
+      advanceToNextHole(activeHole);
+    } else {
+      initStatsForHole(activeHole);
+      setPendingStatsHole(activeHole);
+      setShowStatsSheet(true);
     }
-  }, [holeData, activeHole, isEdit]);
+  }, [holeData, activeHole, isEdit, showStatsSheet, roundComplete]);
 
-  // ── Auto-flip to back 9 ──────────────────────────────────
+  // ── Auto-flip to back 9 (BUG 2 FIX) ─────────────────────
+  // Don't flip while the stats sheet is open
   useEffect(() => {
     if (!is18 || hasAutoFlipped.current || activeTab !== "front") return;
+    if (showStatsSheet) return; // Wait until stats sheet is dismissed
 
     const allFrontComplete = Array.from({ length: 9 }, (_, i) => i + 1).every((h) =>
       isHoleComplete(h)
@@ -243,7 +260,7 @@ export default function MultiplayerScorecard({
       hasAutoFlipped.current = true;
       setTimeout(() => setActiveTab("back"), 400);
     }
-  }, [holeData, is18, activeTab]);
+  }, [holeData, is18, activeTab, showStatsSheet]);
 
   // ── Init stats for a hole ─────────────────────────────────
   const initStatsForHole = (holeNum: number) => {
@@ -257,19 +274,24 @@ export default function MultiplayerScorecard({
   // ── Advance to next hole ──────────────────────────────────
   const advanceToNextHole = (completedHole: number) => {
     const next = completedHole + 1;
-    if (next <= holeCount) {
-      setActiveHole(next);
 
-      if (is18 && next > 9 && activeTab === "front") {
-        hasAutoFlipped.current = true;
-        setTimeout(() => setActiveTab("back"), 300);
-      }
-
-      setTimeout(() => {
-        const key = `${next}-${players[0]?.playerId}`;
-        inputRefs.current[key]?.focus();
-      }, 200);
+    // If we've finished the last hole, mark round complete and stop
+    if (next > holeCount) {
+      setRoundComplete(true);
+      return;
     }
+
+    setActiveHole(next);
+
+    if (is18 && next > 9 && activeTab === "front" && !showStatsSheet) {
+      hasAutoFlipped.current = true;
+      setTimeout(() => setActiveTab("back"), 300);
+    }
+
+    setTimeout(() => {
+      const key = `${next}-${players[0]?.playerId}`;
+      inputRefs.current[key]?.focus();
+    }, 200);
   };
 
   // ── Stats sheet handlers ──────────────────────────────────

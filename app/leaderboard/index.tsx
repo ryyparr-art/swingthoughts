@@ -591,6 +591,7 @@ export default function LeaderboardScreen() {
           {/* Regular leaderboards */}
           <FlatList
             ref={listRef}
+            removeClippedSubviews={false}
             data={localBoards}
             keyExtractor={(b, index) => `${b.courseId}-${index}`}
             contentContainerStyle={{ paddingBottom: 140 }}

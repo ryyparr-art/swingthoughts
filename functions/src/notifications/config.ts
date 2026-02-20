@@ -110,4 +110,7 @@ export interface CreateNotificationParams {
   roundId?: string;
   message: string;
   regionKey?: string;
+  navigationTarget?: string;
+  navigationUserId?: string;
+  navigationTab?: string;
 }

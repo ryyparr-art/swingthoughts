@@ -3,7 +3,7 @@
  *
  * Notification types:
  *   - round_invite:   "Ry Par started a round at Maple Hill" → open round viewer
- *   - round_complete: "Your round at Maple Hill is complete — you shot 84" → open summary
+ *   - round_complete: "Your round at Maple Hill with John is complete — you shot 84" → open profile/rounds
  *   - round_notable:  "Ry Par's group is on Hole 7 at Maple Hill" (throttled)
  *
  * Uses the existing notification pipeline:
@@ -38,6 +38,16 @@ export interface RoundNotificationParams {
   markerAvatar?: string;
   grossScore?: number;
   holeNumber?: number;
+  /** Pre-built message (skips generateGroupedMessage if provided) */
+  message?: string;
+  /** Navigation target on tap (e.g. "profile") */
+  navigationTarget?: string;
+  /** User ID to navigate to on tap */
+  navigationUserId?: string;
+  /** Tab to open on profile (e.g. "rounds") */
+  navigationTab?: string;
+  /** All on-platform player IDs in the round (for dedup in scores.ts) */
+  roundPlayerIds?: string[];
 }
 
 // ============================================================================
@@ -57,8 +67,8 @@ export async function sendRoundNotification(params: RoundNotificationParams): Pr
     holeNumber,
   } = params;
 
-  // ── Build message using existing helper ───────────────────
-  const message = generateGroupedMessage(type, markerName, 1, {
+  // ── Build message — use pre-built if provided ─────────────
+  const message = params.message || generateGroupedMessage(type, markerName, 1, {
     courseName,
     holeNumber,
     message: grossScore
@@ -77,8 +87,10 @@ export async function sendRoundNotification(params: RoundNotificationParams): Pr
       actorAvatar: markerAvatar,
       courseName,
       message,
-      // roundId is added to CreateNotificationParams
       roundId,
+      navigationTarget: params.navigationTarget,
+      navigationUserId: params.navigationUserId,
+      navigationTab: params.navigationTab,
     });
   } catch (err) {
     logger.error(`Round notification failed for ${recipientUserId}:`, err);

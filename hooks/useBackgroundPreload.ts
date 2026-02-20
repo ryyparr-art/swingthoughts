@@ -176,17 +176,13 @@ export function useBackgroundPreload({
     // Each preload starts after a delay from the previous one
     
     const preloadTasks = async () => {
-      // 1. Leaderboard (500ms delay) - Uses shared preload function
+      // 1. Leaderboard (immediate - most visited after clubhouse)
       setTimeout(async () => {
         if (regionKey) {
-          const cached = await getCache(CACHE_KEYS.LEADERBOARD(currentUserId, regionKey, "18"));
-          if (!cached) {
-            await preloadLeaderboardData(currentUserId, regionKey, "18", setCache);
-          } else {
-            console.log("⚡ Leaderboard already cached");
-          }
+          await preloadLeaderboardData(currentUserId, regionKey, "18", setCache);
+          console.log("✅ Leaderboard preloaded (always refresh)");
         }
-      }, 500);
+      }, 100);
 
       // 2. Notifications (1000ms delay)
       setTimeout(async () => {
