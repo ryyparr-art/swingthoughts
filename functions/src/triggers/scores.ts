@@ -90,6 +90,7 @@ export const onScoreCreated = onDocumentCreated(
           userId,
           displayName: userName || userData?.displayName || "Unknown",
           userAvatar: userData?.avatar || null,
+          challengeBadges: userData?.earnedChallengeBadges || [],
           grossScore, netScore, courseId, courseName,
           tees: tee || null, teeYardage: teeYardage || null,
           teePar: score.par || (is18 ? 72 : 36), par: score.par || (is18 ? 72 : 36),

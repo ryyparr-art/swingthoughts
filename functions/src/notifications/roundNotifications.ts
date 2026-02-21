@@ -26,7 +26,7 @@ const db = getFirestore();
 // TYPES
 // ============================================================================
 
-export type RoundNotificationType = "round_invite" | "round_complete" | "round_notable";
+export type RoundNotificationType = "round_invite" | "round_complete" | "round_notable" | "marker_transfer" | "marker_transfer_request";
 
 export interface RoundNotificationParams {
   type: RoundNotificationType;

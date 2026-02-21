@@ -975,7 +975,6 @@ export default function NotificationsScreen() {
           </View>
         ) : (
           <FlatList
-            removeClippedSubviews={false}
             data={groupNotificationsByDate(archivedNotifications)}
             renderItem={({ item: section }) => (
               <>
@@ -1085,7 +1084,6 @@ export default function NotificationsScreen() {
       ) : (
         <>
           <FlatList
-            removeClippedSubviews={false}
             data={groupedData}
             renderItem={({ item: section }) => (
               <>

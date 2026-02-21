@@ -3,17 +3,18 @@
  *
  * Flow: Course + Holes + Settings → Format → Playing Partners → Scorecard → Complete
  *
- * Changes:
+ * Features:
  *   - Header: "Tee It Up" with green safe area
  *   - No auto-advance on course select
  *   - Round Type + Visibility in "Round Settings" bottom sheet
  *   - Continue button sticky at bottom
  *   - Selected course shows confirmation bar with X to clear
+ *   - Marker Transfer: hand off scoring via settings or approve incoming requests
  *
  * File: app/scoring/index.tsx
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator, Alert, FlatList, Image, KeyboardAvoidingView,
   Modal, Platform, ScrollView, StyleSheet, Text, TextInput,
@@ -26,7 +27,7 @@ import * as Haptics from "expo-haptics";
 
 import { auth, db } from "@/constants/firebaseConfig";
 import {
-  addDoc, collection, doc, getDoc, onSnapshot, serverTimestamp, updateDoc,
+  addDoc, collection, doc, getDoc, onSnapshot, serverTimestamp, Timestamp, updateDoc,
 } from "firebase/firestore";
 
 import CourseSelector from "@/components/leagues/post-score/CourseSelector";
@@ -56,6 +57,21 @@ const GOLD = "#C5A55A";
 const WALNUT = "#4A3628";
 
 const STABLEFORD_PTS: Record<number, number> = { [-3]: 5, [-2]: 4, [-1]: 3, [0]: 2, [1]: 1 };
+
+/**
+ * Generate the playing order of holes with wraparound.
+ * e.g. startingHole=5, totalHoles=18 → [5,6,7,...,18,1,2,3,4]
+ * e.g. startingHole=3, totalHoles=9, baseHole=1 → [3,4,5,6,7,8,9,1,2]
+ * e.g. startingHole=14, totalHoles=9, baseHole=10 → [14,15,16,17,18,10,11,12,13]
+ */
+function buildPlayingOrder(startingHole: number, totalHoles: number, baseHole: number = 1): number[] {
+  const order: number[] = [];
+  for (let i = 0; i < totalHoles; i++) {
+    const hole = ((startingHole - baseHole + i) % totalHoles) + baseHole;
+    order.push(hole);
+  }
+  return order;
+}
 
 function computeLiveScores(
   players: { playerId: string; courseHandicap: number }[],
@@ -103,6 +119,7 @@ export default function ScoringScreen() {
   const [selectedTee, setSelectedTee] = useState<TeeOption | null>(null);
   const [holeCount, setHoleCount] = useState<9 | 18>(18);
   const [nineHoleSide, setNineHoleSide] = useState<"front" | "back">("front");
+  const [startingHole, setStartingHole] = useState(1);
   const [formatId, setFormatId] = useState("stroke_play");
   const [teams, setTeams] = useState<RoundTeam[] | undefined>();
   const [roundType, setRoundType] = useState<"on_premise" | "simulator">("on_premise");
@@ -117,10 +134,14 @@ export default function ScoringScreen() {
   const [submittingMessage, setSubmittingMessage] = useState("");
   const [showChatSheet, setShowChatSheet] = useState(false);
   const [showSettingsSheet, setShowSettingsSheet] = useState(false);
+  const [showTransferPicker, setShowTransferPicker] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
   const chatListRef = React.useRef<FlatList<ChatMessage>>(null);
   const { messages: chatMessages, sendMessage } = useRoundChat(roundId);
+
+  // Track if we've already shown the transfer request alert to avoid re-firing
+  const transferRequestAlertShown = useRef<string | null>(null);
 
   // ── DATA LOADING ──
   useEffect(() => { if (currentUserId) loadUserData(); }, [currentUserId]);
@@ -186,7 +207,8 @@ export default function ScoringScreen() {
             if (matchedTee) setSelectedTee(matchedTee);
           }
         }
-        setNineHoleSide("front");
+        setNineHoleSide(roundData.nineHoleSide || "front");
+        setStartingHole(roundData.startingHole || 1);
         setCurrentScreen("scorecard");
         console.log("✅ Resumed round:", params.roundId, "at hole", roundData.currentHole);
       } catch (err) { console.error("Error resuming round:", err); Alert.alert("Error", "Failed to resume round."); router.back(); }
@@ -220,19 +242,143 @@ export default function ScoringScreen() {
     autoSelectCourse();
   }, [params.courseId]);
 
-  // ── MARKER TRANSFER DETECTION ──
+  // ══════════════════════════════════════════════════════════════════════
+  // MARKER TRANSFER
+  // ══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Real-time listener for marker changes + incoming transfer requests.
+   * Handles:
+   *   1. Being transferred out (markerId changed away from us)
+   *   2. Incoming transfer request from a viewer (Path 2)
+   */
   useEffect(() => {
     if (!roundId || !currentUserId) return;
+
     const unsub = onSnapshot(doc(db, "rounds", roundId), (snap) => {
       if (!snap.exists()) return;
       const data = snap.data();
+
+      // ── Case 1: We lost marker role (transferred out) ──
       if (currentScreen === "scorecard" && data.markerId !== currentUserId && data.status === "live") {
         const name = data.players?.find((p: any) => p.playerId === data.markerId)?.displayName || "Another player";
-        Alert.alert("Scoring Transferred", `${name} has taken over scoring.`, [{ text: "OK", onPress: () => router.replace(`/round/${roundId}` as any) }]);
+        Alert.alert("Scoring Transferred", `${name} has taken over scoring.`, [
+          { text: "OK", onPress: () => router.replace(`/round/${roundId}` as any) },
+        ]);
+        return;
+      }
+
+      // ── Case 2: Incoming transfer request (we are marker) ──
+      if (
+        data.markerId === currentUserId &&
+        data.markerTransferRequest?.status === "pending" &&
+        data.markerTransferRequest?.requestedBy !== currentUserId
+      ) {
+        const req = data.markerTransferRequest;
+        // Only show alert once per unique request
+        if (transferRequestAlertShown.current === req.requestedBy) return;
+        transferRequestAlertShown.current = req.requestedBy;
+
+        Alert.alert(
+          "Scoring Request",
+          `${req.requestedByName} wants to take over scoring.\n\nIf you don't respond, they'll be auto-approved in 2 minutes.`,
+          [
+            {
+              text: "Decline",
+              style: "cancel",
+              onPress: async () => {
+                try {
+                  await updateDoc(doc(db, "rounds", roundId), { markerTransferRequest: null });
+                  soundPlayer.play("click");
+                } catch (err) { console.error("Error declining transfer:", err); }
+                transferRequestAlertShown.current = null;
+              },
+            },
+            {
+              text: "Approve",
+              onPress: () => {
+                executeMarkerTransfer(req.requestedBy, req.requestedByName);
+                transferRequestAlertShown.current = null;
+              },
+            },
+          ]
+        );
+      }
+
+      // Reset alert guard when request is cleared
+      if (!data.markerTransferRequest) {
+        transferRequestAlertShown.current = null;
       }
     });
+
     return () => unsub();
   }, [roundId, currentUserId, currentScreen]);
+
+  /**
+   * Path 1: Marker initiates transfer from settings sheet.
+   * If only one eligible player, confirm directly. Otherwise show picker.
+   */
+  const handleTransferScoring = () => {
+    const eligible = players.filter((p) => !p.isGhost && p.playerId !== currentUserId);
+
+    if (eligible.length === 0) {
+      Alert.alert("No Eligible Players", "There are no on-platform players to transfer scoring to.");
+      return;
+    }
+
+    setShowSettingsSheet(false);
+
+    if (eligible.length === 1) {
+      const target = eligible[0];
+      Alert.alert(
+        "Transfer Scoring",
+        `Hand off scorekeeper duties to ${target.displayName}?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Transfer", onPress: () => executeMarkerTransfer(target.playerId, target.displayName) },
+        ]
+      );
+    } else {
+      setShowTransferPicker(true);
+    }
+  };
+
+  /**
+   * Execute the marker transfer: update round doc with new markerId.
+   * The onSnapshot listener handles redirecting the old marker.
+   */
+  const executeMarkerTransfer = async (newMarkerId: string, newMarkerName: string) => {
+    if (!roundId) return;
+    try {
+      soundPlayer.play("click");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      await updateDoc(doc(db, "rounds", roundId), {
+        markerId: newMarkerId,
+        markerTransferRequest: null,
+        players: players.map((p) => ({
+          playerId: p.playerId,
+          displayName: p.displayName,
+          avatar: p.avatar || null,
+          isGhost: p.isGhost,
+          isMarker: p.playerId === newMarkerId,
+          handicapIndex: p.handicapIndex,
+          courseHandicap: p.courseHandicap,
+          teeName: p.teeName,
+          slopeRating: p.slopeRating,
+          courseRating: p.courseRating,
+          teamId: p.teamId || null,
+          contactInfo: p.contactInfo || null,
+          contactType: p.contactType || null,
+        })),
+      });
+
+      console.log(`✅ Marker transferred to ${newMarkerName}`);
+    } catch (err) {
+      console.error("Error transferring marker:", err);
+      Alert.alert("Error", "Failed to transfer scoring duties.");
+    }
+  };
 
   // ── COURSE HANDLER — no auto-advance ──
   const handleSelectCourse = async (course: CourseBasic) => {
@@ -268,7 +414,9 @@ export default function ScoringScreen() {
 
   const handleSetHoleCount = (count: 9 | 18) => {
     soundPlayer.play("click"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setHoleCount(count); if (count === 18) setNineHoleSide("front");
+    setHoleCount(count);
+    if (count === 18) { setNineHoleSide("front"); setStartingHole(1); }
+    else { setStartingHole(nineHoleSide === "back" ? 10 : 1); }
   };
 
   const handleFormatConfirm = (selectedFormatId: string, selectedTeams?: RoundTeam[]) => {
@@ -291,8 +439,9 @@ export default function ScoringScreen() {
       const courseId = fullCourseData.courseId || fullCourseData.id;
       const courseName = fullCourseData.courseName || fullCourseData.course_name;
       const allHoles = selectedTee.holes || [];
-      const startHole = holeCount === 9 && nineHoleSide === "back" ? 9 : 0;
-      const holePars = allHoles.slice(startHole, startHole + holeCount).map((h: any) => h.par || 4);
+      const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
+      const playingOrder = buildPlayingOrder(startingHole, holeCount, baseHole);
+      const holePars = playingOrder.map((h) => allHoles[h - 1]?.par || 4);
       const playersWithTeams = teams
         ? confirmedPlayers.map((p) => { const team = teams.find((t) => t.playerIds.includes(p.playerId)); return team ? { ...p, teamId: team.id } : p; })
         : confirmedPlayers;
@@ -307,10 +456,12 @@ export default function ScoringScreen() {
           courseRating: p.courseRating, teamId: p.teamId || null,
           contactInfo: p.contactInfo || null, contactType: p.contactType || null,
         })),
-        teams: teams || null, currentHole: 1, holeData: {}, liveScores: {}, holePars,
+        teams: teams || null, currentHole: 1, holeData: {}, liveScores: {}, holePars, playingOrder,
+        startingHole,
         leagueId: null, leagueWeek: null, regionKey: userRegionKey,
         location: fullCourseData.location || null, startedAt: serverTimestamp(),
         roundType, isSimulator: roundType === "simulator", privacy: roundPrivacy,
+        markerTransferRequest: null,
       };
       const docRef = await addDoc(collection(db, "rounds"), roundDoc);
       setRoundId(docRef.id); setPlayers(playersWithTeams);
@@ -362,8 +513,9 @@ export default function ScoringScreen() {
         await updateDoc(roundRef, { ...holeUpdate, currentHole: Math.min(nextHole, holeCount) });
         if (selectedTee) {
           const allHoles = selectedTee.holes || [];
-          const startIdx = holeCount === 9 && nineHoleSide === "back" ? 9 : 0;
-          const holePars = allHoles.slice(startIdx, startIdx + holeCount).map((h: any) => h.par || 4);
+          const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
+          const order = buildPlayingOrder(startingHole, holeCount, baseHole);
+          const holePars = order.map((h) => allHoles[h - 1]?.par || 4);
           const merged = { ...holeData }; if (!merged[hk]) merged[hk] = {};
           for (const [pid, ps] of Object.entries(stats)) { merged[hk][pid] = { ...(merged[hk][pid] || { strokes: 0 }), fir: ps.fir, gir: ps.gir, dtp: ps.dtp ? parseFloat(ps.dtp) : null }; }
           const liveScores = computeLiveScores(players.map((p) => ({ playerId: p.playerId, courseHandicap: p.courseHandicap })), merged, holePars, holeCount, formatId);
@@ -371,7 +523,7 @@ export default function ScoringScreen() {
         }
       } catch (err) { console.error("Error syncing hole data:", err); }
     }
-  }, [roundId, holeCount, holeData, selectedTee, nineHoleSide, players, formatId]);
+  }, [roundId, holeCount, holeData, selectedTee, nineHoleSide, startingHole, players, formatId]);
 
   const handleCompleteRound = useCallback(async () => {
     if (!roundId) return;
@@ -453,6 +605,12 @@ export default function ScoringScreen() {
     ]);
   };
 
+  // ── Eligible players for marker transfer ──
+  const transferEligiblePlayers = useMemo(
+    () => players.filter((p) => !p.isGhost && p.playerId !== currentUserId),
+    [players, currentUserId]
+  );
+
   // ── RENDER ──
   if (loading) {
     return (
@@ -496,7 +654,7 @@ export default function ScoringScreen() {
               {holeCount === 9 && (
                 <View style={st.nineHoleRow}>
                   {(["front", "back"] as const).map((side) => (
-                    <TouchableOpacity key={side} onPress={() => { soundPlayer.play("click"); setNineHoleSide(side); }} style={[st.nineHoleBtn, nineHoleSide === side && st.nineHoleBtnActive]}>
+                    <TouchableOpacity key={side} onPress={() => { soundPlayer.play("click"); setNineHoleSide(side); setStartingHole(side === "front" ? 1 : 10); }} style={[st.nineHoleBtn, nineHoleSide === side && st.nineHoleBtnActive]}>
                       <Text style={[st.nineHoleBtnText, nineHoleSide === side && st.nineHoleBtnTextActive]}>{side === "front" ? "Front 9 (1–9)" : "Back 9 (10–18)"}</Text>
                     </TouchableOpacity>
                   ))}
@@ -522,6 +680,43 @@ export default function ScoringScreen() {
               ) : (
                 <CourseSelector availableCourses={availableCourses} isRestricted={false} userLocation={userData?.location || null} onSelectCourse={handleSelectCourse} onBack={() => router.back()} />
               )}
+            </View>
+            <View style={st.divider} />
+
+            {/* Starting Hole */}
+            <View style={st.startingHoleSection}>
+              <View style={st.startingHoleHeader}>
+                <Ionicons name="navigate-outline" size={20} color={GREEN} />
+                <Text style={st.startingHoleTitle}>Starting Hole</Text>
+                {startingHole !== (holeCount === 9 && nineHoleSide === "back" ? 10 : 1) && (
+                  <View style={st.startingHoleBadge}>
+                    <Text style={st.startingHoleBadgeText}>Hole {startingHole}</Text>
+                  </View>
+                )}
+              </View>
+              <FlatList
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                data={(() => {
+                  if (holeCount === 18) return Array.from({ length: 18 }, (_, i) => i + 1);
+                  return nineHoleSide === "back"
+                    ? Array.from({ length: 9 }, (_, i) => i + 10)
+                    : Array.from({ length: 9 }, (_, i) => i + 1);
+                })()}
+                keyExtractor={(item) => String(item)}
+                contentContainerStyle={st.startingHoleList}
+                renderItem={({ item: hole }) => {
+                  const isSelected = hole === startingHole;
+                  return (
+                    <TouchableOpacity
+                      onPress={() => { soundPlayer.play("click"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setStartingHole(hole); }}
+                      style={[st.startingHoleChip, isSelected && st.startingHoleChipActive]}
+                    >
+                      <Text style={[st.startingHoleChipText, isSelected && st.startingHoleChipTextActive]}>{hole}</Text>
+                    </TouchableOpacity>
+                  );
+                }}
+              />
             </View>
             <View style={st.divider} />
 
@@ -638,7 +833,11 @@ export default function ScoringScreen() {
             </TouchableOpacity>
             <View style={{ flex: 1, alignItems: "center" }}>
               <Text style={st.headerTitle} numberOfLines={1}>{fullCourseData?.courseName || fullCourseData?.course_name || "Round"}</Text>
-              <Text style={st.headerSubtitle}>Hole {currentHole} of {holeCount}</Text>
+              <Text style={st.headerSubtitle}>Hole {(() => {
+                const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
+                const order = buildPlayingOrder(startingHole, holeCount, baseHole);
+                return order[currentHole - 1] || currentHole;
+              })()} of {holeCount}</Text>
             </View>
             <View style={st.headerActions}>
               <TouchableOpacity onPress={() => { soundPlayer.play("click"); setShowChatSheet(true); }} style={st.headerIconBtn}>
@@ -652,7 +851,12 @@ export default function ScoringScreen() {
             </View>
           </View>
           <MultiplayerScorecard mode="edit" formatId={formatId} players={players} holeCount={holeCount}
-            holes={selectedTee.holes.slice(holeCount === 9 && nineHoleSide === "back" ? 9 : 0, (holeCount === 9 && nineHoleSide === "back" ? 9 : 0) + holeCount)}
+            holes={(() => {
+              const allHoles = selectedTee.holes || [];
+              const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
+              const order = buildPlayingOrder(startingHole, holeCount, baseHole);
+              return order.map((h) => allHoles[h - 1] || { par: 4 });
+            })()}
             holeData={holeData} onScoreChange={handleScoreChange} onHoleComplete={handleHoleComplete}
             statsSheetSuppressed={statsSheetSuppressed} onEnableStatsSheet={() => setStatsSheetSuppressed(false)} />
 
@@ -695,23 +899,83 @@ export default function ScoringScreen() {
           <Modal visible={showSettingsSheet} transparent animationType="slide">
             <View style={st.sheetOverlay}>
               <TouchableOpacity style={st.sheetBackdrop} activeOpacity={1} onPress={() => setShowSettingsSheet(false)} />
-              <View style={[st.sheetContainer, { maxHeight: 360 }]}>
+              <View style={[st.sheetContainer, { maxHeight: 420 }]}>
                 <View style={st.sheetHeader}>
                   <View style={st.sheetHandle} />
                   <Text style={st.sheetTitle}>Round Settings</Text>
                   <TouchableOpacity onPress={() => setShowSettingsSheet(false)}><Image source={closeIcon} style={{ width: 22, height: 22, tintColor: "#666" }} /></TouchableOpacity>
                 </View>
                 <ScrollView style={st.settingsBody}>
+                  {/* Visibility */}
                   <TouchableOpacity style={st.settingsRow} onPress={handleTogglePrivacy}>
                     <View style={st.settingsRowIcon}><Ionicons name="globe-outline" size={20} color={HEADER_GREEN} /></View>
                     <View style={{ flex: 1 }}><Text style={st.settingsRowLabel}>Round Visibility</Text><Text style={st.settingsRowSub}>Who can watch this round live</Text></View>
                     <Ionicons name="chevron-forward" size={18} color="#CCC" />
                   </TouchableOpacity>
+
+                  {/* Transfer Scoring — only show if there are eligible players */}
+                  {transferEligiblePlayers.length > 0 && (
+                    <TouchableOpacity style={st.settingsRow} onPress={handleTransferScoring}>
+                      <View style={st.settingsRowIcon}><Ionicons name="swap-horizontal-outline" size={20} color={HEADER_GREEN} /></View>
+                      <View style={{ flex: 1 }}><Text style={st.settingsRowLabel}>Transfer Scoring</Text><Text style={st.settingsRowSub}>Hand off scorekeeper duties</Text></View>
+                      <Ionicons name="chevron-forward" size={18} color="#CCC" />
+                    </TouchableOpacity>
+                  )}
+
+                  {/* Abandon */}
                   <TouchableOpacity style={st.settingsRow} onPress={handleAbandonRound}>
                     <View style={[st.settingsRowIcon, { backgroundColor: "rgba(204,51,51,0.08)" }]}><Ionicons name="close-circle-outline" size={20} color="#CC3333" /></View>
                     <View style={{ flex: 1 }}><Text style={[st.settingsRowLabel, { color: "#CC3333" }]}>Abandon Round</Text><Text style={st.settingsRowSub}>End without saving scores</Text></View>
                     <Ionicons name="chevron-forward" size={18} color="#CCC" />
                   </TouchableOpacity>
+                </ScrollView>
+              </View>
+            </View>
+          </Modal>
+
+          {/* Transfer Player Picker */}
+          <Modal visible={showTransferPicker} transparent animationType="slide">
+            <View style={st.sheetOverlay}>
+              <TouchableOpacity style={st.sheetBackdrop} activeOpacity={1} onPress={() => setShowTransferPicker(false)} />
+              <View style={[st.sheetContainer, { maxHeight: 400 }]}>
+                <View style={st.sheetHeader}>
+                  <View style={st.sheetHandle} />
+                  <Text style={st.sheetTitle}>Transfer Scoring To</Text>
+                  <TouchableOpacity onPress={() => setShowTransferPicker(false)}>
+                    <Image source={closeIcon} style={{ width: 22, height: 22, tintColor: "#666" }} />
+                  </TouchableOpacity>
+                </View>
+                <ScrollView style={{ paddingVertical: 8 }}>
+                  {transferEligiblePlayers.map((p) => (
+                    <TouchableOpacity
+                      key={p.playerId}
+                      style={st.transferPlayerRow}
+                      onPress={() => {
+                        setShowTransferPicker(false);
+                        Alert.alert(
+                          "Transfer Scoring",
+                          `Hand off scorekeeper duties to ${p.displayName}?`,
+                          [
+                            { text: "Cancel", style: "cancel" },
+                            { text: "Transfer", onPress: () => executeMarkerTransfer(p.playerId, p.displayName) },
+                          ]
+                        );
+                      }}
+                    >
+                      {p.avatar ? (
+                        <Image source={{ uri: p.avatar }} style={st.transferPlayerAvatar} />
+                      ) : (
+                        <View style={st.transferPlayerAvatarFallback}>
+                          <Ionicons name="person" size={18} color="#999" />
+                        </View>
+                      )}
+                      <View style={{ flex: 1 }}>
+                        <Text style={st.transferPlayerName}>{p.displayName}</Text>
+                        <Text style={st.transferPlayerSub}>Tap to transfer</Text>
+                      </View>
+                      <Ionicons name="arrow-forward-circle-outline" size={22} color={HEADER_GREEN} />
+                    </TouchableOpacity>
+                  ))}
                 </ScrollView>
               </View>
             </View>
@@ -724,8 +988,9 @@ export default function ScoringScreen() {
         const cName = fullCourseData?.courseName || fullCourseData?.course_name || "Course";
         const cId = typeof fullCourseData?.id === "string" ? parseInt(fullCourseData.id, 10) : (fullCourseData?.courseId || fullCourseData?.id || 0) as number;
         const teeHoles = selectedTee?.holes || [];
-        const startIdx = nineHoleSide === "back" ? 9 : 0;
-        const pars = teeHoles.slice(startIdx, startIdx + holeCount).map((h: any) => h.par || 4);
+        const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
+        const order = buildPlayingOrder(startingHole, holeCount, baseHole);
+        const pars = order.map((h) => teeHoles[h - 1]?.par || 4);
         return (
           <RoundSummary roundId={roundId} courseName={cName} courseId={cId} holeCount={holeCount} formatId={formatId} isSimulator={roundType === "simulator"} holePars={pars}
             players={players.map((p) => {
@@ -789,6 +1054,13 @@ const st = StyleSheet.create({
   settingsRowLabel: { fontSize: 15, fontWeight: "600", color: "#333" },
   settingsRowSub: { fontSize: 12, color: "#999", marginTop: 1 },
 
+  // ── Transfer Player Picker ──
+  transferPlayerRow: { flexDirection: "row", alignItems: "center", paddingVertical: 14, paddingHorizontal: 16, gap: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#E8E4DA" },
+  transferPlayerAvatar: { width: 40, height: 40, borderRadius: 20 },
+  transferPlayerAvatarFallback: { width: 40, height: 40, borderRadius: 20, backgroundColor: "#E8E4DA", justifyContent: "center", alignItems: "center" },
+  transferPlayerName: { fontSize: 15, fontWeight: "700", color: "#333" },
+  transferPlayerSub: { fontSize: 12, color: "#999", marginTop: 1 },
+
   holeSection: { alignItems: "center", paddingTop: 16, paddingBottom: 12, paddingHorizontal: 24 },
   holeSectionTitle: { fontSize: 16, fontWeight: "800", color: WALNUT, fontFamily: Platform.OS === "ios" ? "Georgia" : "serif", marginTop: 8, marginBottom: 12, textAlign: "center" },
   holeToggle: { flexDirection: "row", gap: 10 },
@@ -806,6 +1078,17 @@ const st = StyleSheet.create({
   nineHoleBtnTextActive: { color: "#FFF" },
 
   divider: { height: 1, backgroundColor: "#E0DCD4", marginHorizontal: 24, marginVertical: 2 },
+
+  startingHoleSection: { paddingTop: 12, paddingBottom: 10 },
+  startingHoleHeader: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 24, marginBottom: 10 },
+  startingHoleTitle: { fontSize: 15, fontWeight: "700", color: WALNUT, fontFamily: Platform.OS === "ios" ? "Georgia" : "serif" },
+  startingHoleBadge: { backgroundColor: GREEN, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 },
+  startingHoleBadgeText: { fontSize: 11, fontWeight: "700", color: "#FFF" },
+  startingHoleList: { paddingHorizontal: 24, gap: 6 },
+  startingHoleChip: { width: 40, height: 40, borderRadius: 20, backgroundColor: "#FFF", borderWidth: 1.5, borderColor: "#E0DCD4", justifyContent: "center", alignItems: "center" },
+  startingHoleChipActive: { backgroundColor: GREEN, borderColor: GREEN },
+  startingHoleChipText: { fontSize: 15, fontWeight: "700", color: "#999" },
+  startingHoleChipTextActive: { color: "#FFF" },
 
   courseSection: { paddingTop: 12 },
   courseSectionHeader: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 24, marginBottom: 8 },

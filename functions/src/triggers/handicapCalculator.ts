@@ -82,6 +82,12 @@ interface DifferentialResult {
 function calculateDifferential(input: DifferentialInput): DifferentialResult {
   const { grossScore, courseRating, slopeRating, holes, currentHandicapIndex } = input;
 
+  // Sanity check: if gross score is way below course rating, likely a 9-hole score marked as 18
+  if (holes === 18 && grossScore < courseRating * 0.75) {
+    console.log(`⚠️ Suspicious score: ${grossScore} gross on ${courseRating} rated course — treating as 9-hole`);
+    return calculateDifferential({ ...input, holes: 9 });
+  }
+
   if (holes === 18) {
     // Standard 18-hole differential
     const differential = (113 / slopeRating) * (grossScore - courseRating);

@@ -2,13 +2,19 @@
  * LiveRoundViewer — Spectator/player view for a live round
  *
  * Green #147A52 header, three tabs: Scorecard | Chat | Settings
- * Settings: Take Over Marker, Edit Scores, Round Privacy, Abandon Round
+ * Settings: Request Scoring (with 2-min auto-approve), Edit Scores, Round Privacy, Abandon Round
+ *
+ * Marker Transfer (Path 2 — Player requests from viewer):
+ *   - Player taps "Request Scoring" → writes markerTransferRequest to round doc
+ *   - Current marker gets alert with Approve/Decline (handled in scoring screen)
+ *   - 2-minute client-side countdown → auto-approve if marker doesn't respond
+ *   - On approval: player is redirected to scoring screen in resume mode
  *
  * Route: /round/[roundId]
  * File: components/scoring/LiveRoundViewer.tsx
  */
 
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -29,7 +35,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { auth, db } from "@/constants/firebaseConfig";
-import { doc, updateDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, updateDoc, serverTimestamp, Timestamp } from "firebase/firestore";
 import { getFormatById } from "@/constants/gameFormats";
 import {
   useLiveRound,
@@ -45,6 +51,8 @@ const scorecardIcon = require("@/assets/icons/Post Score.png");
 const HEADER_GREEN = "#147A52";
 const WALNUT = "#4A3628";
 const CREAM = "#F4EED8";
+
+const TRANSFER_TIMEOUT_SECONDS = 120; // 2 minutes
 
 interface LiveRoundViewerProps {
   roundId: string;
@@ -64,11 +72,213 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
   const [sending, setSending] = useState(false);
   const chatListRef = useRef<FlatList<ChatMessage>>(null);
 
+  // ── Marker Transfer State ─────────────────────────────────
+  const [transferPending, setTransferPending] = useState(false);
+  const [transferCountdown, setTransferCountdown] = useState<number | null>(null);
+  const transferTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const format = round ? getFormatById(round.formatId) : null;
   const isMarker = round?.markerId === currentUserId;
-  const isPlayer = round?.players?.some((p) => p.playerId === currentUserId) ?? false;
+  const isPlayer = round?.players?.some((p) => p.playerId === currentUserId && !p.isGhost) ?? false;
 
-  // ── Send chat message ─────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════
+  // MARKER TRANSFER — Path 2 (Player requests from viewer)
+  // ══════════════════════════════════════════════════════════════
+
+  /**
+   * Watch the round doc for transfer request resolution.
+   * If our request was approved (markerId changed to us), navigate to scoring.
+   * If our request was cleared (declined), reset pending state.
+   */
+  useEffect(() => {
+    if (!round || !transferPending) return;
+
+    const request = round.markerTransferRequest;
+
+    // Request was cleared (declined or resolved)
+    if (!request || request.status !== "pending") {
+      // Check if we became the marker
+      if (round.markerId === currentUserId) {
+        // Transfer approved! Navigate to scoring screen
+        setTransferPending(false);
+        setTransferCountdown(null);
+        if (transferTimerRef.current) clearTimeout(transferTimerRef.current);
+
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        soundPlayer.play("click");
+
+        Alert.alert(
+          "You're the Scorekeeper! 🏌️",
+          "You've taken over scoring duties for this round.",
+          [
+            {
+              text: "Start Scoring",
+              onPress: () => {
+                router.replace(`/scoring?roundId=${roundId}&resume=true` as any);
+              },
+            },
+          ]
+        );
+        return;
+      }
+
+      // Request was declined or expired without us becoming marker
+      if (transferPending && !request) {
+        setTransferPending(false);
+        setTransferCountdown(null);
+        if (transferTimerRef.current) clearTimeout(transferTimerRef.current);
+      }
+    }
+  }, [round?.markerTransferRequest, round?.markerId, transferPending]);
+
+  /**
+   * Countdown timer — ticks every second.
+   * When it hits 0, auto-approve the transfer.
+   */
+  useEffect(() => {
+    if (!transferPending || transferCountdown === null) return;
+
+    if (transferCountdown <= 0) {
+      autoApproveTransfer();
+      return;
+    }
+
+    transferTimerRef.current = setTimeout(() => {
+      setTransferCountdown((prev) => (prev !== null ? prev - 1 : null));
+    }, 1000);
+
+    return () => {
+      if (transferTimerRef.current) clearTimeout(transferTimerRef.current);
+    };
+  }, [transferPending, transferCountdown]);
+
+  /**
+   * Request to take over scoring.
+   * Writes a markerTransferRequest to the round doc and starts the countdown.
+   */
+  const handleRequestScoring = () => {
+    if (!isPlayer || isMarker) return;
+
+    // Guard: already pending
+    if (round?.markerTransferRequest?.status === "pending") {
+      Alert.alert("Request Pending", "A scoring transfer request is already in progress.");
+      return;
+    }
+
+    const markerName = round?.players?.find((p) => p.playerId === round?.markerId)?.displayName || "the current scorekeeper";
+
+    Alert.alert(
+      "Request Scoring",
+      `Ask ${markerName} to hand off scoring duties?\n\nIf they don't respond within 2 minutes, you'll be auto-approved.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Request",
+          onPress: async () => {
+            try {
+              soundPlayer.play("click");
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+              const now = Timestamp.now();
+              const expiresAt = Timestamp.fromMillis(now.toMillis() + TRANSFER_TIMEOUT_SECONDS * 1000);
+
+              // Get our display name
+              const userSnap = await getDoc(doc(db, "users", currentUserId));
+              const displayName = userSnap.data()?.displayName ||
+                round?.players?.find((p) => p.playerId === currentUserId)?.displayName ||
+                "A player";
+
+              await updateDoc(doc(db, "rounds", roundId), {
+                markerTransferRequest: {
+                  requestedBy: currentUserId,
+                  requestedByName: displayName,
+                  requestedAt: now,
+                  status: "pending",
+                  expiresAt,
+                },
+              });
+
+              setTransferPending(true);
+              setTransferCountdown(TRANSFER_TIMEOUT_SECONDS);
+              console.log("✅ Marker transfer requested");
+            } catch (err) {
+              console.error("Error requesting transfer:", err);
+              Alert.alert("Error", "Failed to send request. Try again.");
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  /**
+   * Auto-approve: called when countdown hits 0.
+   * Re-reads the round doc to confirm the request is still pending,
+   * then writes the markerId change.
+   */
+  const autoApproveTransfer = async () => {
+    if (!roundId || !currentUserId) return;
+
+    try {
+      const roundSnap = await getDoc(doc(db, "rounds", roundId));
+      const data = roundSnap.data();
+
+      if (
+        data?.markerTransferRequest?.status === "pending" &&
+        data?.markerTransferRequest?.requestedBy === currentUserId
+      ) {
+        const updatedPlayers = (data.players || []).map((p: any) => ({
+          ...p,
+          isMarker: p.playerId === currentUserId,
+        }));
+
+        await updateDoc(doc(db, "rounds", roundId), {
+          markerId: currentUserId,
+          markerTransferRequest: null,
+          players: updatedPlayers,
+        });
+
+        console.log("✅ Auto-approved marker transfer");
+        // The useEffect watching round.markerId will handle navigation
+      } else {
+        console.log("⏭️ Transfer request was already resolved");
+        setTransferPending(false);
+        setTransferCountdown(null);
+      }
+    } catch (err) {
+      console.error("Error auto-approving transfer:", err);
+      Alert.alert("Error", "Failed to auto-approve transfer.");
+      setTransferPending(false);
+      setTransferCountdown(null);
+    }
+  };
+
+  /**
+   * Cancel a pending transfer request.
+   */
+  const handleCancelTransferRequest = async () => {
+    try {
+      await updateDoc(doc(db, "rounds", roundId), { markerTransferRequest: null });
+      soundPlayer.play("click");
+    } catch (err) {
+      console.error("Error cancelling transfer:", err);
+    }
+    setTransferPending(false);
+    setTransferCountdown(null);
+    if (transferTimerRef.current) clearTimeout(transferTimerRef.current);
+  };
+
+  // ── Format countdown for display ──────────────────────────
+  const formatCountdown = (seconds: number): string => {
+    const m = Math.floor(seconds / 60);
+    const sec = seconds % 60;
+    return `${m}:${String(sec).padStart(2, "0")}`;
+  };
+
+  // ══════════════════════════════════════════════════════════════
+  // CHAT
+  // ══════════════════════════════════════════════════════════════
+
   const handleSendMessage = useCallback(async () => {
     if (!chatInput.trim() || sending) return;
     setSending(true);
@@ -89,36 +299,9 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
     }
   }, [chatInput, sending, currentUserId, round, sendMessage]);
 
-  // ── Settings actions ────────────────────────────────────────
-  const handleTakeOverMarker = () => {
-    if (!isPlayer || isMarker) return;
-    Alert.alert(
-      "Take Over Scoring",
-      "This will make you the scorekeeper for this round. The current marker will be notified.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Take Over",
-          onPress: async () => {
-            try {
-              await updateDoc(doc(db, "rounds", roundId), {
-                markerId: currentUserId,
-                markerTransferredAt: serverTimestamp(),
-                previousMarkerId: round?.markerId,
-              });
-              soundPlayer.play("click");
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              // Navigate new marker into the scoring screen in resume mode
-              router.replace(`/scoring?roundId=${roundId}&resume=true` as any);
-            } catch (err) {
-              console.error("Marker transfer error:", err);
-              Alert.alert("Error", "Failed to transfer marker. Try again.");
-            }
-          },
-        },
-      ]
-    );
-  };
+  // ══════════════════════════════════════════════════════════════
+  // SETTINGS ACTIONS
+  // ══════════════════════════════════════════════════════════════
 
   const handleTogglePrivacy = () => {
     if (!isMarker) return;
@@ -178,7 +361,10 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
     );
   };
 
-  // ── Render helpers ──────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════
+  // RENDER HELPERS
+  // ══════════════════════════════════════════════════════════════
+
   const renderChatMessage = useCallback(
     ({ item }: { item: ChatMessage }) => {
       const isMe = item.userId === currentUserId;
@@ -227,7 +413,10 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
     </View>
   );
 
-  // ── Loading / Error ─────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════
+  // LOADING / ERROR
+  // ══════════════════════════════════════════════════════════════
+
   if (isLoading) {
     return (
       <View style={s.center}>
@@ -251,7 +440,10 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
 
   const privacyLabel = round.privacy === "partners" ? "Partners Only" : round.privacy === "private" ? "Private" : "Public";
 
-  // ── Render ──────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════
+  // RENDER
+  // ══════════════════════════════════════════════════════════════
+
   return (
     <KeyboardAvoidingView style={s.container} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       {/* Status bar background */}
@@ -283,6 +475,19 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
           </Text>
         </View>
       </View>
+
+      {/* Transfer Request Pending Banner */}
+      {transferPending && transferCountdown !== null && (
+        <View style={s.transferBanner}>
+          <ActivityIndicator size="small" color={HEADER_GREEN} />
+          <Text style={s.transferBannerText}>
+            Waiting for approval... {formatCountdown(transferCountdown)}
+          </Text>
+          <TouchableOpacity onPress={handleCancelTransferRequest} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Text style={s.transferCancelText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Tab Bar */}
       <View style={s.tabBar}>
@@ -396,16 +601,32 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
             <>
               <Text style={s.settingsSection}>Actions</Text>
               <View style={s.settingsCard}>
+                {/* Request Scoring — only for on-platform players who aren't the marker */}
                 {isPlayer && !isMarker && (
-                  <TouchableOpacity style={s.actionRow} onPress={handleTakeOverMarker}>
+                  <TouchableOpacity
+                    style={s.actionRow}
+                    onPress={handleRequestScoring}
+                    disabled={transferPending}
+                  >
                     <View style={s.actionIcon}>
                       <Ionicons name="swap-horizontal-outline" size={20} color={HEADER_GREEN} />
                     </View>
                     <View style={s.actionInfo}>
-                      <Text style={s.actionLabel}>Take Over Scoring</Text>
-                      <Text style={s.actionSub}>Become the scorekeeper for this round</Text>
+                      <Text style={s.actionLabel}>
+                        {transferPending ? "Request Pending..." : "Request Scoring"}
+                      </Text>
+                      <Text style={s.actionSub}>
+                        {transferPending
+                          ? `Auto-approves in ${formatCountdown(transferCountdown || 0)}`
+                          : "Ask to become the scorekeeper"
+                        }
+                      </Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={18} color="#CCC" />
+                    {transferPending ? (
+                      <ActivityIndicator size="small" color={HEADER_GREEN} />
+                    ) : (
+                      <Ionicons name="chevron-forward" size={18} color="#CCC" />
+                    )}
                   </TouchableOpacity>
                 )}
                 {isMarker && (
@@ -500,6 +721,11 @@ const s = StyleSheet.create({
   completeText: { fontSize: 10, fontWeight: "700", color: "rgba(255,255,255,0.7)" },
   abandonedBadge: { backgroundColor: "rgba(204,51,51,0.15)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   abandonedText: { fontSize: 10, fontWeight: "700", color: "#CC3333" },
+
+  // Transfer Banner
+  transferBanner: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "#FFF8E1", paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#FFE082" },
+  transferBannerText: { flex: 1, fontSize: 13, fontWeight: "600", color: "#664D03" },
+  transferCancelText: { fontSize: 13, fontWeight: "700", color: "#CC3333" },
 
   // Tab Bar
   tabBar: { flexDirection: "row", backgroundColor: "#FFF", paddingVertical: 8, paddingHorizontal: 12, gap: 8, borderBottomWidth: 1, borderBottomColor: "#E8E4DA" },

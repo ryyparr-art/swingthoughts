@@ -1,18 +1,21 @@
 /**
  * Round Triggers — Cloud Functions for multiplayer round lifecycle
  *
- * onRoundCompleted:
- *   Triggers when rounds/{roundId}.status changes to "complete".
+ * onRoundUpdated:
+ *   Triggers on ANY update to rounds/{roundId}.
+ *
+ *   Live round events (checked on every update):
+ *   - Marker Transfer: notifies new marker + other players when markerId changes
+ *   - Transfer Request: notifies current marker when a player requests scoring
+ *
+ *   Completion events (status changes to "complete"):
  *   - Creates individual score docs per player (fires existing onScoreCreated pipeline)
  *   - Sets isGhost flag on ghost score docs (existing triggers early-return on ghosts)
  *   - Sends ghost invite SMS/email if contact info provided
- *   - Creates clubhouse thought (feed post) with group context
+ *   - Sends round_complete notifications to on-platform players
  *   - Writes feedActivity items for round completion
  *   - Auto-creates league score docs if round is league-linked
- *
- * onRoundLiveUpdate:
- *   Triggers on holeData/liveScores changes for live rounds.
- *   - Sends throttled push notifications to spectators on notable events
+ *   - Updates recentPlayedWith cache
  *
  * File: functions/src/triggers/rounds.ts
  */
@@ -52,6 +55,14 @@ interface HolePlayerData {
   dtp?: number | null;
 }
 
+interface MarkerTransferRequest {
+  requestedBy: string;
+  requestedByName: string;
+  requestedAt: admin.firestore.Timestamp;
+  status: "pending" | "approved" | "declined";
+  expiresAt: admin.firestore.Timestamp;
+}
+
 interface RoundData {
   markerId: string;
   status: "live" | "complete" | "abandoned";
@@ -72,16 +83,16 @@ interface RoundData {
   location?: { city: string; state: string; latitude?: number; longitude?: number };
   startedAt: admin.firestore.Timestamp;
   completedAt?: admin.firestore.Timestamp;
-  // New fields
   roundType?: "on_premise" | "simulator";
   isSimulator?: boolean;
   privacy?: "public" | "private" | "partners";
   roundDescription?: string;
   roundImageUrl?: string;
+  markerTransferRequest?: MarkerTransferRequest | null;
 }
 
 // ============================================================================
-// onRoundCompleted
+// onRoundUpdated — main trigger
 // ============================================================================
 
 export const onRoundUpdated = onDocumentUpdated(
@@ -93,237 +104,327 @@ export const onRoundUpdated = onDocumentUpdated(
 
     if (!before || !after) return;
 
-    // ── ROUND COMPLETED: status changed to "complete" ─────────
-    if (before.status !== "complete" && after.status === "complete") {
-    logger.info(`Round ${roundId} completed — processing ${after.players.length} players`);
+    // ══════════════════════════════════════════════════════════════
+    // MARKER TRANSFER — runs on ANY update while round is live
+    // ══════════════════════════════════════════════════════════════
 
-    // Format & simulator eligibility
-    const HANDICAP_ELIGIBLE_FORMATS = ["stroke_play", "individual_stableford", "par_bogey"];
-    const isSimulator = after.isSimulator === true || after.roundType === "simulator";
-    const countsForHandicap = !isSimulator && HANDICAP_ELIGIBLE_FORMATS.includes(after.formatId);
-    const isLeaderboardEligible = countsForHandicap; // Both 9 and 18 hole
+    // ── Marker changed: notify new marker + other players ──────
+    if (
+      before.markerId &&
+      after.markerId &&
+      before.markerId !== after.markerId &&
+      after.status === "live"
+    ) {
+      const oldMarkerName =
+        after.players.find((p) => p.playerId === before.markerId)?.displayName ||
+        "The previous scorekeeper";
+      const newMarkerName =
+        after.players.find((p) => p.playerId === after.markerId)?.displayName ||
+        "A player";
 
-    const batch = db.batch();
-    const scoreDocIds: string[] = [];
+      logger.info(
+        `🔄 Marker transferred in round ${roundId}: ${before.markerId} → ${after.markerId}`
+      );
 
-    // ── 1. Create individual score docs per player ──────────────
-    for (const player of after.players) {
+      // Notify the NEW marker
       try {
-        const { holeScores, adjScores, holeStats, grossScore, netScore, totalPar, scoreToPar } =
-          buildPlayerScoreData(player, after);
-
-        const scoreRef = db.collection("scores").doc();
-        const scoreData: Record<string, any> = {
-          // Link to round
+        await sendRoundNotification({
+          type: "marker_transfer",
+          recipientUserId: after.markerId,
           roundId,
-          // Player info
-          userId: player.isGhost ? `ghost_${player.playerId}` : player.playerId,
-          displayName: player.displayName,
-          avatar: player.avatar || null,
-          // Ghost flags
-          isGhost: player.isGhost,
-          ghostName: player.isGhost ? player.displayName : null,
-          markedBy: after.markerId,
-          // Course info
-          courseId: after.courseId,
           courseName: after.courseName,
-          tees: player.teeName,
-          courseRating: player.courseRating,
-          slopeRating: player.slopeRating,
-          // Handicap
-          handicapIndex: player.handicapIndex,
-          courseHandicap: player.courseHandicap,
-          // Scores
-          holeScores,
-          adjScores,
-          grossScore,
-          netScore,
-          totalPar,
-          scoreToPar,
-          // Stats
-          holeStats,
-          fairwaysHit: holeStats.fir.filter((v: boolean | null) => v === true).length,
-          fairwaysPossible: holeStats.fir.filter((v: boolean | null) => v !== null).length,
-          greensInRegulation: holeStats.gir.filter((v: boolean | null) => v === true).length,
-          // Format
-          formatId: after.formatId,
-          // Eligibility flags
-          countsForHandicap,
-          isLeaderboardEligible,
-          isSimulator,
-          // Description & image (from round)
-          roundDescription: after.roundDescription || null,
-          roundImageUrl: after.roundImageUrl || null,
-          // Skip thought creation in onScoreCreated
-          skipThought: true,
-          // League (if applicable)
-          leagueId: after.leagueId || null,
-          leagueWeek: after.leagueWeek || null,
-          // Team
-          teamId: player.teamId || null,
-          // Location & region
-          regionKey: after.regionKey || null,
-          location: after.location || null,
-          geohash: null,
-          // Metadata
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          source: "multiplayer_round",
-          holeCount: after.holeCount,
-          userName: player.displayName,
-        };
+          markerName: oldMarkerName,
+          message: `You're now the scorekeeper for the round at ${after.courseName}! 🏌️`,
+          navigationTarget: "scoring",
+        });
+      } catch (err) {
+        logger.error(`Marker transfer notification failed for new marker:`, err);
+      }
 
-        batch.set(scoreRef, scoreData);
-        scoreDocIds.push(scoreRef.id);
+      // Notify other on-platform players (not old or new marker)
+      const otherPlayers = after.players.filter(
+        (p) =>
+          !p.isGhost &&
+          p.playerId !== before.markerId &&
+          p.playerId !== after.markerId
+      );
+
+      for (const player of otherPlayers) {
+        try {
+          await sendRoundNotification({
+            type: "marker_transfer",
+            recipientUserId: player.playerId,
+            roundId,
+            courseName: after.courseName,
+            markerName: newMarkerName,
+            message: `${newMarkerName} is now the scorekeeper for the round at ${after.courseName}`,
+            navigationTarget: "round",
+          });
+        } catch (err) {
+          logger.error(
+            `Marker transfer notification failed for ${player.displayName}:`,
+            err
+          );
+        }
+      }
+
+      logger.info(`✅ Sent marker transfer notifications for round ${roundId}`);
+    }
+
+    // ── New transfer request: notify current marker ────────────
+    const beforeReq = before.markerTransferRequest;
+    const afterReq = after.markerTransferRequest;
+
+    if (
+      !beforeReq &&
+      afterReq?.status === "pending" &&
+      after.status === "live"
+    ) {
+      logger.info(
+        `📩 Marker transfer requested by ${afterReq.requestedByName} in round ${roundId}`
+      );
+
+      try {
+        await sendRoundNotification({
+          type: "marker_transfer_request",
+          recipientUserId: after.markerId,
+          roundId,
+          courseName: after.courseName,
+          markerName: afterReq.requestedByName,
+          message: `${afterReq.requestedByName} wants to take over scoring. Approve?`,
+          navigationTarget: "scoring",
+        });
 
         logger.info(
-          `Score doc ${scoreRef.id} created for ${player.displayName} (ghost: ${player.isGhost})`
+          `✅ Sent transfer request notification to marker ${after.markerId}`
         );
       } catch (err) {
-        logger.error(`Error creating score for ${player.displayName}:`, err);
+        logger.error(`Transfer request notification failed:`, err);
       }
     }
 
-    // ── 2. Commit all score docs ────────────────────────────────
-    try {
-      await batch.commit();
-      logger.info(`Committed ${scoreDocIds.length} score docs for round ${roundId}`);
-    } catch (err) {
-      logger.error(`Batch commit failed for round ${roundId}:`, err);
+    // ══════════════════════════════════════════════════════════════
+    // ROUND COMPLETED — status changed to "complete"
+    // ══════════════════════════════════════════════════════════════
+
+    if (before.status !== "complete" && after.status === "complete") {
+      logger.info(
+        `Round ${roundId} completed — processing ${after.players.length} players`
+      );
+
+      // Format & simulator eligibility
+      const HANDICAP_ELIGIBLE_FORMATS = [
+        "stroke_play",
+        "individual_stableford",
+        "par_bogey",
+      ];
+      const isSimulator =
+        after.isSimulator === true || after.roundType === "simulator";
+      const countsForHandicap =
+        !isSimulator && HANDICAP_ELIGIBLE_FORMATS.includes(after.formatId);
+      const isLeaderboardEligible = countsForHandicap;
+
+      const batch = db.batch();
+      const scoreDocIds: string[] = [];
+
+      // ── 1. Create individual score docs per player ────────────
+      for (const player of after.players) {
+        try {
+          const {
+            holeScores,
+            adjScores,
+            holeStats,
+            grossScore,
+            netScore,
+            totalPar,
+            scoreToPar,
+          } = buildPlayerScoreData(player, after);
+
+          const scoreRef = db.collection("scores").doc();
+          const scoreData: Record<string, any> = {
+            // Link to round
+            roundId,
+            // Player info
+            userId: player.isGhost
+              ? `ghost_${player.playerId}`
+              : player.playerId,
+            displayName: player.displayName,
+            avatar: player.avatar || null,
+            // Ghost flags
+            isGhost: player.isGhost,
+            ghostName: player.isGhost ? player.displayName : null,
+            markedBy: after.markerId,
+            // Course info
+            courseId: after.courseId,
+            courseName: after.courseName,
+            tees: player.teeName,
+            courseRating: player.courseRating,
+            slopeRating: player.slopeRating,
+            // Handicap
+            handicapIndex: player.handicapIndex,
+            courseHandicap: player.courseHandicap,
+            // Scores
+            holeScores,
+            adjScores,
+            grossScore,
+            netScore,
+            totalPar,
+            scoreToPar,
+            // Stats
+            holeStats,
+            fairwaysHit: holeStats.fir.filter(
+              (v: boolean | null) => v === true
+            ).length,
+            fairwaysPossible: holeStats.fir.filter(
+              (v: boolean | null) => v !== null
+            ).length,
+            greensInRegulation: holeStats.gir.filter(
+              (v: boolean | null) => v === true
+            ).length,
+            // Format
+            formatId: after.formatId,
+            // Eligibility flags
+            countsForHandicap,
+            isLeaderboardEligible,
+            isSimulator,
+            // Description & image (from round)
+            roundDescription: after.roundDescription || null,
+            roundImageUrl: after.roundImageUrl || null,
+            // Skip thought creation in onScoreCreated
+            skipThought: true,
+            // League (if applicable)
+            leagueId: after.leagueId || null,
+            leagueWeek: after.leagueWeek || null,
+            // Team
+            teamId: player.teamId || null,
+            // Location & region
+            regionKey: after.regionKey || null,
+            location: after.location || null,
+            geohash: null,
+            // Metadata
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            source: "multiplayer_round",
+            holeCount: after.holeCount,
+            userName: player.displayName,
+          };
+
+          batch.set(scoreRef, scoreData);
+          scoreDocIds.push(scoreRef.id);
+
+          logger.info(
+            `Score doc ${scoreRef.id} created for ${player.displayName} (ghost: ${player.isGhost})`
+          );
+        } catch (err) {
+          logger.error(
+            `Error creating score for ${player.displayName}:`,
+            err
+          );
+        }
+      }
+
+      // ── 2. Commit all score docs ──────────────────────────────
+      try {
+        await batch.commit();
+        logger.info(
+          `Committed ${scoreDocIds.length} score docs for round ${roundId}`
+        );
+      } catch (err) {
+        logger.error(`Batch commit failed for round ${roundId}:`, err);
+        return;
+      }
+
+      // ── 3. Send ghost invites ─────────────────────────────────
+      const ghostPlayers = after.players.filter(
+        (p) => p.isGhost && p.contactInfo
+      );
+      for (const ghost of ghostPlayers) {
+        try {
+          await sendGhostInvite({
+            roundId,
+            ghostName: ghost.displayName,
+            contactInfo: ghost.contactInfo!,
+            contactType: ghost.contactType || "phone",
+            courseName: after.courseName,
+            grossScore: calculateGrossScore(ghost, after),
+            markerName:
+              after.players.find((p) => p.isMarker)?.displayName || "A friend",
+          });
+        } catch (err) {
+          logger.error(
+            `Ghost invite failed for ${ghost.displayName}:`,
+            err
+          );
+        }
+      }
+
+      // ── 4. Send round_complete notifications ──────────────────
+      const onPlatformPlayers = after.players.filter(
+        (p) => !p.isGhost && !p.isMarker
+      );
+      const roundPlayerIds = after.players
+        .filter((p) => !p.isGhost)
+        .map((p) => p.playerId);
+
+      for (const player of onPlatformPlayers) {
+        try {
+          const others = after.players.filter(
+            (p) => p.playerId !== player.playerId
+          );
+          const namedPlayer = others.find((p) => !p.isGhost) || others[0];
+          const remainingCount = others.length - 1;
+          let withString = "";
+          if (namedPlayer) {
+            withString = ` with ${namedPlayer.displayName}`;
+            if (remainingCount === 1) {
+              const third = others.find(
+                (p) => p.playerId !== namedPlayer.playerId
+              );
+              withString += ` & ${third?.displayName || "1 other"}`;
+            } else if (remainingCount > 1) {
+              withString += ` & ${remainingCount} other${remainingCount > 1 ? "s" : ""}`;
+            }
+          }
+
+          const grossScore = calculateGrossScore(player, after);
+
+          await sendRoundNotification({
+            type: "round_complete",
+            recipientUserId: player.playerId,
+            roundId,
+            courseName: after.courseName,
+            grossScore,
+            markerName:
+              after.players.find((p) => p.isMarker)?.displayName || "Unknown",
+            message: `Your round at ${after.courseName}${withString} is complete — you shot ${grossScore}.`,
+            navigationTarget: "profile",
+            navigationUserId: player.playerId,
+            navigationTab: "rounds",
+            roundPlayerIds,
+          });
+        } catch (err) {
+          logger.error(
+            `Notification failed for ${player.displayName}:`,
+            err
+          );
+        }
+      }
+
+      // ── 5. Create league scores (if league-linked) ────────────
+      if (after.leagueId && after.leagueWeek) {
+        await createLeagueScores(roundId, after);
+      }
+
+      // ── 6. Write feedActivity items ───────────────────────────
+      await writeFeedActivity(roundId, after);
+
+      // ── 7. Update recentPlayedWith cache on user docs ─────────
+      await updateRecentPlayedWith(after.players);
+
+      logger.info(`Round ${roundId} processing complete`);
       return;
     }
-
-    // ── 3. Send ghost invites ───────────────────────────────────
-    const ghostPlayers = after.players.filter((p) => p.isGhost && p.contactInfo);
-    for (const ghost of ghostPlayers) {
-      try {
-        await sendGhostInvite({
-          roundId,
-          ghostName: ghost.displayName,
-          contactInfo: ghost.contactInfo!,
-          contactType: ghost.contactType || "phone",
-          courseName: after.courseName,
-          grossScore: calculateGrossScore(ghost, after),
-          markerName: after.players.find((p) => p.isMarker)?.displayName || "A friend",
-        });
-      } catch (err) {
-        logger.error(`Ghost invite failed for ${ghost.displayName}:`, err);
-      }
-    }
-
-   // ── 4. Send round_complete notifications ────────────────────
-    const onPlatformPlayers = after.players.filter((p) => !p.isGhost && !p.isMarker);
-    // Collect all player IDs in round (for dedup in scores.ts)
-    const roundPlayerIds = after.players.filter((p) => !p.isGhost).map((p) => p.playerId);
-
-    for (const player of onPlatformPlayers) {
-      try {
-        // Build "with X" string — pick another player to name
-        const others = after.players.filter((p) => p.playerId !== player.playerId);
-        const namedPlayer = others.find((p) => !p.isGhost) || others[0];
-        const remainingCount = others.length - 1;
-        let withString = "";
-        if (namedPlayer) {
-          withString = ` with ${namedPlayer.displayName}`;
-          if (remainingCount === 1) {
-            const third = others.find((p) => p.playerId !== namedPlayer.playerId);
-            withString += ` & ${third?.displayName || "1 other"}`;
-          } else if (remainingCount > 1) {
-            withString += ` & ${remainingCount} other${remainingCount > 1 ? "s" : ""}`;
-          }
-        }
-
-        const grossScore = calculateGrossScore(player, after);
-
-        await sendRoundNotification({
-          type: "round_complete",
-          recipientUserId: player.playerId,
-          roundId,
-          courseName: after.courseName,
-          grossScore,
-          markerName: after.players.find((p) => p.isMarker)?.displayName || "Unknown",
-          message: `Your round at ${after.courseName}${withString} is complete — you shot ${grossScore}.`,
-          // Navigation data
-          navigationTarget: "profile",
-          navigationUserId: player.playerId,
-          navigationTab: "rounds",
-          // Dedup: list of all on-platform player IDs in this round
-          roundPlayerIds,
-        });
-      } catch (err) {
-        logger.error(`Notification failed for ${player.displayName}:`, err);
-      }
-    }
-
-    // ── 5. Create league scores (if league-linked) ──────────────
-    if (after.leagueId && after.leagueWeek) {
-      await createLeagueScores(roundId, after);
-    }
-
-    // ── 6. Write feedActivity items ─────────────────────────────
-    await writeFeedActivity(roundId, after);
-
-    // ── 7. Update recentPlayedWith cache on user docs ───────────
-    await updateRecentPlayedWith(after.players);
-
-    logger.info(`Round ${roundId} processing complete`);
-    return;
   }
-
-  // ── LIVE UPDATE: Throttled spectator notifications ──────────
-  if (after.status === "live") {
-    // Only when holeData changes
-    if (JSON.stringify(before.holeData) === JSON.stringify(after.holeData)) return;
-
-    // Find newly completed holes
-    const beforeHoles = Object.keys(before.holeData || {}).length;
-    const afterHoles = Object.keys(after.holeData || {}).length;
-
-    // Only notify on new hole completions, throttle to every 3 holes
-    if (afterHoles <= beforeHoles) return;
-    if (afterHoles % 3 !== 0) return;
-
-    // Check for notable events on the latest hole
-    const latestHole = String(after.currentHole);
-    const latestHoleData = after.holeData[latestHole];
-    if (!latestHoleData) return;
-
-    // Send throttled notification to spectators
-    // (partners of any player in the round)
-    try {
-      const playerIds = after.players.filter((p: PlayerSlot) => !p.isGhost).map((p: PlayerSlot) => p.playerId);
-
-      // Get partners of all players
-      const partnerSets = new Set<string>();
-      for (const pid of playerIds) {
-        const userDoc = await db.collection("users").doc(pid).get();
-        const partners: string[] = userDoc.data()?.partners || [];
-        partners.forEach((p: string) => partnerSets.add(p));
-      }
-
-      // Remove players themselves from spectator list
-      playerIds.forEach((pid: string) => partnerSets.delete(pid));
-
-      const spectators = Array.from(partnerSets);
-      if (spectators.length === 0) return;
-
-      const markerName = after.players.find((p: PlayerSlot) => p.isMarker)?.displayName || "A group";
-
-      // Send notification to up to 50 spectators
-      for (const spectatorId of spectators.slice(0, 50)) {
-        await sendRoundNotification({
-          type: "round_notable",
-          recipientUserId: spectatorId,
-          roundId,
-          courseName: after.courseName,
-          markerName,
-          holeNumber: after.currentHole,
-        });
-      }
-    } catch (err) {
-      logger.error(`Live update notification failed for round ${roundId}:`, err);
-    }
-  }
-});
+);
 
 // ============================================================================
 // HELPERS
@@ -408,7 +509,10 @@ function calculateGrossScore(player: PlayerSlot, round: RoundData): number {
  * Create league score documents for league-linked rounds.
  * Only creates for on-platform players who are members of the league.
  */
-async function createLeagueScores(roundId: string, round: RoundData): Promise<void> {
+async function createLeagueScores(
+  roundId: string,
+  round: RoundData
+): Promise<void> {
   if (!round.leagueId || !round.leagueWeek) return;
 
   const leagueRef = db.collection("leagues").doc(round.leagueId);
@@ -456,7 +560,9 @@ async function createLeagueScores(roundId: string, round: RoundData): Promise<vo
 
   try {
     await batch.commit();
-    logger.info(`League scores created for league ${round.leagueId} week ${round.leagueWeek}`);
+    logger.info(
+      `League scores created for league ${round.leagueId} week ${round.leagueWeek}`
+    );
   } catch (err) {
     logger.error(`League score creation failed:`, err);
   }
@@ -465,7 +571,10 @@ async function createLeagueScores(roundId: string, round: RoundData): Promise<vo
 /**
  * Write feedActivity items for round completion.
  */
-async function writeFeedActivity(roundId: string, round: RoundData): Promise<void> {
+async function writeFeedActivity(
+  roundId: string,
+  round: RoundData
+): Promise<void> {
   const batch = db.batch();
   const now = Date.now();
 
@@ -473,8 +582,12 @@ async function writeFeedActivity(roundId: string, round: RoundData): Promise<voi
   const playerSummaries = round.players.map((p) => {
     const grossScore = calculateGrossScore(p, round);
     const totalPar = round.holePars
-      ? round.holePars.slice(0, round.holeCount).reduce((s: number, par: number) => s + par, 0)
-      : (round.holeCount === 18 ? 72 : 36);
+      ? round.holePars
+          .slice(0, round.holeCount)
+          .reduce((s: number, par: number) => s + par, 0)
+      : round.holeCount === 18
+        ? 72
+        : 36;
     return {
       playerId: p.playerId,
       displayName: p.displayName,
@@ -518,7 +631,9 @@ async function writeFeedActivity(roundId: string, round: RoundData): Promise<voi
       location: round.location || null,
       timestamp: now,
       createdAt: admin.firestore.Timestamp.fromMillis(now),
-      ttl: admin.firestore.Timestamp.fromMillis(now + 30 * 24 * 60 * 60 * 1000),
+      ttl: admin.firestore.Timestamp.fromMillis(
+        now + 30 * 24 * 60 * 60 * 1000
+      ),
     });
   }
 
@@ -558,7 +673,10 @@ async function updateRecentPlayedWith(players: PlayerSlot[]): Promise<void> {
 
       await userRef.update({ recentPlayedWith: updated });
     } catch (err) {
-      logger.error(`recentPlayedWith update failed for ${player.playerId}:`, err);
+      logger.error(
+        `recentPlayedWith update failed for ${player.playerId}:`,
+        err
+      );
     }
   }
 }

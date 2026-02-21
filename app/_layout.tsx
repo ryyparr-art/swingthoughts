@@ -1,3 +1,4 @@
+import "../patches/disableClippedSubviews";
 import { CacheProvider } from "@/contexts/CacheContext";
 import { NewPostProvider } from "@/contexts/NewPostContext";
 import { claimGhostScores } from "@/utils/ghostClaim";

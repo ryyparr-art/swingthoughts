@@ -116,6 +116,13 @@ export interface RoundData {
   isSimulator?: boolean;
   previousMarkerId?: string;
   markerTransferredAt?: any;
+  markerTransferRequest?: {
+    requestedBy: string;
+    requestedByName: string;
+    requestedAt: any;
+    status: "pending" | "approved" | "declined";
+    expiresAt: any;
+  } | null;
   abandonedAt?: any;
   abandonedBy?: string;
 }

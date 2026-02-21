@@ -27,7 +27,6 @@
     },
     "android": {
       "package": "com.swingthoughts.app",
-      "softwareKeyboardLayoutMode": "adjustResize",
       "adaptiveIcon": {
         "backgroundColor": "#0D5C3A",
         "foregroundImage": "./assets/images/AppIcon.png"
@@ -50,6 +49,14 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "windowSoftInputMode": "adjustResize"
+          }
+        }
+      ],
       [
         "expo-location",
         {
@@ -87,7 +94,8 @@
       "expo-web-browser",
       "expo-video",
       "expo-audio",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      "expo-build-properties"
     ],
     "experiments": {
       "typedRoutes": true
