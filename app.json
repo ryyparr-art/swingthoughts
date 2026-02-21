@@ -14,6 +14,10 @@
     "scheme": "swingthoughts",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "notification": {
+      "icon": "./assets/images/notification-icon.png",
+      "color": "#0D5C3A"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.swingthoughts.app",
@@ -29,7 +33,7 @@
       "package": "com.swingthoughts.app",
       "adaptiveIcon": {
         "backgroundColor": "#0D5C3A",
-        "foregroundImage": "./assets/images/AppIcon.png"
+        "foregroundImage": "./assets/images/adaptive-icon-foreground.png"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [

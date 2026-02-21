@@ -1020,6 +1020,37 @@ service cloud.firestore {
     }
 
     // ============================================================================
+    // OUTINGS (GROUP OUTING INFRASTRUCTURE)
+    // ✅ NEW: Powers casual outings, leagues, invitationals, and tours
+    // ============================================================================
+
+    match /outings/{outingId} {
+      // Read: Any authenticated user (semi-public for spectator/dashboard access)
+      allow read, list: if isSignedIn();
+
+      // Create: Any verified user, must be the organizer
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.organizerId == request.auth.uid;
+
+      // Update: Organizer can update all fields.
+      // Group markers can update group status fields.
+      // Cloud Functions handle most updates via Admin SDK.
+      allow update: if isSignedIn() &&
+        (
+          // Organizer can update anything
+          resource.data.organizerId == request.auth.uid ||
+          // Admin can update anything
+          isAdmin()
+        );
+
+      // Delete: Organizer only, and only if status is "draft"
+      allow delete: if isSignedIn() &&
+        resource.data.organizerId == request.auth.uid &&
+        resource.data.status == "draft";
+    }
+
+    // ============================================================================
     // CHALLENGES
     // ============================================================================
 
@@ -1069,11 +1100,10 @@ service cloud.firestore {
     }
 
     // ============================================================================
-// UPDATED ROUNDS RULES — Replace the existing rounds block in firestore.rules
-// Changes: Allow any player in the round to transfer markerId to themselves
-// ============================================================================
+    // ROUNDS
+    // ============================================================================
 
-     match /rounds/{roundId} {
+    match /rounds/{roundId} {
       // Anyone signed in can read rounds (needed for LiveRoundViewer, spectators)
       allow read, list: if isSignedIn();
 
@@ -1118,7 +1148,6 @@ service cloud.firestore {
           (request.auth.uid == resource.data.userId || isAdmin());
       }
     }
-
 
     // ============================================================================
     // GHOST CLAIMS (MULTIPLAYER GHOST USER SCORE CLAIMING)
@@ -1170,6 +1199,7 @@ service cloud.firestore {
     }
   }
 }
+
 
 
 

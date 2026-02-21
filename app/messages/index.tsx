@@ -27,7 +27,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Animated,
   Dimensions,
   FlatList,
   Image,
@@ -55,8 +54,8 @@ interface Thread {
   participantNames?: Record<string, string>;
   participantAvatars?: Record<string, string | null>;
   participantBadges?: Record<string, string[]>;
-  isGroup?: boolean;           // ✅ NEW: Group chat flag
-  groupName?: string;          // ✅ NEW: Group display name
+  isGroup?: boolean;
+  groupName?: string;
   lastMessage?: any;
   lastMessageAt?: any;
   unreadCount?: Record<string, number>;
@@ -81,25 +80,22 @@ function ThreadRow({
   const unread = item.unreadCount?.[userId] ?? 0;
   const swipeableRef = useRef<Swipeable>(null);
 
-  // ✅ NEW: Detect if this is a group chat
   const isGroup = item.isGroup || item.participants.length > 2;
 
-  // For 1:1 chats, get the other user's ID
-  const otherUserId = !isGroup 
-    ? item.participants.find((p) => p !== userId)! 
+  const otherUserId = !isGroup
+    ? item.participants.find((p) => p !== userId)!
     : null;
 
-  // ✅ UPDATED: Handle both 1:1 and group display names
   const [name, setName] = useState(() => {
     if (isGroup) {
       return item.groupName || "Group Chat";
     }
     return otherUserId ? (item.participantNames?.[otherUserId] || "User") : "User";
   });
-  
+
   const [avatar, setAvatar] = useState<string | null>(() => {
     if (isGroup) {
-      return null; // Groups use icon instead
+      return null;
     }
     return otherUserId ? (item.participantAvatars?.[otherUserId] || null) : null;
   });
@@ -109,11 +105,9 @@ function ThreadRow({
     return item.participantBadges?.[otherUserId] || [];
   });
 
-  // ✅ Only fetch from users collection if denormalized data is missing (1:1 only)
   useEffect(() => {
     if (isGroup || !otherUserId) return;
 
-    // If we already have name from denormalized data, don't fetch
     if (item.participantNames?.[otherUserId]) {
       console.log("✅ Using denormalized name:", item.participantNames[otherUserId]);
       return;
@@ -164,7 +158,6 @@ function ThreadRow({
     });
   };
 
-  // ✅ NEW: Build group subtitle showing member names
   const getSubtitle = () => {
     if (!lastMessageText && isGroup && item.participantNames) {
       const otherNames = Object.entries(item.participantNames)
@@ -175,43 +168,18 @@ function ThreadRow({
     return lastMessageText || "No messages yet";
   };
 
-  const renderRightActions = (
-    progress: Animated.AnimatedInterpolation<number>,
-    dragX: Animated.AnimatedInterpolation<number>
-  ) => {
-    const translateX = dragX.interpolate({
-      inputRange: [-100, 0],
-      outputRange: [0, 100],
-      extrapolate: "clamp",
-    });
-
-    const opacity = dragX.interpolate({
-      inputRange: [-100, -50, 0],
-      outputRange: [1, 0.8, 0],
-      extrapolate: "clamp",
-    });
-
+  const renderRightActions = () => {
     return (
-      <Animated.View
-        style={[
-          styles.deleteAction,
-          {
-            transform: [{ translateX }],
-            opacity,
-          },
-        ]}
+      <TouchableOpacity
+        style={styles.deleteAction}
+        onPress={() => {
+          swipeableRef.current?.close();
+          onDelete();
+        }}
       >
-        <TouchableOpacity
-          style={styles.deleteButton}
-          onPress={() => {
-            swipeableRef.current?.close();
-            onDelete();
-          }}
-        >
-          <Ionicons name="trash" size={24} color="#FFF" />
-          <Text style={styles.deleteText}>Delete</Text>
-        </TouchableOpacity>
-      </Animated.View>
+        <Ionicons name="trash" size={24} color="#FFF" />
+        <Text style={styles.deleteText}>Delete</Text>
+      </TouchableOpacity>
     );
   };
 
@@ -235,7 +203,6 @@ function ThreadRow({
       >
         <View style={styles.messageHeader}>
           <View style={styles.senderInfo}>
-            {/* ✅ UPDATED: Show group icon or user avatar */}
             {isGroup ? (
               <View style={styles.groupAvatarContainer}>
                 <View style={styles.avatarCircle}>
@@ -341,13 +308,12 @@ export default function MessagesScreen() {
           ...(d.data() as Omit<Thread, "id">),
         }))
         .filter((thread) => {
-          // Don't show threads where current user is in deletedBy array
           const deletedBy = thread.deletedBy || [];
           return !deletedBy.includes(userId);
         });
 
       console.log(`✅ Loaded ${items.length} threads`);
-      
+
       // Log denormalized data availability
       items.forEach((thread, idx) => {
         const isGroup = thread.isGroup || thread.participants.length > 2;
@@ -391,7 +357,6 @@ export default function MessagesScreen() {
               soundPlayer.play("click");
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-              // Soft delete: Add current user to deletedBy array
               const threadRef = doc(db, "threads", threadId);
               const threadSnap = await getDoc(threadRef);
 
@@ -399,7 +364,6 @@ export default function MessagesScreen() {
                 const threadData = threadSnap.data();
                 const deletedBy = threadData.deletedBy || [];
 
-                // Add current user to deletedBy
                 if (!deletedBy.includes(userId)) {
                   deletedBy.push(userId);
                 }
@@ -409,7 +373,6 @@ export default function MessagesScreen() {
                   updatedAt: serverTimestamp(),
                 });
 
-                // Check if all users have deleted - trigger full delete via Cloud Function
                 const participants = threadData.participants || [];
                 const allDeleted = participants.every((p: string) =>
                   deletedBy.includes(p)
@@ -422,7 +385,6 @@ export default function MessagesScreen() {
                 }
               }
 
-              // Update local state
               const updated = threads.filter((t) => t.id !== threadId);
               setThreads(updated);
               await setCache(CACHE_KEYS.LOCKER_NOTES(userId!), updated);
@@ -715,7 +677,6 @@ const styles = StyleSheet.create({
     borderRadius: 24,
   },
 
-  // ✅ NEW: Group avatar styles
   groupAvatarContainer: {
     position: "relative",
   },
@@ -777,21 +738,13 @@ const styles = StyleSheet.create({
     lineHeight: 24,
   },
 
-  // Swipe delete action
   deleteAction: {
     backgroundColor: "#FF3B30",
     justifyContent: "center",
-    alignItems: "flex-end",
-    borderRadius: 12,
-    marginBottom: 12,
-  },
-
-  deleteButton: {
-    justifyContent: "center",
     alignItems: "center",
     width: 80,
-    height: "100%",
-    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginBottom: 12,
   },
 
   deleteText: {
@@ -801,7 +754,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
-  // Empty state
   emptyContainer: {
     flex: 1,
     justifyContent: "center",
