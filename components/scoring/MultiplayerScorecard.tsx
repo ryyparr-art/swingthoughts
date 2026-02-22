@@ -23,33 +23,33 @@
  * File: components/scoring/MultiplayerScorecard.tsx
  */
 
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-    getBack9Par,
-    getBack9Yardage,
-    getFront9Par,
-    getFront9Yardage,
-    getStrokesForHole,
-    getTotalPar,
-    getTotalYardage,
-} from "@/components/leagues/post-score/helpers";
-import type { HoleInfo } from "@/components/leagues/post-score/types";
-import { getFormatById } from "@/constants/gameFormats";
-import { soundPlayer } from "@/utils/soundPlayer";
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { soundPlayer } from "@/utils/soundPlayer";
 import {
-    Modal,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
-} from "react-native";
+  getStrokesForHole,
+  getFront9Par,
+  getBack9Par,
+  getTotalPar,
+  getFront9Yardage,
+  getBack9Yardage,
+  getTotalYardage,
+} from "@/components/leagues/post-score/helpers";
+import { getFormatById, getStablefordPoints } from "@/constants/gameFormats";
+import type { HoleInfo } from "@/components/leagues/post-score/types";
+import type { PlayerSlot, HolePlayerData } from "./scoringTypes";
 import PostHoleStatsSheet from "./PostHoleStatsSheet";
-import type { HolePlayerData, PlayerSlot } from "./scoringTypes";
 
 // ============================================================================
 // TYPES
@@ -69,6 +69,7 @@ interface MultiplayerScorecardProps {
   statsSheetSuppressed?: boolean;
   onEnableStatsSheet?: () => void;
   dtpEligiblePlayers?: Set<string>;
+  initialHole?: number;
 }
 
 // ============================================================================
@@ -102,14 +103,17 @@ export default function MultiplayerScorecard({
   statsSheetSuppressed = false,
   onEnableStatsSheet,
   dtpEligiblePlayers,
+  initialHole,
 }: MultiplayerScorecardProps) {
   const format = getFormatById(formatId);
   const isEdit = mode === "edit";
   const is18 = holeCount === 18;
 
   // ── State ──────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<"front" | "back">("front");
-  const [activeHole, setActiveHole] = useState(1);
+  const [activeTab, setActiveTab] = useState<"front" | "back">(
+    is18 && (initialHole ?? 1) > 9 ? "back" : "front"
+  );
+  const [activeHole, setActiveHole] = useState(initialHole ?? 1);
   const [showStatsSheet, setShowStatsSheet] = useState(false);
   const [pendingStatsHole, setPendingStatsHole] = useState<number | null>(null);
   const [consecutiveSkips, setConsecutiveSkips] = useState(0);
@@ -217,6 +221,23 @@ export default function MultiplayerScorecard({
     },
     [players, getScore]
   );
+
+  // ── Pre-populate completed holes on mount (resume support) ──
+  const hasInitialized = useRef(false);
+  useEffect(() => {
+    if (hasInitialized.current) return;
+    if (players.length === 0) return;
+    hasInitialized.current = true;
+
+    for (let h = 1; h <= holeCount; h++) {
+      const allScored = players.every(
+        (p) => holeData[String(h)]?.[p.playerId]?.strokes != null
+      );
+      if (allScored) {
+        completedStatsHoles.current.add(h);
+      }
+    }
+  }, [players, holeCount, holeData]);
 
   // ── Auto-advance logic (BUG 1 FIX) ───────────────────────
   // Only trigger stats/advance if:

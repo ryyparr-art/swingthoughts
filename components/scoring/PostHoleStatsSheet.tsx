@@ -9,6 +9,10 @@
  * File: components/scoring/PostHoleStatsSheet.tsx
  */
 
+import type { HoleInfo } from "@/components/leagues/post-score/types";
+import { soundPlayer } from "@/utils/soundPlayer";
+import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import React, { useCallback, useEffect, useRef } from "react";
 import {
   Animated,
@@ -21,10 +25,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
-import { soundPlayer } from "@/utils/soundPlayer";
-import type { HoleInfo } from "@/components/leagues/post-score/types";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { PlayerSlot } from "./scoringTypes";
 
 const SCREEN_HEIGHT = Dimensions.get("window").height;
@@ -80,9 +81,12 @@ export default function PostHoleStatsSheet({
   onSkip,
 }: PostHoleStatsSheetProps) {
   const translateY = useRef(new Animated.Value(SHEET_HEIGHT)).current;
+  const insets = useSafeAreaInsets();
 
   const isPar3 = holeInfo.par <= 3;
   const showDtp = !isPar3 ? false : dtpEligiblePlayers && dtpEligiblePlayers.size > 0;
+
+  const bottomPadding = Math.max(insets.bottom, 16);
 
   // ── Animate in/out ──────────────────────────────────────────
   useEffect(() => {
@@ -90,12 +94,12 @@ export default function PostHoleStatsSheet({
       Keyboard.dismiss();
     }
     Animated.spring(translateY, {
-      toValue: visible ? 0 : SHEET_HEIGHT,
+      toValue: visible ? 0 : SHEET_HEIGHT + bottomPadding,
       useNativeDriver: true,
       tension: 65,
       friction: 11,
     }).start();
-  }, [visible]);
+  }, [visible, bottomPadding]);
 
   // ── Three-state toggle: null → true → false → null ──────────
   const handleToggle = useCallback(
@@ -155,7 +159,10 @@ export default function PostHoleStatsSheet({
     <Animated.View
       style={[
         s.container,
-        { transform: [{ translateY }] },
+        {
+          transform: [{ translateY }],
+          paddingBottom: bottomPadding,
+        },
       ]}
       pointerEvents={visible ? "auto" : "none"}
     >
@@ -246,7 +253,6 @@ const s = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    height: SHEET_HEIGHT,
     backgroundColor: "#FFFCF0",
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
@@ -256,7 +262,6 @@ const s = StyleSheet.create({
     shadowRadius: 12,
     elevation: 10,
     paddingHorizontal: 16,
-    paddingBottom: Platform.OS === "ios" ? 34 : 16,
   },
   handleBar: {
     alignItems: "center",
@@ -371,6 +376,7 @@ const s = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     color: "#333",
+    padding: 0,
   },
 
   // ── Save Button ─────────────────────────────────────────────

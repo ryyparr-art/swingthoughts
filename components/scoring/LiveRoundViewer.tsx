@@ -4,6 +4,14 @@
  * Green #147A52 header, three tabs: Scorecard | Chat | Settings
  * Settings: Request Scoring (with 2-min auto-approve), Edit Scores, Round Privacy, Abandon Round
  *
+ * Scorecard tab layout:
+ *   - MultiplayerScorecard grid as hero (view mode)
+ *   - Standings cards below sorted by score (position, avatar, name, thru, score-to-par)
+ *
+ * Hole data sourcing (for MultiplayerScorecard holes prop):
+ *   1. round.holeDetails — full hole info (par, yardage, handicap) stored at round creation
+ *   2. round.holePars fallback — par-only array for older rounds
+ *
  * Marker Transfer (Path 2 — Player requests from viewer):
  *   - Player taps "Request Scoring" → writes markerTransferRequest to round doc
  *   - Current marker gets alert with Approve/Decline (handled in scoring screen)
@@ -14,7 +22,7 @@
  * File: components/scoring/LiveRoundViewer.tsx
  */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -81,25 +89,30 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
   const isMarker = round?.markerId === currentUserId;
   const isPlayer = round?.players?.some((p) => p.playerId === currentUserId && !p.isGhost) ?? false;
 
+  // ── Build holes array from round doc ──────────────────────
+  // Prefer holeDetails (full data), fall back to holePars (par only)
+  const holes = useMemo(() => {
+    if (!round) return [];
+    if (round.holeDetails && round.holeDetails.length > 0) {
+      return round.holeDetails;
+    }
+    if (round.holePars && round.holePars.length > 0) {
+      return round.holePars.map((par: number) => ({ par, yardage: 0 }));
+    }
+    return [];
+  }, [round]);
+
   // ══════════════════════════════════════════════════════════════
   // MARKER TRANSFER — Path 2 (Player requests from viewer)
   // ══════════════════════════════════════════════════════════════
 
-  /**
-   * Watch the round doc for transfer request resolution.
-   * If our request was approved (markerId changed to us), navigate to scoring.
-   * If our request was cleared (declined), reset pending state.
-   */
   useEffect(() => {
     if (!round || !transferPending) return;
 
     const request = round.markerTransferRequest;
 
-    // Request was cleared (declined or resolved)
     if (!request || request.status !== "pending") {
-      // Check if we became the marker
       if (round.markerId === currentUserId) {
-        // Transfer approved! Navigate to scoring screen
         setTransferPending(false);
         setTransferCountdown(null);
         if (transferTimerRef.current) clearTimeout(transferTimerRef.current);
@@ -122,7 +135,6 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
         return;
       }
 
-      // Request was declined or expired without us becoming marker
       if (transferPending && !request) {
         setTransferPending(false);
         setTransferCountdown(null);
@@ -131,10 +143,6 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
     }
   }, [round?.markerTransferRequest, round?.markerId, transferPending]);
 
-  /**
-   * Countdown timer — ticks every second.
-   * When it hits 0, auto-approve the transfer.
-   */
   useEffect(() => {
     if (!transferPending || transferCountdown === null) return;
 
@@ -152,14 +160,9 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
     };
   }, [transferPending, transferCountdown]);
 
-  /**
-   * Request to take over scoring.
-   * Writes a markerTransferRequest to the round doc and starts the countdown.
-   */
   const handleRequestScoring = () => {
     if (!isPlayer || isMarker) return;
 
-    // Guard: already pending
     if (round?.markerTransferRequest?.status === "pending") {
       Alert.alert("Request Pending", "A scoring transfer request is already in progress.");
       return;
@@ -182,7 +185,6 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
               const now = Timestamp.now();
               const expiresAt = Timestamp.fromMillis(now.toMillis() + TRANSFER_TIMEOUT_SECONDS * 1000);
 
-              // Get our display name
               const userSnap = await getDoc(doc(db, "users", currentUserId));
               const displayName = userSnap.data()?.displayName ||
                 round?.players?.find((p) => p.playerId === currentUserId)?.displayName ||
@@ -211,11 +213,6 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
     );
   };
 
-  /**
-   * Auto-approve: called when countdown hits 0.
-   * Re-reads the round doc to confirm the request is still pending,
-   * then writes the markerId change.
-   */
   const autoApproveTransfer = async () => {
     if (!roundId || !currentUserId) return;
 
@@ -239,7 +236,6 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
         });
 
         console.log("✅ Auto-approved marker transfer");
-        // The useEffect watching round.markerId will handle navigation
       } else {
         console.log("⏭️ Transfer request was already resolved");
         setTransferPending(false);
@@ -253,9 +249,6 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
     }
   };
 
-  /**
-   * Cancel a pending transfer request.
-   */
   const handleCancelTransferRequest = async () => {
     try {
       await updateDoc(doc(db, "rounds", roundId), { markerTransferRequest: null });
@@ -268,7 +261,6 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
     if (transferTimerRef.current) clearTimeout(transferTimerRef.current);
   };
 
-  // ── Format countdown for display ──────────────────────────
   const formatCountdown = (seconds: number): string => {
     const m = Math.floor(seconds / 60);
     const sec = seconds % 60;
@@ -393,25 +385,42 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
     [currentUserId]
   );
 
-  const renderLeaderboardEntry = (entry: LeaderboardEntry, index: number) => (
-    <View key={entry.playerId} style={[s.lbRow, index === 0 && s.lbRowFirst]}>
-      <Text style={s.lbPosition}>{index + 1}</Text>
-      <View style={s.lbPlayerInfo}>
+  /** Render a single standings card */
+  const renderStandingsCard = (entry: LeaderboardEntry, index: number) => {
+    const isLeader = index === 0;
+    return (
+      <View key={entry.playerId} style={s.standingsCard}>
+        <View style={[s.positionCircle, isLeader && s.positionCircleLeader]}>
+          <Text style={[s.positionText, isLeader && s.positionTextLeader]}>
+            {index + 1}
+          </Text>
+        </View>
+
         {entry.avatar ? (
-          <Image source={{ uri: entry.avatar }} style={s.lbAvatar} />
+          <Image source={{ uri: entry.avatar }} style={s.standingsAvatar} />
         ) : (
-          <View style={[s.lbAvatar, s.lbAvatarPlaceholder]}>
-            <Text style={s.lbAvatarText}>{entry.displayName.charAt(0).toUpperCase()}</Text>
+          <View style={[s.standingsAvatar, s.standingsAvatarPlaceholder]}>
+            <Text style={s.standingsAvatarText}>
+              {entry.displayName.charAt(0).toUpperCase()}
+            </Text>
           </View>
         )}
-        <View>
-          <Text style={[s.lbName, index === 0 && s.lbNameFirst]}>{entry.displayName}</Text>
-          <Text style={s.lbThru}>Thru {entry.thru}</Text>
+
+        <View style={s.standingsInfo}>
+          <Text style={s.standingsName}>{entry.displayName}</Text>
+          <Text style={s.standingsThru}>Thru {entry.thru}</Text>
         </View>
+
+        <Text style={[
+          s.standingsScore,
+          entry.displayValue.startsWith("-") && s.standingsScoreUnder,
+          entry.displayValue === "E" && s.standingsScoreEven,
+        ]}>
+          {entry.displayValue}
+        </Text>
       </View>
-      <Text style={[s.lbScore, index === 0 && s.lbScoreFirst]}>{entry.displayValue}</Text>
-    </View>
-  );
+    );
+  };
 
   // ══════════════════════════════════════════════════════════════
   // LOADING / ERROR
@@ -516,25 +525,32 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
         ))}
       </View>
 
-      {/* Scorecard Tab */}
+      {/* ════════════════════════════════════════════════════════ */}
+      {/* SCORECARD TAB                                           */}
+      {/* ════════════════════════════════════════════════════════ */}
       {activeTab === "scorecard" && (
-        <View style={s.tabContent}>
-          <View style={s.leaderboard}>
-            <Text style={s.lbTitle}>Leaderboard</Text>
-            {leaderboard.map((entry, idx) => renderLeaderboardEntry(entry, idx))}
-          </View>
+        <ScrollView style={s.scorecardTab} contentContainerStyle={s.scorecardTabContent}>
+          {/* Scorecard Grid — The Hero */}
           <MultiplayerScorecard
             mode="view"
             formatId={round.formatId}
             players={round.players}
             holeCount={round.holeCount as 9 | 18}
-            holes={round.players[0]?.tee?.holes || []}
+            holes={holes}
             holeData={round.holeData || {}}
           />
-        </View>
+
+          {/* Standings Cards — Sorted by score */}
+          <View style={s.standingsSection}>
+            <Text style={s.standingsTitle}>Standings</Text>
+            {leaderboard.map((entry, idx) => renderStandingsCard(entry, idx))}
+          </View>
+        </ScrollView>
       )}
 
-      {/* Chat Tab */}
+      {/* ════════════════════════════════════════════════════════ */}
+      {/* CHAT TAB                                                */}
+      {/* ════════════════════════════════════════════════════════ */}
       {activeTab === "chat" && (
         <View style={s.chatContainer}>
           <FlatList
@@ -577,10 +593,11 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
         </View>
       )}
 
-      {/* Settings Tab */}
+      {/* ════════════════════════════════════════════════════════ */}
+      {/* SETTINGS TAB                                            */}
+      {/* ════════════════════════════════════════════════════════ */}
       {activeTab === "settings" && (
         <ScrollView style={s.settingsContainer} contentContainerStyle={s.settingsContent}>
-          {/* Round Info Card */}
           <Text style={s.settingsSection}>Round Info</Text>
           <View style={s.settingsCard}>
             {[
@@ -596,12 +613,10 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
             ))}
           </View>
 
-          {/* Live Actions */}
           {isLive && (
             <>
               <Text style={s.settingsSection}>Actions</Text>
               <View style={s.settingsCard}>
-                {/* Request Scoring — only for on-platform players who aren't the marker */}
                 {isPlayer && !isMarker && (
                   <TouchableOpacity
                     style={s.actionRow}
@@ -669,7 +684,6 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
             </>
           )}
 
-          {/* Post-Round Actions */}
           {!isLive && round.status === "complete" && isMarker && (
             <>
               <Text style={s.settingsSection}>Post-Round</Text>
@@ -733,23 +747,50 @@ const s = StyleSheet.create({
   tabActive: { backgroundColor: HEADER_GREEN },
   tabText: { fontSize: 13, fontWeight: "600", color: "#888" },
   tabTextActive: { color: "#FFF" },
-  tabContent: { flex: 1 },
 
-  // Leaderboard
-  leaderboard: { backgroundColor: "#FFFCF0", paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "#E8E4DA" },
-  lbTitle: { fontSize: 13, fontWeight: "700", color: HEADER_GREEN, fontFamily: Platform.OS === "ios" ? "Georgia" : "serif", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 },
-  lbRow: { flexDirection: "row", alignItems: "center", paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#E8E4DA" },
-  lbRowFirst: { borderBottomWidth: 0 },
-  lbPosition: { width: 24, fontSize: 14, fontWeight: "700", color: "#888", textAlign: "center" },
-  lbPlayerInfo: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10, marginLeft: 8 },
-  lbAvatar: { width: 28, height: 28, borderRadius: 14 },
-  lbAvatarPlaceholder: { backgroundColor: "#E8F5E9", justifyContent: "center", alignItems: "center" },
-  lbAvatarText: { fontSize: 12, fontWeight: "700", color: HEADER_GREEN },
-  lbName: { fontSize: 14, fontWeight: "600", color: "#333" },
-  lbNameFirst: { fontWeight: "800", color: HEADER_GREEN },
-  lbThru: { fontSize: 11, color: "#999" },
-  lbScore: { fontSize: 16, fontWeight: "700", color: "#333", minWidth: 60, textAlign: "right" },
-  lbScoreFirst: { color: HEADER_GREEN, fontWeight: "800", fontSize: 18 },
+  // Scorecard Tab
+  scorecardTab: { flex: 1 },
+  scorecardTabContent: { paddingBottom: 40 },
+
+  // Standings
+  standingsSection: { paddingHorizontal: 16, paddingTop: 16 },
+  standingsTitle: {
+    fontSize: 12, fontWeight: "700", color: HEADER_GREEN,
+    fontFamily: Platform.OS === "ios" ? "Georgia" : "serif",
+    textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10,
+  },
+  standingsCard: {
+    flexDirection: "row", alignItems: "center",
+    backgroundColor: "#FFF", borderRadius: 12,
+    padding: 12, paddingHorizontal: 16, marginBottom: 8,
+    borderWidth: 1, borderColor: "#E8E4DA", gap: 12,
+  },
+  positionCircle: {
+    width: 28, height: 28, borderRadius: 14,
+    backgroundColor: "#F0EDE4", justifyContent: "center", alignItems: "center",
+  },
+  positionCircleLeader: { backgroundColor: HEADER_GREEN },
+  positionText: {
+    fontSize: 14, fontWeight: "700", color: "#888",
+    fontFamily: Platform.OS === "ios" ? "Georgia" : "serif",
+  },
+  positionTextLeader: { color: "#FFF" },
+  standingsAvatar: { width: 36, height: 36, borderRadius: 18 },
+  standingsAvatarPlaceholder: { backgroundColor: "#E8F5E9", justifyContent: "center", alignItems: "center" },
+  standingsAvatarText: { fontSize: 14, fontWeight: "700", color: HEADER_GREEN },
+  standingsInfo: { flex: 1 },
+  standingsName: {
+    fontSize: 15, fontWeight: "700", color: "#333",
+    fontFamily: Platform.OS === "ios" ? "Georgia" : "serif",
+  },
+  standingsThru: { fontSize: 12, color: "#999", marginTop: 1 },
+  standingsScore: {
+    fontSize: 20, fontWeight: "800",
+    fontFamily: Platform.OS === "ios" ? "Georgia" : "serif",
+    color: HEADER_GREEN, minWidth: 44, textAlign: "right",
+  },
+  standingsScoreUnder: { color: "#E53935" },
+  standingsScoreEven: { color: "#888" },
 
   // Chat
   chatContainer: { flex: 1, backgroundColor: CREAM },
@@ -777,13 +818,9 @@ const s = StyleSheet.create({
   settingsContent: { padding: 16, paddingBottom: 40 },
   settingsSection: { fontSize: 12, fontWeight: "700", color: "#999", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8, marginTop: 16, marginLeft: 4 },
   settingsCard: { backgroundColor: "#FFF", borderRadius: 12, overflow: "hidden", borderWidth: 1, borderColor: "#E8E4DA" },
-
-  // Settings Info Rows
   infoRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#E8E4DA" },
   infoLabel: { fontSize: 14, color: "#888" },
   infoValue: { fontSize: 14, fontWeight: "600", color: "#333" },
-
-  // Settings Action Rows
   actionRow: { flexDirection: "row", alignItems: "center", paddingVertical: 14, paddingHorizontal: 16, gap: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#E8E4DA" },
   actionIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: "rgba(20,122,82,0.08)", justifyContent: "center", alignItems: "center" },
   actionInfo: { flex: 1 },

@@ -100,6 +100,10 @@ export interface RoundData {
   holeData: Record<string, Record<string, HolePlayerData>>;
   /** Map<playerId, LiveScoreEntry> */
   liveScores: Record<string, LiveScoreEntry>;
+  /** Par values per hole in playing order */
+  holePars?: number[];
+  /** Full hole details (par, yardage, stroke index) in playing order — used by LiveRoundViewer */
+  holeDetails?: { par: number; yardage: number; handicap?: number | null }[];
   leagueId?: string;
   leagueWeek?: number;
   regionKey?: string;

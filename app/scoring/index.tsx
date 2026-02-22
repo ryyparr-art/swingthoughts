@@ -58,12 +58,6 @@ const WALNUT = "#4A3628";
 
 const STABLEFORD_PTS: Record<number, number> = { [-3]: 5, [-2]: 4, [-1]: 3, [0]: 2, [1]: 1 };
 
-/**
- * Generate the playing order of holes with wraparound.
- * e.g. startingHole=5, totalHoles=18 → [5,6,7,...,18,1,2,3,4]
- * e.g. startingHole=3, totalHoles=9, baseHole=1 → [3,4,5,6,7,8,9,1,2]
- * e.g. startingHole=14, totalHoles=9, baseHole=10 → [14,15,16,17,18,10,11,12,13]
- */
 function buildPlayingOrder(startingHole: number, totalHoles: number, baseHole: number = 1): number[] {
   const order: number[] = [];
   for (let i = 0; i < totalHoles; i++) {
@@ -140,7 +134,6 @@ export default function ScoringScreen() {
   const chatListRef = React.useRef<FlatList<ChatMessage>>(null);
   const { messages: chatMessages, sendMessage } = useRoundChat(roundId);
 
-  // Track if we've already shown the transfer request alert to avoid re-firing
   const transferRequestAlertShown = useRef<string | null>(null);
 
   // ── DATA LOADING ──
@@ -217,7 +210,6 @@ export default function ScoringScreen() {
     resumeRound();
   }, [params.roundId, params.resume, currentUserId]);
 
-  // Auto-select course from param (no auto-advance)
   useEffect(() => {
     if (!params.courseId || params.roundId) return;
     if (fullCourseData) return;
@@ -246,20 +238,11 @@ export default function ScoringScreen() {
   // MARKER TRANSFER
   // ══════════════════════════════════════════════════════════════════════
 
-  /**
-   * Real-time listener for marker changes + incoming transfer requests.
-   * Handles:
-   *   1. Being transferred out (markerId changed away from us)
-   *   2. Incoming transfer request from a viewer (Path 2)
-   */
   useEffect(() => {
     if (!roundId || !currentUserId) return;
-
     const unsub = onSnapshot(doc(db, "rounds", roundId), (snap) => {
       if (!snap.exists()) return;
       const data = snap.data();
-
-      // ── Case 1: We lost marker role (transferred out) ──
       if (currentScreen === "scorecard" && data.markerId !== currentUserId && data.status === "live") {
         const name = data.players?.find((p: any) => p.playerId === data.markerId)?.displayName || "Another player";
         Alert.alert("Scoring Transferred", `${name} has taken over scoring.`, [
@@ -267,120 +250,70 @@ export default function ScoringScreen() {
         ]);
         return;
       }
-
-      // ── Case 2: Incoming transfer request (we are marker) ──
       if (
         data.markerId === currentUserId &&
         data.markerTransferRequest?.status === "pending" &&
         data.markerTransferRequest?.requestedBy !== currentUserId
       ) {
         const req = data.markerTransferRequest;
-        // Only show alert once per unique request
         if (transferRequestAlertShown.current === req.requestedBy) return;
         transferRequestAlertShown.current = req.requestedBy;
-
         Alert.alert(
           "Scoring Request",
           `${req.requestedByName} wants to take over scoring.\n\nIf you don't respond, they'll be auto-approved in 2 minutes.`,
           [
             {
-              text: "Decline",
-              style: "cancel",
+              text: "Decline", style: "cancel",
               onPress: async () => {
-                try {
-                  await updateDoc(doc(db, "rounds", roundId), { markerTransferRequest: null });
-                  soundPlayer.play("click");
-                } catch (err) { console.error("Error declining transfer:", err); }
+                try { await updateDoc(doc(db, "rounds", roundId), { markerTransferRequest: null }); soundPlayer.play("click"); }
+                catch (err) { console.error("Error declining transfer:", err); }
                 transferRequestAlertShown.current = null;
               },
             },
             {
               text: "Approve",
-              onPress: () => {
-                executeMarkerTransfer(req.requestedBy, req.requestedByName);
-                transferRequestAlertShown.current = null;
-              },
+              onPress: () => { executeMarkerTransfer(req.requestedBy, req.requestedByName); transferRequestAlertShown.current = null; },
             },
           ]
         );
       }
-
-      // Reset alert guard when request is cleared
-      if (!data.markerTransferRequest) {
-        transferRequestAlertShown.current = null;
-      }
+      if (!data.markerTransferRequest) { transferRequestAlertShown.current = null; }
     });
-
     return () => unsub();
   }, [roundId, currentUserId, currentScreen]);
 
-  /**
-   * Path 1: Marker initiates transfer from settings sheet.
-   * If only one eligible player, confirm directly. Otherwise show picker.
-   */
   const handleTransferScoring = () => {
     const eligible = players.filter((p) => !p.isGhost && p.playerId !== currentUserId);
-
-    if (eligible.length === 0) {
-      Alert.alert("No Eligible Players", "There are no on-platform players to transfer scoring to.");
-      return;
-    }
-
+    if (eligible.length === 0) { Alert.alert("No Eligible Players", "There are no on-platform players to transfer scoring to."); return; }
     setShowSettingsSheet(false);
-
     if (eligible.length === 1) {
       const target = eligible[0];
-      Alert.alert(
-        "Transfer Scoring",
-        `Hand off scorekeeper duties to ${target.displayName}?`,
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Transfer", onPress: () => executeMarkerTransfer(target.playerId, target.displayName) },
-        ]
-      );
-    } else {
-      setShowTransferPicker(true);
-    }
+      Alert.alert("Transfer Scoring", `Hand off scorekeeper duties to ${target.displayName}?`, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Transfer", onPress: () => executeMarkerTransfer(target.playerId, target.displayName) },
+      ]);
+    } else { setShowTransferPicker(true); }
   };
 
-  /**
-   * Execute the marker transfer: update round doc with new markerId.
-   * The onSnapshot listener handles redirecting the old marker.
-   */
   const executeMarkerTransfer = async (newMarkerId: string, newMarkerName: string) => {
     if (!roundId) return;
     try {
       soundPlayer.play("click");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
       await updateDoc(doc(db, "rounds", roundId), {
-        markerId: newMarkerId,
-        markerTransferRequest: null,
+        markerId: newMarkerId, markerTransferRequest: null,
         players: players.map((p) => ({
-          playerId: p.playerId,
-          displayName: p.displayName,
-          avatar: p.avatar || null,
-          isGhost: p.isGhost,
-          isMarker: p.playerId === newMarkerId,
-          handicapIndex: p.handicapIndex,
-          courseHandicap: p.courseHandicap,
-          teeName: p.teeName,
-          slopeRating: p.slopeRating,
-          courseRating: p.courseRating,
-          teamId: p.teamId || null,
-          contactInfo: p.contactInfo || null,
-          contactType: p.contactType || null,
+          playerId: p.playerId, displayName: p.displayName, avatar: p.avatar || null,
+          isGhost: p.isGhost, isMarker: p.playerId === newMarkerId, handicapIndex: p.handicapIndex,
+          courseHandicap: p.courseHandicap, teeName: p.teeName, slopeRating: p.slopeRating,
+          courseRating: p.courseRating, teamId: p.teamId || null,
+          contactInfo: p.contactInfo || null, contactType: p.contactType || null,
         })),
       });
-
       console.log(`✅ Marker transferred to ${newMarkerName}`);
-    } catch (err) {
-      console.error("Error transferring marker:", err);
-      Alert.alert("Error", "Failed to transfer scoring duties.");
-    }
+    } catch (err) { console.error("Error transferring marker:", err); Alert.alert("Error", "Failed to transfer scoring duties."); }
   };
 
-  // ── COURSE HANDLER — no auto-advance ──
   const handleSelectCourse = async (course: CourseBasic) => {
     const rawCourseId = course.courseId || course.id;
     if (!rawCourseId) return;
@@ -397,18 +330,15 @@ export default function ScoringScreen() {
           const dt: TeeOption = { tee_name: "Default", course_rating: 72, slope_rating: 113, par_total: holeCount === 9 ? 36 : 72, total_yards: holeCount === 9 ? 3200 : 6400, number_of_holes: holeCount, holes: generateDefaultHoles(holeCount), source: "male" };
           setAvailableTees([dt]); setSelectedTee(dt);
         }
-        soundPlayer.play("click");
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        soundPlayer.play("click"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       } else { Alert.alert("Error", "Could not load course data."); }
     } catch (err) { console.error("Error loading course:", err); Alert.alert("Error", "Failed to load course data."); }
     finally { setLoadingCourse(false); }
   };
 
-  // ── CONTINUE → FORMAT ──
   const handleContinueToFormat = () => {
     if (!fullCourseData || !selectedTee) { Alert.alert("Select a Course", "Please select a course before continuing."); return; }
-    soundPlayer.play("click");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    soundPlayer.play("click"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setCurrentScreen("format");
   };
 
@@ -424,7 +354,6 @@ export default function ScoringScreen() {
     setFormatId(selectedFormatId); setTeams(selectedTeams); setCurrentScreen("group");
   };
 
-  // ── GROUP SETUP ──
   const markerInfo = useMemo(() => ({
     userId: currentUserId || "", displayName: userData?.displayName || "Unknown",
     avatar: userData?.avatar || undefined, handicapIndex: parseFloat(userData?.handicap) || 0,
@@ -442,6 +371,9 @@ export default function ScoringScreen() {
       const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
       const playingOrder = buildPlayingOrder(startingHole, holeCount, baseHole);
       const holePars = playingOrder.map((h) => allHoles[h - 1]?.par || 4);
+      const holeDetails = playingOrder.map((h) => ({
+        par: allHoles[h - 1]?.par || 4, yardage: allHoles[h - 1]?.yardage || 0, handicap: allHoles[h - 1]?.handicap ?? null,
+      }));
       const playersWithTeams = teams
         ? confirmedPlayers.map((p) => { const team = teams.find((t) => t.playerIds.includes(p.playerId)); return team ? { ...p, teamId: team.id } : p; })
         : confirmedPlayers;
@@ -456,9 +388,8 @@ export default function ScoringScreen() {
           courseRating: p.courseRating, teamId: p.teamId || null,
           contactInfo: p.contactInfo || null, contactType: p.contactType || null,
         })),
-        teams: teams || null, currentHole: 1, holeData: {}, liveScores: {}, holePars, playingOrder,
-        startingHole,
-        leagueId: null, leagueWeek: null, regionKey: userRegionKey,
+        teams: teams || null, currentHole: 1, holeData: {}, liveScores: {}, holePars, holeDetails, playingOrder,
+        startingHole, leagueId: null, leagueWeek: null, regionKey: userRegionKey,
         location: fullCourseData.location || null, startedAt: serverTimestamp(),
         roundType, isSimulator: roundType === "simulator", privacy: roundPrivacy,
         markerTransferRequest: null,
@@ -487,7 +418,6 @@ export default function ScoringScreen() {
     await handleGroupConfirm([soloMarker]);
   };
 
-  // ── SCORECARD HANDLERS ──
   const handleScoreChange = useCallback((holeNum: number, playerId: string, strokes: number | null) => {
     setHoleData((prev) => {
       const hk = String(holeNum); const existing = prev[hk] || {}; const pd = existing[playerId] || { strokes: 0 };
@@ -550,7 +480,6 @@ export default function ScoringScreen() {
     finally { setSubmitting(false); }
   }, [roundId, holeCount, holeData, router]);
 
-  // ── NAVIGATION ──
   const handleBack = () => {
     soundPlayer.play("click");
     switch (currentScreen) {
@@ -569,7 +498,6 @@ export default function ScoringScreen() {
     }
   };
 
-  // ── CHAT & IN-ROUND SETTINGS ──
   const handleSendChat = useCallback(async () => {
     if (!chatInput.trim() || chatSending || !roundId) return;
     setChatSending(true); soundPlayer.play("click");
@@ -605,7 +533,6 @@ export default function ScoringScreen() {
     ]);
   };
 
-  // ── Eligible players for marker transfer ──
   const transferEligiblePlayers = useMemo(
     () => players.filter((p) => !p.isGhost && p.playerId !== currentUserId),
     [players, currentUserId]
@@ -629,13 +556,14 @@ export default function ScoringScreen() {
       {/* ═══ COURSE SCREEN ═══ */}
       {currentScreen === "course" && (
         <View style={{ flex: 1 }}>
-          <View style={{ backgroundColor: HEADER_GREEN, height: insets.top }} />
-          <View style={st.header}>
-            <TouchableOpacity onPress={() => router.back()} style={st.headerBackBtn}>
-              <Ionicons name="chevron-back" size={24} color="#FFF" />
-            </TouchableOpacity>
-            <Text style={st.headerTitle}>Tee It Up</Text>
-            <View style={{ width: 32 }} />
+          <View style={{ backgroundColor: HEADER_GREEN, paddingTop: insets.top }}>
+            <View style={st.header}>
+              <TouchableOpacity onPress={() => router.back()} style={st.headerBackBtn}>
+                <Ionicons name="chevron-back" size={24} color="#FFF" />
+              </TouchableOpacity>
+              <Text style={st.headerTitle}>Tee It Up</Text>
+              <View style={{ width: 32 }} />
+            </View>
           </View>
 
           <ScrollView style={{ flex: 1, backgroundColor: CREAM }} contentContainerStyle={{ paddingBottom: 120 }} showsVerticalScrollIndicator={false}>
@@ -695,23 +623,18 @@ export default function ScoringScreen() {
                 )}
               </View>
               <FlatList
-                horizontal
-                showsHorizontalScrollIndicator={false}
+                horizontal showsHorizontalScrollIndicator={false}
                 data={(() => {
                   if (holeCount === 18) return Array.from({ length: 18 }, (_, i) => i + 1);
-                  return nineHoleSide === "back"
-                    ? Array.from({ length: 9 }, (_, i) => i + 10)
-                    : Array.from({ length: 9 }, (_, i) => i + 1);
+                  return nineHoleSide === "back" ? Array.from({ length: 9 }, (_, i) => i + 10) : Array.from({ length: 9 }, (_, i) => i + 1);
                 })()}
                 keyExtractor={(item) => String(item)}
                 contentContainerStyle={st.startingHoleList}
                 renderItem={({ item: hole }) => {
                   const isSelected = hole === startingHole;
                   return (
-                    <TouchableOpacity
-                      onPress={() => { soundPlayer.play("click"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setStartingHole(hole); }}
-                      style={[st.startingHoleChip, isSelected && st.startingHoleChipActive]}
-                    >
+                    <TouchableOpacity onPress={() => { soundPlayer.play("click"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setStartingHole(hole); }}
+                      style={[st.startingHoleChip, isSelected && st.startingHoleChipActive]}>
                       <Text style={[st.startingHoleChipText, isSelected && st.startingHoleChipTextActive]}>{hole}</Text>
                     </TouchableOpacity>
                   );
@@ -824,41 +747,44 @@ export default function ScoringScreen() {
       )}
 
       {/* ═══ SCORECARD ═══ */}
-      {currentScreen === "scorecard" && selectedTee && roundId && (
+      {currentScreen === "scorecard" && selectedTee && roundId && players.length > 0 && (
         <View style={{ flex: 1 }}>
-          <View style={{ backgroundColor: HEADER_GREEN, height: insets.top }} />
-          <View style={st.header}>
-            <TouchableOpacity onPress={handleBack} style={st.headerBackBtn}>
-              <Ionicons name="chevron-back" size={24} color="#FFF" />
-            </TouchableOpacity>
-            <View style={{ flex: 1, alignItems: "center" }}>
-              <Text style={st.headerTitle} numberOfLines={1}>{fullCourseData?.courseName || fullCourseData?.course_name || "Round"}</Text>
-              <Text style={st.headerSubtitle}>Hole {(() => {
-                const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
-                const order = buildPlayingOrder(startingHole, holeCount, baseHole);
-                return order[currentHole - 1] || currentHole;
-              })()} of {holeCount}</Text>
-            </View>
-            <View style={st.headerActions}>
-              <TouchableOpacity onPress={() => { soundPlayer.play("click"); setShowChatSheet(true); }} style={st.headerIconBtn}>
-                <Ionicons name="chatbubble-outline" size={20} color="#FFF" />
-                {chatMessages.length > 0 && <View style={st.chatBadge}><Text style={st.chatBadgeText}>{chatMessages.length > 99 ? "99+" : chatMessages.length}</Text></View>}
+          <View style={{ backgroundColor: HEADER_GREEN, paddingTop: insets.top }}>
+            <View style={st.header}>
+              <TouchableOpacity onPress={handleBack} style={st.headerBackBtn}>
+                <Ionicons name="chevron-back" size={24} color="#FFF" />
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => { soundPlayer.play("click"); setShowSettingsSheet(true); }} style={st.headerIconBtn}>
-                <Ionicons name="settings-outline" size={20} color="#FFF" />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleCompleteRound} style={st.finishBtn}><Text style={st.finishBtnText}>Finish</Text></TouchableOpacity>
+              <View style={{ flex: 1, alignItems: "center" }}>
+                <Text style={st.headerTitle} numberOfLines={1}>{fullCourseData?.courseName || fullCourseData?.course_name || "Round"}</Text>
+                <Text style={st.headerSubtitle}>Hole {(() => {
+                  const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
+                  const order = buildPlayingOrder(startingHole, holeCount, baseHole);
+                  return order[currentHole - 1] || currentHole;
+                })()} of {holeCount}</Text>
+              </View>
+              <View style={st.headerActions}>
+                <TouchableOpacity onPress={() => { soundPlayer.play("click"); setShowChatSheet(true); }} style={st.headerIconBtn}>
+                  <Ionicons name="chatbubble-outline" size={20} color="#FFF" />
+                  {chatMessages.length > 0 && <View style={st.chatBadge}><Text style={st.chatBadgeText}>{chatMessages.length > 99 ? "99+" : chatMessages.length}</Text></View>}
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => { soundPlayer.play("click"); setShowSettingsSheet(true); }} style={st.headerIconBtn}>
+                  <Ionicons name="settings-outline" size={20} color="#FFF" />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleCompleteRound} style={st.finishBtn}><Text style={st.finishBtnText}>Finish</Text></TouchableOpacity>
+              </View>
             </View>
           </View>
-          <MultiplayerScorecard mode="edit" formatId={formatId} players={players} holeCount={holeCount}
+
+          <MultiplayerScorecard mode="edit"
+            initialHole={currentHole}
             holes={(() => {
               const allHoles = selectedTee.holes || [];
               const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
               const order = buildPlayingOrder(startingHole, holeCount, baseHole);
-              return order.map((h) => allHoles[h - 1] || { par: 4 });
+              return order.map((h) => allHoles[h - 1] || { par: 4, yardage: 0 });
             })()}
             holeData={holeData} onScoreChange={handleScoreChange} onHoleComplete={handleHoleComplete}
-            statsSheetSuppressed={statsSheetSuppressed} onEnableStatsSheet={() => setStatsSheetSuppressed(false)} />
+            statsSheetSuppressed={statsSheetSuppressed} onEnableStatsSheet={() => setStatsSheetSuppressed(false)} formatId={formatId} players={players} holeCount={holeCount} />
 
           {/* Chat Sheet */}
           <Modal visible={showChatSheet} transparent animationType="slide">
@@ -906,14 +832,11 @@ export default function ScoringScreen() {
                   <TouchableOpacity onPress={() => setShowSettingsSheet(false)}><Image source={closeIcon} style={{ width: 22, height: 22, tintColor: "#666" }} /></TouchableOpacity>
                 </View>
                 <ScrollView style={st.settingsBody}>
-                  {/* Visibility */}
                   <TouchableOpacity style={st.settingsRow} onPress={handleTogglePrivacy}>
                     <View style={st.settingsRowIcon}><Ionicons name="globe-outline" size={20} color={HEADER_GREEN} /></View>
                     <View style={{ flex: 1 }}><Text style={st.settingsRowLabel}>Round Visibility</Text><Text style={st.settingsRowSub}>Who can watch this round live</Text></View>
                     <Ionicons name="chevron-forward" size={18} color="#CCC" />
                   </TouchableOpacity>
-
-                  {/* Transfer Scoring — only show if there are eligible players */}
                   {transferEligiblePlayers.length > 0 && (
                     <TouchableOpacity style={st.settingsRow} onPress={handleTransferScoring}>
                       <View style={st.settingsRowIcon}><Ionicons name="swap-horizontal-outline" size={20} color={HEADER_GREEN} /></View>
@@ -921,8 +844,6 @@ export default function ScoringScreen() {
                       <Ionicons name="chevron-forward" size={18} color="#CCC" />
                     </TouchableOpacity>
                   )}
-
-                  {/* Abandon */}
                   <TouchableOpacity style={st.settingsRow} onPress={handleAbandonRound}>
                     <View style={[st.settingsRowIcon, { backgroundColor: "rgba(204,51,51,0.08)" }]}><Ionicons name="close-circle-outline" size={20} color="#CC3333" /></View>
                     <View style={{ flex: 1 }}><Text style={[st.settingsRowLabel, { color: "#CC3333" }]}>Abandon Round</Text><Text style={st.settingsRowSub}>End without saving scores</Text></View>
@@ -947,27 +868,18 @@ export default function ScoringScreen() {
                 </View>
                 <ScrollView style={{ paddingVertical: 8 }}>
                   {transferEligiblePlayers.map((p) => (
-                    <TouchableOpacity
-                      key={p.playerId}
-                      style={st.transferPlayerRow}
+                    <TouchableOpacity key={p.playerId} style={st.transferPlayerRow}
                       onPress={() => {
                         setShowTransferPicker(false);
-                        Alert.alert(
-                          "Transfer Scoring",
-                          `Hand off scorekeeper duties to ${p.displayName}?`,
-                          [
-                            { text: "Cancel", style: "cancel" },
-                            { text: "Transfer", onPress: () => executeMarkerTransfer(p.playerId, p.displayName) },
-                          ]
-                        );
-                      }}
-                    >
+                        Alert.alert("Transfer Scoring", `Hand off scorekeeper duties to ${p.displayName}?`, [
+                          { text: "Cancel", style: "cancel" },
+                          { text: "Transfer", onPress: () => executeMarkerTransfer(p.playerId, p.displayName) },
+                        ]);
+                      }}>
                       {p.avatar ? (
                         <Image source={{ uri: p.avatar }} style={st.transferPlayerAvatar} />
                       ) : (
-                        <View style={st.transferPlayerAvatarFallback}>
-                          <Ionicons name="person" size={18} color="#999" />
-                        </View>
+                        <View style={st.transferPlayerAvatarFallback}><Ionicons name="person" size={18} color="#999" /></View>
                       )}
                       <View style={{ flex: 1 }}>
                         <Text style={st.transferPlayerName}>{p.displayName}</Text>
@@ -1054,7 +966,6 @@ const st = StyleSheet.create({
   settingsRowLabel: { fontSize: 15, fontWeight: "600", color: "#333" },
   settingsRowSub: { fontSize: 12, color: "#999", marginTop: 1 },
 
-  // ── Transfer Player Picker ──
   transferPlayerRow: { flexDirection: "row", alignItems: "center", paddingVertical: 14, paddingHorizontal: 16, gap: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#E8E4DA" },
   transferPlayerAvatar: { width: 40, height: 40, borderRadius: 20 },
   transferPlayerAvatarFallback: { width: 40, height: 40, borderRadius: 20, backgroundColor: "#E8E4DA", justifyContent: "center", alignItems: "center" },
