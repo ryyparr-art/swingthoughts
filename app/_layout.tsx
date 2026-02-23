@@ -463,6 +463,18 @@ export default function RootLayout() {
           }
           break;
 
+        case "marker_transfer":
+          if (data.roundId) {
+            router.push(`/scoring?roundId=${data.roundId}&resume=true`);
+          }
+          break;
+
+        case "marker_transfer_request":
+          if (data.roundId) {
+            router.push(`/scoring?roundId=${data.roundId}&resume=true`);
+          }
+          break;
+
         // ============================================
         // FALLBACK - Use generic routing based on available data
         // ============================================

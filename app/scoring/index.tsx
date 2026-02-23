@@ -14,6 +14,9 @@
  * File: app/scoring/index.tsx
  */
 
+import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator, Alert, FlatList, Image, KeyboardAvoidingView,
@@ -21,32 +24,33 @@ import {
   TouchableOpacity, View,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { useRouter, useLocalSearchParams } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
 
 import { auth, db } from "@/constants/firebaseConfig";
 import {
-  addDoc, collection, doc, getDoc, onSnapshot, serverTimestamp, Timestamp, updateDoc,
+  addDoc, collection, doc, getDoc, onSnapshot, serverTimestamp,
+  updateDoc
 } from "firebase/firestore";
 
 import CourseSelector from "@/components/leagues/post-score/CourseSelector";
 import {
-  calculateCourseHandicap, extractTees, generateDefaultHoles, haversine, loadFullCourseData,
+  extractTees, generateDefaultHoles, haversine, loadFullCourseData
 } from "@/components/leagues/post-score/helpers";
 import type { CourseBasic, FullCourseData, TeeOption } from "@/components/leagues/post-score/types";
 
-import GroupSetup from "@/components/scoring/GroupSetup";
 import FormatPicker from "@/components/scoring/FormatPicker";
+import GroupSetup from "@/components/scoring/GroupSetup";
 import MultiplayerScorecard from "@/components/scoring/MultiplayerScorecard";
 import RoundSummary from "@/components/scoring/RoundSummary";
+import TransferAlertModal from "@/components/scoring/TransferAlertModal";
 import type {
-  PlayerSlot, RoundTeam, HolePlayerData, LiveScoreEntry, PostScoreScreen,
+  HolePlayerData, LiveScoreEntry,
+  PlayerSlot,
+  PostScoreScreen,
+  RoundTeam,
 } from "@/components/scoring/scoringTypes";
 
-import { GAME_FORMATS } from "@/constants/gameFormats";
-import { soundPlayer } from "@/utils/soundPlayer";
 import { useRoundChat, type ChatMessage } from "@/hooks/useLiveRound";
+import { soundPlayer } from "@/utils/soundPlayer";
 
 const closeIcon = require("@/assets/icons/Close.png");
 
@@ -135,6 +139,8 @@ export default function ScoringScreen() {
   const { messages: chatMessages, sendMessage } = useRoundChat(roundId);
 
   const transferRequestAlertShown = useRef<string | null>(null);
+  const [transferRequestVisible, setTransferRequestVisible] = useState(false);
+  const [transferRequestData, setTransferRequestData] = useState<{ requestedBy: string; requestedByName: string } | null>(null);
 
   // ── DATA LOADING ──
   useEffect(() => { if (currentUserId) loadUserData(); }, [currentUserId]);
@@ -244,40 +250,37 @@ export default function ScoringScreen() {
       if (!snap.exists()) return;
       const data = snap.data();
       if (currentScreen === "scorecard" && data.markerId !== currentUserId && data.status === "live") {
+        // Dismiss transfer modal if it's showing
+        setTransferRequestVisible(false);
+        setTransferRequestData(null);
         const name = data.players?.find((p: any) => p.playerId === data.markerId)?.displayName || "Another player";
         Alert.alert("Scoring Transferred", `${name} has taken over scoring.`, [
           { text: "OK", onPress: () => router.replace(`/round/${roundId}` as any) },
         ]);
         return;
       }
+      // Skip transfer request logic if we're no longer the marker
+      if (data.markerId !== currentUserId) {
+        setTransferRequestVisible(false);
+        setTransferRequestData(null);
+        return;
+      }
+
       if (
-        data.markerId === currentUserId &&
         data.markerTransferRequest?.status === "pending" &&
         data.markerTransferRequest?.requestedBy !== currentUserId
       ) {
         const req = data.markerTransferRequest;
         if (transferRequestAlertShown.current === req.requestedBy) return;
         transferRequestAlertShown.current = req.requestedBy;
-        Alert.alert(
-          "Scoring Request",
-          `${req.requestedByName} wants to take over scoring.\n\nIf you don't respond, they'll be auto-approved in 2 minutes.`,
-          [
-            {
-              text: "Decline", style: "cancel",
-              onPress: async () => {
-                try { await updateDoc(doc(db, "rounds", roundId), { markerTransferRequest: null }); soundPlayer.play("click"); }
-                catch (err) { console.error("Error declining transfer:", err); }
-                transferRequestAlertShown.current = null;
-              },
-            },
-            {
-              text: "Approve",
-              onPress: () => { executeMarkerTransfer(req.requestedBy, req.requestedByName); transferRequestAlertShown.current = null; },
-            },
-          ]
-        );
+        setTransferRequestData({ requestedBy: req.requestedBy, requestedByName: req.requestedByName });
+        setTransferRequestVisible(true);
       }
-      if (!data.markerTransferRequest) { transferRequestAlertShown.current = null; }
+      if (!data.markerTransferRequest) {
+        transferRequestAlertShown.current = null;
+        setTransferRequestVisible(false);
+        setTransferRequestData(null);
+      }
     });
     return () => unsub();
   }, [roundId, currentUserId, currentScreen]);
@@ -754,7 +757,7 @@ export default function ScoringScreen() {
               <TouchableOpacity onPress={handleBack} style={st.headerBackBtn}>
                 <Ionicons name="chevron-back" size={24} color="#FFF" />
               </TouchableOpacity>
-              <View style={{ flex: 1, alignItems: "center" }}>
+              <View style={{ flex: 1, alignItems: "center", justifyContent: "center", minHeight: 36 }}>
                 <Text style={st.headerTitle} numberOfLines={1}>{fullCourseData?.courseName || fullCourseData?.course_name || "Round"}</Text>
                 <Text style={st.headerSubtitle}>Hole {(() => {
                   const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
@@ -892,6 +895,23 @@ export default function ScoringScreen() {
               </View>
             </View>
           </Modal>
+
+          {/* Transfer Request Alert */}
+          <TransferAlertModal
+            visible={transferRequestVisible}
+            requestedByName={transferRequestData?.requestedByName || ""}
+            onDecline={async () => {
+              setTransferRequestVisible(false);
+              transferRequestAlertShown.current = null;
+              try { await updateDoc(doc(db, "rounds", roundId!), { markerTransferRequest: null }); soundPlayer.play("click"); }
+              catch (err) { console.error("Error declining transfer:", err); }
+            }}
+            onApprove={() => {
+              setTransferRequestVisible(false);
+              transferRequestAlertShown.current = null;
+              if (transferRequestData) executeMarkerTransfer(transferRequestData.requestedBy, transferRequestData.requestedByName);
+            }}
+          />
         </View>
       )}
 
@@ -929,7 +949,7 @@ const st = StyleSheet.create({
 
   header: { paddingVertical: 12, paddingHorizontal: 16, backgroundColor: HEADER_GREEN, flexDirection: "row", alignItems: "center" },
   headerBackBtn: { padding: 4, marginRight: 8 },
-  headerTitle: { flex: 1, fontSize: 18, fontWeight: "700", color: "#FFF", fontFamily: Platform.OS === "ios" ? "Georgia" : "serif", textAlign: "center" },
+  headerTitle: { fontSize: 18, fontWeight: "700", color: "#FFF", fontFamily: Platform.OS === "ios" ? "Georgia" : "serif", textAlign: "center" },
   headerSubtitle: { fontSize: 12, color: GOLD, marginTop: 2 },
   headerActions: { flexDirection: "row", alignItems: "center", gap: 4 },
   headerIconBtn: { padding: 6, position: "relative" },

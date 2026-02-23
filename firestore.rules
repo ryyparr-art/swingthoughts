@@ -1103,7 +1103,7 @@ service cloud.firestore {
     // ROUNDS
     // ============================================================================
 
-    match /rounds/{roundId} {
+match /rounds/{roundId} {
       // Anyone signed in can read rounds (needed for LiveRoundViewer, spectators)
       allow read, list: if isSignedIn();
 
@@ -1114,17 +1114,15 @@ service cloud.firestore {
         request.resource.data.status == "live";
 
       // Marker can update anything (scores, status, privacy, etc.)
-      // OR any signed-in player can transfer markerId to themselves
+      // OR any signed-in player can request/accept a marker transfer
       allow update: if isSignedIn() &&
         (
           // Current marker can update anything
           resource.data.markerId == request.auth.uid ||
-          // Any authenticated user can ONLY update marker transfer fields
-          // (markerId must be set to their own UID)
+          // Any player can request/accept a marker transfer
           (
-            request.resource.data.markerId == request.auth.uid &&
             request.resource.data.diff(resource.data).affectedKeys()
-              .hasOnly(['markerId', 'markerTransferredAt', 'previousMarkerId'])
+              .hasOnly(['markerId', 'markerTransferredAt', 'previousMarkerId', 'markerTransferRequest', 'players'])
           )
         );
 
