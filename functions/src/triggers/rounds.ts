@@ -13,7 +13,7 @@
  *   - Sets isGhost flag on ghost score docs (existing triggers early-return on ghosts)
  *   - Sends ghost invite SMS/email if contact info provided
  *   - Sends round_complete notifications to on-platform players
- *   - Writes feedActivity items for round completion
+ *   - Writes feedActivity items for round completion (skipped for outing-linked rounds)
  *   - Auto-creates league score docs if round is league-linked
  *   - Updates recentPlayedWith cache
  *
@@ -89,6 +89,10 @@ interface RoundData {
   roundDescription?: string;
   roundImageUrl?: string;
   markerTransferRequest?: MarkerTransferRequest | null;
+  /** Outing link — if present, this round is part of a group outing */
+  outingId?: string | null;
+  groupId?: string | null;
+  groupName?: string | null;
 }
 
 // ============================================================================
@@ -212,6 +216,8 @@ export const onRoundUpdated = onDocumentUpdated(
         `Round ${roundId} completed — processing ${after.players.length} players`
       );
 
+      const isOutingLinked = !!after.outingId;
+
       // Format & simulator eligibility
       const HANDICAP_ELIGIBLE_FORMATS = [
         "stroke_play",
@@ -297,6 +303,9 @@ export const onRoundUpdated = onDocumentUpdated(
             leagueWeek: after.leagueWeek || null,
             // Team
             teamId: player.teamId || null,
+            // Outing (if applicable)
+            outingId: after.outingId || null,
+            groupId: after.groupId || null,
             // Location & region
             regionKey: after.regionKey || null,
             location: after.location || null,
@@ -358,55 +367,64 @@ export const onRoundUpdated = onDocumentUpdated(
       }
 
       // ── 4. Send round_complete notifications ──────────────────
-      const onPlatformPlayers = after.players.filter(
-        (p) => !p.isGhost && !p.isMarker
-      );
-      const roundPlayerIds = after.players
-        .filter((p) => !p.isGhost)
-        .map((p) => p.playerId);
+      // For outing-linked rounds, skip individual round_complete notifications.
+      // The outing_complete notifications (sent by outingRounds.ts when ALL
+      // groups finish) replace these with position-aware outing results.
+      if (!isOutingLinked) {
+        const onPlatformPlayers = after.players.filter(
+          (p) => !p.isGhost && !p.isMarker
+        );
+        const roundPlayerIds = after.players
+          .filter((p) => !p.isGhost)
+          .map((p) => p.playerId);
 
-      for (const player of onPlatformPlayers) {
-        try {
-          const others = after.players.filter(
-            (p) => p.playerId !== player.playerId
-          );
-          const namedPlayer = others.find((p) => !p.isGhost) || others[0];
-          const remainingCount = others.length - 1;
-          let withString = "";
-          if (namedPlayer) {
-            withString = ` with ${namedPlayer.displayName}`;
-            if (remainingCount === 1) {
-              const third = others.find(
-                (p) => p.playerId !== namedPlayer.playerId
-              );
-              withString += ` & ${third?.displayName || "1 other"}`;
-            } else if (remainingCount > 1) {
-              withString += ` & ${remainingCount} other${remainingCount > 1 ? "s" : ""}`;
+        for (const player of onPlatformPlayers) {
+          try {
+            const others = after.players.filter(
+              (p) => p.playerId !== player.playerId
+            );
+            const namedPlayer = others.find((p) => !p.isGhost) || others[0];
+            const remainingCount = others.length - 1;
+            let withString = "";
+            if (namedPlayer) {
+              withString = ` with ${namedPlayer.displayName}`;
+              if (remainingCount === 1) {
+                const third = others.find(
+                  (p) => p.playerId !== namedPlayer.playerId
+                );
+                withString += ` & ${third?.displayName || "1 other"}`;
+              } else if (remainingCount > 1) {
+                withString += ` & ${remainingCount} other${remainingCount > 1 ? "s" : ""}`;
+              }
             }
+
+            const grossScore = calculateGrossScore(player, after);
+
+            await sendRoundNotification({
+              type: "round_complete",
+              recipientUserId: player.playerId,
+              roundId,
+              courseName: after.courseName,
+              grossScore,
+              markerName:
+                after.players.find((p) => p.isMarker)?.displayName || "Unknown",
+              message: `Your round at ${after.courseName}${withString} is complete — you shot ${grossScore}.`,
+              navigationTarget: "profile",
+              navigationUserId: player.playerId,
+              navigationTab: "rounds",
+              roundPlayerIds,
+            });
+          } catch (err) {
+            logger.error(
+              `Notification failed for ${player.displayName}:`,
+              err
+            );
           }
-
-          const grossScore = calculateGrossScore(player, after);
-
-          await sendRoundNotification({
-            type: "round_complete",
-            recipientUserId: player.playerId,
-            roundId,
-            courseName: after.courseName,
-            grossScore,
-            markerName:
-              after.players.find((p) => p.isMarker)?.displayName || "Unknown",
-            message: `Your round at ${after.courseName}${withString} is complete — you shot ${grossScore}.`,
-            navigationTarget: "profile",
-            navigationUserId: player.playerId,
-            navigationTab: "rounds",
-            roundPlayerIds,
-          });
-        } catch (err) {
-          logger.error(
-            `Notification failed for ${player.displayName}:`,
-            err
-          );
         }
+      } else {
+        logger.info(
+          `⏭️ Skipping round_complete notifications for outing-linked round ${roundId} — outing_complete handles this`
+        );
       }
 
       // ── 5. Create league scores (if league-linked) ────────────
@@ -415,7 +433,16 @@ export const onRoundUpdated = onDocumentUpdated(
       }
 
       // ── 6. Write feedActivity items ───────────────────────────
-      await writeFeedActivity(roundId, after);
+      // For outing-linked rounds, skip individual round_complete feed cards.
+      // The outing_complete card (written by outingRounds.ts when ALL groups
+      // finish) replaces these — Strava-style grouped activity.
+      if (!isOutingLinked) {
+        await writeFeedActivity(roundId, after);
+      } else {
+        logger.info(
+          `⏭️ Skipping round feed activity for outing-linked round ${roundId} — outing_complete card handles this`
+        );
+      }
 
       // ── 7. Update recentPlayedWith cache on user docs ─────────
       await updateRecentPlayedWith(after.players);
@@ -570,6 +597,10 @@ async function createLeagueScores(
 
 /**
  * Write feedActivity items for round completion.
+ *
+ * NOTE: This is NOT called for outing-linked rounds. The outing_complete
+ * card (written by outingRounds.ts) replaces individual round cards for
+ * outing participants — Strava-style grouped activity.
  */
 async function writeFeedActivity(
   roundId: string,

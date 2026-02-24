@@ -25,11 +25,13 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { auth, db } from "@/constants/firebaseConfig";
+import { auth, db, functions } from "@/constants/firebaseConfig";
 import {
   addDoc, collection, doc, getDoc, onSnapshot, serverTimestamp,
   updateDoc
 } from "firebase/firestore";
+import { httpsCallable } from "firebase/functions";
+import type { OutingGroup, OutingPlayer } from "@/constants/outingTypes";
 
 import CourseSelector from "@/components/leagues/post-score/CourseSelector";
 import {
@@ -421,6 +423,70 @@ export default function ScoringScreen() {
     await handleGroupConfirm([soloMarker]);
   };
 
+  // ══════════════════════════════════════════════════════════════════════
+  // OUTING LAUNCH
+  // ══════════════════════════════════════════════════════════════════════
+
+  const handleOutingLaunch = async (roster: OutingPlayer[], groups: OutingGroup[]) => {
+    if (!fullCourseData || !selectedTee || !currentUserId) return;
+    try {
+      setSubmitting(true); setSubmittingMessage("Launching outing...");
+      const courseId = fullCourseData.courseId || fullCourseData.id;
+      const courseName = fullCourseData.courseName || fullCourseData.course_name;
+
+      const launchOuting = httpsCallable(functions, "launchOuting");
+      const result = await launchOuting({
+        parentType: "casual",
+        parentId: null,
+        courseId: typeof courseId === "string" ? parseInt(courseId, 10) : courseId,
+        courseName,
+        holeCount,
+        nineHoleSide: holeCount === 9 ? nineHoleSide : undefined,
+        formatId,
+        groupSize: 4,
+        roundType,
+        privacy: roundPrivacy,
+        location: fullCourseData.location || null,
+        regionKey: userRegionKey || null,
+        roster,
+        groups,
+      });
+
+      const { outingId, organizerRoundId } = result.data as {
+        success: boolean; outingId: string; roundIds: string[]; organizerRoundId: string;
+      };
+      console.log(`✅ Outing launched: ${outingId}, organizer round: ${organizerRoundId}`);
+
+      // If the organizer is a group marker, navigate to their scorecard
+      const organizerGroup = groups.find((g) => g.markerId === currentUserId);
+      if (organizerGroup && organizerRoundId) {
+        setRoundId(organizerRoundId);
+        const roundSnap = await getDoc(doc(db, "rounds", organizerRoundId));
+        if (roundSnap.exists()) {
+          const roundData = roundSnap.data();
+          setPlayers(roundData.players || []);
+          setHoleData(roundData.holeData || {});
+          setStartingHole(roundData.startingHole || 1);
+          setCurrentHole(1);
+          setCurrentScreen("scorecard");
+        }
+      } else {
+        // Organizer is not scoring — go back to home with success message
+        Alert.alert(
+          "Outing Launched! 🏌️",
+          `Your group outing at ${courseName} is live. Group scorers have been notified.`,
+          [{ text: "OK", onPress: () => router.replace("/") }]
+        );
+      }
+
+      soundPlayer.play("click");
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err: any) {
+      console.error("Outing launch error:", err);
+      Alert.alert("Launch Failed", err?.message || "Failed to launch outing. Please try again.");
+    } finally { setSubmitting(false); }
+  };
+
   const handleScoreChange = useCallback((holeNum: number, playerId: string, strokes: number | null) => {
     setHoleData((prev) => {
       const hk = String(holeNum); const existing = prev[hk] || {}; const pd = existing[playerId] || { strokes: 0 };
@@ -746,7 +812,12 @@ export default function ScoringScreen() {
         <GroupSetup marker={markerInfo} markerTee={selectedTee} availableTees={availableTees}
           courseName={fullCourseData?.courseName || fullCourseData?.course_name || ""}
           holeCount={holeCount} onConfirm={handleGroupConfirm} onPlaySolo={handlePlaySolo}
-          onBack={handleBack} onMarkerTeeChange={(tee) => setSelectedTee(tee)} />
+          onBack={handleBack} onMarkerTeeChange={(tee) => setSelectedTee(tee)}
+          courseId={(() => { const cid = fullCourseData?.courseId || fullCourseData?.id; return typeof cid === "string" ? parseInt(cid, 10) : (cid ?? 0); })()}
+          nineHoleSide={nineHoleSide}
+          formatId={formatId}
+          onOutingLaunch={handleOutingLaunch}
+        />
       )}
 
       {/* ═══ SCORECARD ═══ */}

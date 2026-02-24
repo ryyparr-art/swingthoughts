@@ -127,6 +127,9 @@ export { onRoundUpdated } from "./triggers/rounds";
 //Cleanup Abandoned Rounds
 export { cleanupAbandonedRounds } from "./cleanupAbandonedRounds";
 
+export { launchOuting } from "./outings/outingLaunch";
+export { onOutingRoundUpdated } from "./triggers/outingRounds";
+
 
 
 

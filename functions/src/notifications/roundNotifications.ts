@@ -26,14 +26,14 @@ const db = getFirestore();
 // TYPES
 // ============================================================================
 
-export type RoundNotificationType = "round_invite" | "round_complete" | "round_notable" | "marker_transfer" | "marker_transfer_request";
+export type RoundNotificationType = "round_invite" | "round_complete" | "round_notable" | "marker_transfer" | "marker_transfer_request" | "outing_complete";
 
 export interface RoundNotificationParams {
   type: RoundNotificationType;
   recipientUserId: string;
   roundId: string;
   courseName: string;
-  markerName: string;
+  markerName?: string;
   markerId?: string;
   markerAvatar?: string;
   grossScore?: number;
@@ -60,7 +60,7 @@ export async function sendRoundNotification(params: RoundNotificationParams): Pr
     recipientUserId,
     roundId,
     courseName,
-    markerName,
+    markerName = "",
     markerId,
     markerAvatar,
     grossScore,

@@ -129,6 +129,8 @@ export interface RoundData {
   } | null;
   abandonedAt?: any;
   abandonedBy?: string;
+  outingId?: string;
+  groupId?: string;
 }
 
 // ============================================================================

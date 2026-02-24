@@ -1,5 +1,6 @@
 // constants/firebaseConfig.ts
 
+import { getFunctions } from "firebase/functions";
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Analytics, getAnalytics, isSupported } from "firebase/analytics";
 import { getApp, getApps, initializeApp } from "firebase/app";
@@ -47,5 +48,10 @@ if (typeof window !== 'undefined') {
   });
 }
 
-export { analytics, auth, db, storage };
+const functions = getFunctions(app);
+
+export { analytics, auth, db, functions, storage };
+
+
+
 

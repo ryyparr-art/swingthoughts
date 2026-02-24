@@ -11,6 +11,8 @@
  * File: constants/outingTypes.ts
  */
 
+import type { TeeOption } from "@/components/leagues/post-score/types";
+
 // ============================================================================
 // OUTING STATUS
 // ============================================================================
@@ -36,6 +38,17 @@ export interface OutingPlayer {
   isGhost: boolean;
   /** Player handicap index */
   handicapIndex: number;
+  /** Calculated course handicap based on selected tee */
+  courseHandicap: number;
+
+  /** Selected tee for this player */
+  tee: TeeOption;
+  /** Tee name shorthand */
+  teeName: string;
+  /** Slope rating from their tee */
+  slopeRating: number;
+  /** Course rating from their tee */
+  courseRating: number;
 
   /** Assigned group ID (null if unassigned) */
   groupId?: string | null;

@@ -450,11 +450,17 @@ export default function RootLayout() {
         // ============================================
         // ROUND NOTIFICATIONS - Go to round viewer or scoring
         // ============================================
-        case "round_invite":
+       case "round_invite":
           if (data.roundId) {
-            router.push(`/scoring?roundId=${data.roundId}`);
+            if (data.navigationTarget === "scoring") {
+            // Marker — open scoring screen in resume mode
+            router.push(`/scoring?roundId=${data.roundId}&resume=true`);
+          } else {
+            // Non-marker player — open round viewer (FAB auto-detects outing)
+            router.push(`/round/${data.roundId}`);
           }
-          break;
+        }
+        break;
 
         case "round_complete":
         case "round_notable":
@@ -474,6 +480,12 @@ export default function RootLayout() {
             router.push(`/scoring?roundId=${data.roundId}&resume=true`);
           }
           break;
+
+        case "outing_complete":
+          if (data.roundId) {
+            router.push(`/round/${data.roundId}`);
+          }
+          break;  
 
         // ============================================
         // FALLBACK - Use generic routing based on available data

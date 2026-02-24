@@ -7,22 +7,49 @@
  *   - Push notification deep link (round_invite, round_complete, round_notable)
  *   - Post-round redirect after marker finishes scoring
  *
- * For the marker: shows completed round summary (mode="review")
- * For spectators: shows live scorecard + chat (mode="view")
+ * If the round is linked to an outing (has outingId), renders the
+ * OutingLeaderboardFAB as a floating overlay showing the cross-group
+ * live leaderboard. Tapping it opens the full leaderboard modal.
  *
  * File: app/round/[roundId].tsx
  */
 
-import LiveRoundViewer from "@/components/scoring/LiveRoundViewer";
+import React, { useEffect, useState } from "react";
+import { View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
-import React from "react";
+import { doc, getDoc } from "firebase/firestore";
+import { db } from "@/constants/firebaseConfig";
+import LiveRoundViewer from "@/components/scoring/LiveRoundViewer";
+import OutingLeaderboardFAB from "./OutingLeaderboardFAB";
 
 export default function RoundViewerScreen() {
-  const { roundId } = useLocalSearchParams<{ roundId: string }>();
+  const { roundId, outingId: paramOutingId } = useLocalSearchParams<{
+    roundId: string;
+    outingId?: string;
+  }>();
 
-  if (!roundId) {
-    return null;
-  }
+  const [outingId, setOutingId] = useState<string | null>(paramOutingId ?? null);
 
-  return <LiveRoundViewer roundId={roundId} />;
+  // If outingId wasn't passed as a param, check the round doc
+  useEffect(() => {
+    if (paramOutingId || !roundId) return;
+
+    getDoc(doc(db, "rounds", roundId)).then((snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.outingId) {
+          setOutingId(data.outingId);
+        }
+      }
+    }).catch(() => {});
+  }, [roundId, paramOutingId]);
+
+  if (!roundId) return null;
+
+  return (
+    <View style={{ flex: 1 }}>
+      <LiveRoundViewer roundId={roundId} />
+      {outingId && <OutingLeaderboardFAB outingId={outingId} />}
+    </View>
+  );
 }

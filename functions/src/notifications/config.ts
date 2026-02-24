@@ -39,6 +39,7 @@ export const GROUPABLE_TYPES = {
     "trending",
     "system",
     "group_message",
+    "outing_complete",
     // League notifications (always individual)
     "league_invite",
     "league_join_request",

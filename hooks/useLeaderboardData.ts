@@ -292,33 +292,31 @@ export function useLeaderboardData({
       // ============================================================
 
       if (filterType === "course" && filterCourseId) {
-        // SPECIFIC COURSE FILTER
+        // SPECIFIC COURSE FILTER — query leaderboards directly by courseId
         console.log("🔍 Filter: Specific Course -", filterCourseName);
 
-        const course = await getCourseById(filterCourseId);
+        const leaderboardQuery = query(
+          collection(db, "leaderboards"),
+          where("courseId", "==", filterCourseId)
+        );
+        const leaderboardSnap = await getDocs(leaderboardQuery);
 
-        if (!course) {
-          console.log("⚠️ Course not found:", filterCourseId);
-          setBoards([]);
-          setDisplayedCourseIds([]);
-          setShowingCached(false);
-          setLoading(false);
-          return;
-        }
-
-        const leaderboard = await getLeaderboard(course.regionKey, filterCourseId);
-
-        if (leaderboard) {
-          leaderboards = [leaderboard];
+        if (!leaderboardSnap.empty) {
+          leaderboards = [leaderboardSnap.docs[0].data()];
+          console.log("✅ Found leaderboard for course:", filterCourseId);
         } else {
+          // No leaderboard yet — fall back to course API data for metadata
+          console.log("⚠️ No leaderboard for course, showing empty board");
+          const course = await getCourseById(filterCourseId);
+
           leaderboards = [
             {
               courseId: filterCourseId,
-              courseName: filterCourseName || course.course_name,
+              courseName: filterCourseName || course?.course_name || "Unknown Course",
               topScores18: [],
               topScores9: [],
               topScores: [],
-              location: course.location
+              location: course?.location
                 ? { city: course.location.city, state: course.location.state }
                 : undefined,
             },
