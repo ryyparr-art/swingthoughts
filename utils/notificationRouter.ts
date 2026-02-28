@@ -1,6 +1,6 @@
 import { auth } from "@/constants/firebaseConfig";
-import { Router } from "expo-router";
 import { Notification } from "@/constants/notificationTypes";
+import { Router } from "expo-router";
 
 /**
  * Routes the user to the appropriate screen based on notification type.
@@ -50,6 +50,32 @@ export function navigateForNotification(notification: Notification, router: Rout
       return false;
 
     // ==========================================
+    // OUTING & RIVALRY
+    // ==========================================
+    case "outing_complete":
+      if (notification.roundId) {
+        // Open the player's group round scorecard
+        const uid = auth.currentUser?.uid;
+        if (uid) {
+          router.push(`/profile/${uid}?tab=rounds`);
+          return true;
+        }
+      }
+      return false;
+
+    case "rivalry_update":
+      if (notification.rivalryId) {
+        // rivalryId format: "playerAId_playerBId" (sorted alphabetically)
+        // Navigate to the OTHER player's profile
+        const ids = notification.rivalryId.split("_");
+        const currentUserId = auth.currentUser?.uid;
+        const rivalId = ids.find((id: string) => id !== currentUserId) || ids[0];
+        router.push(`/profile/${rivalId}` as any);
+        return true;
+      }
+      return false;
+
+    // ==========================================
     // HOLE-IN-ONE
     // ==========================================
     case "partner_holeinone":
@@ -89,6 +115,8 @@ export function navigateForNotification(notification: Notification, router: Rout
         router.push({
           pathname: "/leaderboard",
           params: {
+            filterType: "course",
+            courseId: notification.courseId.toString(),
             highlightCourseId: notification.courseId.toString(),
             highlightUserId: notification.actorId,
           },

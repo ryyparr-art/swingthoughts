@@ -5,6 +5,8 @@
  *   - round_invite:   "Ry Par started a round at Maple Hill" → open round viewer
  *   - round_complete: "Your round at Maple Hill with John is complete — you shot 84" → open profile/rounds
  *   - round_notable:  "Ry Par's group is on Hole 7 at Maple Hill" (throttled)
+ *   - outing_complete: "You finished 3rd at Maple Hill — Net 72" → open round
+ *   - rivalry_update: "Matt takes the lead over Ryan (9-8)" → open rival profile
  *
  * Uses the existing notification pipeline:
  *   createNotificationDocument() → top-level `notifications` collection
@@ -16,8 +18,8 @@
 import { getFirestore } from "firebase-admin/firestore";
 import { logger } from "firebase-functions/v2";
 import {
-    createNotificationDocument,
-    generateGroupedMessage,
+  createNotificationDocument,
+  generateGroupedMessage,
 } from "./helpers";
 
 const db = getFirestore();
@@ -26,13 +28,20 @@ const db = getFirestore();
 // TYPES
 // ============================================================================
 
-export type RoundNotificationType = "round_invite" | "round_complete" | "round_notable" | "marker_transfer" | "marker_transfer_request" | "outing_complete";
+export type RoundNotificationType =
+  | "round_invite"
+  | "round_complete"
+  | "round_notable"
+  | "marker_transfer"
+  | "marker_transfer_request"
+  | "outing_complete"
+  | "rivalry_update";
 
 export interface RoundNotificationParams {
   type: RoundNotificationType;
   recipientUserId: string;
-  roundId: string;
-  courseName: string;
+  roundId?: string;
+  courseName?: string;
   markerName?: string;
   markerId?: string;
   markerAvatar?: string;
@@ -48,6 +57,9 @@ export interface RoundNotificationParams {
   navigationTab?: string;
   /** All on-platform player IDs in the round (for dedup in scores.ts) */
   roundPlayerIds?: string[];
+  /** Rivalry fields (for rivalry_update notifications) */
+  rivalryId?: string;
+  changeType?: string;
 }
 
 // ============================================================================
@@ -59,7 +71,7 @@ export async function sendRoundNotification(params: RoundNotificationParams): Pr
     type,
     recipientUserId,
     roundId,
-    courseName,
+    courseName = "",
     markerName = "",
     markerId,
     markerAvatar,
@@ -88,6 +100,8 @@ export async function sendRoundNotification(params: RoundNotificationParams): Pr
       courseName,
       message,
       roundId,
+      rivalryId: params.rivalryId,
+      changeType: params.changeType,
       navigationTarget: params.navigationTarget,
       navigationUserId: params.navigationUserId,
       navigationTab: params.navigationTab,

@@ -6,25 +6,25 @@
  * - Video thumbnail with play button
  * - Tap to expand to fullscreen
  * - Dynamic aspect ratio (Instagram-style): clamped between 4:5 portrait and 1.91:1 landscape
+ * - Self-measuring width to fit within card bounds (no overlap)
  */
 
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import React, { useState } from "react";
+import { Image as ExpoImage } from "expo-image";
+import React, { useCallback, useRef, useState } from "react";
 import {
-  Dimensions,
   FlatList,
-  Image,
+  LayoutChangeEvent,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
+  ViewToken,
 } from "react-native";
 
 import { VideoThumbnail } from "@/components/video/VideoComponents";
 import { soundPlayer } from "@/utils/soundPlayer";
-
-const SCREEN_WIDTH = Dimensions.get('window').width;
 
 /* ================================================================ */
 /* TYPES                                                            */
@@ -69,17 +69,37 @@ export default function FeedPostMedia({
 }: FeedPostMediaProps) {
   // Get images array
   const images = imageUrls || (imageUrl ? [imageUrl] : []);
-  
+
+  // Self-measure container width — no more SCREEN_WIDTH assumption
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  const handleLayout = useCallback((event: LayoutChangeEvent) => {
+    const { width } = event.nativeEvent.layout;
+    if (width > 0 && width !== containerWidth) {
+      setContainerWidth(width);
+    }
+  }, [containerWidth]);
+
   // Current image index for carousel
   const [currentIndex, setCurrentIndex] = useState(0);
 
+  // Viewability config for accurate index tracking
+  const viewabilityConfig = useRef({ viewAreaCoveragePercentThreshold: 50 }).current;
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: ViewToken[] }) => {
+      if (viewableItems.length > 0 && viewableItems[0].index != null) {
+        setCurrentIndex(viewableItems[0].index);
+      }
+    }
+  ).current;
+
   // Clamp aspect ratio: min 0.8 (4:5 portrait), max 1.91 (landscape), default 1.0 (square)
   const clampedRatio = Math.min(1.91, Math.max(0.8, mediaAspectRatio || 1.0));
-  const mediaHeight = Math.round(SCREEN_WIDTH / clampedRatio);
+  const mediaHeight = containerWidth > 0 ? Math.round(containerWidth / clampedRatio) : 0;
 
   // Handle image tap — pass full array + tapped index
   const handleImagePress = (index: number) => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     onImagePress(images, index);
   };
@@ -98,58 +118,66 @@ export default function FeedPostMedia({
   // Render images carousel
   if (images.length > 0) {
     return (
-      <View>
-        <FlatList
-          data={images}
-          horizontal
-          pagingEnabled
-          showsHorizontalScrollIndicator={false}
-          onMomentumScrollEnd={(event) => {
-            const index = Math.round(
-              event.nativeEvent.contentOffset.x / SCREEN_WIDTH
-            );
-            setCurrentIndex(index);
-          }}
-          renderItem={({ item, index }) => (
-            <TouchableOpacity
-              activeOpacity={0.9}
-              onPress={() => handleImagePress(index)}
-            >
-              <View style={{ width: SCREEN_WIDTH }}>
-                <Image 
-                  source={{ uri: item }} 
-                  style={{ width: "100%", height: mediaHeight }}
-                  resizeMode="cover"
-                />
+      <View onLayout={handleLayout}>
+        {containerWidth > 0 && (
+          <>
+            <FlatList
+              data={images}
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              bounces={false}
+              overScrollMode="never"
+              onViewableItemsChanged={onViewableItemsChanged}
+              viewabilityConfig={viewabilityConfig}
+              getItemLayout={(_, index) => ({
+                length: containerWidth,
+                offset: containerWidth * index,
+                index,
+              })}
+              renderItem={({ item, index }) => (
+                <TouchableOpacity
+                  activeOpacity={0.9}
+                  onPress={() => handleImagePress(index)}
+                  style={{ width: containerWidth }}
+                >
+                  <ExpoImage
+                    source={{ uri: item }}
+                    style={{ width: containerWidth, height: mediaHeight }}
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    transition={200}
+                  />
+                </TouchableOpacity>
+              )}
+              keyExtractor={(_, index) => `${thoughtId}-image-${index}`}
+            />
+
+            {/* Pagination dots */}
+            {images.length > 1 && (
+              <View style={styles.paginationDots}>
+                {images.map((_, index) => (
+                  <View
+                    key={index}
+                    style={[
+                      styles.dot,
+                      currentIndex === index && styles.dotActive,
+                    ]}
+                  />
+                ))}
               </View>
-            </TouchableOpacity>
-          )}
-          keyExtractor={(item, index) => `${thoughtId}-image-${index}`}
-        />
-        
-        {/* Pagination dots */}
-        {images.length > 1 && (
-          <View style={styles.paginationDots}>
-            {images.map((_, index) => (
-              <View
-                key={index}
-                style={[
-                  styles.dot,
-                  currentIndex === index && styles.dotActive,
-                ]}
-              />
-            ))}
-          </View>
-        )}
-        
-        {/* Image count badge */}
-        {images.length > 1 && (
-          <View style={styles.countBadge}>
-            <Ionicons name="images" size={14} color="#FFF" />
-            <Text style={styles.countText}>
-              {currentIndex + 1}/{images.length}
-            </Text>
-          </View>
+            )}
+
+            {/* Image count badge */}
+            {images.length > 1 && (
+              <View style={styles.countBadge}>
+                <Ionicons name="images" size={14} color="#FFF" />
+                <Text style={styles.countText}>
+                  {currentIndex + 1}/{images.length}
+                </Text>
+              </View>
+            )}
+          </>
         )}
       </View>
     );
@@ -162,7 +190,7 @@ export default function FeedPostMedia({
         videoUrl={videoUrl}
         thumbnailUrl={videoThumbnailUrl}
         videoDuration={videoDuration}
-        mediaHeight={mediaHeight}
+        mediaHeight={mediaHeight || 300}
         onPress={handleVideoPress}
       />
     );
@@ -201,7 +229,7 @@ const styles = StyleSheet.create({
     width: 24,
     borderColor: "rgba(0, 0, 0, 0.3)",
   },
-  
+
   // Count badge
   countBadge: {
     position: "absolute",

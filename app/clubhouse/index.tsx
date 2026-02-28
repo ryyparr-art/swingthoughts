@@ -16,6 +16,11 @@
  * - Image/video fullscreen viewers (swipeable gallery)
  * - Comments and report modals
  * - Tournament chat modal
+ * 
+ * Performance:
+ * - FlatList with virtualization props (initialNumToRender, windowSize, etc.)
+ * - expo-image for all network images (memory-disk caching)
+ * - Memoized render callbacks
  */
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -562,6 +567,12 @@ export default function ClubhouseScreen() {
               : item.id
           }
           contentContainerStyle={styles.listContent}
+          // ✅ Virtualization props for performance
+          initialNumToRender={6}
+          maxToRenderPerBatch={5}
+          windowSize={7}
+          updateCellsBatchingPeriod={50}
+          removeClippedSubviews={false}
           onScrollToIndexFailed={(info) => {
             setTimeout(() => {
               flatListRef.current?.scrollToOffset({

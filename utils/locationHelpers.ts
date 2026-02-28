@@ -166,10 +166,11 @@ export const updateCurrentLocation = async (
     const updates: any = {
       currentCity: location.city,
       currentState: location.state,
-      currentLatitude: location.latitude, // ✅ Added
-      currentLongitude: location.longitude, // ✅ Added
+      currentLatitude: location.latitude,
+      currentLongitude: location.longitude,
       currentLocationUpdatedAt: new Date().toISOString(),
       locationMethod: method,
+      lastLocationUpdate: new Date(),
     };
 
     // Only update regionKey if it changed
@@ -252,7 +253,10 @@ export const checkAndUpdateLocation = async (
     if (!snap.exists()) return;
 
     const user = snap.data();
-    const hasPermission = user.locationPermission === true;
+
+    // ✅ Check actual device permission instead of Firestore flag
+    const { status } = await Location.getForegroundPermissionsAsync();
+    const hasPermission = status === "granted";
 
     // ========== GPS USERS (Auto-update) ==========
     if (hasPermission) {

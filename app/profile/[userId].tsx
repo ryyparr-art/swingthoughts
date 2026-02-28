@@ -10,6 +10,7 @@ import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import { Image as ExpoImage } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import RoundScorecardViewer from "@/components/scoring/RoundScorecardViewer";
 import {
@@ -21,7 +22,7 @@ import {
   query,
   where,
 } from "firebase/firestore";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -69,6 +70,9 @@ interface Post {
   createdAt: any;
   hasMedia?: boolean;
   mediaType?: "images" | "video" | null;
+  isPoll?: boolean;
+  poll?: { question?: string };
+  postType?: string;
 }
 
 export interface ProfileRound {
@@ -256,6 +260,9 @@ export default function ProfileScreen() {
           createdAt: data.createdAt,
           hasMedia: data.hasMedia,
           mediaType: data.mediaType,
+          isPoll: data.isPoll || false,
+          poll: data.poll || null,
+          postType: data.postType || null,
         });
       });
 
@@ -482,7 +489,7 @@ export default function ProfileScreen() {
 
   /* ========================= RENDER POST ========================= */
 
-  const renderPost = ({ item }: { item: Post }) => {
+  const renderPost = useCallback(({ item }: { item: Post }) => {
     const images = item.imageUrls || (item.imageUrl ? [item.imageUrl] : []);
     const firstImage = images[0];
     const hasMultipleImages = images.length > 1;
@@ -497,11 +504,14 @@ export default function ProfileScreen() {
           setGalleryModalVisible(true);
         }}
       >
+        {/* Video thumbnail */}
         {item.videoThumbnailUrl ? (
           <>
-            <Image
+            <ExpoImage
               source={{ uri: item.videoThumbnailUrl }}
               style={styles.postImage}
+              contentFit="cover"
+              cachePolicy="memory-disk"
             />
             <View style={styles.videoIndicator}>
               <Ionicons name="play-circle" size={40} color="#FFF" />
@@ -519,12 +529,18 @@ export default function ProfileScreen() {
             )}
           </>
         ) : firstImage ? (
+          /* Image post */
           <>
-            <Image source={{ uri: firstImage }} style={styles.postImage} />
+            <ExpoImage
+              source={{ uri: firstImage }}
+              style={styles.postImage}
+              contentFit="cover"
+              cachePolicy="memory-disk"
+            />
 
             {hasMultipleImages && (
               <View style={styles.multiImageIndicator}>
-                <Ionicons name="images" size={16} color="#FFF" />
+                <Ionicons name="copy-outline" size={14} color="#FFF" />
                 <Text style={styles.multiImageText}>{images.length}</Text>
               </View>
             )}
@@ -541,7 +557,27 @@ export default function ProfileScreen() {
               </TouchableOpacity>
             )}
           </>
+        ) : item.isPoll ? (
+          /* Poll post */
+          <View style={styles.pollCard}>
+            <Ionicons name="bar-chart-outline" size={28} color="#0D5C3A" />
+            <Text style={styles.pollCardText} numberOfLines={3}>
+              {item.poll?.question || item.caption}
+            </Text>
+            {isOwnProfile && (
+              <TouchableOpacity
+                style={styles.editIconPoll}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handleEditPost(item.postId);
+                }}
+              >
+                <Ionicons name="create-outline" size={20} color="#0D5C3A" />
+              </TouchableOpacity>
+            )}
+          </View>
         ) : (
+          /* Text-only post */
           <View style={styles.textOnlyCard}>
             <Text style={styles.textOnlyContent} numberOfLines={4}>
               {item.caption}
@@ -561,11 +597,11 @@ export default function ProfileScreen() {
         )}
       </TouchableOpacity>
     );
-  };
+  }, [isOwnProfile]);
 
   /* ========================= RENDER ROUND ========================= */
 
-  const renderRound = ({ item }: { item: ProfileRound }) => (
+  const renderRound = useCallback(({ item }: { item: ProfileRound }) => (
     <ProfileRoundCard
       round={item}
       onPress={() => {
@@ -574,7 +610,7 @@ export default function ProfileScreen() {
         setScorecardRoundId(item.roundId);
       }}
     />
-  );
+  ), []);
 
   /* ========================= SCREEN ========================= */
 
@@ -617,9 +653,11 @@ export default function ProfileScreen() {
               <View style={styles.cardLeftCol}>
                 <View style={styles.avatarRing}>
                   {profile.avatar ? (
-                    <Image
+                    <ExpoImage
                       source={{ uri: profile.avatar }}
                       style={styles.avatar}
+                      contentFit="cover"
+                      cachePolicy="memory-disk"
                     />
                   ) : (
                     <View style={styles.avatarPlaceholder}>
@@ -846,6 +884,10 @@ export default function ProfileScreen() {
           keyExtractor={(item) => item.postId}
           numColumns={3}
           contentContainerStyle={styles.postsGrid}
+          initialNumToRender={12}
+          maxToRenderPerBatch={9}
+          windowSize={5}
+          removeClippedSubviews={false}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -871,6 +913,10 @@ export default function ProfileScreen() {
           renderItem={renderRound}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.roundsGrid}
+          initialNumToRender={6}
+          maxToRenderPerBatch={4}
+          windowSize={5}
+          removeClippedSubviews={false}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -946,7 +992,7 @@ export default function ProfileScreen() {
           setTimeout(() => setPartnersModalVisible(true), 300);
         }}
       />
-    <RoundScorecardViewer
+      <RoundScorecardViewer
         visible={!!scorecardRoundId}
         roundId={scorecardRoundId}
         onClose={() => setScorecardRoundId(null)}
@@ -1285,6 +1331,35 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
+  /* Poll card */
+  pollCard: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#E8F5E9",
+    padding: 12,
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 6,
+  },
+
+  pollCardText: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#0D5C3A",
+    textAlign: "center",
+    lineHeight: 15,
+  },
+
+  editIconPoll: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    backgroundColor: "rgba(255, 255, 255, 0.95)",
+    borderRadius: 12,
+    padding: 6,
+  },
+
+  /* Text-only card */
   textOnlyCard: {
     width: "100%",
     height: "100%",

@@ -13,10 +13,16 @@
  * - 9-hole and 18-hole support
  * - Highlight scores from notifications
  * - Pull-to-refresh
+ * 
+ * Performance:
+ * - expo-image for all network avatars (memory-disk caching)
+ * - FlatList virtualization props
+ * - removeClippedSubviews={false} to prevent watchdog crash
  */
 
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import { Image as ExpoImage } from "expo-image";
 import { router, useLocalSearchParams } from "expo-router";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -496,7 +502,12 @@ export default function LeaderboardScreen() {
                   activeOpacity={0.85}
                 >
                   {s.userAvatar ? (
-                    <Image source={{ uri: s.userAvatar }} style={styles.avatar} />
+                    <ExpoImage
+                      source={{ uri: s.userAvatar }}
+                      style={styles.avatar}
+                      contentFit="cover"
+                      cachePolicy="memory-disk"
+                    />
                   ) : (
                     <View style={styles.avatarFallback} />
                   )}
@@ -594,6 +605,10 @@ export default function LeaderboardScreen() {
             data={localBoards}
             keyExtractor={(b, index) => `${b.courseId}-${index}`}
             contentContainerStyle={{ paddingBottom: 140 }}
+            initialNumToRender={4}
+            maxToRenderPerBatch={3}
+            windowSize={5}
+            removeClippedSubviews={false}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}

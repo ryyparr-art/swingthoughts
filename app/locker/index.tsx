@@ -1,3 +1,4 @@
+import LockerRivals from "@/components/locker/LockerRivals";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
@@ -23,7 +24,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-// ✅ Badge icon imports (matching LowmanCarousel)
+// Badge icon imports
 const LowLeaderTrophy = require("@/assets/icons/LowLeaderTrophy.png");
 const LowLeaderScratch = require("@/assets/icons/LowLeaderScratch.png");
 const LowLeaderAce = require("@/assets/icons/LowLeaderAce.png");
@@ -32,14 +33,14 @@ const HoleInOne = require("@/assets/icons/HoleinOne.png");
 export default function LockerScreen() {
   const router = useRouter();
   const currentUserId = auth.currentUser?.uid;
-  const { getCache, setCache } = useCache(); // ✅ Add cache hook
+  const { getCache, setCache } = useCache();
 
   const [profile, setProfile] = useState<any>(null);
   const [clubs, setClubs] = useState<any>(null);
   const [badges, setBadges] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showingCached, setShowingCached] = useState(false); // ✅ Cache indicator
-  const [refreshing, setRefreshing] = useState(false); // ✅ Pull to refresh
+  const [showingCached, setShowingCached] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   /* ========================= LOAD USER WITH CACHE ========================= */
 
@@ -51,7 +52,6 @@ export default function LockerScreen() {
 
       const loadUserWithCache = async () => {
         try {
-          // Step 1: Try to load from cache (instant)
           const cached = await getCache(CACHE_KEYS.LOCKER(currentUserId));
           
           if (cached) {
@@ -63,7 +63,6 @@ export default function LockerScreen() {
             setLoading(false);
           }
 
-          // Step 2: Set up real-time listener (always)
           const userRef = doc(db, "users", currentUserId);
 
           unsubscribe = onSnapshot(
@@ -72,7 +71,6 @@ export default function LockerScreen() {
               if (snap.exists()) {
                 const data = snap.data();
                 
-                // Parse badges
                 const badgesData = data.Badges || [];
                 const validBadges = badgesData.filter((badge: any) => {
                   if (!badge) return false;
@@ -82,18 +80,15 @@ export default function LockerScreen() {
                 
                 const displayBadges = data.displayBadges || validBadges.slice(0, 3);
                 
-                // Update state
                 setProfile(data);
                 setClubs(data.clubs || {});
                 setBadges(displayBadges);
                 
-                // Step 3: Update cache
                 await setCache(CACHE_KEYS.LOCKER(currentUserId), {
                   profile: data,
                   clubs: data.clubs || {},
                   badges: displayBadges,
                 });
-                console.log("✅ Locker data cached");
                 
                 setShowingCached(false);
               }
@@ -131,14 +126,12 @@ export default function LockerScreen() {
     setShowingCached(false);
     
     try {
-      // Fetch fresh data
       const userRef = doc(db, "users", currentUserId);
       const snap = await getDoc(userRef);
       
       if (snap.exists()) {
         const data = snap.data();
         
-        // Parse badges
         const badgesData = data.Badges || [];
         const validBadges = badgesData.filter((badge: any) => {
           if (!badge) return false;
@@ -148,12 +141,10 @@ export default function LockerScreen() {
         
         const displayBadges = data.displayBadges || validBadges.slice(0, 3);
         
-        // Update state
         setProfile(data);
         setClubs(data.clubs || {});
         setBadges(displayBadges);
         
-        // Update cache
         await setCache(CACHE_KEYS.LOCKER(currentUserId), {
           profile: data,
           clubs: data.clubs || {},
@@ -170,48 +161,21 @@ export default function LockerScreen() {
 
   /* ========================= HELPERS ========================= */
 
-  const formatBadgeDate = (timestamp: any) => {
-    if (!timestamp) return "";
-    
-    try {
-      // Handle Firestore Timestamp
-      const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
-      return date.toLocaleDateString("en-US", { 
-        month: "short", 
-        day: "numeric", 
-        year: "numeric" 
-      });
-    } catch {
-      return "";
-    }
-  };
-
-  // ✅ Helper to get home course name (handles both object and string formats)
   const getHomeCourseName = () => {
     if (!profile) return null;
-    
-    // New object format
     if (profile.homeCourse && typeof profile.homeCourse === 'object') {
       return profile.homeCourse.courseName;
     }
-    
-    // Backwards compatible string field
     if (profile.homeCourseName) {
       return profile.homeCourseName;
     }
-    
-    // Legacy string format
     if (profile.homeCourse && typeof profile.homeCourse === 'string') {
       return profile.homeCourse;
     }
-    
     return null;
   };
 
   const parseBadge = (badge: any) => {
-    console.log("🔍 Parsing badge:", JSON.stringify(badge, null, 2));
-    
-    // Handle string badges (legacy)
     if (typeof badge === "string") {
       return { 
         label: badge, 
@@ -222,42 +186,26 @@ export default function LockerScreen() {
       };
     }
 
-    // ✅ Handle flat structure with direct "type" field (MOST COMMON)
     if (badge.type) {
       const badgeType = badge.type.toLowerCase();
-      
-      console.log(`  ✅ Badge type (flat): ${badgeType}`);
-      
-      // Map badge type to custom icon
-      let icon = LowLeaderTrophy; // Default
+      let icon = LowLeaderTrophy;
       
       switch (badgeType) {
-        case "lowman":
-          icon = LowLeaderTrophy;
-          break;
-        case "scratch":
-          icon = LowLeaderScratch;
-          break;
-        case "ace":
-          icon = LowLeaderAce;
-          break;
-        case "holeinone":
-          icon = HoleInOne;
-          break;
-        default:
-          console.warn(`⚠️ Unknown badge type: ${badgeType}`);
+        case "lowman": icon = LowLeaderTrophy; break;
+        case "scratch": icon = LowLeaderScratch; break;
+        case "ace": icon = LowLeaderAce; break;
+        case "holeinone": icon = HoleInOne; break;
       }
       
       return {
         label: badge.displayName || (badgeType.charAt(0).toUpperCase() + badgeType.slice(1)),
         courseName: badge.courseName || null,
         date: badge.achievedAt || null,
-        icon: icon,
+        icon,
         type: badgeType
       };
     }
 
-    // ✅ FALLBACK: Handle nested structure (if it exists)
     const badgeKeys = Object.keys(badge || {}).filter(key => key !== 'courseName');
     const badgeTypeKey = badgeKeys.find(key => 
       badge[key] && typeof badge[key] === 'object' && badge[key].displayName
@@ -266,39 +214,24 @@ export default function LockerScreen() {
     if (badgeTypeKey) {
       const badgeData = badge[badgeTypeKey];
       const badgeType = badgeTypeKey.toLowerCase();
-      
-      console.log(`  ✅ Badge type (nested): ${badgeType}`);
-      
       let icon = LowLeaderTrophy;
       
       switch (badgeType) {
-        case "lowman":
-          icon = LowLeaderTrophy;
-          break;
-        case "scratch":
-          icon = LowLeaderScratch;
-          break;
-        case "ace":
-          icon = LowLeaderAce;
-          break;
-        case "holeinone":
-          icon = HoleInOne;
-          break;
-        default:
-          console.warn(`⚠️ Unknown badge type: ${badgeType}`);
+        case "lowman": icon = LowLeaderTrophy; break;
+        case "scratch": icon = LowLeaderScratch; break;
+        case "ace": icon = LowLeaderAce; break;
+        case "holeinone": icon = HoleInOne; break;
       }
       
       return {
         label: badgeData.displayName || (badgeTypeKey.charAt(0).toUpperCase() + badgeTypeKey.slice(1)),
         courseName: badge.courseName || null,
         date: badgeData.achievedAt || null,
-        icon: icon,
+        icon,
         type: badgeType
       };
     }
 
-    // Default fallback
-    console.warn("⚠️ No valid badge type found in:", badge);
     return {
       label: badge.displayName || "Achievement",
       courseName: badge.courseName || null,
@@ -310,7 +243,6 @@ export default function LockerScreen() {
 
   /* ========================= COURSE USER REDIRECT ========================= */
 
-  // If user is a Course, redirect to their course locker
   if (!loading && profile?.userType === "Course" && profile?.ownedCourseId) {
     return <Redirect href={`/locker/course/${profile.ownedCourseId}`} />;
   }
@@ -341,7 +273,6 @@ export default function LockerScreen() {
       >
         <TopNavBar />
 
-        {/* Cache indicator - only show when cache is displayed */}
         {showingCached && !loading && (
           <View style={styles.cacheIndicator}>
             <ActivityIndicator size="small" color="#0D5C3A" />
@@ -361,14 +292,24 @@ export default function LockerScreen() {
             />
           }
         >
-          {/* PROFILE */}
+          {/* ═══════════════════════════════════════════════════════════
+              PROFILE SECTION — LAYOUT ORDER
+              Name → HCI → Rivals → Stats → Identity → Badges → Clubs
+              ═══════════════════════════════════════════════════════════ */}
           <View style={styles.profileSection}>
+
+            {/* ── DISPLAY NAME ── */}
             <Text style={styles.name}>{profile?.displayName ?? "Player"}</Text>
+
+            {/* ── HANDICAP ── */}
             <Text style={styles.handicap}>
-              Handicap: {profile?.handicap ?? "N/A"}
+              HCI: {profile?.handicap ?? "N/A"}
             </Text>
 
-            {/* CAREER STATS ROW - Always visible */}
+            {/* ── RIVALS (Nemesis / Threat / Target) ── */}
+            {currentUserId && <LockerRivals userId={currentUserId} />}
+
+            {/* ── CAREER STATS ROW ── */}
             <TouchableOpacity
               onPress={() => router.push(`/locker/stats-tracker?userId=${currentUserId}`)}
               activeOpacity={0.7}
@@ -380,21 +321,21 @@ export default function LockerScreen() {
                     {profile?.totalBirdies > 0 ? profile.totalBirdies : "-"}
                   </Text>
                 </View>
-              
+                
                 <View style={styles.statItem}>
                   <Text style={styles.statEmoji}>🦅</Text>
                   <Text style={styles.statCount}>
                     {profile?.totalEagles > 0 ? profile.totalEagles : "-"}
                   </Text>
                 </View>
-              
+                
                 <View style={styles.statItem}>
                   <Text style={styles.statEmoji}>🦢</Text>
                   <Text style={styles.statCount}>
                     {profile?.totalAlbatross > 0 ? profile.totalAlbatross : "-"}
                   </Text>
                 </View>
-              
+                
                 <View style={styles.statItem}>
                   <Image source={HoleInOne} style={styles.statIcon} />
                   <Text style={styles.statCount}>
@@ -404,7 +345,7 @@ export default function LockerScreen() {
               </View>
             </TouchableOpacity>
 
-            {/* HOME COURSE & GAME IDENTITY */}
+            {/* ── HOME COURSE & GAME IDENTITY ── */}
             {(homeCourseName || profile?.gameIdentity) && (
               <View style={styles.identityContainer}>
                 {homeCourseName && (
@@ -422,83 +363,33 @@ export default function LockerScreen() {
               </View>
             )}
 
-            {/* BADGES - 2 COLUMN LAYOUT */}
-            <View style={styles.badgesWrapper}>
-              <Text style={styles.sectionTitle}>Achievements</Text>
-
-              {badges.length === 0 ? (
-                <Text style={styles.noBadges}>No badges earned yet</Text>
-              ) : (
-                <View style={styles.badgesContainer}>
-                  {/* First Row - 2 badges */}
-                  <View style={styles.badgesRow}>
-                    {badges.slice(0, 2).map((badge, i) => {
-                      const parsed = parseBadge(badge);
-                      
-                      return (
-                        <View key={i} style={styles.badge}>
-                          {/* ✅ Custom badge icon at top */}
-                          <Image source={parsed.icon} style={styles.badgeIcon} />
-                          
-                          <Text style={styles.badgeText}>{parsed.label}</Text>
-                          
-                          {(parsed.courseName || parsed.date) && (
-                            <View style={styles.badgeDetails}>
-                              {parsed.courseName && (
-                                <Text style={styles.badgeDetailText} numberOfLines={1}>
-                                  {parsed.courseName}
-                                </Text>
-                              )}
-                              {parsed.date && (
-                                <Text style={styles.badgeDetailText}>
-                                  {formatBadgeDate(parsed.date)}
-                                </Text>
-                              )}
-                            </View>
-                          )}
-                        </View>
-                      );
-                    })}
-                  </View>
-
-                  {/* Second Row - 1 badge centered */}
-                  {badges.length > 2 && (
-                    <View style={styles.badgesRowSingle}>
-                      {(() => {
-                        const parsed = parseBadge(badges[2]);
-                        
-                        return (
-                          <View style={styles.badge}>
-                            {/* ✅ Custom badge icon at top */}
-                            <Image source={parsed.icon} style={styles.badgeIcon} />
-                            
-                            <Text style={styles.badgeText}>{parsed.label}</Text>
-                            
-                            {(parsed.courseName || parsed.date) && (
-                              <View style={styles.badgeDetails}>
-                                {parsed.courseName && (
-                                  <Text style={styles.badgeDetailText} numberOfLines={1}>
-                                    {parsed.courseName}
-                                  </Text>
-                                )}
-                                {parsed.date && (
-                                  <Text style={styles.badgeDetailText}>
-                                    {formatBadgeDate(parsed.date)}
-                                  </Text>
-                                )}
-                              </View>
-                            )}
-                          </View>
-                        );
-                      })()}
-                    </View>
-                  )}
+            {/* ── ACHIEVEMENTS — 3 across, compact ── */}
+            {badges.length > 0 && (
+              <View style={styles.badgesWrapper}>
+                <Text style={styles.badgesSectionLabel}>ACHIEVEMENTS</Text>
+                <View style={styles.badgesRow}>
+                  {badges.slice(0, 3).map((badge, i) => {
+                    const parsed = parseBadge(badge);
+                    return (
+                      <View key={i} style={styles.badgeCompact}>
+                        <Image source={parsed.icon} style={styles.badgeIconCompact} />
+                        <Text style={styles.badgeLabel} numberOfLines={1}>
+                          {parsed.label}
+                        </Text>
+                        {parsed.courseName && (
+                          <Text style={styles.badgeCourse} numberOfLines={1}>
+                            {parsed.courseName}
+                          </Text>
+                        )}
+                      </View>
+                    );
+                  })}
                 </View>
-              )}
-            </View>
+              </View>
+            )}
           </View>
 
-          {/* CLUBS */}
+          {/* ═══ CLUBS ═══ */}
           <LockerClubsDisplay clubs={clubs} isOwnLocker={true} />
         </ScrollView>
 
@@ -543,33 +434,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 24,
     paddingBottom: 120,
-    gap: 28,
+    gap: 24,
   },
 
-  profileSection: { alignItems: "center" },
+  profileSection: { alignItems: "center", gap: 14 },
 
+  // ── Name & Handicap ──
   name: {
     fontSize: 32,
     fontWeight: "800",
     color: "white",
-    marginBottom: 6,
   },
 
   handicap: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: "rgba(255,255,255,0.95)",
-    marginBottom: 12,
+    fontSize: 16,
+    fontWeight: "700",
+    color: "rgba(255,255,255,0.8)",
+    letterSpacing: 0.5,
   },
 
-  // ✅ Career Stats Row
+  // ── Career Stats Row ──
   careerStatsContainer: {
     flexDirection: "row",
     backgroundColor: "rgba(0,0,0,0.3)",
     borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 16,
-    marginBottom: 16,
     gap: 20,
     alignItems: "center",
     justifyContent: "center",
@@ -597,12 +487,12 @@ const styles = StyleSheet.create({
     color: "white",
   },
 
+  // ── Identity ──
   identityContainer: {
     backgroundColor: "rgba(0,0,0,0.25)",
     borderRadius: 12,
     paddingVertical: 12,
     paddingHorizontal: 16,
-    marginBottom: 18,
     gap: 8,
     alignItems: "center",
   },
@@ -620,81 +510,55 @@ const styles = StyleSheet.create({
     fontStyle: "italic",
   },
 
-  badgesWrapper: { 
-    width: "100%", 
+  // ── Achievements — compact 3 across ──
+  badgesWrapper: {
+    width: "100%",
     alignItems: "center",
   },
 
-  sectionTitle: {
-    fontSize: 22,
-    fontWeight: "800",
-    color: "white",
-    marginBottom: 14,
+  badgesSectionLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "rgba(255,255,255,0.5)",
+    letterSpacing: 1.2,
+    marginBottom: 10,
   },
 
-  // ✅ Container for all badges
-  badgesContainer: {
-    width: "100%",
-    gap: 12,
-  },
-
-  // ✅ First row - 2 badges side by side
-  badgesRow: { 
-    flexDirection: "row", 
-    gap: 12,
-    justifyContent: "center",
-  },
-
-  // ✅ Second row - 1 badge centered
-  badgesRowSingle: {
+  badgesRow: {
     flexDirection: "row",
     justifyContent: "center",
+    gap: 10,
   },
 
-  badge: {
-    backgroundColor: "rgba(0,0,0,0.4)",
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+  badgeCompact: {
+    backgroundColor: "rgba(0,0,0,0.35)",
     borderRadius: 12,
-    minWidth: 140,
-    maxWidth: 160,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
     alignItems: "center",
+    width: 100,
+    gap: 4,
   },
 
-  // ✅ Custom badge icon at top
-  badgeIcon: {
-    width: 40,
-    height: 40,
+  badgeIconCompact: {
+    width: 28,
+    height: 28,
     resizeMode: "contain",
-    marginBottom: 8,
   },
 
-  badgeText: { 
-    color: "white", 
-    fontWeight: "700",
-    fontSize: 14,
-    textAlign: "center",
-    marginBottom: 4,
-  },
-
-  badgeDetails: {
-    width: "100%",
-    gap: 2,
-  },
-
-  badgeDetailText: {
-    color: "rgba(255,255,255,0.7)",
+  badgeLabel: {
     fontSize: 11,
-    fontWeight: "500",
+    fontWeight: "700",
+    color: "#FFF",
     textAlign: "center",
   },
 
-  noBadges: {
-    color: "rgba(255,255,255,0.6)",
-    fontStyle: "italic",
+  badgeCourse: {
+    fontSize: 9,
+    fontWeight: "500",
+    color: "rgba(255,255,255,0.5)",
+    textAlign: "center",
   },
-
-  // Clubs section styles now in LockerClubsDisplay component
 });
 
 

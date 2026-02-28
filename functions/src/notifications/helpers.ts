@@ -128,7 +128,6 @@ export function generateGroupedMessage(
     case "mention_comment":
       return `${actorName} tagged you in a comment`;
 
-    // After the "mention_comment" case:
     case "poll_vote":
       if (actorCount === 1) return `${actorName} voted on your poll`;
       return `${actorName} and ${othersText} voted on your poll`;
@@ -228,6 +227,12 @@ export function generateGroupedMessage(
       return extraData?.holeNumber
         ? `${actorName}'s group is on Hole ${extraData.holeNumber} at ${extraData?.courseName || "the course"}`
         : `${actorName}'s group is playing at ${extraData?.courseName || "the course"}`;
+
+    // Outing & Rivalry notifications (message is pre-built by Cloud Functions)
+    case "outing_complete":
+      return extraData?.message || `Your outing at ${extraData?.courseName || "the course"} is complete`;
+    case "rivalry_update":
+      return extraData?.message || `Rivalry update`;
     
     default:
       return `${actorName} interacted with you`;
@@ -257,6 +262,8 @@ export async function createNotificationDocument(params: CreateNotificationParam
     weekNumber,
     inviteId,
     roundId,
+    rivalryId,
+    changeType,
     message,
     regionKey,
   } = params;
@@ -377,6 +384,8 @@ export async function createNotificationDocument(params: CreateNotificationParam
     if (regionKey) notificationData.regionKey = regionKey;
     if (inviteId) notificationData.inviteId = inviteId;
     if (roundId) notificationData.roundId = roundId;
+    if (rivalryId) notificationData.rivalryId = rivalryId;
+    if (changeType) notificationData.changeType = changeType;
     if (params.navigationTarget) notificationData.navigationTarget = params.navigationTarget;
     if (params.navigationUserId) notificationData.navigationUserId = params.navigationUserId;
     if (params.navigationTab) notificationData.navigationTab = params.navigationTab;
@@ -413,6 +422,8 @@ export async function createNotificationDocument(params: CreateNotificationParam
   if (regionKey) notificationData.regionKey = regionKey;
   if (inviteId) notificationData.inviteId = inviteId;
   if (roundId) notificationData.roundId = roundId;
+  if (rivalryId) notificationData.rivalryId = rivalryId;
+  if (changeType) notificationData.changeType = changeType;
   if (params.navigationTarget) notificationData.navigationTarget = params.navigationTarget;
   if (params.navigationUserId) notificationData.navigationUserId = params.navigationUserId;
   if (params.navigationTab) notificationData.navigationTab = params.navigationTab;

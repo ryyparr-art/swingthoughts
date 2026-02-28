@@ -19,6 +19,7 @@
  *   - Post-hole stats sheet integration
  *   - Green header, cream background, serif fonts
  *   - Score cell color coding: birdie (red circle), eagle (gold), bogey/double (square)
+ *   - Handwritten Caveat font on score cells for natural feel
  *
  * File: components/scoring/MultiplayerScorecard.tsx
  */
@@ -86,6 +87,8 @@ const CREAM_LIGHT = "#FFFCF0";
 const CELL_W = 38;
 const LABEL_W = 70;
 const TOTAL_W = 46;
+
+const HANDWRITTEN = "Caveat_400Regular";
 
 // ============================================================================
 // COMPONENT
@@ -239,13 +242,7 @@ export default function MultiplayerScorecard({
     }
   }, [players, holeCount, holeData]);
 
-  // ── Auto-advance logic (BUG 1 FIX) ───────────────────────
-  // Only trigger stats/advance if:
-  //   - We're in edit mode
-  //   - The active hole is complete
-  //   - We haven't already triggered stats for this hole
-  //   - The stats sheet isn't already showing
-  //   - The round isn't already complete
+  // ── Auto-advance logic ────────────────────────────────────
   useEffect(() => {
     if (!isEdit) return;
     if (roundComplete) return;
@@ -253,7 +250,6 @@ export default function MultiplayerScorecard({
     if (!isHoleComplete(activeHole)) return;
     if (completedStatsHoles.current.has(activeHole)) return;
 
-    // Mark this hole so we never re-trigger it
     completedStatsHoles.current.add(activeHole);
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -267,11 +263,10 @@ export default function MultiplayerScorecard({
     }
   }, [holeData, activeHole, isEdit, showStatsSheet, roundComplete]);
 
-  // ── Auto-flip to back 9 (BUG 2 FIX) ─────────────────────
-  // Don't flip while the stats sheet is open
+  // ── Auto-flip to back 9 ──────────────────────────────────
   useEffect(() => {
     if (!is18 || hasAutoFlipped.current || activeTab !== "front") return;
-    if (showStatsSheet) return; // Wait until stats sheet is dismissed
+    if (showStatsSheet) return;
 
     const allFrontComplete = Array.from({ length: 9 }, (_, i) => i + 1).every((h) =>
       isHoleComplete(h)
@@ -296,7 +291,6 @@ export default function MultiplayerScorecard({
   const advanceToNextHole = (completedHole: number) => {
     const next = completedHole + 1;
 
-    // If we've finished the last hole, mark round complete and stop
     if (next > holeCount) {
       setRoundComplete(true);
       return;
@@ -832,7 +826,7 @@ const cs = StyleSheet.create({
     width: CELL_W,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 6,
+    paddingVertical: 8,
   },
   greenBg: {
     backgroundColor: HEADER_GREEN,
@@ -882,48 +876,61 @@ const cs = StyleSheet.create({
 
   // ── Handicap Stroke Dots ────────────────────────────────────
   strokeDot: {
-    fontSize: 8,
+    fontSize: 10,
     color: HEADER_GREEN,
     fontWeight: "800",
     position: "absolute",
-    top: 1,
-    right: 4,
+    top: 6,
+    right: 6,
     letterSpacing: -1,
+    zIndex: 1,
   },
 
-  // ── Score Display (read-only) ───────────────────────────────
+  // ── Score Display (read-only) — handwritten font ────────────
   scoreDisplay: {
-    width: 30,
-    height: 30,
+    width: 36,
+    height: 36,
     borderRadius: 4,
     alignItems: "center",
     justifyContent: "center",
+    marginLeft: -2,
   },
   scoreText: {
-    fontSize: 15,
+    fontSize: 30,
+    fontFamily: HANDWRITTEN,
     fontWeight: "700",
+    lineHeight: 34,
+    includeFontPadding: false,
+    textAlignVertical: "center",
   },
   netSubscript: {
-    fontSize: 8,
+    fontSize: 10,
     color: GREEN,
-    fontWeight: "600",
+    fontWeight: "800",
     position: "absolute",
     bottom: 0,
-    right: 1,
+    right: -0,
   },
 
-  // ── Score Input (edit mode) ─────────────────────────────────
+  // ── Score Input (edit mode) — handwritten font ──────────────
   scoreInput: {
-    width: 32,
-    height: 32,
-    fontSize: 16,
+    width: 36,
+    height: 36,
+    fontSize: 30,
+    fontFamily: HANDWRITTEN,
     fontWeight: "700",
+    lineHeight: 34,
     textAlign: "center",
+    textAlignVertical: "center",
+    includeFontPadding: false,
     backgroundColor: "#FFFDE7",
     borderRadius: 4,
     borderWidth: 1,
     borderColor: GOLD,
     color: "#333",
+    padding: 0,
+    paddingRight: 2,
+    paddingTop: Platform.OS === "ios" ? 2 : 0,
   },
 
   // ── Score cell color coding ─────────────────────────────────

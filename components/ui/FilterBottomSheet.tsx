@@ -593,43 +593,60 @@ export default function FilterBottomSheet({
               numColumns={3}
               keyExtractor={(item: any) => item.id}
               contentContainerStyle={styles.postGrid}
-              renderItem={({ item }: { item: any }) => (
-                <TouchableOpacity
-                  style={styles.postTile}
-                  onPress={() => handleSelectPost(item.id)}
-                >
-                  {item.imageUrl ? (
-                    <Image
-                      source={{ uri: item.imageUrl }}
-                      style={styles.postImage}
-                      resizeMode="cover"
-                    />
-                  ) : item.videoThumbnailUrl ? (
-                    <View>
+              renderItem={({ item }: { item: any }) => {
+                const firstImage = item.imageUrls?.[0] || item.imageUrl;
+
+                return (
+                  <TouchableOpacity
+                    style={styles.postTile}
+                    onPress={() => handleSelectPost(item.id)}
+                  >
+                    {item.videoThumbnailUrl ? (
+                      <View>
+                        <Image
+                          source={{ uri: item.videoThumbnailUrl }}
+                          style={styles.postImage}
+                          resizeMode="cover"
+                        />
+                        <View style={styles.videoIndicator}>
+                          <Ionicons name="play-circle" size={32} color="#FFFFFF" />
+                        </View>
+                      </View>
+                    ) : firstImage ? (
                       <Image
-                        source={{ uri: item.videoThumbnailUrl }}
+                        source={{ uri: firstImage }}
                         style={styles.postImage}
                         resizeMode="cover"
                       />
-                      <View style={styles.videoIndicator}>
-                        <Ionicons name="play-circle" size={32} color="#FFFFFF" />
+                    ) : item.isPoll ? (
+                      <View style={styles.pollPlaceholder}>
+                        <Ionicons name="bar-chart-outline" size={28} color="#0D5C3A" />
+                        <Text style={styles.pollPlaceholderText} numberOfLines={3}>
+                          {item.poll?.question || item.content}
+                        </Text>
                       </View>
-                    </View>
-                  ) : (
-                    <View style={styles.postPlaceholder}>
-                      <Text style={styles.postPlaceholderText} numberOfLines={3}>
-                        {item.content || item.caption}
+                    ) : (
+                      <View style={styles.postPlaceholder}>
+                        <Text style={styles.postPlaceholderText} numberOfLines={3}>
+                          {item.content || item.caption}
+                        </Text>
+                      </View>
+                    )}
+
+                    {item.imageUrls?.length > 1 && (
+                      <View style={styles.multiImageBadge}>
+                        <Ionicons name="copy-outline" size={12} color="#FFFFFF" />
+                      </View>
+                    )}
+                    
+                    <View style={styles.postTypeBadge}>
+                      <Text style={styles.postTypeBadgeText}>
+                        {item.isPoll ? "POLL" : item.postType?.substring(0, 3).toUpperCase() || "POST"}
                       </Text>
                     </View>
-                  )}
-                  
-                  <View style={styles.postTypeBadge}>
-                    <Text style={styles.postTypeBadgeText}>
-                      {item.postType?.substring(0, 3).toUpperCase() || "POST"}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              )}
+                  </TouchableOpacity>
+                );
+              }}
               ListEmptyComponent={
                 <View style={styles.emptyStateFullScreen}>
                   <Text style={styles.emptyIcon}>🏌️</Text>
@@ -975,6 +992,31 @@ const styles = StyleSheet.create({
     color: "#666",
     textAlign: "center",
     lineHeight: 14,
+  },
+  pollPlaceholder: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#E8F5E9",
+    borderRadius: 4,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 8,
+    gap: 4,
+  },
+  pollPlaceholderText: {
+    fontSize: 10,
+    color: "#0D5C3A",
+    textAlign: "center",
+    lineHeight: 13,
+    fontWeight: "600",
+  },
+  multiImageBadge: {
+    position: "absolute",
+    top: 6,
+    left: 6,
+    backgroundColor: "rgba(0, 0, 0, 0.6)",
+    borderRadius: 4,
+    padding: 3,
   },
   postTypeBadge: {
     position: "absolute",

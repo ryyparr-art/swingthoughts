@@ -7,10 +7,10 @@
  * How it works:
  * - TextInput text is always visible (#333) for normal text
  * - When tags exist, an overlay renders on top with:
- *   - Normal text portions = transparent (so input text shows through)
- *   - Tagged text portions = colored + bold (painted over the input text)
- * - Both layers use identical text metrics (fontSize, lineHeight, padding, fontFamily)
- *   to ensure perfect alignment
+ *   - Normal text portions = #333 (matching TextInput)
+ *   - Tagged text portions = colored + semibold (painted over the input text)
+ * - Both layers use identical text metrics (fontSize, lineHeight, padding, fontFamily, fontWeight)
+ *   to ensure perfect alignment and cursor positioning
  */
 
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -18,13 +18,13 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import React from "react";
 import {
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 import { AutocompleteItem, MAX_CHARACTERS } from "./types";
@@ -37,6 +37,7 @@ const TEXT_STYLE = {
   fontSize: 16,
   lineHeight: 22,
   fontFamily: Platform.OS === "ios" ? "System" : undefined,
+  fontWeight: "400" as const,
   paddingTop: 16,
   paddingBottom: 16,
   paddingLeft: 16,
@@ -116,7 +117,7 @@ export default function ContentInput({
           if (tagType === "league") {
             return <Text key={i} style={styles.tagLeague}>{part}</Text>;
           }
-          // Normal text: transparent so the TextInput text shows through
+          // Normal text: same color as TextInput
           return <Text key={i} style={styles.tagNone}>{part}</Text>;
         })}
       </Text>
@@ -130,20 +131,18 @@ export default function ContentInput({
       </Text>
 
       <View style={styles.inputWrapper}>
-        {/* Overlay: sits on top, tagged text colored, normal text transparent */}
+        {/* Overlay: sits on top, tagged text colored, normal text matches input */}
         {hasTags && (
           <View style={styles.overlay} pointerEvents="none">
             {renderOverlay()}
           </View>
         )}
 
-        {/* TextInput: always has colored text for untagged portions */}
+        {/* TextInput: transparent when overlay active so overlay handles rendering */}
         <TextInput
           ref={textInputRef}
           style={[
             styles.textInput,
-            // When overlay active, hide the tagged portions of input text
-            // by making ALL input text transparent - overlay handles rendering
             hasTags && { color: "transparent" },
           ]}
           placeholder="What clicked for you today?"
@@ -158,7 +157,6 @@ export default function ContentInput({
           spellCheck={true}
           textAlignVertical="top"
           selectionColor="#0D5C3A"
-          // Ensure cursor is visible even with transparent text
           caretHidden={false}
         />
       </View>
@@ -290,23 +288,25 @@ const styles = StyleSheet.create({
   overlayText: {
     fontSize: TEXT_STYLE.fontSize,
     lineHeight: TEXT_STYLE.lineHeight,
+    fontWeight: TEXT_STYLE.fontWeight,
     fontFamily: TEXT_STYLE.fontFamily,
   },
-  // Non-tagged text in overlay: transparent so TextInput text shows
+  // Non-tagged text: matches TextInput color
   tagNone: {
     color: "#333",
   },
-  // Tagged text: colored and bold, painted over the transparent input text
+  // Tagged text: colored + semibold (600 not 700 to keep character widths
+  // close to normal weight for accurate cursor alignment)
   tagMention: {
-    fontWeight: "700",
+    fontWeight: "600",
     color: "#0D5C3A",
   },
   tagTournament: {
-    fontWeight: "700",
+    fontWeight: "600",
     color: "#B8860B",
   },
   tagLeague: {
-    fontWeight: "700",
+    fontWeight: "600",
     color: "#FF6B35",
   },
 
@@ -318,6 +318,7 @@ const styles = StyleSheet.create({
     paddingRight: TEXT_STYLE.paddingRight,
     fontSize: TEXT_STYLE.fontSize,
     lineHeight: TEXT_STYLE.lineHeight,
+    fontWeight: TEXT_STYLE.fontWeight,
     fontFamily: TEXT_STYLE.fontFamily,
     minHeight: 120,
     textAlignVertical: "top",

@@ -388,7 +388,9 @@ export default function RootLayout() {
           if (data.courseId) {
             router.push({
               pathname: "/leaderboard",
-              params: { 
+              params: {
+                filterType: "course",
+                courseId: String(data.courseId),
                 highlightCourseId: String(data.courseId),
                 highlightUserId: data.actorId as string,
               },
@@ -428,7 +430,7 @@ export default function RootLayout() {
         // MESSAGES - Go to message thread (1:1 and Group)
         // ============================================
         case "message":
-        case "group_message":  // ✅ NEW: Handle group messages
+        case "group_message":
           // ✅ Use threadId if provided (works for both 1:1 and groups)
           if (data.threadId) {
             router.push(`/messages/${data.threadId}`);

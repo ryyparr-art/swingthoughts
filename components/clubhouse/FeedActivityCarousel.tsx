@@ -16,12 +16,15 @@
  *   - ace_tier_earned (everyone)
  *   - league_result (members)
  *   - round_complete (partners + regional, respects privacy)
+ *   - rivalry_update (rivals + regional)
+ *   - outing_complete (participants + regional)
  *
  * Uses FlatList with pagingEnabled for snap-to-card behavior.
  */
 
-import RoundScorecardViewer from "@/components/scoring/RoundScorecardViewer";
 import BadgeIcon from "@/components/challenges/BadgeIcon";
+import RoundScorecardViewer from "@/components/scoring/RoundScorecardViewer";
+import { auth } from "@/constants/firebaseConfig";
 import type {
   ActivityAceTierEarned,
   ActivityBadgeEarned,
@@ -34,11 +37,14 @@ import type {
   ActivityLeagueResult,
   ActivityLowLeaderChange,
   ActivityLowRound,
+  ActivityOutingComplete,
+  ActivityRivalryUpdate,
   ActivityRoundComplete,
   ActivityScratchEarned,
 } from "@/utils/feedInsertTypes";
 import { soundPlayer } from "@/utils/soundPlayer";
 import * as Haptics from "expo-haptics";
+import { Image as ExpoImage } from "expo-image";
 import { useRouter } from "expo-router";
 import React, { useCallback, useRef, useState } from "react";
 import {
@@ -100,6 +106,15 @@ export default function FeedActivityCarousel({ insert }: Props) {
         contentContainerStyle={styles.scroll}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
+        removeClippedSubviews={false}
+        initialNumToRender={3}
+        maxToRenderPerBatch={3}
+        windowSize={3}
+        getItemLayout={(_, index) => ({
+          length: CARD_WIDTH + CARD_MARGIN * 2,
+          offset: (CARD_WIDTH + CARD_MARGIN * 2) * index,
+          index,
+        })}
       />
 
       {/* Page indicator dots */}
@@ -169,6 +184,24 @@ function ActivityCard({ item }: { item: ActivityItem }) {
       case "round_complete":
         setScorecardRoundId((item as ActivityRoundComplete).roundId);
         break;
+      case "rivalry_update": {
+        // Navigate to the rival's profile
+        const rivalry = item as ActivityRivalryUpdate;
+        const currentUserId = auth.currentUser?.uid;
+        const rivalId =
+          rivalry.playerA.userId === currentUserId
+            ? rivalry.playerB.userId
+            : rivalry.playerA.userId;
+        router.push(`/profile/${rivalId}` as any);
+        break;
+      }
+      case "outing_complete": {
+        const outing = item as ActivityOutingComplete;
+        if (outing.roundId) {
+          setScorecardRoundId(outing.roundId);
+        }
+        break;
+      }
     }
   };
 
@@ -179,6 +212,8 @@ function ActivityCard({ item }: { item: ActivityItem }) {
   const isDTPAvailable = item.activityType === "dtp_available";
   const isLeagueResult = item.activityType === "league_result";
   const isRoundComplete = item.activityType === "round_complete";
+  const isRivalry = item.activityType === "rivalry_update";
+  const isOutingComplete = item.activityType === "outing_complete";
 
   return (
     <TouchableOpacity
@@ -188,6 +223,8 @@ function ActivityCard({ item }: { item: ActivityItem }) {
         isDTPAvailable && styles.cardDTP,
         isLeagueResult && styles.cardLeagueResult,
         isRoundComplete && styles.cardRoundComplete,
+        isRivalry && styles.cardRivalry,
+        isOutingComplete && styles.cardOutingComplete,
       ]}
       activeOpacity={0.8}
       onPress={handlePress}
@@ -242,6 +279,10 @@ function renderActivityContent(item: ActivityItem) {
       return <LeagueResultContent item={item} />;
     case "round_complete":
       return <RoundCompleteContent item={item} />;
+    case "rivalry_update":
+      return <RivalryUpdateContent item={item} />;
+    case "outing_complete":
+      return <OutingCompleteContent item={item} />;
     default:
       return null;
   }
@@ -470,10 +511,14 @@ function LeagueResultContent({ item }: { item: ActivityLeagueResult }) {
   return (
     <View style={styles.contentRow}>
       {item.leagueAvatar ? (
-        <Image
-          source={{ uri: item.leagueAvatar }}
-          style={styles.leagueResultAvatar}
-        />
+        <View style={styles.leagueResultAvatar}>
+          <ExpoImage
+            source={{ uri: item.leagueAvatar }}
+            style={{ width: 40, height: 40 }}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+          />
+        </View>
       ) : (
         <View style={[styles.leagueResultAvatar, styles.leagueResultAvatarFallback]}>
           <Text style={{ fontSize: 16, fontWeight: "800", color: "#FFF" }}>
@@ -522,14 +567,11 @@ function RoundCompleteContent({ item }: { item: ActivityRoundComplete }) {
   const headerNames = (() => {
     if (isSolo) return <Text style={styles.bold}>{item.displayName}</Text>;
 
-    // Marker is always the card owner (item.displayName)
-    // Winner is first in playerSummaries (sorted by net)
     const winner = item.playerSummaries[0];
     const winnerIsDifferent = winner && winner.displayName !== item.displayName;
     const othersCount = item.playerCount - (winnerIsDifferent ? 2 : 1);
 
     if (!winnerIsDifferent) {
-      // Marker is the winner
       if (othersCount === 1) {
         return (
           <>
@@ -547,7 +589,6 @@ function RoundCompleteContent({ item }: { item: ActivityRoundComplete }) {
     }
 
     if (othersCount === 0) {
-      // Just 2 players
       return (
         <>
           <Text style={styles.bold}>{item.displayName}</Text>
@@ -569,7 +610,6 @@ function RoundCompleteContent({ item }: { item: ActivityRoundComplete }) {
 
   return (
     <View style={{ gap: 8 }}>
-      {/* Header row: avatar + course */}
       <View style={styles.contentRow}>
         <Avatar uri={item.avatar} name={item.displayName} />
         <View style={styles.contentBody}>
@@ -585,7 +625,7 @@ function RoundCompleteContent({ item }: { item: ActivityRoundComplete }) {
           </Text>
         </View>
         {item.roundImageUrl ? (
-          <Image source={{ uri: item.roundImageUrl }} style={rcStyles.thumbImage} />
+          <ExpoImage source={{ uri: item.roundImageUrl }} style={rcStyles.thumbImage} contentFit="cover" cachePolicy="memory-disk" />
         ) : (
           <View style={rcStyles.accentGolf}>
             <Text style={{ fontSize: 16 }}>⛳</Text>
@@ -593,16 +633,13 @@ function RoundCompleteContent({ item }: { item: ActivityRoundComplete }) {
         )}
       </View>
 
-      {/* Scoreboard mini-table */}
       <View style={rcStyles.scoreboard}>
-        {/* Header */}
         <View style={rcStyles.scoreRow}>
           <Text style={[rcStyles.scoreColPlayer, rcStyles.scoreHeader]}>PLAYER</Text>
           <Text style={[rcStyles.scoreColNum, rcStyles.scoreHeader]}>GRS</Text>
           <Text style={[rcStyles.scoreColNum, rcStyles.scoreHeader]}>NET</Text>
           <Text style={[rcStyles.scoreColNum, rcStyles.scoreHeader]}>+/-</Text>
         </View>
-        {/* Player rows */}
         {topPlayers.map((p, i) => {
           const isWinner = i === 0 && item.playerCount > 1;
           return (
@@ -625,12 +662,172 @@ function RoundCompleteContent({ item }: { item: ActivityRoundComplete }) {
         })}
       </View>
 
-      {/* Description (if provided) */}
       {item.roundDescription ? (
         <Text style={rcStyles.description} numberOfLines={2}>
           {item.roundDescription}
         </Text>
       ) : null}
+    </View>
+  );
+}
+
+// -- Rivalry Update --
+function RivalryUpdateContent({ item }: { item: ActivityRivalryUpdate }) {
+  const currentUserId = auth.currentUser?.uid;
+
+  // Determine perspective: is the current user playerA or playerB?
+  const isPlayerA = currentUserId === item.playerA.userId;
+  const me = isPlayerA ? item.playerA : item.playerB;
+  const rival = isPlayerA ? item.playerB : item.playerA;
+
+  // Record from my perspective
+  const myWins = isPlayerA ? item.record.wins : item.record.losses;
+  const rivalWins = isPlayerA ? item.record.losses : item.record.wins;
+  const ties = item.record.ties;
+
+  // Personalize the message
+  const personalMessage = (() => {
+    // Replace names with "You" for the current user
+    let msg = item.message;
+    if (me.displayName && msg.includes(me.displayName)) {
+      msg = msg.replace(me.displayName, "You");
+    }
+    return msg;
+  })();
+
+  // Change type emoji
+  const changeEmoji = (() => {
+    switch (item.changeType) {
+      case "lead_change": return "🔄";
+      case "streak_broken": return "💥";
+      case "streak_extended": return "🔥";
+      case "rivalry_formed": return "🤝";
+      case "belt_claimed": return "🏅";
+      case "tied_up": return "⚖️";
+      case "milestone": return "🎯";
+      default: return "⚡";
+    }
+  })();
+
+  // Build recent result dots (W/L from my perspective)
+  // We don't have full recent results on the feed card, but we can show the record visually
+  const totalMatches = myWins + rivalWins + ties;
+
+  return (
+    <View style={{ gap: 10 }}>
+      {/* Headline */}
+      <Text style={rivStyles.headline}>
+        {changeEmoji} {personalMessage}
+      </Text>
+
+      {/* Head-to-head display */}
+      <View style={rivStyles.h2hContainer}>
+        {/* My side */}
+        <View style={rivStyles.h2hSide}>
+          <Avatar uri={me.avatar} name={me.displayName} />
+          <Text style={rivStyles.h2hName} numberOfLines={1}>You</Text>
+        </View>
+
+        {/* Record center */}
+        <View style={rivStyles.h2hCenter}>
+          <View style={rivStyles.recordRow}>
+            <Text style={[rivStyles.recordNum, myWins > rivalWins && rivStyles.recordWinning]}>
+              {myWins}
+            </Text>
+            <Text style={rivStyles.recordDash}> – </Text>
+            <Text style={[rivStyles.recordNum, rivalWins > myWins && rivStyles.recordWinning]}>
+              {rivalWins}
+            </Text>
+          </View>
+          {ties > 0 && (
+            <Text style={rivStyles.tiesText}>{ties} {ties === 1 ? "tie" : "ties"}</Text>
+          )}
+          <Text style={rivStyles.matchCount}>{totalMatches} matches</Text>
+        </View>
+
+        {/* Rival side */}
+        <View style={rivStyles.h2hSide}>
+          <Avatar uri={rival.avatar} name={rival.displayName} />
+          <Text style={rivStyles.h2hName} numberOfLines={1}>
+            {rival.displayName.split(" ")[0]}
+          </Text>
+        </View>
+      </View>
+
+      {/* Footer */}
+      <Text style={styles.timeText}>
+        {item.courseName} • {formatTime(item.timestamp)}
+      </Text>
+    </View>
+  );
+}
+
+// -- Outing Complete --
+function OutingCompleteContent({ item }: { item: ActivityOutingComplete }) {
+  const scoreToParLabel = (stp: number) => {
+    if (stp === 0) return "E";
+    return stp > 0 ? `+${stp}` : `${stp}`;
+  };
+
+  const topThree = item.topFive.slice(0, 3);
+  const positionLabel = ordinal(item.myPosition);
+
+  return (
+    <View style={{ gap: 8 }}>
+      {/* Header */}
+      <View style={styles.contentRow}>
+        <View style={ocStyles.accentTrophy}>
+          <Text style={{ fontSize: 18 }}>🏆</Text>
+        </View>
+        <View style={styles.contentBody}>
+          <Text style={styles.contentText}>
+            <Text style={styles.bold}>Group Outing</Text>
+            {" at "}
+            <Text style={styles.hl}>{item.courseName}</Text>
+          </Text>
+          <Text style={styles.timeText}>
+            {item.playerCount} players • {item.groupCount} group{item.groupCount > 1 ? "s" : ""}
+            {item.invitationalRoundNumber
+              ? ` • Round ${item.invitationalRoundNumber}`
+              : ""}
+            {" • "}{formatTime(item.timestamp)}
+          </Text>
+        </View>
+      </View>
+
+      {/* Leaderboard top 3 */}
+      <View style={ocStyles.leaderboard}>
+        {topThree.map((p, i) => {
+          const isMe = p.playerId === item.userId;
+          const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : "🥉";
+          return (
+            <View key={p.playerId} style={[ocStyles.lbRow, isMe && ocStyles.lbRowMe]}>
+              <Text style={ocStyles.lbMedal}>{medal}</Text>
+              <Text style={[ocStyles.lbName, isMe && styles.bold]} numberOfLines={1}>
+                {isMe ? "You" : p.displayName}
+              </Text>
+              <Text style={[ocStyles.lbNet, i === 0 && styles.gold]}>
+                Net {p.netScore}
+              </Text>
+              <Text style={ocStyles.lbGross}>({p.grossScore})</Text>
+            </View>
+          );
+        })}
+      </View>
+
+      {/* My result (if not in top 3) */}
+      {item.myPosition > 3 && (
+        <View style={ocStyles.myResult}>
+          <Text style={ocStyles.myResultText}>
+            You finished <Text style={styles.bold}>{positionLabel}</Text> of {item.playerCount}
+            {" — Net "}
+            <Text style={styles.bold}>{item.myNet}</Text>
+            {" ("}
+            {item.myGross}
+            {")"}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -641,7 +838,16 @@ function RoundCompleteContent({ item }: { item: ActivityRoundComplete }) {
 
 function Avatar({ uri, name }: { uri?: string | null; name: string }) {
   if (uri) {
-    return <Image source={{ uri }} style={styles.avatar} />;
+    return (
+      <View style={styles.avatar}>
+        <ExpoImage
+          source={{ uri }}
+          style={{ width: 40, height: 40 }}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+        />
+      </View>
+    );
   }
   return (
     <View style={[styles.avatar, styles.avatarFallback]}>
@@ -678,6 +884,10 @@ function getTypeInfo(type: string): { typeLabel: string; dotColor: string } {
       return { typeLabel: "League Result", dotColor: "#0D5C3A" };
     case "round_complete":
       return { typeLabel: "Round Posted", dotColor: "#147A52" };
+    case "rivalry_update":
+      return { typeLabel: "Rivalry", dotColor: "#E53935" };
+    case "outing_complete":
+      return { typeLabel: "Outing Result", dotColor: "#B8860B" };
     default:
       return { typeLabel: "Activity", dotColor: "#999" };
   }
@@ -695,6 +905,12 @@ function formatTime(timestamp: number): string {
   if (days === 1) return "Yesterday";
   if (days < 7) return `${days}d ago`;
   return `${Math.floor(days / 7)}w ago`;
+}
+
+function ordinal(n: number): string {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
 // ============================================================================
@@ -727,6 +943,7 @@ const styles = StyleSheet.create({
   // Card outer (for snap spacing)
   cardOuter: {
     width: CARD_WIDTH,
+    height: 220,
     marginHorizontal: CARD_MARGIN,
   },
 
@@ -738,6 +955,8 @@ const styles = StyleSheet.create({
     gap: 12,
     borderWidth: 1,
     borderColor: "#F0F0F0",
+    overflow: "hidden",
+    flex: 1,
   },
   cardNudge: {
     backgroundColor: "rgba(13, 92, 58, 0.04)",
@@ -754,6 +973,16 @@ const styles = StyleSheet.create({
   cardRoundComplete: {
     borderLeftWidth: 3,
     borderLeftColor: "#147A52",
+  },
+  cardRivalry: {
+    borderLeftWidth: 3,
+    borderLeftColor: "#E53935",
+    backgroundColor: "rgba(229, 57, 53, 0.02)",
+  },
+  cardOutingComplete: {
+    borderLeftWidth: 3,
+    borderLeftColor: "#B8860B",
+    backgroundColor: "rgba(184, 134, 11, 0.02)",
   },
 
   // Type label
@@ -981,5 +1210,131 @@ const rcStyles = StyleSheet.create({
     color: "#666",
     fontStyle: "italic",
     lineHeight: 17,
+  },
+});
+
+// ── Rivalry Update card styles ───────────────────────────────────
+const rivStyles = StyleSheet.create({
+  headline: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#333",
+    lineHeight: 20,
+  },
+  h2hContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "rgba(0,0,0,0.03)",
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+  },
+  h2hSide: {
+    alignItems: "center",
+    gap: 6,
+    width: 70,
+  },
+  h2hName: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#666",
+    textAlign: "center",
+  },
+  h2hCenter: {
+    alignItems: "center",
+    flex: 1,
+  },
+  recordRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+  },
+  recordNum: {
+    fontSize: 24,
+    fontWeight: "800",
+    color: "#999",
+  },
+  recordWinning: {
+    color: "#0D5C3A",
+  },
+  recordDash: {
+    fontSize: 18,
+    fontWeight: "400",
+    color: "#CCC",
+  },
+  tiesText: {
+    fontSize: 10,
+    color: "#BBB",
+    marginTop: 2,
+  },
+  matchCount: {
+    fontSize: 10,
+    color: "#CCC",
+    marginTop: 2,
+  },
+});
+
+// ── Outing Complete card styles ──────────────────────────────────
+const ocStyles = StyleSheet.create({
+  accentTrophy: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(184, 134, 11, 0.1)",
+    borderWidth: 1.5,
+    borderColor: "rgba(184, 134, 11, 0.25)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  leaderboard: {
+    backgroundColor: "rgba(0,0,0,0.03)",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    gap: 2,
+  },
+  lbRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 4,
+    gap: 8,
+  },
+  lbRowMe: {
+    backgroundColor: "rgba(184, 134, 11, 0.06)",
+    marginHorizontal: -8,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  lbMedal: {
+    fontSize: 14,
+    width: 22,
+    textAlign: "center",
+  },
+  lbName: {
+    flex: 1,
+    fontSize: 13,
+    color: "#333",
+  },
+  lbNet: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#333",
+  },
+  lbGross: {
+    fontSize: 11,
+    color: "#999",
+    width: 36,
+    textAlign: "right",
+  },
+  myResult: {
+    backgroundColor: "rgba(184, 134, 11, 0.06)",
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  myResultText: {
+    fontSize: 12,
+    color: "#666",
+    textAlign: "center",
   },
 });

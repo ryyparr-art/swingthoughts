@@ -59,6 +59,12 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/leagues/$(leagueId)/members/$(request.auth.uid));
     }
 
+    // Check if user is the host of an invitational
+    function isInvitationalHost(invitationalId) {
+      let inv = get(/databases/$(database)/documents/invitationals/$(invitationalId)).data;
+      return request.auth.uid == inv.hostUserId;
+    }
+
     // ============================================================================
     // RATE LIMIT HELPERS
     // ============================================================================
@@ -1021,7 +1027,7 @@ service cloud.firestore {
 
     // ============================================================================
     // OUTINGS (GROUP OUTING INFRASTRUCTURE)
-    // ✅ NEW: Powers casual outings, leagues, invitationals, and tours
+    // ✅ Powers casual outings, leagues, invitationals, and tours
     // ============================================================================
 
     match /outings/{outingId} {
@@ -1048,6 +1054,104 @@ service cloud.firestore {
       allow delete: if isSignedIn() &&
         resource.data.organizerId == request.auth.uid &&
         resource.data.status == "draft";
+    }
+
+    // ============================================================================
+    // INVITATIONALS (INVITE-ONLY COMPETITIVE EVENTS)
+    // ✅ NEW: Golf trips, local rivalries, mini-tournaments
+    // Multi-round, multi-course events with roster + leaderboard.
+    // Backing outing docs handle per-round scoring via outings collection.
+    // ============================================================================
+
+    // ========================================================================
+    // RIVALRIES COLLECTION (head-to-head tracking)
+    // ========================================================================
+
+    match /rivalries/{rivalryId} {
+      // List: any signed-in user can query (empty results if no matches)
+      allow list: if isSignedIn();
+
+      // Get: only participants can read individual docs
+      allow get: if isSignedIn() &&
+        request.auth.uid in resource.data.playerIds;
+
+      // Only Cloud Functions write — no client writes
+      allow write: if false;
+    }
+
+    // ========================================================================
+    // INVITATIONALS COLLECTION
+    // ========================================================================
+
+    match /invitationals/{invitationalId} {
+      // Read: Any authenticated user can browse/view invitationals
+      allow read, list: if isSignedIn();
+
+      // Create: Any verified user can host an invitational
+      allow create: if isSignedIn() &&
+        isEmailVerified() &&
+        request.resource.data.hostUserId == request.auth.uid;
+
+      // Update: Host can update all fields (roster, rounds, groups, standings).
+      // Roster members can update their own status (accept/decline invite).
+      // Cloud Functions handle standings updates via Admin SDK.
+      allow update: if isSignedIn() &&
+        (
+          // Host can update anything
+          isInvitationalHost(invitationalId) ||
+          // Admin can update anything
+          isAdmin() ||
+          // Roster members can update limited fields (RSVP, etc.)
+          // Client ensures only own roster entry changes; full roster
+          // validation would exceed Firestore rule complexity limits
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['roster', 'playerCount', 'updatedAt'])
+        );
+
+      // Delete: Host only, and only if status is "draft" (no active rounds)
+      allow delete: if isSignedIn() &&
+        isInvitationalHost(invitationalId) &&
+        resource.data.status == "draft";
+
+      // ========================================================================
+      // INVITATIONAL ANNOUNCEMENTS SUBCOLLECTION (host-only updates)
+      // ========================================================================
+      match /announcements/{announcementId} {
+        allow read, list: if isSignedIn();
+
+        // Only host can post announcements
+        allow create: if isSignedIn() &&
+          isEmailVerified() &&
+          isInvitationalHost(invitationalId) &&
+          request.resource.data.authorId == request.auth.uid &&
+          request.resource.data.message.size() <= 500;
+
+        // Only host or admin can update/delete
+        allow update, delete: if isSignedIn() &&
+          (isInvitationalHost(invitationalId) || isAdmin());
+      }
+
+      // ========================================================================
+      // INVITATIONAL CHAT SUBCOLLECTION (reserved for future use)
+      // ========================================================================
+      match /chat/{messageId} {
+        allow read, list: if isSignedIn();
+
+        allow create: if isSignedIn() &&
+          isEmailVerified() &&
+          request.resource.data.userId == request.auth.uid &&
+          request.resource.data.content.size() <= 500;
+
+        // No edits to chat messages
+        allow update: if false;
+
+        allow delete: if isSignedIn() &&
+          (
+            request.auth.uid == resource.data.userId ||
+            isInvitationalHost(invitationalId) ||
+            isAdmin()
+          );
+      }
     }
 
     // ============================================================================
@@ -1089,7 +1193,7 @@ service cloud.firestore {
 
     // ============================================================================
     // FEED ACTIVITY (for feed insert cards, TTL auto-deletes after 7 days)
-    // ✅ NEW: Top-level collection for "From the Field" activity carousel
+    // ✅ Top-level collection for "From the Field" activity carousel
     // ============================================================================
 
     match /feedActivity/{docId} {
@@ -1197,6 +1301,11 @@ match /rounds/{roundId} {
     }
   }
 }
+
+
+
+
+
 
 
 

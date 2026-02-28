@@ -130,6 +130,9 @@ export { cleanupAbandonedRounds } from "./cleanupAbandonedRounds";
 export { launchOuting } from "./outings/outingLaunch";
 export { onOutingRoundUpdated } from "./triggers/outingRounds";
 
+// Invitational round management
+export { startInvitationalRound } from "./triggers/invitationalRounds";
+
 
 
 

@@ -53,6 +53,16 @@ export interface DiscoveryDTPItem {
   status: "unclaimed" | "beatable";
 }
 
+export interface DiscoveryRivalryNudgeItem {
+  id: string;
+  rivalryId: string;
+  rivalUserId: string;
+  rivalName: string;
+  rivalAvatar?: string | null;
+  message: string;
+  emoji: string;
+}
+
 /**
  * A single discovery carousel insert in the feed.
  * Contains a title, type, and array of items to scroll through.
@@ -64,14 +74,16 @@ export interface DiscoveryInsert {
     | "leagues"
     | "courses"
     | "partners"
-    | "dtp_pins";
+    | "dtp_pins"
+    | "rivalry_nudges";
   title: string;
   items:
     | DiscoveryChallengeItem[]
     | DiscoveryLeagueItem[]
     | DiscoveryCourseItem[]
     | DiscoveryPartnerItem[]
-    | DiscoveryDTPItem[];
+    | DiscoveryDTPItem[]
+    | DiscoveryRivalryNudgeItem[];
   dismissKey: string; // AsyncStorage key for dismiss state
 }
 
@@ -199,6 +211,67 @@ export interface ActivityRoundComplete extends BaseActivity {
   roundImageUrl?: string | null;
 }
 
+export interface ActivityRivalryUpdate extends BaseActivity {
+  activityType: "rivalry_update";
+  userId: string;
+  displayName: string;
+  avatar?: string | null;
+  rivalryId: string;
+  changeType:
+    | "lead_change"
+    | "streak_broken"
+    | "streak_extended"
+    | "rivalry_formed"
+    | "belt_claimed"
+    | "tied_up"
+    | "milestone";
+  message: string;
+  playerA: { userId: string; displayName: string; avatar?: string | null };
+  playerB: { userId: string; displayName: string; avatar?: string | null };
+  record: { wins: number; losses: number; ties: number };
+  courseId: number;
+  courseName: string;
+  roundId?: string | null;
+  outingId?: string | null;
+}
+
+export interface ActivityOutingComplete extends BaseActivity {
+  activityType: "outing_complete";
+  userId: string;
+  displayName: string;
+  avatar?: string | null;
+  outingId: string;
+  roundId?: string | null;
+  courseId: number;
+  courseName: string;
+  holeCount: number;
+  formatId: string;
+  playerCount: number;
+  groupCount: number;
+  winner: {
+    playerId: string;
+    displayName: string;
+    avatar?: string | null;
+    netScore: number;
+    grossScore: number;
+  };
+  myPosition: number;
+  myGross: number;
+  myNet: number;
+  topFive: {
+    position: number;
+    playerId: string;
+    displayName: string;
+    avatar?: string | null;
+    grossScore: number;
+    netScore: number;
+    scoreToPar: number;
+    groupName: string;
+  }[];
+  invitationalId?: string | null;
+  invitationalRoundNumber?: number | null;
+}
+
 export type ActivityItem =
   | ActivityBadgeEarned
   | ActivityDTPClaimed
@@ -210,7 +283,9 @@ export type ActivityItem =
   | ActivityScratchEarned
   | ActivityAceTierEarned
   | ActivityLeagueResult
-  | ActivityRoundComplete;
+  | ActivityRoundComplete
+  | ActivityRivalryUpdate
+  | ActivityOutingComplete;
 
 /**
  * The "From the Field" activity carousel.

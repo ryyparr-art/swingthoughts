@@ -95,71 +95,77 @@ export default function TournamentLiveBanner({ onPress }: TournamentLiveBannerPr
   });
 
   return (
-    <TouchableOpacity
-      style={styles.container}
-      onPress={handlePress}
-      activeOpacity={0.8}
-    >
-      {/* Animated glow background */}
-      <Animated.View
-        style={[
-          styles.glowBackground,
-          { opacity: glowOpacity },
-        ]}
-      />
-      
-      <View style={styles.content}>
-        {/* Left side: Live indicator + Tournament name */}
-        <View style={styles.leftSection}>
-          {/* Pulsing live dot */}
-          <View style={styles.liveIndicator}>
-            <Animated.View
-              style={[
-                styles.liveDotOuter,
-                { transform: [{ scale: pulseAnim }] },
-              ]}
+    <View style={styles.wrapper}>
+      <TouchableOpacity
+        style={styles.container}
+        onPress={handlePress}
+        activeOpacity={0.8}
+      >
+        {/* Animated glow background */}
+        <Animated.View
+          style={[
+            styles.glowBackground,
+            { opacity: glowOpacity },
+          ]}
+        />
+        
+        <View style={styles.content}>
+          {/* Left side: Live indicator + Tournament name */}
+          <View style={styles.leftSection}>
+            {/* Pulsing live dot */}
+            <View style={styles.liveIndicator}>
+              <Animated.View
+                style={[
+                  styles.liveDotOuter,
+                  { transform: [{ scale: pulseAnim }] },
+                ]}
+              />
+              <View style={styles.liveDot} />
+            </View>
+            
+            <Text style={styles.liveText}>LIVE</Text>
+            
+            <View style={styles.divider} />
+            
+            {/* Trophy icon */}
+            <Image
+              source={require("@/assets/icons/LowLeaderTrophy.png")}
+              style={styles.trophyIcon}
             />
-            <View style={styles.liveDot} />
+            
+            {/* Tournament name */}
+            <Text style={styles.tournamentName} numberOfLines={1}>
+              {tournament.name}
+            </Text>
           </View>
           
-          <Text style={styles.liveText}>LIVE</Text>
-          
-          <View style={styles.divider} />
-          
-          {/* Trophy icon */}
-          <Image
-            source={require("@/assets/icons/LowLeaderTrophy.png")}
-            style={styles.trophyIcon}
-          />
-          
-          {/* Tournament name */}
-          <Text style={styles.tournamentName} numberOfLines={1}>
-            {tournament.name}
-          </Text>
+          {/* Right side: Participant count + arrow */}
+          <View style={styles.rightSection}>
+            {participantCount > 0 && (
+              <View style={styles.participantBadge}>
+                <Ionicons name="people" size={12} color="#0D5C3A" />
+                <Text style={styles.participantCount}>{participantCount}</Text>
+              </View>
+            )}
+            
+            <Ionicons name="chevron-forward" size={18} color="#0D5C3A" />
+          </View>
         </View>
-        
-        {/* Right side: Participant count + arrow */}
-        <View style={styles.rightSection}>
-          {participantCount > 0 && (
-            <View style={styles.participantBadge}>
-              <Ionicons name="people" size={12} color="#0D5C3A" />
-              <Text style={styles.participantCount}>{participantCount}</Text>
-            </View>
-          )}
-          
-          <Ionicons name="chevron-forward" size={18} color="#0D5C3A" />
-        </View>
-      </View>
-    </TouchableOpacity>
+      </TouchableOpacity>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  // Transparent wrapper so feed background shows through
+  wrapper: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+
   container: {
-    marginHorizontal: 12,
-    marginVertical: 8,
     borderRadius: 12,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: "rgba(244, 238, 216, 0.85)",
     borderWidth: 2,
     borderColor: "#0D5C3A",
     overflow: "hidden",

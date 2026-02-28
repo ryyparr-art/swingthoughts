@@ -20,29 +20,30 @@ import { CHALLENGES } from "@/constants/challengeTypes";
 import { db } from "@/constants/firebaseConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
-    collection,
-    doc,
-    getDoc,
-    getDocs,
-    limit,
-    orderBy,
-    query,
-    Timestamp,
-    where,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  Timestamp,
+  where,
 } from "firebase/firestore";
 import {
-    activityDismissKey,
-    ActivityItem,
-    DiscoveryChallengeItem,
-    DiscoveryCourseItem,
-    discoveryDismissKey,
-    DiscoveryDTPItem,
-    DiscoveryInsert,
-    DiscoveryLeagueItem,
-    DiscoveryPartnerItem,
-    FeedInsert,
-    hioDismissKey,
-    HoleInOneInsert
+  activityDismissKey,
+  ActivityItem,
+  DiscoveryChallengeItem,
+  DiscoveryCourseItem,
+  discoveryDismissKey,
+  DiscoveryDTPItem,
+  DiscoveryInsert,
+  DiscoveryLeagueItem,
+  DiscoveryPartnerItem,
+  DiscoveryRivalryNudgeItem,
+  FeedInsert,
+  hioDismissKey,
+  HoleInOneInsert
 } from "./feedInsertTypes";
 
 // ============================================================================
@@ -75,6 +76,7 @@ export async function fetchFeedInserts(
       courseDiscovery,
       partnerDiscovery,
       dtpDiscovery,
+      rivalryNudgeDiscovery,
       activityItems,
       hioInsert,
     ] = await Promise.all([
@@ -83,6 +85,7 @@ export async function fetchFeedInserts(
       fetchCourseDiscovery(ctx),
       fetchPartnerDiscovery(ctx),
       fetchDTPDiscovery(ctx),
+      fetchRivalryNudges(ctx),
       fetchActivityItems(ctx),
       fetchHoleInOne(ctx),
     ]);
@@ -108,6 +111,10 @@ export async function fetchFeedInserts(
 
     if (dtpDiscovery && !dismissedKeys.has(dtpDiscovery.dismissKey)) {
       inserts.push(dtpDiscovery);
+    }
+
+    if (rivalryNudgeDiscovery && !dismissedKeys.has(rivalryNudgeDiscovery.dismissKey)) {
+      inserts.push(rivalryNudgeDiscovery);
     }
 
     if (activityItems.length > 0) {
@@ -459,6 +466,118 @@ async function fetchPartnerDiscovery(
 }
 
 // ============================================================================
+// DISCOVERY: RIVALRY NUDGES
+// ============================================================================
+
+async function fetchRivalryNudges(
+  ctx: ProviderContext
+): Promise<DiscoveryInsert | null> {
+  try {
+    // Query all rivalries where this user is a participant
+    const rivalriesQuery = query(
+      collection(db, "rivalries"),
+      where("playerIds", "array-contains", ctx.userId)
+    );
+
+    const snap = await getDocs(rivalriesQuery);
+    if (snap.empty) return null;
+
+    const nudges: DiscoveryRivalryNudgeItem[] = [];
+
+    snap.forEach((d) => {
+      const data = d.data();
+      const isPlayerA = data.playerA?.userId === ctx.userId;
+      const rival = isPlayerA ? data.playerB : data.playerA;
+      const myWins = isPlayerA ? data.record?.wins || 0 : data.record?.losses || 0;
+      const theirWins = isPlayerA ? data.record?.losses || 0 : data.record?.wins || 0;
+      const margin = myWins - theirWins;
+
+      // They can tie you (I lead by 1)
+      if (margin === 1) {
+        nudges.push({
+          id: `nudge_tie_${d.id}`,
+          rivalryId: d.id,
+          rivalUserId: rival.userId,
+          rivalName: rival.displayName,
+          rivalAvatar: rival.avatar || null,
+          message: `${rival.displayName.split(" ")[0]} can tie you next round`,
+          emoji: "⚠️",
+        });
+      }
+
+      // You can tie them (I trail by 1)
+      if (margin === -1) {
+        nudges.push({
+          id: `nudge_catch_${d.id}`,
+          rivalryId: d.id,
+          rivalUserId: rival.userId,
+          rivalName: rival.displayName,
+          rivalAvatar: rival.avatar || null,
+          message: `One win ties it with ${rival.displayName.split(" ")[0]}`,
+          emoji: "💪",
+        });
+      }
+
+      // Losing streak (3+)
+      if (
+        data.currentStreak &&
+        data.currentStreak.playerId !== ctx.userId &&
+        data.currentStreak.count >= 3
+      ) {
+        nudges.push({
+          id: `nudge_streak_${d.id}`,
+          rivalryId: d.id,
+          rivalUserId: rival.userId,
+          rivalName: rival.displayName,
+          rivalAvatar: rival.avatar || null,
+          message: `${rival.displayName.split(" ")[0]} has won ${data.currentStreak.count} straight`,
+          emoji: "😤",
+        });
+      }
+
+      // I hold the belt — defend it
+      if (data.beltHolder === ctx.userId) {
+        nudges.push({
+          id: `nudge_belt_${d.id}`,
+          rivalryId: d.id,
+          rivalUserId: rival.userId,
+          rivalName: rival.displayName,
+          rivalAvatar: rival.avatar || null,
+          message: `Defend your belt vs ${rival.displayName.split(" ")[0]}`,
+          emoji: "🏅",
+        });
+      }
+
+      // They hold the belt — take it
+      if (data.beltHolder && data.beltHolder === rival.userId) {
+        nudges.push({
+          id: `nudge_belt_take_${d.id}`,
+          rivalryId: d.id,
+          rivalUserId: rival.userId,
+          rivalName: rival.displayName,
+          rivalAvatar: rival.avatar || null,
+          message: `Take the belt from ${rival.displayName.split(" ")[0]}`,
+          emoji: "🥊",
+        });
+      }
+    });
+
+    if (nudges.length === 0) return null;
+
+    return {
+      type: "discovery",
+      subtype: "rivalry_nudges",
+      title: "Rivalry Watch",
+      items: nudges.slice(0, 6),
+      dismissKey: discoveryDismissKey("rivalry_nudges"),
+    };
+  } catch (err) {
+    console.error("Rivalry nudge fetch failed:", err);
+    return null;
+  }
+}
+
+// ============================================================================
 // ACTIVITY: "FROM THE FIELD" ITEMS
 // ============================================================================
 
@@ -471,6 +590,9 @@ async function fetchPartnerDiscovery(
  *   - Low leader change
  *   - Scratch/Ace tier earned
  *   - League weekly result
+ *   - Round complete (group rounds)
+ *   - Rivalry update (head-to-head changes)
+ *   - Outing complete (group outing results)
  *
  * Also generates client-side items:
  *   - User's own challenge progress
@@ -625,6 +747,51 @@ async function fetchActivityItems(
             roundImageUrl: data.roundImageUrl || null,
           });
           break;
+
+        case "rivalry_update":
+          items.push({
+            ...baseItem,
+            activityType: "rivalry_update",
+            userId: data.userId,
+            displayName: data.displayName,
+            avatar: data.avatar || null,
+            rivalryId: data.rivalryId,
+            changeType: data.changeType,
+            message: data.message,
+            playerA: data.playerA,
+            playerB: data.playerB,
+            record: data.record,
+            courseId: data.courseId,
+            courseName: data.courseName,
+            roundId: data.roundId || null,
+            outingId: data.outingId || null,
+          });
+          break;
+
+        case "outing_complete":
+          items.push({
+            ...baseItem,
+            activityType: "outing_complete",
+            userId: data.userId,
+            displayName: data.displayName,
+            avatar: data.avatar || null,
+            outingId: data.outingId,
+            roundId: data.roundId || null,
+            courseId: data.courseId,
+            courseName: data.courseName,
+            holeCount: data.holeCount,
+            formatId: data.formatId,
+            playerCount: data.playerCount,
+            groupCount: data.groupCount,
+            winner: data.winner,
+            myPosition: data.myPosition,
+            myGross: data.myGross,
+            myNet: data.myNet,
+            topFive: data.topFive || [],
+            invitationalId: data.invitationalId || null,
+            invitationalRoundNumber: data.invitationalRoundNumber || null,
+          });
+          break;
       }
     });
 
@@ -649,6 +816,9 @@ async function fetchActivityItems(
  * - dtp_claimed, low_leader_change: partners + regional
  * - scratch_earned, ace_tier_earned: anyone (achievement)
  * - league_result: league members only
+ * - round_complete: partners + regional, respects privacy
+ * - rivalry_update: show if user is one of the rivals, or partner/regional
+ * - outing_complete: show if user is a participant, or partner/regional
  * - hole_in_one: everyone (handled separately as standalone)
  */
 function shouldShowActivity(
@@ -659,31 +829,50 @@ function shouldShowActivity(
   const isRegional = data.regionKey === ctx.regionKey;
   const isSelf = data.userId === ctx.userId;
 
-  // Never show own activity in "From the Field"
-  if (isSelf) return false;
-
   switch (data.activityType) {
     case "badge_earned":
     case "low_round":
     case "dtp_claimed":
     case "low_leader_change":
+      // Never show own activity in "From the Field"
+      if (isSelf) return false;
       return isPartner || isRegional;
 
     case "joined_league":
+      if (isSelf) return false;
       return isPartner;
 
     case "scratch_earned":
     case "ace_tier_earned":
+      if (isSelf) return false;
       return true; // shown to everyone
 
     case "league_result":
       return ctx.leagueIds.includes(data.leagueId);
 
     case "round_complete":
-      // Show if posted by a partner, or same region, respecting privacy
+      if (isSelf) return false;
       if (data.privacy === "private") return false;
       if (data.privacy === "partners") return isPartner;
       return isPartner || isRegional;
+
+    case "rivalry_update": {
+      // Always show if user is one of the rivals (it's their rivalry)
+      const isInRivalry =
+        data.playerA?.userId === ctx.userId ||
+        data.playerB?.userId === ctx.userId;
+      if (isInRivalry) return true;
+      // Otherwise show to partners/regional (community interest)
+      if (isSelf) return false;
+      return isPartner || isRegional;
+    }
+
+    case "outing_complete": {
+      // Always show if user is the participant (it's their outing card)
+      if (isSelf) return true;
+      // Otherwise show to partners/regional
+      return isPartner || isRegional;
+    }
 
     default:
       return false;

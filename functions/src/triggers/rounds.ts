@@ -25,6 +25,13 @@ import { logger } from "firebase-functions/v2";
 import { onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { sendGhostInvite } from "../invites/ghostInvite";
 import { sendRoundNotification } from "../notifications/roundNotifications";
+import {
+  PlayerResult,
+  processRivalries,
+  RivalryContext,
+  sendRivalryNotifications,
+  writeRivalryFeedCards,
+} from "../rivalries/rivalryEngine";
 
 const db = admin.firestore();
 
@@ -446,6 +453,53 @@ export const onRoundUpdated = onDocumentUpdated(
 
       // ── 7. Update recentPlayedWith cache on user docs ─────────
       await updateRecentPlayedWith(after.players);
+
+      // ── 8. Update rivalries ─────────────────────────────────────
+      // For non-outing rounds, process rivalries between all on-platform players.
+      // Outing-linked rounds are handled by outingRounds.ts (cross-group processing).
+      if (!isOutingLinked) {
+        try {
+          const playerResults: PlayerResult[] = after.players
+            .filter((p) => !p.isGhost)
+            .map((p) => {
+              const grossScore = calculateGrossScore(p, after);
+              return {
+                userId: p.playerId,
+                displayName: p.displayName,
+                avatar: p.avatar || null,
+                netScore: grossScore - p.courseHandicap,
+                grossScore,
+                isGhost: false,
+              };
+            });
+
+          const rivalryContext: RivalryContext = {
+            roundId,
+            courseId: after.courseId,
+            courseName: after.courseName,
+            date: after.completedAt || admin.firestore.Timestamp.now(),
+            regionKey: after.regionKey || null,
+            location: after.location || null,
+          };
+
+          const rivalryChanges = await processRivalries(playerResults, rivalryContext);
+
+          if (rivalryChanges.length > 0) {
+            await writeRivalryFeedCards(rivalryChanges, rivalryContext);
+            await sendRivalryNotifications(rivalryChanges, sendRoundNotification);
+            logger.info(
+              `✅ ${rivalryChanges.length} rivalry changes processed for round ${roundId}`
+            );
+          }
+        } catch (err) {
+          logger.error(`Rivalry processing failed for round ${roundId}:`, err);
+          // Non-fatal — round completion still succeeded
+        }
+      } else {
+        logger.info(
+          `⏭️ Skipping rivalry processing for outing-linked round ${roundId} — outingRounds.ts handles this`
+        );
+      }
 
       logger.info(`Round ${roundId} processing complete`);
       return;

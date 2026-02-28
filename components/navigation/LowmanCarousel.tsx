@@ -340,7 +340,7 @@ export default function LowmanCarousel({
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     console.log("🚀 Tapped empty card, navigating to post-score");
-    router.push("/post-score");
+    router.push("/post-score" as any);
   };
 
   if (carouselData.length === 0) {
@@ -382,11 +382,12 @@ export default function LowmanCarousel({
       showsHorizontalScrollIndicator={false}
       style={styles.scrollStrip}
       contentContainerStyle={styles.container}
+      removeClippedSubviews={false}
       onContentSizeChange={(w) => (scrollContentWidth.current = w)}
       onTouchStart={() => (isTouching.current = true)}
       onTouchEnd={() => (isTouching.current = false)}
     >
-      {Array.from({ length: 4 }).flatMap((_, repeatIndex) =>
+      {Array.from({ length: 2 }).flatMap((_, repeatIndex) =>
         carouselData.map((item, idx) => (
           <TouchableOpacity
             key={`${item.userId}-${item.courseName}-${item.hole || 'lowman'}-${repeatIndex}-${idx}`}

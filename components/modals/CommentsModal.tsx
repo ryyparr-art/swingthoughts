@@ -65,6 +65,12 @@ interface Props {
   onCommentAdded: () => void;
 }
 
+interface TaggedEvent {
+  eventId: string;
+  eventName: string;
+  eventType: "tournament" | "outing" | "league";
+}
+
 interface Comment {
   id: string;
   content: string;
@@ -74,6 +80,7 @@ interface Comment {
   likedBy?: string[];
   taggedPartners?: { userId: string; displayName: string }[];
   taggedCourses?: { courseId: number; courseName: string }[];
+  taggedEvents?: TaggedEvent[];
   imageUrl?: string;
   parentCommentId?: string;
   depth: number;
@@ -86,6 +93,7 @@ interface UserProfile {
   avatar?: string;
   challengeBadges?: string[];
 }
+
 export default function CommentsModal({
   visible,
   thoughtId,
@@ -97,6 +105,7 @@ export default function CommentsModal({
   const insets = useSafeAreaInsets();
   const inputRef = useRef<TextInput>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hashDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
 
   const [comments, setComments] = useState<Comment[]>([]);
@@ -109,19 +118,36 @@ export default function CommentsModal({
   const [replyingToCommentId, setReplyingToCommentId] = useState<string | null>(null);
   const [replyingToUsername, setReplyingToUsername] = useState("");
   const [expandedComments, setExpandedComments] = useState<Set<string>>(new Set());
+
+  // @ tagging state
   const [taggedPartners, setTaggedPartners] = useState<{ userId: string; displayName: string }[]>([]);
   const [taggedCourses, setTaggedCourses] = useState<{ courseId: number; courseName: string }[]>([]);
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [autocompleteType, setAutocompleteType] = useState<"partner" | "course" | null>(null);
   const [autocompleteResults, setAutocompleteResults] = useState<any[]>([]);
   const [currentMention, setCurrentMention] = useState("");
+  const [triggerIndex, setTriggerIndex] = useState<number>(-1);
   const [allPartners, setAllPartners] = useState<{ userId: string; displayName: string }[]>([]);
   const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
+
+  // # tagging state
+  const [taggedEvents, setTaggedEvents] = useState<TaggedEvent[]>([]);
+  const [showHashAutocomplete, setShowHashAutocomplete] = useState(false);
+  const [hashAutocompleteResults, setHashAutocompleteResults] = useState<any[]>([]);
+  const [currentHashTag, setCurrentHashTag] = useState("");
+  const [hashTriggerIndex, setHashTriggerIndex] = useState<number>(-1);
+  const [selectedHashTags, setSelectedHashTags] = useState<string[]>([]);
+
+  // Image state
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [viewerImage, setViewerImage] = useState<string | null>(null);
 
   const currentUserId = auth.currentUser?.uid;
+
+  // ============================================================================
+  // LOAD CURRENT USER + PARTNERS
+  // ============================================================================
 
   useEffect(() => {
     if (!visible || !currentUserId) return;
@@ -175,6 +201,10 @@ export default function CommentsModal({
     loadPartners();
   }, [visible, currentUserId]);
 
+  // ============================================================================
+  // COMMENTS LISTENER
+  // ============================================================================
+
   useEffect(() => {
     if (!visible || !thoughtId) return;
     setLoading(true);
@@ -195,8 +225,8 @@ export default function CommentsModal({
         } as Comment;
       });
       setComments(prev => {
-        const stillPendingOptimistic = prev.filter(c => 
-          c.isOptimistic && !loaded.some(real => 
+        const stillPendingOptimistic = prev.filter(c =>
+          c.isOptimistic && !loaded.some(real =>
             real.content === c.content && real.userId === c.userId
           )
         );
@@ -226,6 +256,11 @@ export default function CommentsModal({
     });
     return () => unsubscribe();
   }, [visible, thoughtId]);
+
+  // ============================================================================
+  // IMAGE HANDLING
+  // ============================================================================
+
   const pickImage = async () => {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -310,28 +345,83 @@ export default function CommentsModal({
       throw error;
     }
   };
+
+  // ============================================================================
+  // TEXT INPUT + AUTOCOMPLETE TRIGGERS (@ and #)
+  // ============================================================================
+
   const handleTextChange = (newText: string) => {
     setText(newText);
+
+    // Clean up removed @ mentions
     const cleanedMentions = selectedMentions.filter((mention) => newText.includes(mention));
     if (cleanedMentions.length !== selectedMentions.length) {
       setSelectedMentions(cleanedMentions);
     }
+
+    // Clean up removed # tags
+    const cleanedHashTags = selectedHashTags.filter((tag) => newText.includes(tag));
+    if (cleanedHashTags.length !== selectedHashTags.length) {
+      setSelectedHashTags(cleanedHashTags);
+    }
+
+    // --- Detect # trigger ---
+    const lastHashIndex = newText.lastIndexOf("#");
     const lastAtIndex = newText.lastIndexOf("@");
+
+    // Determine which trigger is more recent (further right in the string)
+    if (lastHashIndex > lastAtIndex) {
+      // # is the active trigger
+      const afterHash = newText.slice(lastHashIndex + 1);
+      // Cancel if user typed double space or newline after #
+      if (afterHash.endsWith("  ") || afterHash.includes("\n")) {
+        setShowHashAutocomplete(false);
+        setShowAutocomplete(false);
+        return;
+      }
+      // Only trigger if # is at start or preceded by a space
+      const charBefore = lastHashIndex > 0 ? newText[lastHashIndex - 1] : " ";
+      if (charBefore !== " " && lastHashIndex !== 0) {
+        setShowHashAutocomplete(false);
+        return;
+      }
+      setCurrentHashTag(afterHash);
+      setHashTriggerIndex(lastHashIndex);
+      setShowAutocomplete(false); // dismiss @ autocomplete
+
+      if (hashDebounceRef.current) clearTimeout(hashDebounceRef.current);
+      hashDebounceRef.current = setTimeout(() => {
+        if (afterHash.length >= 1) searchEvents(afterHash);
+      }, 300);
+      return;
+    }
+
+    // --- Detect @ trigger ---
+    setShowHashAutocomplete(false); // dismiss # autocomplete
+
     if (lastAtIndex === -1) {
       setShowAutocomplete(false);
       return;
     }
+
     const afterAt = newText.slice(lastAtIndex + 1);
     if (afterAt.endsWith("  ") || afterAt.includes("\n")) {
       setShowAutocomplete(false);
       return;
     }
+
     setCurrentMention(afterAt);
+    setTriggerIndex(lastAtIndex);
+
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       if (afterAt.length >= 1) searchMentions(afterAt);
     }, 300);
   };
+
+  // ============================================================================
+  // @ SEARCH (Partners → Courses)
+  // ============================================================================
 
   const searchMentions = async (searchText: string) => {
     try {
@@ -401,41 +491,163 @@ export default function CommentsModal({
     }
   };
 
+  // ============================================================================
+  // # SEARCH (Tournaments → Outings → Leagues)
+  // ============================================================================
+
+  const searchEvents = async (searchText: string) => {
+    try {
+      const results: any[] = [];
+      const lowerSearch = searchText.toLowerCase();
+
+      // Search tournaments
+      try {
+        const tournamentsSnap = await getDocs(collection(db, "tournaments"));
+        tournamentsSnap.forEach((d) => {
+          const data = d.data();
+          const name = data.name || "";
+          if (name.toLowerCase().includes(lowerSearch)) {
+            results.push({
+              eventId: d.id,
+              eventName: name,
+              eventType: "tournament" as const,
+              subtitle: data.course || "",
+            });
+          }
+        });
+      } catch (err) {
+        console.error("Tournament search error:", err);
+      }
+
+      // Search outings
+      try {
+        const outingsSnap = await getDocs(collection(db, "outings"));
+        outingsSnap.forEach((d) => {
+          const data = d.data();
+          const name = data.name || data.courseName || "";
+          if (name.toLowerCase().includes(lowerSearch)) {
+            results.push({
+              eventId: d.id,
+              eventName: name,
+              eventType: "outing" as const,
+              subtitle: data.parentType ? data.parentType.charAt(0).toUpperCase() + data.parentType.slice(1) : "Outing",
+            });
+          }
+        });
+      } catch (err) {
+        console.error("Outing search error:", err);
+      }
+
+      // Search leagues
+      try {
+        const leaguesSnap = await getDocs(collection(db, "leagues"));
+        leaguesSnap.forEach((d) => {
+          const data = d.data();
+          const name = data.name || "";
+          if (name.toLowerCase().includes(lowerSearch)) {
+            results.push({
+              eventId: d.id,
+              eventName: name,
+              eventType: "league" as const,
+              subtitle: data.format || "League",
+            });
+          }
+        });
+      } catch (err) {
+        console.error("League search error:", err);
+      }
+
+      if (results.length > 0) {
+        setHashAutocompleteResults(results);
+        setShowHashAutocomplete(true);
+      } else {
+        setShowHashAutocomplete(false);
+      }
+    } catch (err) {
+      console.error("Event search error:", err);
+    }
+  };
+
+  // ============================================================================
+  // AUTOCOMPLETE SELECTION — CLEAN REPLACE + TRAILING SPACE
+  // ============================================================================
+
   const handleSelectMention = (item: any) => {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    let mentionText = "";
+
     if (autocompleteType === "partner") {
       if (taggedPartners.find((p) => p.userId === item.userId)) {
         setShowAutocomplete(false);
         return;
       }
-      const lastAtIndex = text.lastIndexOf("@");
-      const beforeAt = text.slice(0, lastAtIndex);
-      const afterMention = text.slice(lastAtIndex + 1 + currentMention.length);
-      mentionText = `@${item.displayName}`;
-      setText(`${beforeAt}${mentionText} ${afterMention}`);
-      setTaggedPartners([...taggedPartners, { userId: item.userId, displayName: item.displayName }]);
+      const beforeTrigger = text.slice(0, triggerIndex);
+      const mentionText = `@${item.displayName}`;
+      const newText = `${beforeTrigger}${mentionText} `;
+      setText(newText);
+      setTaggedPartners(prev => [...prev, { userId: item.userId, displayName: item.displayName }]);
+      if (!selectedMentions.includes(mentionText)) {
+        setSelectedMentions(prev => [...prev, mentionText]);
+      }
     } else if (autocompleteType === "course") {
       if (taggedCourses.find((c) => c.courseId === item.courseId)) {
         setShowAutocomplete(false);
         return;
       }
-      const lastAtIndex = text.lastIndexOf("@");
-      const beforeAt = text.slice(0, lastAtIndex);
-      const afterMention = text.slice(lastAtIndex + 1 + currentMention.length);
-      mentionText = `@${item.courseName}`;
-      setText(`${beforeAt}${mentionText} ${afterMention}`);
-      setTaggedCourses([...taggedCourses, { courseId: item.courseId, courseName: item.courseName }]);
+      const beforeTrigger = text.slice(0, triggerIndex);
+      const mentionText = `@${item.courseName}`;
+      const newText = `${beforeTrigger}${mentionText} `;
+      setText(newText);
+      setTaggedCourses(prev => [...prev, { courseId: item.courseId, courseName: item.courseName }]);
+      if (!selectedMentions.includes(mentionText)) {
+        setSelectedMentions(prev => [...prev, mentionText]);
+      }
     }
-    if (mentionText && !selectedMentions.includes(mentionText)) {
-      setSelectedMentions([...selectedMentions, mentionText]);
-    }
+
     setShowAutocomplete(false);
+    setCurrentMention("");
+    setTriggerIndex(-1);
   };
+
+  const handleSelectHashTag = (item: any) => {
+    soundPlayer.play('click');
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    // Prevent duplicate tags
+    if (taggedEvents.find((e) => e.eventId === item.eventId)) {
+      setShowHashAutocomplete(false);
+      return;
+    }
+
+    const beforeTrigger = text.slice(0, hashTriggerIndex);
+    const hashText = `#${item.eventName}`;
+    const newText = `${beforeTrigger}${hashText} `;
+    setText(newText);
+
+    setTaggedEvents(prev => [...prev, {
+      eventId: item.eventId,
+      eventName: item.eventName,
+      eventType: item.eventType,
+    }]);
+
+    if (!selectedHashTags.includes(hashText)) {
+      setSelectedHashTags(prev => [...prev, hashText]);
+    }
+
+    setShowHashAutocomplete(false);
+    setCurrentHashTag("");
+    setHashTriggerIndex(-1);
+  };
+
+  // ============================================================================
+  // RENDER COMMENT WITH @ AND # TAGS
+  // ============================================================================
+
   const renderCommentWithTags = (comment: Comment) => {
-    const { content, taggedPartners = [], taggedCourses = [] } = comment;
+    const { content, taggedPartners = [], taggedCourses = [], taggedEvents = [] } = comment;
+
     const mentionMap: { [key: string]: { type: string; data: any } } = {};
+
     taggedPartners.forEach((partner) => {
       mentionMap[`@${partner.displayName}`] = { type: 'partner', data: partner };
     });
@@ -444,14 +656,23 @@ export default function CommentsModal({
       mentionMap[courseTagNoSpaces] = { type: 'course', data: course };
       mentionMap[`@${course.courseName}`] = { type: 'course', data: course };
     });
+    taggedEvents.forEach((event) => {
+      mentionMap[`#${event.eventName}`] = { type: 'event', data: event };
+      const noSpaces = `#${event.eventName.replace(/\s+/g, "")}`;
+      mentionMap[noSpaces] = { type: 'event', data: event };
+    });
+
     const mentionPatterns = Object.keys(mentionMap)
       .map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
       .sort((a, b) => b.length - a.length);
+
     if (mentionPatterns.length === 0) {
       return <Text style={styles.commentText}>{content}</Text>;
     }
+
     const mentionRegex = new RegExp(`(${mentionPatterns.join('|')})`, 'g');
     const parts = content.split(mentionRegex);
+
     return (
       <Text style={styles.commentText}>
         {parts.map((part, index) => {
@@ -460,12 +681,24 @@ export default function CommentsModal({
             return (
               <Text
                 key={index}
-                style={styles.mention}
+                style={mention.type === 'event' ? styles.hashTag : styles.mention}
                 onPress={() => {
                   soundPlayer.play('click');
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  if (mention.type === 'partner') router.push(`/locker/${mention.data.userId}`);
-                  else if (mention.type === 'course') router.push(`/locker/course/${mention.data.courseId}`);
+                  if (mention.type === 'partner') {
+                    router.push(`/locker/${mention.data.userId}`);
+                  } else if (mention.type === 'course') {
+                    router.push(`/locker/course/${mention.data.courseId}`);
+                  } else if (mention.type === 'event') {
+                    const event = mention.data as TaggedEvent;
+                    if (event.eventType === "tournament") {
+                      router.push(`/events/tournament/${event.eventId}` as any);
+                    } else if (event.eventType === "outing") {
+                      router.push(`/events/outing/${event.eventId}` as any);
+                    } else if (event.eventType === "league") {
+                      router.push(`/events/league/${event.eventId}` as any);
+                    }
+                  }
                 }}
               >
                 {part}
@@ -477,6 +710,10 @@ export default function CommentsModal({
       </Text>
     );
   };
+
+  // ============================================================================
+  // POST / EDIT COMMENT
+  // ============================================================================
 
   const post = async () => {
     if (!text.trim() || !currentUserId) return;
@@ -499,6 +736,7 @@ export default function CommentsModal({
     const commentContent = text.trim();
     const commentTaggedPartners = [...taggedPartners];
     const commentTaggedCourses = [...taggedCourses];
+    const commentTaggedEvents = [...taggedEvents];
     const commentReplyingTo = replyingToCommentId;
     const commentImage = selectedImage;
 
@@ -508,6 +746,7 @@ export default function CommentsModal({
           content: commentContent,
           taggedPartners: commentTaggedPartners,
           taggedCourses: commentTaggedCourses,
+          taggedEvents: commentTaggedEvents,
         });
         setEditingCommentId(null);
         setOriginalEditText("");
@@ -522,6 +761,7 @@ export default function CommentsModal({
           likedBy: [],
           taggedPartners: commentTaggedPartners,
           taggedCourses: commentTaggedCourses,
+          taggedEvents: commentTaggedEvents,
           parentCommentId: commentReplyingTo || undefined,
           depth: parentComment ? (parentComment.depth + 1) : 0,
           replyCount: 0,
@@ -554,6 +794,7 @@ export default function CommentsModal({
           likedBy: [],
           taggedPartners: commentTaggedPartners,
           taggedCourses: commentTaggedCourses,
+          taggedEvents: commentTaggedEvents,
           parentCommentId: commentReplyingTo || null,
           depth: parentComment ? (parentComment.depth + 1) : 0,
           replyCount: 0,
@@ -574,6 +815,7 @@ export default function CommentsModal({
           postAuthorId: postOwnerId,
           content: commentContent,
           taggedUsers: taggedUserIds,
+          taggedEvents: commentTaggedEvents,
           parentCommentId: commentReplyingTo || null,
           parentCommentAuthorId: parentComment?.userId || null,
           createdAt: serverTimestamp(),
@@ -591,7 +833,9 @@ export default function CommentsModal({
       setText("");
       setTaggedPartners([]);
       setTaggedCourses([]);
+      setTaggedEvents([]);
       setSelectedMentions([]);
+      setSelectedHashTags([]);
       setReplyingToCommentId(null);
       setReplyingToUsername("");
       setSelectedImage(null);
@@ -604,6 +848,11 @@ export default function CommentsModal({
       setPosting(false);
     }
   };
+
+  // ============================================================================
+  // EDIT / DELETE / REPLY / LIKE HANDLERS
+  // ============================================================================
+
   const handleEditComment = (comment: Comment) => {
     soundPlayer.play('click');
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -612,10 +861,14 @@ export default function CommentsModal({
     setOriginalEditText(comment.content);
     setTaggedPartners(comment.taggedPartners || []);
     setTaggedCourses(comment.taggedCourses || []);
+    setTaggedEvents(comment.taggedEvents || []);
     const existingMentions: string[] = [];
     if (comment.taggedPartners) comment.taggedPartners.forEach((p) => existingMentions.push(`@${p.displayName}`));
     if (comment.taggedCourses) comment.taggedCourses.forEach((c) => existingMentions.push(`@${c.courseName}`));
     setSelectedMentions(existingMentions);
+    const existingHashTags: string[] = [];
+    if (comment.taggedEvents) comment.taggedEvents.forEach((e) => existingHashTags.push(`#${e.eventName}`));
+    setSelectedHashTags(existingHashTags);
     inputRef.current?.focus();
   };
 
@@ -627,7 +880,9 @@ export default function CommentsModal({
     setOriginalEditText("");
     setTaggedPartners([]);
     setTaggedCourses([]);
+    setTaggedEvents([]);
     setSelectedMentions([]);
+    setSelectedHashTags([]);
   };
 
   const handleDeleteComment = (comment: Comment) => {
@@ -757,6 +1012,47 @@ export default function CommentsModal({
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setViewerImage(null);
   };
+
+  // ============================================================================
+  // INPUT OVERLAY (inline colored tags while typing)
+  // ============================================================================
+
+  const inputHasTags =
+    selectedMentions.length > 0 ||
+    selectedHashTags.length > 0;
+
+  const renderInputOverlay = () => {
+    if (!text || !inputHasTags) return null;
+
+    // Build all tagged items, longest first to prevent partial matches
+    const allTagged = [
+      ...selectedMentions.map(m => ({ text: m, color: "#0D5C3A" as const })),
+      ...selectedHashTags.map(h => ({ text: h, color: "#B8860B" as const })),
+    ].sort((a, b) => b.text.length - a.text.length);
+
+    const escaped = allTagged.map(t =>
+      t.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    );
+    const regex = new RegExp(`(${escaped.join('|')})`, 'g');
+    const parts = text.split(regex);
+
+    const colorMap = new Map<string, string>();
+    allTagged.forEach(t => colorMap.set(t.text, t.color));
+
+    return parts.map((part, i) => {
+      const tagColor = colorMap.get(part);
+      if (tagColor) {
+        return <Text key={i} style={{ fontWeight: "600", color: tagColor }}>{part}</Text>;
+      }
+      // Normal text: same weight as TextInput for exact cursor alignment
+      return <Text key={i} style={{ color: "#333" }}>{part}</Text>;
+    });
+  };
+
+  // ============================================================================
+  // RENDER
+  // ============================================================================
+
   return (
     <Modal visible={visible} animationType="slide" transparent>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.backdrop}>
@@ -859,6 +1155,7 @@ export default function CommentsModal({
             )}
           </View>
 
+          {/* @ Autocomplete dropdown */}
           {showAutocomplete && (
             <View style={styles.autocompleteContainer}>
               <ScrollView keyboardShouldPersistTaps="handled" style={styles.autocompleteScroll}>
@@ -866,6 +1163,27 @@ export default function CommentsModal({
                   <TouchableOpacity key={`${item.userId || item.courseId}-${idx}`} style={styles.autocompleteItem} onPress={() => handleSelectMention(item)}>
                     <Text style={styles.autocompleteName}>{autocompleteType === "partner" ? `@${item.displayName}` : `@${item.courseName}`}</Text>
                     {autocompleteType === "course" && <Text style={styles.autocompleteLocation}>{item.location}</Text>}
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
+          {/* # Autocomplete dropdown */}
+          {showHashAutocomplete && (
+            <View style={styles.autocompleteContainer}>
+              <ScrollView keyboardShouldPersistTaps="handled" style={styles.autocompleteScroll}>
+                {hashAutocompleteResults.map((item, idx) => (
+                  <TouchableOpacity key={`${item.eventId}-${idx}`} style={styles.autocompleteItem} onPress={() => handleSelectHashTag(item)}>
+                    <View style={styles.hashAutocompleteRow}>
+                      <Text style={styles.hashAutocompleteBadge}>
+                        {item.eventType === "tournament" ? "🏆" : item.eventType === "league" ? "🏅" : "⛳"}
+                      </Text>
+                      <View>
+                        <Text style={styles.autocompleteName}>#{item.eventName}</Text>
+                        {item.subtitle ? <Text style={styles.autocompleteLocation}>{item.subtitle}</Text> : null}
+                      </View>
+                    </View>
                   </TouchableOpacity>
                 ))}
               </ScrollView>
@@ -894,10 +1212,21 @@ export default function CommentsModal({
                 <Text style={[styles.imagePickerIcon, (posting || !!editingCommentId) && styles.imagePickerIconDisabled]}>📷</Text>
               </TouchableOpacity>
               <View style={styles.inputContainer}>
+                {/* Overlay: colored tags painted over transparent input text */}
+                {inputHasTags && text.length > 0 && (
+                  <View style={styles.inputOverlay} pointerEvents="none">
+                    <Text style={styles.inputOverlayText}>
+                      {renderInputOverlay()}
+                    </Text>
+                  </View>
+                )}
                 <TextInput
                   ref={inputRef}
-                  style={styles.input}
-                  placeholder={editingCommentId ? "Update your comment…" : "Add a comment…"}
+                  style={[
+                    styles.input,
+                    inputHasTags && text.length > 0 && { color: "transparent" },
+                  ]}
+                  placeholder={editingCommentId ? "Update your comment…" : "Add a comment… @ tag  # event"}
                   placeholderTextColor="#999"
                   value={text}
                   onChangeText={handleTextChange}
@@ -909,18 +1238,6 @@ export default function CommentsModal({
                   textAlignVertical="top"
                   selectionColor="#0D5C3A"
                 />
-                {selectedMentions.length > 0 && text.includes("@") && (
-                  <View style={styles.mentionChipsContainer}>
-                    <Text style={styles.mentionChipsLabel}>Tagged:</Text>
-                    <View style={styles.mentionChips}>
-                      {selectedMentions.map((mention, idx) => (
-                        <View key={idx} style={styles.mentionChip}>
-                          <Text style={styles.mentionChipText}>{mention}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  </View>
-                )}
               </View>
               <TouchableOpacity onPress={post} disabled={posting || uploadingImage || !text.trim()}>
                 {posting || uploadingImage ? (
@@ -947,6 +1264,7 @@ export default function CommentsModal({
     </Modal>
   );
 }
+
 const styles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.5)" },
   sheet: { height: "75%", backgroundColor: "#F0F8F0", borderTopLeftRadius: 20, borderTopRightRadius: 20 },
@@ -968,6 +1286,7 @@ const styles = StyleSheet.create({
   name: { fontWeight: "700", color: "#0D5C3A", marginBottom: 2 },
   commentText: { fontSize: 14, color: "#333", lineHeight: 20 },
   mention: { fontSize: 14, fontWeight: "700", color: "#0D5C3A" },
+  hashTag: { fontSize: 14, fontWeight: "700", color: "#B8860B" },
   commentImageContainer: { marginTop: 8, borderRadius: 8, overflow: "hidden" },
   commentImage: { width: 150, height: 112, borderRadius: 8 },
   commentActions: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 6 },
@@ -987,6 +1306,8 @@ const styles = StyleSheet.create({
   autocompleteItem: { padding: 12, borderBottomWidth: 1, borderBottomColor: "#F0F0F0" },
   autocompleteName: { fontSize: 14, fontWeight: "600", color: "#0D5C3A" },
   autocompleteLocation: { fontSize: 12, color: "#666", marginTop: 2 },
+  hashAutocompleteRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  hashAutocompleteBadge: { fontSize: 18 },
   inputWrapper: { flexDirection: "column", padding: 12, borderTopWidth: 1, borderTopColor: "#DDD", backgroundColor: "#E8DCC3", gap: 10 },
   inputRow: { flexDirection: "row", alignItems: "flex-end", gap: 10 },
   replyingIndicator: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "rgba(13, 92, 58, 0.1)", paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8 },
@@ -999,13 +1320,27 @@ const styles = StyleSheet.create({
   imagePreview: { width: 80, height: 60, borderRadius: 8 },
   removeImageButton: { position: "absolute", top: -8, right: -8, backgroundColor: "#FF3B30", borderRadius: 12, width: 24, height: 24, justifyContent: "center", alignItems: "center" },
   removeImageIcon: { width: 12, height: 12, tintColor: "#FFF" },
-  inputContainer: { flex: 1 },
-  input: { backgroundColor: "#FFF", borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8, maxHeight: 100, fontSize: 14, textAlignVertical: "top", color: "#333" },
-  mentionChipsContainer: { marginTop: 6, paddingHorizontal: 4 },
-  mentionChipsLabel: { fontSize: 10, fontWeight: "600", color: "#0D5C3A", marginBottom: 4 },
-  mentionChips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  mentionChip: { backgroundColor: "#0D5C3A", paddingVertical: 3, paddingHorizontal: 8, borderRadius: 10 },
-  mentionChipText: { color: "#FFF", fontSize: 11, fontWeight: "600" },
+  inputContainer: { flex: 1, position: "relative" },
+  inputOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "transparent",
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingTop: Platform.OS === "ios" ? 7 : 8,
+    paddingBottom: 8,
+    zIndex: 2,
+  },
+  inputOverlayText: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: "400",
+    fontFamily: Platform.OS === "ios" ? "System" : undefined,
+  },
+  input: { backgroundColor: "#FFF", borderRadius: 20, paddingHorizontal: 14, paddingTop: Platform.OS === "ios" ? 7 : 8, paddingBottom: 8, maxHeight: 100, fontSize: 14, lineHeight: 20, fontFamily: Platform.OS === "ios" ? "System" : undefined, color: "#333", zIndex: 1 },
   send: { width: 28, height: 28, tintColor: "#0D5C3A" },
   sendDisabled: { opacity: 0.4 },
   imageViewerBackdrop: { flex: 1, backgroundColor: "rgba(0, 0, 0, 0.9)", justifyContent: "center", alignItems: "center" },

@@ -221,6 +221,7 @@ export const cleanupRemovedTags = (text: string, tags: TagState): CleanedTags =>
 interface TriggerResult {
   type: "mention" | "hashtag" | null;
   searchText: string;
+  triggerIndex: number;
 }
 
 export const parseTrigger = (text: string): TriggerResult => {
@@ -229,23 +230,31 @@ export const parseTrigger = (text: string): TriggerResult => {
   const triggerIndex = Math.max(lastAtIndex, lastHashIndex);
 
   if (triggerIndex === -1) {
-    return { type: null, searchText: "" };
+    return { type: null, searchText: "", triggerIndex: -1 };
   }
 
   const triggerChar = lastAtIndex > lastHashIndex ? "@" : "#";
   const afterTrigger = text.slice(triggerIndex + 1);
 
+  // Cancel if double-space or newline after trigger (user dismissed autocomplete)
   if (afterTrigger.includes("  ") || afterTrigger.includes("\n")) {
-    return { type: null, searchText: "" };
+    return { type: null, searchText: "", triggerIndex: -1 };
   }
 
-  const searchText = afterTrigger.split(" ")[0];
+  // Only trigger if the character before is a space or start of string
+  if (triggerIndex > 0 && text[triggerIndex - 1] !== " ") {
+    return { type: null, searchText: "", triggerIndex: -1 };
+  }
+
+  // Use the full text after the trigger (supports multi-word searches)
+  const searchText = afterTrigger;
   if (searchText.length < 1) {
-    return { type: null, searchText: "" };
+    return { type: null, searchText: "", triggerIndex: -1 };
   }
 
   return {
     type: triggerChar === "@" ? "mention" : "hashtag",
     searchText,
+    triggerIndex,
   };
 };

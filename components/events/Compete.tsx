@@ -1,12 +1,12 @@
 /**
  * Compete Tab
  *
- * Hub for structured competitions: Leagues, Cups, Tournaments.
- * Shows active competitions the user is in, invites, and CTAs
- * to create or join new ones.
+ * Hub for structured competitions: Leagues, Invitationals, Tours.
  *
- * Leagues are live now. Cups and Tournaments coming later
- * (same underlying architecture with different settings).
+ * - Leagues: live, season-long competitions
+ * - Invitationals: host-created invite-only single-day tournaments
+ *   (uses outing scoring infrastructure with competitive leaderboard)
+ * - Tours: user-created multi-event series (coming soon)
  */
 
 import { db } from "@/constants/firebaseConfig";
@@ -15,21 +15,21 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import {
-    collection,
-    doc,
-    getDoc,
-    getDocs
+  collection,
+  doc,
+  getDoc,
+  getDocs,
 } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Image,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Image,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 interface CompeteProps {
@@ -48,12 +48,27 @@ interface LeagueSummary {
   userRank?: number;
 }
 
+interface InvitationalSummary {
+  id: string;
+  name: string;
+  hostUserId: string;
+  hostName: string;
+  courseName: string;
+  date: Date;
+  status: "draft" | "open" | "active" | "completed" | "cancelled";
+  format: string;
+  playerCount: number;
+  maxPlayers: number;
+  userStatus: "host" | "accepted" | "invited";
+}
+
 export default function Compete({ userId }: CompeteProps) {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [myLeagues, setMyLeagues] = useState<LeagueSummary[]>([]);
+  const [myInvitationals, setMyInvitationals] = useState<InvitationalSummary[]>([]);
 
   useEffect(() => {
     if (userId) loadCompetitions();
@@ -61,7 +76,7 @@ export default function Compete({ userId }: CompeteProps) {
 
   const loadCompetitions = async () => {
     try {
-      // Find leagues where user is a member
+      // Load leagues
       const leaguesSnap = await getDocs(collection(db, "leagues"));
       const leagues: LeagueSummary[] = [];
 
@@ -69,7 +84,6 @@ export default function Compete({ userId }: CompeteProps) {
         const memberDoc = await getDoc(
           doc(db, "leagues", leagueDoc.id, "members", userId)
         );
-
         if (memberDoc.exists()) {
           const data = leagueDoc.data();
           leagues.push({
@@ -86,6 +100,50 @@ export default function Compete({ userId }: CompeteProps) {
       }
 
       setMyLeagues(leagues);
+
+      // Load invitationals where user is on the roster or is host
+      // Wrapped in try/catch — collection may not exist yet or rules may not be deployed
+      try {
+        const invitationalsSnap = await getDocs(collection(db, "invitationals"));
+        const invitationals: InvitationalSummary[] = [];
+
+        for (const invDoc of invitationalsSnap.docs) {
+          const data = invDoc.data();
+          const roster = data.roster || [];
+          const isHost = data.hostUserId === userId;
+          const rosterEntry = roster.find((r: any) => r.userId === userId);
+
+          if (isHost || rosterEntry) {
+            invitationals.push({
+              id: invDoc.id,
+              name: data.name || "Unnamed Invitational",
+              hostUserId: data.hostUserId,
+              hostName: data.hostName || "Unknown",
+              courseName: data.courseName || "",
+              date: data.date?.toDate?.() || new Date(),
+              status: data.status || "draft",
+              format: data.format || "stroke",
+              playerCount: data.playerCount || roster.length,
+              maxPlayers: data.maxPlayers || 24,
+              userStatus: isHost ? "host" : (rosterEntry?.status || "invited"),
+            });
+          }
+        }
+
+        // Sort: active/open first, then by date
+        invitationals.sort((a, b) => {
+          const statusOrder = { active: 0, open: 1, draft: 2, completed: 3, cancelled: 4 };
+          const aOrder = statusOrder[a.status] ?? 5;
+          const bOrder = statusOrder[b.status] ?? 5;
+          if (aOrder !== bOrder) return aOrder - bOrder;
+          return a.date.getTime() - b.date.getTime();
+        });
+
+        setMyInvitationals(invitationals);
+      } catch (invError) {
+        console.warn("Invitationals not available yet:", invError);
+        setMyInvitationals([]);
+      }
     } catch (error) {
       console.error("Error loading competitions:", error);
     } finally {
@@ -98,6 +156,27 @@ export default function Compete({ userId }: CompeteProps) {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     await loadCompetitions();
     setRefreshing(false);
+  };
+
+  const formatDate = (date: Date) => {
+    const now = new Date();
+    const diff = date.getTime() - now.getTime();
+    const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+
+    if (days === 0) return "Today";
+    if (days === 1) return "Tomorrow";
+    if (days > 0 && days <= 7) return `In ${days} days`;
+
+    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  };
+
+  const formatLabel = (format: string) => {
+    switch (format) {
+      case "stroke": return "Stroke Play";
+      case "stableford": return "Stableford";
+      case "scramble": return "Scramble";
+      default: return format;
+    }
   };
 
   if (loading) {
@@ -244,7 +323,6 @@ export default function Compete({ userId }: CompeteProps) {
               </TouchableOpacity>
             ))}
 
-            {/* Create new */}
             <TouchableOpacity
               style={styles.createNewButton}
               onPress={() => {
@@ -261,14 +339,178 @@ export default function Compete({ userId }: CompeteProps) {
       </View>
 
       {/* ============================================================ */}
-      {/* CUPS                                                         */}
+      {/* INVITATIONALS                                                */}
+      {/* ============================================================ */}
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}>
+          <View style={styles.sectionTitleRow}>
+            <Ionicons name="trophy" size={18} color="#B8860B" />
+            <Text style={styles.sectionTitle}>Invitationals</Text>
+          </View>
+          {myInvitationals.length > 0 && (
+            <TouchableOpacity
+              style={styles.sectionAction}
+              onPress={() => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push("/invitationals/create" as any);
+              }}
+            >
+              <Text style={styles.sectionActionText}>Host</Text>
+              <Ionicons name="add" size={14} color="#0D5C3A" />
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Pending invitations */}
+        {myInvitationals
+          .filter((inv) => inv.userStatus === "invited" && inv.status === "open")
+          .map((inv) => (
+            <TouchableOpacity
+              key={`invite-${inv.id}`}
+              style={styles.inviteCard}
+              onPress={() => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push({
+                  pathname: "/invitationals/[id]" as any,
+                  params: { id: inv.id },
+                });
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={styles.inviteBadge}>
+                <Ionicons name="mail" size={16} color="#FFF" />
+              </View>
+              <View style={styles.inviteContent}>
+                <Text style={styles.inviteTitle}>You're Invited!</Text>
+                <Text style={styles.inviteName}>{inv.name}</Text>
+                <Text style={styles.inviteMeta}>
+                  {inv.courseName} • {formatDate(inv.date)} • Hosted by {inv.hostName}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color="#B8860B" />
+            </TouchableOpacity>
+          ))}
+
+        {/* Active / upcoming invitationals */}
+        {myInvitationals
+          .filter((inv) => inv.userStatus !== "invited" || inv.status !== "open")
+          .length === 0 && myInvitationals.filter((inv) => inv.userStatus === "invited" && inv.status === "open").length === 0 ? (
+          <View style={styles.emptyCard}>
+            <Ionicons name="trophy-outline" size={36} color="#CCC" />
+            <Text style={styles.emptyTitle}>No Invitationals Yet</Text>
+            <Text style={styles.emptySubtext}>
+              Plan a golf trip, organize a local rivalry, or build your own multi-round series — pick the courses, set the dates, and crown a champion
+            </Text>
+            <View style={styles.emptyActions}>
+              <TouchableOpacity
+                style={styles.primaryButtonGold}
+                onPress={() => {
+                  soundPlayer.play("click");
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                  router.push("/invitationals/create" as any);
+                }}
+              >
+                <Ionicons name="trophy" size={16} color="#FFF" />
+                <Text style={styles.primaryButtonText}>Host an Invitational</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : (
+          <>
+            {myInvitationals
+              .filter((inv) => !(inv.userStatus === "invited" && inv.status === "open"))
+              .map((inv) => (
+                <TouchableOpacity
+                  key={inv.id}
+                  style={styles.competitionCard}
+                  onPress={() => {
+                    soundPlayer.play("click");
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    router.push({
+                      pathname: "/invitationals/[id]" as any,
+                      params: { id: inv.id },
+                    });
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.competitionLeft}>
+                    <View style={styles.invitationalAvatarPlaceholder}>
+                      <Ionicons name="trophy" size={20} color="#FFF" />
+                    </View>
+                    <View style={styles.competitionInfo}>
+                      <Text style={styles.competitionName}>{inv.name}</Text>
+                      <Text style={styles.competitionMeta}>
+                        {inv.courseName} • {formatDate(inv.date)}
+                      </Text>
+                      <Text style={styles.competitionMeta}>
+                        {formatLabel(inv.format)} • {inv.playerCount}/{inv.maxPlayers} players
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.competitionRight}>
+                    <View
+                      style={[
+                        styles.statusBadge,
+                        inv.status === "active" ? styles.statusActive :
+                        inv.status === "open" ? styles.statusUpcoming :
+                        inv.status === "completed" ? styles.statusCompleted :
+                        styles.statusDraft,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.statusText,
+                          inv.status === "active" ? styles.statusTextActive :
+                          inv.status === "open" ? styles.statusTextUpcoming :
+                          inv.status === "completed" ? styles.statusTextCompleted :
+                          styles.statusTextDraft,
+                        ]}
+                      >
+                        {inv.status === "active" ? "Live" :
+                         inv.status === "open" ? "Open" :
+                         inv.status === "completed" ? "Completed" :
+                         inv.status === "draft" ? "Draft" : inv.status}
+                      </Text>
+                    </View>
+                    {inv.userStatus === "host" && (
+                      <View style={styles.hostBadge}>
+                        <Text style={styles.hostBadgeText}>Host</Text>
+                      </View>
+                    )}
+                    <Ionicons name="chevron-forward" size={16} color="#CCC" />
+                  </View>
+                </TouchableOpacity>
+              ))}
+
+            <TouchableOpacity
+              style={styles.createNewButton}
+              onPress={() => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                router.push("/invitationals/create" as any);
+              }}
+            >
+              <Ionicons name="add-circle-outline" size={18} color="#B8860B" />
+              <Text style={[styles.createNewText, { color: "#B8860B" }]}>
+                Host New Invitational
+              </Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
+
+      {/* ============================================================ */}
+      {/* TOURS                                                        */}
       {/* ============================================================ */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
           <View style={styles.sectionTitleRow}>
             <Ionicons name="golf" size={18} color="#999" />
             <Text style={[styles.sectionTitle, styles.sectionTitleDisabled]}>
-              Cups
+              Tours
             </Text>
           </View>
           <View style={styles.comingSoonBadge}>
@@ -278,38 +520,11 @@ export default function Compete({ userId }: CompeteProps) {
 
         <View style={styles.comingSoonCard}>
           <Ionicons name="golf-outline" size={28} color="#BBB" />
-          <Text style={styles.comingSoonCardTitle}>Golf Trip Cups</Text>
-          <Text style={styles.comingSoonCardDesc}>
-            Plan a multi-round cup with your buddies. Different courses,
-            rotating matchups, one champion.
-          </Text>
-        </View>
-      </View>
-
-      {/* ============================================================ */}
-      {/* TOURNAMENTS                                                  */}
-      {/* ============================================================ */}
-      <View style={styles.section}>
-        <View style={styles.sectionHeader}>
-          <View style={styles.sectionTitleRow}>
-            <Ionicons name="ribbon" size={18} color="#999" />
-            <Text style={[styles.sectionTitle, styles.sectionTitleDisabled]}>
-              Tournaments
-            </Text>
-          </View>
-          <View style={styles.comingSoonBadge}>
-            <Text style={styles.comingSoonText}>Coming Soon</Text>
-          </View>
-        </View>
-
-        <View style={styles.comingSoonCard}>
-          <Ionicons name="ribbon-outline" size={28} color="#BBB" />
           <Text style={styles.comingSoonCardTitle}>
-            Course & League Tournaments
+            Professional Tour Series
           </Text>
           <Text style={styles.comingSoonCardDesc}>
-            Open-registration events hosted by courses or league commissioners.
-            Single or multi-day formats.
+            Paid, multi-course competitive series with entry fees, points races, purses, and season-long standings. The serious side of amateur golf.
           </Text>
         </View>
       </View>
@@ -408,6 +623,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     borderRadius: 20,
   },
+  primaryButtonGold: {
+    backgroundColor: "#B8860B",
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   primaryButtonText: {
     color: "#FFF",
     fontSize: 13,
@@ -425,6 +649,46 @@ const styles = StyleSheet.create({
     color: "#0D5C3A",
     fontSize: 13,
     fontWeight: "700",
+  },
+
+  // Invitation card
+  inviteCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF8E1",
+    borderRadius: 12,
+    padding: 14,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: "#FFE082",
+  },
+  inviteBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#B8860B",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  inviteContent: {
+    flex: 1,
+    gap: 2,
+  },
+  inviteTitle: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#B8860B",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  inviteName: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#333",
+  },
+  inviteMeta: {
+    fontSize: 12,
+    color: "#888",
   },
 
   // Competition cards
@@ -460,6 +724,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  invitationalAvatarPlaceholder: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#B8860B",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   competitionInfo: {
     flex: 1,
     gap: 2,
@@ -491,6 +763,12 @@ const styles = StyleSheet.create({
   statusUpcoming: {
     backgroundColor: "#FFF8E1",
   },
+  statusCompleted: {
+    backgroundColor: "rgba(0, 0, 0, 0.05)",
+  },
+  statusDraft: {
+    backgroundColor: "rgba(0, 0, 0, 0.04)",
+  },
   statusText: {
     fontSize: 11,
     fontWeight: "700",
@@ -500,6 +778,25 @@ const styles = StyleSheet.create({
   },
   statusTextUpcoming: {
     color: "#F59E0B",
+  },
+  statusTextCompleted: {
+    color: "#666",
+  },
+  statusTextDraft: {
+    color: "#999",
+  },
+
+  // Host badge
+  hostBadge: {
+    backgroundColor: "rgba(184, 134, 11, 0.15)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  hostBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#B8860B",
   },
 
   // Create new

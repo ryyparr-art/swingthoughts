@@ -10,6 +10,10 @@
  *
  * Data source: rounds/{roundId} Firestore document
  *
+ * Updates:
+ *   - Handwritten Caveat font on score cells (matching MultiplayerScorecard)
+ *   - Larger stroke dots, net subscript, and cell padding
+ *
  * File: components/scoring/RoundScorecardViewer.tsx
  */
 
@@ -22,15 +26,15 @@ import * as Haptics from "expo-haptics";
 import { doc, getDoc } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Image,
-    Modal,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Image,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -100,6 +104,8 @@ const CREAM_LIGHT = "#FFFCF0";
 const CELL_W = 38;
 const LABEL_W = 70;
 const TOTAL_W = 46;
+
+const HANDWRITTEN = "Caveat_400Regular";
 
 // ============================================================================
 // COMPONENT
@@ -802,7 +808,7 @@ const cs = StyleSheet.create({
     width: CELL_W,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 6,
+    paddingVertical: 8,
   },
   yardageText: {
     fontSize: 11,
@@ -858,34 +864,40 @@ const cs = StyleSheet.create({
 
   // ── Handicap Stroke Dots ────────────────────────────────────
   strokeDot: {
-    fontSize: 8,
+    fontSize: 10,
     color: HEADER_GREEN,
     fontWeight: "800",
     position: "absolute",
-    top: 1,
-    right: 4,
+    top: 6,
+    right: 6,
     letterSpacing: -1,
+    zIndex: 1,
   },
 
-  // ── Score Display ───────────────────────────────────────────
+  // ── Score Display — handwritten font ────────────────────────
   scoreDisplay: {
-    width: 30,
-    height: 30,
+    width: 36,
+    height: 36,
     borderRadius: 4,
     alignItems: "center",
     justifyContent: "center",
+    marginLeft: -2,
   },
   scoreText: {
-    fontSize: 15,
+    fontSize: 30,
+    fontFamily: HANDWRITTEN,
     fontWeight: "700",
+    lineHeight: 34,
+    includeFontPadding: false,
+    textAlignVertical: "center",
   },
   netSubscript: {
-    fontSize: 8,
+    fontSize: 10,
     color: GREEN,
-    fontWeight: "600",
+    fontWeight: "800",
     position: "absolute",
     bottom: 0,
-    right: 1,
+    right: -0,
   },
 
   // ── Score cell color coding ─────────────────────────────────

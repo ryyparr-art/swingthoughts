@@ -132,6 +132,7 @@ export default function CreateScreen() {
   const [autocompleteType, setAutocompleteType] = useState<"mention" | "hashtag" | null>(null);
   const [autocompleteResults, setAutocompleteResults] = useState<AutocompleteItem[]>([]);
   const [currentSearchText, setCurrentSearchText] = useState("");
+  const [activeTriggerIndex, setActiveTriggerIndex] = useState<number>(-1);
 
   // Tags
   const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
@@ -333,10 +334,8 @@ export default function CreateScreen() {
     }
 
     if (currentCropIndex < pendingImages.length - 1) {
-      // Move to next image
       setCurrentCropIndex(currentCropIndex + 1);
     } else {
-      // All done
       setShowCropModal(false);
       setPendingImages([]);
       setCurrentCropIndex(0);
@@ -432,14 +431,16 @@ export default function CreateScreen() {
         }
       }
 
-      // Parse trigger
+      // Parse trigger — now returns triggerIndex
       const trigger = parseTrigger(text);
       if (!trigger.type) {
         setShowAutocomplete(false);
+        setActiveTriggerIndex(-1);
         return;
       }
 
       setCurrentSearchText(trigger.searchText);
+      setActiveTriggerIndex(trigger.triggerIndex);
 
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(async () => {
@@ -468,9 +469,9 @@ export default function CreateScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
     if (autocompleteType === "mention") {
-      const lastAtIndex = content.lastIndexOf("@");
-      const beforeAt = content.slice(0, lastAtIndex);
-      const afterSearch = content.slice(lastAtIndex + 1 + currentSearchText.length);
+      // Clean replace: slice to trigger position, append tag + trailing space
+      const idx = activeTriggerIndex >= 0 ? activeTriggerIndex : content.lastIndexOf("@");
+      const beforeTrigger = content.slice(0, idx);
 
       let mentionText = "";
       if (item.type === "partner") {
@@ -496,17 +497,17 @@ export default function CreateScreen() {
         }
       }
 
-      setContent(`${beforeAt}${mentionText} ${afterSearch}`);
+      setContent(`${beforeTrigger}${mentionText} `);
       if (mentionText && !selectedMentions.includes(mentionText)) {
         setSelectedMentions([...selectedMentions, mentionText]);
       }
     } else if (autocompleteType === "hashtag") {
-      const lastHashIndex = content.lastIndexOf("#");
-      const beforeHash = content.slice(0, lastHashIndex);
-      const afterSearch = content.slice(lastHashIndex + 1 + currentSearchText.length);
+      // Clean replace: slice to trigger position, append tag + trailing space
+      const idx = activeTriggerIndex >= 0 ? activeTriggerIndex : content.lastIndexOf("#");
+      const beforeTrigger = content.slice(0, idx);
       const hashtagText = `#${item.name}`;
 
-      setContent(`${beforeHash}${hashtagText} ${afterSearch}`);
+      setContent(`${beforeTrigger}${hashtagText} `);
 
       if (item.type === "tournament") {
         if (!selectedTournaments.includes(hashtagText)) {
@@ -520,6 +521,8 @@ export default function CreateScreen() {
     }
 
     setShowAutocomplete(false);
+    setActiveTriggerIndex(-1);
+    setCurrentSearchText("");
   };
 
   /* ---------------------------------------------------------------- */

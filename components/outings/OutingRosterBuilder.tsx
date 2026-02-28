@@ -10,6 +10,10 @@
  *
  * Context-agnostic: leagues pass pre-filled rosters and skip this.
  *
+ * Fixes:
+ *   - Uses onAddUsers (batch) to avoid stale-closure roster overwrites
+ *   - Passes maxSelect so AddPlayerModal allows up to remaining slots
+ *
  * File: components/outings/OutingRosterBuilder.tsx
  */
 
@@ -22,25 +26,25 @@ import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import {
-    collection,
-    doc,
-    getDoc,
-    getDocs,
-    query,
-    where,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
 } from "firebase/firestore";
 import React, { useCallback, useState } from "react";
 import {
-    ActivityIndicator,
-    FlatList,
-    Image,
-    Modal,
-    Platform,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  FlatList,
+  Image,
+  Modal,
+  Platform,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 const GREEN = "#0D5C3A";
@@ -185,7 +189,28 @@ export default function OutingRosterBuilder({
     setShowBulkAdd(false);
   };
 
-  // ── Individual add (on-platform user) ──
+  // ── Batch add from AddPlayerModal (all selected players at once) ──
+  const handleAddUsers = useCallback(
+    (users: SearchResult[]) => {
+      const newPlayers: OutingPlayer[] = users
+        .filter((u) => !existingIds.has(u.userId))
+        .map((u) =>
+          buildPlayer(
+            u.userId,
+            u.displayName,
+            u.avatar || undefined,
+            u.handicapIndex ?? defaultHandicap,
+            false
+          )
+        );
+      if (newPlayers.length > 0) {
+        onRosterChange([...roster, ...newPlayers]);
+      }
+    },
+    [roster, existingIds, buildPlayer, defaultHandicap, onRosterChange]
+  );
+
+  // ── Legacy per-user fallback (kept for compatibility but unused now) ──
   const handleAddUser = useCallback(
     (user: SearchResult) => {
       if (existingIds.has(user.userId)) return;
@@ -350,9 +375,11 @@ export default function OutingRosterBuilder({
         visible={showIndividualAdd}
         onClose={() => setShowIndividualAdd(false)}
         onAddUser={handleAddUser}
+        onAddUsers={handleAddUsers}
         onAddGhost={handleAddGhost}
         markerId={organizerId}
         existingPlayerIds={[...existingIds]}
+        maxSelect={slotsRemaining}
       />
     </View>
   );

@@ -8,6 +8,7 @@
  *   - courses: Course hero with avatar
  *   - partners: Avatar + context + Add button
  *   - dtp_pins: Green cards with pin status
+ *   - rivalry_nudges: Engagement nudges for active rivalries
  *
  * Dismissible via ✕ button. Dismiss state persisted in AsyncStorage.
  */
@@ -26,10 +27,12 @@ import {
   DiscoveryInsert,
   DiscoveryLeagueItem,
   DiscoveryPartnerItem,
+  DiscoveryRivalryNudgeItem,
 } from "@/utils/feedInsertTypes";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import { Image as ExpoImage } from "expo-image";
 import { useRouter } from "expo-router";
 import {
   arrayUnion,
@@ -45,11 +48,10 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  Image,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 
 interface Props {
@@ -71,6 +73,8 @@ export default function FeedDiscoveryCarousel({ insert }: Props) {
         return <PartnerCard item={item as DiscoveryPartnerItem} />;
       case "dtp_pins":
         return <DTPCard item={item as DiscoveryDTPItem} />;
+      case "rivalry_nudges":
+        return <RivalryNudgeCard item={item as DiscoveryRivalryNudgeItem} />;
       default:
         return null;
     }
@@ -109,6 +113,10 @@ export default function FeedDiscoveryCarousel({ insert }: Props) {
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.scroll}
         ItemSeparatorComponent={() => <View style={{ width: 10 }} />}
+        removeClippedSubviews={false}
+        initialNumToRender={4}
+        maxToRenderPerBatch={3}
+        windowSize={3}
       />
     </View>
   );
@@ -252,7 +260,7 @@ function LeagueCard({ item }: { item: DiscoveryLeagueItem }) {
     >
       <View style={styles.leagueTop}>
         {item.avatar ? (
-          <Image source={{ uri: item.avatar }} style={styles.leagueAvatar} />
+          <ExpoImage source={{ uri: item.avatar }} style={styles.leagueAvatar} contentFit="cover" cachePolicy="memory-disk" />
         ) : (
           <View style={[styles.leagueAvatar, styles.leagueAvatarFallback]}>
             <Text style={styles.leagueAvatarLetter}>
@@ -300,7 +308,7 @@ function CourseCard({ item }: { item: DiscoveryCourseItem }) {
       <View style={styles.courseHero}>
         {item.avatar ? (
           <View style={styles.courseAvatarWrap}>
-            <Image source={{ uri: item.avatar }} style={styles.courseAvatarImg} />
+            <ExpoImage source={{ uri: item.avatar }} style={styles.courseAvatarImg} contentFit="cover" cachePolicy="memory-disk" />
           </View>
         ) : (
           <View style={[styles.courseAvatarWrap, styles.courseAvatarFallback]}>
@@ -339,7 +347,7 @@ function PartnerCard({ item }: { item: DiscoveryPartnerItem }) {
       }}
     >
       {item.avatar ? (
-        <Image source={{ uri: item.avatar }} style={styles.partnerAvatar} />
+        <ExpoImage source={{ uri: item.avatar }} style={styles.partnerAvatar} contentFit="cover" cachePolicy="memory-disk" />
       ) : (
         <View style={[styles.partnerAvatar, styles.partnerAvatarFallback]}>
           <Text style={styles.partnerAvatarLetter}>
@@ -402,6 +410,50 @@ function DTPCard({ item }: { item: DiscoveryDTPItem }) {
 }
 
 // ============================================================================
+// RIVALRY NUDGE CARD
+// ============================================================================
+
+function RivalryNudgeCard({ item }: { item: DiscoveryRivalryNudgeItem }) {
+  const router = useRouter();
+
+  return (
+    <TouchableOpacity
+      style={styles.rivalryCard}
+      activeOpacity={0.8}
+      onPress={() => {
+        soundPlayer.play("click");
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        router.push(`/locker/${item.rivalUserId}` as any);
+      }}
+    >
+      {/* Avatar */}
+      {item.rivalAvatar ? (
+        <ExpoImage
+          source={{ uri: item.rivalAvatar }}
+          style={styles.rivalryAvatar}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+        />
+      ) : (
+        <View style={[styles.rivalryAvatar, styles.rivalryAvatarFallback]}>
+          <Text style={styles.rivalryAvatarLetter}>
+            {item.rivalName.charAt(0).toUpperCase()}
+          </Text>
+        </View>
+      )}
+
+      {/* Emoji */}
+      <Text style={styles.rivalryEmoji}>{item.emoji}</Text>
+
+      {/* Message */}
+      <Text style={styles.rivalryMessage} numberOfLines={2}>
+        {item.message}
+      </Text>
+    </TouchableOpacity>
+  );
+}
+
+// ============================================================================
 // STYLES
 // ============================================================================
 
@@ -431,11 +483,13 @@ const styles = StyleSheet.create({
 
   // Challenge
   challengeCard: {
-    width: 130,
+    width: 160,
+    height: 160,
     backgroundColor: "#0D5C3A",
     borderRadius: 14,
     padding: 16,
     alignItems: "center",
+    justifyContent: "center",
     gap: 8,
   },
   challengeCardRegistering: {
@@ -466,13 +520,14 @@ const styles = StyleSheet.create({
 
   // League
   leagueCard: {
-    width: 195,
+    width: 160,
+    height: 160,
     backgroundColor: "#FFF",
     borderWidth: 1.5,
     borderColor: "#E8E8E8",
     borderRadius: 14,
     padding: 14,
-    gap: 10,
+    justifyContent: "space-between",
   },
   leagueTop: { flexDirection: "row", alignItems: "center", gap: 10 },
   leagueAvatar: {
@@ -507,12 +562,13 @@ const styles = StyleSheet.create({
   // Course
   courseCard: {
     width: 160,
+    height: 160,
     borderRadius: 14,
     overflow: "hidden",
   },
   courseHero: {
     width: "100%",
-    height: 100,
+    height: 90,
     backgroundColor: "#1B5E20",
     alignItems: "center",
     justifyContent: "center",
@@ -548,8 +604,10 @@ const styles = StyleSheet.create({
 
   // Partner
   partnerCard: {
-    width: 115,
+    width: 160,
+    height: 160,
     alignItems: "center",
+    justifyContent: "center",
     gap: 6,
     padding: 14,
     backgroundColor: "#FFF",
@@ -582,10 +640,12 @@ const styles = StyleSheet.create({
 
   // DTP
   dtpCard: {
-    width: 170,
+    width: 160,
+    height: 160,
     backgroundColor: "#0D5C3A",
     borderRadius: 14,
     padding: 14,
+    justifyContent: "center",
     gap: 6,
   },
   dtpPinRow: { flexDirection: "row", alignItems: "center", gap: 6 },
@@ -600,4 +660,46 @@ const styles = StyleSheet.create({
   dtpCourse: { fontSize: 13, fontWeight: "700", color: "#FFF", lineHeight: 17 },
   dtpStatus: { fontSize: 11, color: "rgba(255,255,255,0.6)", fontWeight: "500" },
   dtpCta: { fontSize: 11, fontWeight: "700", color: "#FFD700", marginTop: 4 },
+
+  // Rivalry Nudge
+  rivalryCard: {
+    width: 160,
+    height: 160,
+    backgroundColor: "#1A1A1A",
+    borderRadius: 14,
+    padding: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: "#E53935",
+  },
+  rivalryAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    overflow: "hidden",
+    borderWidth: 2,
+    borderColor: "rgba(229, 57, 53, 0.4)",
+  },
+  rivalryAvatarFallback: {
+    backgroundColor: "rgba(229, 57, 53, 0.2)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  rivalryAvatarLetter: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#FFF",
+  },
+  rivalryEmoji: {
+    fontSize: 18,
+  },
+  rivalryMessage: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.85)",
+    textAlign: "center",
+    lineHeight: 15,
+  },
 });

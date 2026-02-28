@@ -77,6 +77,8 @@ export const sendPushNotification = onDocumentCreated(
           threadId: notification.threadId,
           leagueId: notification.leagueId,
           roundId: notification.roundId,
+          rivalryId: notification.rivalryId,
+          changeType: notification.changeType,
         },
         badge: unreadCount,
       };
@@ -144,6 +146,9 @@ export const sendPushNotification = onDocumentCreated(
         case "round_invite": pushMessage.title = "⛳ Live Round"; break;
         case "round_complete": pushMessage.title = "🏁 Round Complete"; break;
         case "round_notable": pushMessage.title = "⛳ Round Update"; break;
+        // Outing & Rivalry Notifications
+        case "outing_complete": pushMessage.title = "🏁 Outing Results"; break;
+        case "rivalry_update": pushMessage.title = "⚔️ Rivalry Update"; break;
         default: pushMessage.title = "⛳ Swing Thoughts";
       }
 

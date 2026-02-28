@@ -9,6 +9,9 @@
  *      a. Marks outing as "complete" and builds final leaderboard
  *      b. Sends outing_complete push notifications to all participants
  *      c. Writes outing_complete feed activity cards
+ *      d. Processes rivalries for all player pairs (cross-group)
+ *      e. Writes rivalry_update feed cards + sends notifications
+ *      f. If invitational-linked → updates invitational round + standings
  *
  * This runs AFTER the existing onRoundUpdated trigger (which creates score docs, etc.)
  * so individual player scores are already processed.
@@ -20,6 +23,13 @@ import * as admin from "firebase-admin";
 import { logger } from "firebase-functions/v2";
 import { onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { sendRoundNotification } from "../notifications/roundNotifications";
+import {
+  PlayerResult,
+  processRivalries,
+  RivalryContext,
+  sendRivalryNotifications,
+  writeRivalryFeedCards,
+} from "../rivalries/rivalryEngine";
 
 const db = admin.firestore();
 
@@ -122,10 +132,11 @@ export const onOutingRoundUpdated = onDocumentUpdated(
         logger.info(`✅ Outing ${outingId} marked complete`);
 
         // ══════════════════════════════════════════════════════════════
-        // OUTING COMPLETE — Send notifications + write feed cards
+        // OUTING COMPLETE — Post-completion pipeline
         // ══════════════════════════════════════════════════════════════
 
         if (finalLeaderboard.length > 0) {
+          // ── Step 1: Outing complete notifications ──
           await sendOutingCompleteNotifications(
             outingId,
             outingData,
@@ -133,12 +144,59 @@ export const onOutingRoundUpdated = onDocumentUpdated(
             finalLeaderboard
           );
 
+          // ── Step 2: Outing complete feed activity cards ──
           await writeOutingFeedActivity(
             outingId,
             outingData,
             updatedGroups,
             finalLeaderboard
           );
+
+          // ── Step 3: Process rivalries (all player pairs, cross-group) ──
+          try {
+            const playerResults: PlayerResult[] = finalLeaderboard.map((e) => ({
+              userId: e.playerId,
+              displayName: e.displayName,
+              avatar: e.avatar,
+              netScore: e.netScore,
+              grossScore: e.grossScore,
+              isGhost: e.isGhost,
+            }));
+
+            const rivalryContext: RivalryContext = {
+              outingId,
+              courseId: outingData.courseId,
+              courseName: outingData.courseName,
+              date: outingData.completedAt || admin.firestore.Timestamp.now(),
+              regionKey: outingData.regionKey || null,
+              location: outingData.location || null,
+            };
+
+            const rivalryChanges = await processRivalries(playerResults, rivalryContext);
+
+            if (rivalryChanges.length > 0) {
+              await writeRivalryFeedCards(rivalryChanges, rivalryContext);
+              await sendRivalryNotifications(rivalryChanges, sendRoundNotification);
+              logger.info(`✅ ${rivalryChanges.length} rivalry changes processed for outing ${outingId}`);
+            }
+          } catch (err) {
+            logger.error(`Rivalry processing failed for outing ${outingId}:`, err);
+          }
+
+          // ── Step 4: Invitational completion (if linked) ──
+          if (outingData.parentType === "invitational" && outingData.parentId) {
+            try {
+              await handleInvitationalRoundComplete(
+                outingData.parentId,
+                outingData.parentRoundId,
+                outingData.parentRoundNumber,
+                finalLeaderboard,
+                outingId
+              );
+            } catch (err) {
+              logger.error(`Invitational update failed for outing ${outingId}:`, err);
+            }
+          }
         }
       } else {
         // Not all complete yet — just update progress
@@ -150,6 +208,195 @@ export const onOutingRoundUpdated = onDocumentUpdated(
     }
   }
 );
+
+// ============================================================================
+// INVITATIONAL ROUND COMPLETION
+// ============================================================================
+
+async function handleInvitationalRoundComplete(
+  invitationalId: string,
+  roundId: string,
+  roundNumber: number,
+  leaderboard: LeaderboardEntry[],
+  outingId: string
+): Promise<void> {
+  logger.info(
+    `🏆 Invitational round ${roundNumber} complete — updating invitational ${invitationalId}`
+  );
+
+  const invRef = db.collection("invitationals").doc(invitationalId);
+  const invSnap = await invRef.get();
+
+  if (!invSnap.exists) {
+    logger.error(`Invitational ${invitationalId} not found`);
+    return;
+  }
+
+  const invData = invSnap.data()!;
+  const rounds = invData.rounds || [];
+
+  // ── 1. Update round status ──
+  const roundIndex = rounds.findIndex((r: any) => r.roundId === roundId);
+  if (roundIndex === -1) {
+    logger.error(`Round ${roundId} not found in invitational ${invitationalId}`);
+    return;
+  }
+
+  rounds[roundIndex] = {
+    ...rounds[roundIndex],
+    status: "completed",
+    outingId,
+  };
+
+  // ── 2. Recalculate cumulative standings ──
+  const standings = calculateCumulativeStandings(
+    rounds,
+    invData,
+    leaderboard,
+    roundIndex
+  );
+
+  // ── 3. Check if all rounds are complete ──
+  const allRoundsComplete = rounds.every(
+    (r: any) => r.status === "completed"
+  );
+
+  const updatePayload: Record<string, any> = {
+    rounds,
+    standings,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  };
+
+  if (allRoundsComplete) {
+    updatePayload.status = "completed";
+    if (standings.length > 0) {
+      updatePayload.winnerId = standings[0].userId;
+    }
+    logger.info(
+      `🏆 Invitational ${invitationalId} COMPLETE — winner: ${standings[0]?.displayName || "TBD"}`
+    );
+  }
+
+  await invRef.update(updatePayload);
+  logger.info(
+    `✅ Invitational ${invitationalId} updated — round ${roundNumber} completed, ${
+      allRoundsComplete
+        ? "EVENT COMPLETE"
+        : `${rounds.filter((r: any) => r.status === "completed").length}/${rounds.length} rounds done`
+    }`
+  );
+}
+
+function calculateCumulativeStandings(
+  rounds: any[],
+  invData: any,
+  latestLeaderboard: LeaderboardEntry[],
+  latestRoundIndex: number
+): any[] {
+  const overallScoring = invData.overallScoring || "cumulative";
+  const roster = invData.roster || [];
+
+  const playerMap: Record<
+    string,
+    { displayName: string; roundScores: number[]; grossScores: number[] }
+  > = {};
+
+  for (const entry of roster) {
+    if (entry.status !== "accepted" && entry.status !== "ghost") continue;
+    const pid = entry.userId || `ghost_${entry.ghostName}`;
+    playerMap[pid] = {
+      displayName: entry.displayName || entry.ghostName || "Unknown",
+      roundScores: new Array(rounds.length).fill(0),
+      grossScores: new Array(rounds.length).fill(0),
+    };
+  }
+
+  // Carry forward previous round scores
+  const existingStandings = invData.standings || [];
+  for (const standing of existingStandings) {
+    if (playerMap[standing.userId]) {
+      const existing = standing.roundScores || [];
+      const existingGross = standing.grossScores || [];
+      for (let i = 0; i < existing.length && i < rounds.length; i++) {
+        if (i !== latestRoundIndex) {
+          playerMap[standing.userId].roundScores[i] = existing[i] || 0;
+          playerMap[standing.userId].grossScores[i] = existingGross[i] || 0;
+        }
+      }
+    }
+  }
+
+  // Add latest round
+  for (const entry of latestLeaderboard) {
+    if (playerMap[entry.playerId]) {
+      playerMap[entry.playerId].roundScores[latestRoundIndex] = entry.netScore;
+      playerMap[entry.playerId].grossScores[latestRoundIndex] = entry.grossScore;
+    }
+  }
+
+  const standings = Object.entries(playerMap).map(([userId, data]) => {
+    const roundsPlayed = data.roundScores.filter((s) => s > 0).length;
+
+    let totalScore: number;
+    let toPar: number;
+
+    switch (overallScoring) {
+      case "best_of": {
+        const valid = data.roundScores.filter((s) => s > 0);
+        totalScore = valid.length > 0 ? Math.min(...valid) : 0;
+        toPar = totalScore > 0 ? totalScore - 72 : 0;
+        break;
+      }
+      case "cumulative":
+      default: {
+        totalScore = data.roundScores.reduce((sum, s) => sum + s, 0);
+        toPar = totalScore - 72 * roundsPlayed;
+        break;
+      }
+    }
+
+    return {
+      userId,
+      displayName: data.displayName,
+      totalScore,
+      toPar,
+      rank: 0,
+      roundScores: data.roundScores,
+      grossScores: data.grossScores,
+      roundsPlayed,
+    };
+  });
+
+  // Sort
+  if (overallScoring === "points") {
+    standings.sort((a, b) => b.totalScore - a.totalScore);
+  } else {
+    standings.sort((a, b) => {
+      if (a.roundsPlayed === 0 && b.roundsPlayed > 0) return 1;
+      if (b.roundsPlayed === 0 && a.roundsPlayed > 0) return -1;
+      if (a.roundsPlayed === 0 && b.roundsPlayed === 0) return 0;
+      return a.totalScore - b.totalScore;
+    });
+  }
+
+  let currentRank = 1;
+  for (let i = 0; i < standings.length; i++) {
+    if (standings[i].roundsPlayed === 0) {
+      standings[i].rank = 0;
+      continue;
+    }
+    if (
+      i > 0 &&
+      standings[i].totalScore !== standings[i - 1].totalScore &&
+      standings[i - 1].roundsPlayed > 0
+    ) {
+      currentRank = i + 1;
+    }
+    standings[i].rank = currentRank;
+  }
+
+  return standings;
+}
 
 // ============================================================================
 // HELPER: Build final leaderboard from all round documents
@@ -206,10 +453,8 @@ async function buildFinalLeaderboard(
     }
   }
 
-  // Sort by net score ascending (lowest wins), gross as tiebreaker
   entries.sort((a, b) => a.netScore - b.netScore || a.grossScore - b.grossScore);
 
-  // Assign positions with ties
   let currentPos = 1;
   for (let i = 0; i < entries.length; i++) {
     if (i > 0 && entries[i].netScore !== entries[i - 1].netScore) {
@@ -236,7 +481,6 @@ async function sendOutingCompleteNotifications(
   const winner = leaderboard[0];
   const organizerId = outingData.organizerId;
 
-  // Build a map of playerId → their roundId (for navigation)
   const playerRoundMap: Record<string, string> = {};
   for (const group of groups) {
     if (!group.roundId) continue;
@@ -246,16 +490,12 @@ async function sendOutingCompleteNotifications(
   }
 
   for (const entry of leaderboard) {
-    // Skip ghosts
     if (entry.isGhost) continue;
-    // Skip organizer if they launched it (they already know)
-    // Actually, still notify — they want to see the final result
 
     const roundId = playerRoundMap[entry.playerId];
     if (!roundId) continue;
 
     let message: string;
-
     if (entry.position === 1) {
       message = `You won the outing at ${courseName}! Net ${entry.netScore} 🏆`;
     } else if (entry.position <= 3) {
@@ -278,7 +518,6 @@ async function sendOutingCompleteNotifications(
     }
   }
 
-  // Notify organizer if they're NOT a player (spectator organizer)
   const organizerInLeaderboard = leaderboard.some((e) => e.playerId === organizerId);
   if (!organizerInLeaderboard && organizerId) {
     const firstRoundId = groups[0]?.roundId;
@@ -326,7 +565,6 @@ async function writeOutingFeedActivity(
     groupName: e.groupName,
   }));
 
-  // Build a map of playerId → their roundId
   const playerRoundMap: Record<string, string> = {};
   for (const group of groups) {
     if (!group.roundId) continue;
@@ -335,7 +573,6 @@ async function writeOutingFeedActivity(
     }
   }
 
-  // One card per on-platform participant
   for (const entry of leaderboard) {
     if (entry.isGhost) continue;
 
@@ -348,7 +585,6 @@ async function writeOutingFeedActivity(
       displayName: entry.displayName,
       avatar: entry.avatar,
 
-      // Outing context
       outingId,
       roundId: roundId || null,
       courseId: outingData.courseId,
@@ -358,7 +594,6 @@ async function writeOutingFeedActivity(
       playerCount: leaderboard.length,
       groupCount: groups.length,
 
-      // Winner
       winner: {
         playerId: winner.playerId,
         displayName: winner.displayName,
@@ -367,15 +602,11 @@ async function writeOutingFeedActivity(
         grossScore: winner.grossScore,
       },
 
-      // This player's result
       myPosition: entry.position,
       myGross: entry.grossScore,
       myNet: entry.netScore,
-
-      // Top 5 leaderboard snapshot
       topFive,
 
-      // Full leaderboard for tap-to-expand
       finalLeaderboard: leaderboard.map((e) => ({
         position: e.position,
         playerId: e.playerId,
@@ -387,7 +618,10 @@ async function writeOutingFeedActivity(
         groupName: e.groupName,
       })),
 
-      // Feed metadata
+      invitationalId:
+        outingData.parentType === "invitational" ? outingData.parentId : null,
+      invitationalRoundNumber: outingData.parentRoundNumber || null,
+
       regionKey: outingData.regionKey || null,
       location: outingData.location || null,
       privacy: "public",
@@ -399,7 +633,9 @@ async function writeOutingFeedActivity(
 
   try {
     await batch.commit();
-    logger.info(`✅ Outing feed activity written for ${leaderboard.filter((e) => !e.isGhost).length} players`);
+    logger.info(
+      `✅ Outing feed activity written for ${leaderboard.filter((e) => !e.isGhost).length} players`
+    );
   } catch (err) {
     logger.error(`Outing feed activity write failed for outing ${outingId}:`, err);
   }

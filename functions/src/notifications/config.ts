@@ -40,6 +40,7 @@ export const GROUPABLE_TYPES = {
     "system",
     "group_message",
     "outing_complete",
+    "rivalry_update",
     // League notifications (always individual)
     "league_invite",
     "league_join_request",
@@ -109,6 +110,8 @@ export interface CreateNotificationParams {
   weekNumber?: number;
   inviteId?: string;
   roundId?: string;
+  rivalryId?: string;
+  changeType?: string;
   message: string;
   regionKey?: string;
   navigationTarget?: string;

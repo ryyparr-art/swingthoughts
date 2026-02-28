@@ -33,6 +33,9 @@ export interface Notification {
   threadId?: string;
   leagueId?: string;
   inviteId?: string;
+  roundId?: string;
+  rivalryId?: string;
+  changeType?: string;
 
   // Navigation
   navigationTarget?: string;

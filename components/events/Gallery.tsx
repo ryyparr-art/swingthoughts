@@ -4,11 +4,12 @@
  * The "movie trailer" — condensed cliff notes that drive users
  * into the Challenges and Compete tabs.
  *
- * Two sections:
- *   1. Challenges – Horizontal scroll of active challenge previews,
- *      or a teaser card if none active
- *   2. Compete – Action needed items (scores due, invites),
- *      active competition previews, or CTAs to get started
+ * Sections:
+ *   1. Challenges – Teaser card or active challenge previews
+ *   2. Compete – Three subsections matching Compete tab:
+ *      a. Leagues – active league previews or CTA
+ *      b. Invitationals – pending invites, active events, or CTA
+ *      c. Tours – coming soon CTA
  *
  * Key principle: Gallery never shows full detail.
  * Every card deeplinks or switches tabs.
@@ -20,20 +21,20 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import {
-    collection,
-    doc,
-    getDoc,
-    getDocs,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
 } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Image,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Image,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 interface GalleryProps {
@@ -51,7 +52,17 @@ interface LeaguePreview {
   totalWeeks?: number;
 }
 
-// Teaser challenges to show when user has none active
+interface InvitationalPreview {
+  id: string;
+  name: string;
+  hostName: string;
+  courseName: string;
+  date: Date;
+  status: "draft" | "open" | "active" | "completed" | "cancelled";
+  playerCount: number;
+  userStatus: "host" | "accepted" | "invited";
+}
+
 const CHALLENGE_TEASERS = [
   { id: "par3", name: "Par 3 Champion", icon: "flag", color: "#0D5C3A" },
   { id: "fir", name: "Fairway Finder", icon: "golf", color: "#2E7D32" },
@@ -62,6 +73,7 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [myLeagues, setMyLeagues] = useState<LeaguePreview[]>([]);
+  const [myInvitationals, setMyInvitationals] = useState<InvitationalPreview[]>([]);
 
   useEffect(() => {
     if (userId) loadPreviewData();
@@ -69,7 +81,7 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
 
   const loadPreviewData = async () => {
     try {
-      // Load league memberships for compete section
+      // Load leagues
       const leaguesSnap = await getDocs(collection(db, "leagues"));
       const leagues: LeaguePreview[] = [];
 
@@ -92,12 +104,69 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
       }
 
       setMyLeagues(leagues);
+
+      // Load invitationals
+      try {
+        const invSnap = await getDocs(collection(db, "invitationals"));
+        const invitationals: InvitationalPreview[] = [];
+
+        for (const invDoc of invSnap.docs) {
+          const data = invDoc.data();
+          const roster = data.roster || [];
+          const isHost = data.hostUserId === userId;
+          const rosterEntry = roster.find((r: any) => r.userId === userId);
+
+          if (isHost || rosterEntry) {
+            const status = data.status || "draft";
+            if (status === "cancelled" || status === "completed") continue;
+
+            invitationals.push({
+              id: invDoc.id,
+              name: data.name || "Unnamed Invitational",
+              hostName: data.hostName || "Unknown",
+              courseName: data.courseName || "",
+              date: data.date?.toDate?.() || new Date(),
+              status,
+              playerCount: data.playerCount || roster.length,
+              userStatus: isHost ? "host" : (rosterEntry?.status || "invited"),
+            });
+          }
+        }
+
+        invitationals.sort((a, b) => {
+          if (a.userStatus === "invited" && b.userStatus !== "invited") return -1;
+          if (b.userStatus === "invited" && a.userStatus !== "invited") return 1;
+          return a.date.getTime() - b.date.getTime();
+        });
+
+        setMyInvitationals(invitationals);
+      } catch (invError) {
+        console.warn("Invitationals not available yet:", invError);
+        setMyInvitationals([]);
+      }
     } catch (error) {
       console.error("Gallery load error:", error);
     } finally {
       setLoading(false);
     }
   };
+
+  const formatDate = (date: Date) => {
+    const now = new Date();
+    const diff = date.getTime() - now.getTime();
+    const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+    if (days === 0) return "Today";
+    if (days === 1) return "Tomorrow";
+    if (days > 0 && days <= 7) return `In ${days} days`;
+    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  };
+
+  const pendingInvites = myInvitationals.filter(
+    (inv) => inv.userStatus === "invited" && inv.status === "open"
+  );
+  const activeInvitationals = myInvitationals.filter(
+    (inv) => !(inv.userStatus === "invited" && inv.status === "open")
+  );
 
   if (loading) {
     return (
@@ -114,7 +183,7 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
       showsVerticalScrollIndicator={false}
     >
       {/* ============================================================ */}
-      {/* CHALLENGES PREVIEW                                           */}
+      {/* CHALLENGES                                                   */}
       {/* ============================================================ */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
@@ -135,16 +204,6 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
           </TouchableOpacity>
         </View>
 
-        {/*
-         * TODO: When user has active challenges, show horizontal scroll:
-         * <ScrollView horizontal>
-         *   <ActiveChallengeCard progress={12} total={20} rank={3} />
-         * </ScrollView>
-         *
-         * For now, show teaser since challenges aren't live yet.
-         */}
-
-        {/* Teaser — no active challenges */}
         <TouchableOpacity
           style={styles.teaserCard}
           activeOpacity={0.8}
@@ -164,7 +223,6 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
             </View>
           </View>
 
-          {/* Mini preview of challenge types */}
           <View style={styles.teaserChips}>
             {CHALLENGE_TEASERS.map((c) => (
               <View key={c.id} style={styles.teaserChip}>
@@ -182,7 +240,7 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
       </View>
 
       {/* ============================================================ */}
-      {/* COMPETE PREVIEW                                              */}
+      {/* COMPETE                                                      */}
       {/* ============================================================ */}
       <View style={styles.section}>
         <View style={styles.sectionHeader}>
@@ -203,11 +261,16 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
           </TouchableOpacity>
         </View>
 
-        {myLeagues.length > 0 ? (
-          <>
-            {/* TODO: Action needed cards (scores due, invites) go here */}
+        {/* ---- LEAGUES ---- */}
+        <View style={styles.subsection}>
+          <View style={styles.subsectionHeader}>
+            <View style={styles.subsectionTitleRow}>
+              <Ionicons name="shield" size={14} color="#0D5C3A" />
+              <Text style={styles.subsectionTitle}>Leagues</Text>
+            </View>
+          </View>
 
-            {/* Active competition previews — compact horizontal scroll */}
+          {myLeagues.length > 0 ? (
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -227,68 +290,46 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
                     });
                   }}
                 >
-                  {/* League avatar */}
                   {league.avatar ? (
                     <Image
                       source={{ uri: league.avatar }}
                       style={styles.competeAvatar}
                     />
                   ) : (
-                    <View style={styles.competeAvatarPlaceholder}>
+                    <View style={styles.competeAvatarGreen}>
                       <Ionicons name="shield" size={18} color="#FFF" />
                     </View>
                   )}
-
                   <Text style={styles.competeName} numberOfLines={1}>
                     {league.name}
                   </Text>
-
                   <Text style={styles.competeMeta}>
                     {league.format === "stroke" ? "Stroke" : "2v2"}
                     {league.currentWeek && league.totalWeeks
                       ? ` • Wk ${league.currentWeek}/${league.totalWeeks}`
                       : ""}
                   </Text>
-
                   <View
                     style={[
                       styles.competeStatusDot,
-                      league.status === "active"
-                        ? styles.dotActive
-                        : styles.dotUpcoming,
+                      league.status === "active" ? styles.dotActive : styles.dotUpcoming,
                     ]}
                   >
-                    <Text style={styles.competeStatusText}>
+                    <Text
+                      style={[
+                        styles.competeStatusText,
+                        league.status === "active" ? styles.dotActiveText : styles.dotUpcomingText,
+                      ]}
+                    >
                       {league.status === "active" ? "Active" : "Upcoming"}
                     </Text>
                   </View>
                 </TouchableOpacity>
               ))}
-
-              {/* Quick CTA card at end */}
-              <TouchableOpacity
-                style={styles.competeCardAdd}
-                activeOpacity={0.8}
-                onPress={() => {
-                  soundPlayer.play("click");
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                  onSwitchTab?.("compete");
-                }}
-              >
-                <Ionicons
-                  name="add-circle-outline"
-                  size={28}
-                  color="#0D5C3A"
-                />
-                <Text style={styles.competeAddText}>Join or{"\n"}Create</Text>
-              </TouchableOpacity>
             </ScrollView>
-          </>
-        ) : (
-          /* No active competitions — CTA cards */
-          <View style={styles.competeEmptyRow}>
+          ) : (
             <TouchableOpacity
-              style={styles.competeEmptyCard}
+              style={styles.ctaCard}
               activeOpacity={0.8}
               onPress={() => {
                 soundPlayer.play("click");
@@ -296,39 +337,165 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
                 router.push("/leagues/explore" as any);
               }}
             >
-              <Ionicons name="shield-outline" size={28} color="#0D5C3A" />
-              <Text style={styles.competeEmptyLabel}>Join a League</Text>
-              <Text style={styles.competeEmptyDesc}>
-                Season-long competition with friends
-              </Text>
+              <Ionicons name="shield-outline" size={22} color="#0D5C3A" />
+              <View style={styles.ctaContent}>
+                <Text style={styles.ctaTitle}>Find a League</Text>
+                <Text style={styles.ctaDesc}>
+                  Friendly weekly competition with your group
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color="#CCC" />
             </TouchableOpacity>
+          )}
+        </View>
 
+        {/* ---- INVITATIONALS ---- */}
+        <View style={styles.subsection}>
+          <View style={styles.subsectionHeader}>
+            <View style={styles.subsectionTitleRow}>
+              <Ionicons name="trophy" size={14} color="#B8860B" />
+              <Text style={styles.subsectionTitle}>Invitationals</Text>
+            </View>
+          </View>
+
+          {/* Pending invites */}
+          {pendingInvites.map((inv) => (
             <TouchableOpacity
-              style={styles.competeEmptyCard}
+              key={`invite-${inv.id}`}
+              style={styles.inviteCard}
+              activeOpacity={0.8}
+              onPress={() => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                router.push({
+                  pathname: "/invitationals/[id]" as any,
+                  params: { id: inv.id },
+                });
+              }}
+            >
+              <View style={styles.inviteBadge}>
+                <Ionicons name="mail" size={14} color="#FFF" />
+              </View>
+              <View style={styles.inviteContent}>
+                <Text style={styles.inviteLabel}>You're Invited!</Text>
+                <Text style={styles.inviteName} numberOfLines={1}>
+                  {inv.name}
+                </Text>
+                <Text style={styles.inviteMeta} numberOfLines={1}>
+                  {inv.courseName ? `${inv.courseName} • ` : ""}
+                  {formatDate(inv.date)} • {inv.hostName}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={14} color="#B8860B" />
+            </TouchableOpacity>
+          ))}
+
+          {/* Active invitationals */}
+          {activeInvitationals.length > 0 ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.competeScroll}
+            >
+              {activeInvitationals.map((inv) => (
+                <TouchableOpacity
+                  key={inv.id}
+                  style={styles.competeCard}
+                  activeOpacity={0.8}
+                  onPress={() => {
+                    soundPlayer.play("click");
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    router.push({
+                      pathname: "/invitationals/[id]" as any,
+                      params: { id: inv.id },
+                    });
+                  }}
+                >
+                  <View style={styles.competeAvatarGold}>
+                    <Ionicons name="trophy" size={18} color="#FFF" />
+                  </View>
+                  <Text style={styles.competeName} numberOfLines={1}>
+                    {inv.name}
+                  </Text>
+                  <Text style={styles.competeMeta} numberOfLines={1}>
+                    {inv.courseName || formatDate(inv.date)}
+                  </Text>
+                  <View
+                    style={[
+                      styles.competeStatusDot,
+                      inv.status === "active" ? styles.dotActive :
+                      inv.status === "open" ? styles.dotUpcoming : styles.dotDraft,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.competeStatusText,
+                        inv.status === "active" ? styles.dotActiveText :
+                        inv.status === "open" ? styles.dotUpcomingText : styles.dotDraftText,
+                      ]}
+                    >
+                      {inv.status === "active" ? "Live" :
+                       inv.status === "open" ? "Open" : "Draft"}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          ) : pendingInvites.length === 0 ? (
+            <TouchableOpacity
+              style={styles.ctaCard}
               activeOpacity={0.8}
               onPress={() => {
                 soundPlayer.play("click");
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-                router.push("/leagues/create" as any);
+                router.push("/invitationals/create" as any);
               }}
             >
-              <Ionicons name="add-circle-outline" size={28} color="#0D5C3A" />
-              <Text style={styles.competeEmptyLabel}>Create League</Text>
-              <Text style={styles.competeEmptyDesc}>
-                Start your own and invite players
-              </Text>
+              <Ionicons name="trophy-outline" size={22} color="#B8860B" />
+              <View style={styles.ctaContent}>
+                <Text style={styles.ctaTitle}>Plan a Trip or Invitational</Text>
+                <Text style={styles.ctaDesc}>
+                  Golf trips, local rivalries, and mini-tournaments
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color="#CCC" />
             </TouchableOpacity>
-          </View>
-        )}
-      </View>
+          ) : null}
+        </View>
 
-      {/* ============================================================ */}
-      {/* COMING SOON TEASER                                           */}
-      {/* ============================================================ */}
-      <View style={styles.comingSoonStrip}>
-        <Text style={styles.comingSoonStripText}>
-          🏆 Cups & Tournaments coming soon
-        </Text>
+        {/* ---- TOURS ---- */}
+        <View style={styles.subsection}>
+          <View style={styles.subsectionHeader}>
+            <View style={styles.subsectionTitleRow}>
+              <Ionicons name="golf" size={14} color="#999" />
+              <Text style={[styles.subsectionTitle, { color: "#999" }]}>Tours</Text>
+            </View>
+            <View style={styles.comingSoonPill}>
+              <Text style={styles.comingSoonPillText}>Coming Soon</Text>
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.ctaCard, styles.ctaCardMuted]}
+            activeOpacity={0.8}
+            onPress={() => {
+              soundPlayer.play("click");
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              onSwitchTab?.("compete");
+            }}
+          >
+            <Ionicons name="golf-outline" size={22} color="#BBB" />
+            <View style={styles.ctaContent}>
+              <Text style={[styles.ctaTitle, { color: "#999" }]}>
+                Explore Local Tours
+              </Text>
+              <Text style={styles.ctaDesc}>
+                Paid competitive series with points and purses
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#DDD" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={{ height: 100 }} />
@@ -353,7 +520,7 @@ const styles = StyleSheet.create({
 
   // Section headers
   section: {
-    gap: 12,
+    gap: 16,
   },
   sectionHeader: {
     flexDirection: "row",
@@ -379,6 +546,39 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "600",
     color: "#0D5C3A",
+  },
+
+  // Subsection headers (Leagues, Invitationals, Tours)
+  subsection: {
+    gap: 8,
+  },
+  subsectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  subsectionTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  subsectionTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#555",
+  },
+
+  // Coming soon pill
+  comingSoonPill: {
+    backgroundColor: "#FFF8E1",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  comingSoonPillText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#F59E0B",
   },
 
   // =============================================
@@ -448,7 +648,83 @@ const styles = StyleSheet.create({
   },
 
   // =============================================
-  // Compete — horizontal league previews
+  // CTA cards (empty states / actions)
+  // =============================================
+  ctaCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    padding: 14,
+    gap: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+    elevation: 1,
+  },
+  ctaCardMuted: {
+    opacity: 0.7,
+  },
+  ctaContent: {
+    flex: 1,
+    gap: 2,
+  },
+  ctaTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#333",
+  },
+  ctaDesc: {
+    fontSize: 11,
+    color: "#888",
+    lineHeight: 15,
+  },
+
+  // =============================================
+  // Pending invitational invites
+  // =============================================
+  inviteCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF8E1",
+    borderRadius: 12,
+    padding: 12,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: "#FFE082",
+  },
+  inviteBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "#B8860B",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  inviteContent: {
+    flex: 1,
+    gap: 1,
+  },
+  inviteLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#B8860B",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  inviteName: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#333",
+  },
+  inviteMeta: {
+    fontSize: 11,
+    color: "#888",
+  },
+
+  // =============================================
+  // Horizontal competition cards
   // =============================================
   competeScroll: {
     gap: 10,
@@ -472,11 +748,19 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 22,
   },
-  competeAvatarPlaceholder: {
+  competeAvatarGreen: {
     width: 44,
     height: 44,
     borderRadius: 22,
     backgroundColor: "#0D5C3A",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  competeAvatarGold: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#B8860B",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -502,76 +786,20 @@ const styles = StyleSheet.create({
   dotUpcoming: {
     backgroundColor: "#FFF8E1",
   },
+  dotDraft: {
+    backgroundColor: "rgba(0, 0, 0, 0.04)",
+  },
   competeStatusText: {
     fontSize: 10,
     fontWeight: "700",
+  },
+  dotActiveText: {
     color: "#0D5C3A",
   },
-  competeCardAdd: {
-    width: 100,
-    backgroundColor: "#FFF",
-    borderRadius: 14,
-    padding: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    borderWidth: 1.5,
-    borderColor: "rgba(13, 92, 58, 0.15)",
-    borderStyle: "dashed",
+  dotUpcomingText: {
+    color: "#F59E0B",
   },
-  competeAddText: {
-    fontSize: 11,
-    fontWeight: "600",
-    color: "#0D5C3A",
-    textAlign: "center",
-  },
-
-  // =============================================
-  // Compete — empty state (no competitions)
-  // =============================================
-  competeEmptyRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  competeEmptyCard: {
-    flex: 1,
-    backgroundColor: "#FFF",
-    borderRadius: 14,
-    padding: 18,
-    alignItems: "center",
-    gap: 8,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 3,
-    elevation: 1,
-  },
-  competeEmptyLabel: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#333",
-    textAlign: "center",
-  },
-  competeEmptyDesc: {
-    fontSize: 11,
-    color: "#888",
-    textAlign: "center",
-    lineHeight: 15,
-  },
-
-  // =============================================
-  // Coming soon strip
-  // =============================================
-  comingSoonStrip: {
-    backgroundColor: "rgba(255, 215, 0, 0.12)",
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    alignItems: "center",
-  },
-  comingSoonStripText: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#A68A00",
+  dotDraftText: {
+    color: "#999",
   },
 });

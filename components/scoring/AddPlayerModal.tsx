@@ -3,7 +3,7 @@
  *
  * Two tabs:
  *   "Find Player" — sections: My Foursome → Usual Suspects → Partners
- *                   search bar with dropdown overlay, multi-select up to 3
+ *                   search bar with dropdown overlay, multi-select
  *   "Add Guest"   — manual name/handicap/contact entry (unchanged)
  *
  * Data sources (from PartnersModal):
@@ -11,9 +11,27 @@
  *   - favoritedPartners[]   → "Usual Suspects" section
  *   - partners collection   → "Partners" section (minus above)
  *
+ * Fixes:
+ *   - zIndex on searchSection only when dropdown visible (touch fix)
+ *   - remainingSlots uses maxSelect prop (not hardcoded 4)
+ *   - onAddUsers (batch) callback to avoid stale-closure overwrites
+ *
  * File: components/scoring/AddPlayerModal.tsx
  */
 
+import { db } from "@/constants/firebaseConfig";
+import { soundPlayer } from "@/utils/soundPlayer";
+import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  query,
+  where,
+} from "firebase/firestore";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -28,19 +46,6 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  limit,
-  query,
-  where,
-} from "firebase/firestore";
-import { db } from "@/constants/firebaseConfig";
-import { soundPlayer } from "@/utils/soundPlayer";
 import PlayerRow, { type PlayerRowUser } from "./PlayerRow";
 
 // ============================================================================
@@ -72,8 +77,10 @@ interface SectionData {
 interface AddPlayerModalProps {
   visible: boolean;
   onClose: () => void;
-  /** Called with all selected users when "Add Players" is tapped */
+  /** Called once per player — used by foursome GroupSetup (legacy) */
   onAddUser: (user: SearchResult) => void;
+  /** Called once with ALL selected players — preferred for batch adds (outings) */
+  onAddUsers?: (users: SearchResult[]) => void;
   /** Called when a ghost player is added */
   onAddGhost: (ghost: {
     name: string;
@@ -130,6 +137,7 @@ export default function AddPlayerModal({
   visible,
   onClose,
   onAddUser,
+  onAddUsers,
   onAddGhost,
   markerId,
   existingPlayerIds,
@@ -169,12 +177,10 @@ export default function AddPlayerModal({
     return ids;
   }, [existingPlayerIds, markerId, selectedUsers]);
 
-  // How many more can be selected
+  // How many more can be selected — uses maxSelect prop
   const remainingSlots = useMemo(() => {
-    const alreadyInRound = existingPlayerIds.length; // includes marker
-    const totalAfter = alreadyInRound + selectedUsers.length;
-    return Math.max(0, 4 - totalAfter); // 4 max total players
-  }, [existingPlayerIds.length, selectedUsers.length]);
+    return Math.max(0, maxSelect - selectedUsers.length);
+  }, [maxSelect, selectedUsers.length]);
 
   const canSelectMore = remainingSlots > 0;
 
@@ -382,24 +388,30 @@ export default function AddPlayerModal({
     setSelectedUsers((prev) => prev.filter((u) => u.userId !== userId));
   }, []);
 
-  // ── Confirm — call onAddUser for each selected, then close
+  // ── Confirm — batch via onAddUsers if available, else per-user fallback
   const handleAddPlayers = useCallback(() => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    selectedUsers.forEach((user) => {
-      onAddUser({
-        userId: user.userId,
-        displayName: user.displayName,
-        avatar: user.avatar || null,
-        handicapIndex: user.handicapIndex || 0,
-        isPartner: user.isPartner || false,
-        earnedChallengeBadges: user.earnedChallengeBadges,
-      });
-    });
+    const batch: SearchResult[] = selectedUsers.map((user) => ({
+      userId: user.userId,
+      displayName: user.displayName,
+      avatar: user.avatar || null,
+      handicapIndex: user.handicapIndex || 0,
+      isPartner: user.isPartner || false,
+      earnedChallengeBadges: user.earnedChallengeBadges,
+    }));
+
+    if (onAddUsers) {
+      // Batch callback — single call with all players (preferred)
+      onAddUsers(batch);
+    } else {
+      // Legacy per-user fallback (foursome GroupSetup)
+      batch.forEach((user) => onAddUser(user));
+    }
 
     handleClose();
-  }, [selectedUsers, onAddUser]);
+  }, [selectedUsers, onAddUser, onAddUsers]);
 
   // ── Ghost submit (unchanged logic) ────────────────────────
   const handleSubmitGhost = () => {
@@ -493,8 +505,8 @@ export default function AddPlayerModal({
               </View>
             )}
 
-            {/* Search Bar */}
-            <View style={s.searchSection}>
+            {/* Search Bar — only elevate zIndex when dropdown is visible */}
+            <View style={[s.searchSection, showSearchDropdown && { zIndex: 10 }]}>
               <View style={s.searchBar}>
                 <Ionicons name="search" size={18} color="#999" style={{ marginLeft: 12 }} />
                 <TextInput
@@ -744,7 +756,7 @@ const s = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 4,
-    zIndex: 10,
+    // zIndex only applied dynamically when dropdown is visible
   },
   searchBar: {
     flexDirection: "row",
