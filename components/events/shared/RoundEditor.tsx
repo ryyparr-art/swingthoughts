@@ -40,6 +40,10 @@ interface RoundEditorProps {
   onChange: (updated: RoundData) => void;
   onRemove?: () => void;
   canRemove: boolean;
+  /** Earliest selectable date (from event startDate) */
+  minDate?: Date;
+  /** Latest selectable date (from event endDate) */
+  maxDate?: Date;
 }
 
 export default function RoundEditor({
@@ -48,6 +52,8 @@ export default function RoundEditor({
   onChange,
   onRemove,
   canRemove,
+  minDate,
+  maxDate,
 }: RoundEditorProps) {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
@@ -118,16 +124,20 @@ export default function RoundEditor({
         </TouchableOpacity>
 
         {showDatePicker && (
-          <DateTimePicker
-            value={round.date}
-            mode="date"
-            display={Platform.OS === "ios" ? "spinner" : "default"}
-            minimumDate={new Date()}
-            onChange={(_, selectedDate) => {
-              setShowDatePicker(Platform.OS === "ios");
-              if (selectedDate) update({ date: selectedDate });
-            }}
-          />
+          <View style={styles.datePickerWrapper}>
+            <DateTimePicker
+              value={round.date}
+              mode="date"
+              display={Platform.OS === "ios" ? "spinner" : "default"}
+              minimumDate={minDate || new Date()}
+              maximumDate={maxDate}
+              themeVariant="light"
+              onChange={(_, selectedDate) => {
+                setShowDatePicker(Platform.OS === "ios");
+                if (selectedDate) update({ date: selectedDate });
+              }}
+            />
+          </View>
         )}
       </View>
 
@@ -164,16 +174,19 @@ export default function RoundEditor({
             </TouchableOpacity>
 
             {showTimePicker && (
-              <DateTimePicker
-                value={round.teeTime}
-                mode="time"
-                display={Platform.OS === "ios" ? "spinner" : "default"}
-                minuteInterval={5}
-                onChange={(_, selectedTime) => {
-                  setShowTimePicker(Platform.OS === "ios");
-                  if (selectedTime) update({ teeTime: selectedTime });
-                }}
-              />
+              <View style={styles.datePickerWrapper}>
+                <DateTimePicker
+                  value={round.teeTime}
+                  mode="time"
+                  display={Platform.OS === "ios" ? "spinner" : "default"}
+                  minuteInterval={5}
+                  themeVariant="light"
+                  onChange={(_, selectedTime) => {
+                    setShowTimePicker(Platform.OS === "ios");
+                    if (selectedTime) update({ teeTime: selectedTime });
+                  }}
+                />
+              </View>
             )}
           </>
         )}
@@ -192,14 +205,18 @@ export default function RoundEditor({
   );
 }
 
-export function createEmptyRound(): RoundData {
+/**
+ * Create an empty round with an optional default date.
+ * Pass the event startDate so rounds default to the event window, not today.
+ */
+export function createEmptyRound(defaultDate?: Date): RoundData {
   const defaultTeeTime = new Date();
   defaultTeeTime.setHours(8, 0, 0, 0);
 
   return {
     id: `round_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     course: null,
-    date: new Date(),
+    date: defaultDate || new Date(),
     hasTeeTime: false,
     teeTime: defaultTeeTime,
     format: "stroke",
@@ -277,6 +294,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "600",
     color: "#333",
+  },
+  datePickerWrapper: {
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    overflow: "hidden",
   },
 
   // Tee time toggle

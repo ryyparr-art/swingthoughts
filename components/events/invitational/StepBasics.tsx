@@ -3,6 +3,8 @@
  *
  * Invitational name, date range, max players,
  * overall scoring method, and handicap method.
+ *
+ * Invitationals are always multi-day events.
  */
 
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -17,7 +19,6 @@ import {
     Platform,
     ScrollView,
     StyleSheet,
-    Switch,
     Text,
     TextInput,
     TouchableOpacity,
@@ -34,7 +35,6 @@ export interface BasicsData {
   avatarUri: string | null;
   startDate: Date;
   endDate: Date;
-  isSingleDay: boolean;
   maxPlayers: number;
   overallScoring: OverallScoring;
   handicapMethod: HandicapMethod;
@@ -134,31 +134,9 @@ export default function StepBasics({ data, onChange, onNext }: StepBasicsProps) 
           <Text style={styles.charCount}>{data.name.length}/60</Text>
         </View>
 
-        {/* Single Day Toggle */}
+        {/* Dates — always multi-day */}
         <View style={styles.field}>
-          <View style={styles.toggleRow}>
-            <View style={styles.toggleInfo}>
-              <Text style={styles.fieldLabel}>Date</Text>
-              <Text style={styles.fieldHint}>
-                {data.isSingleDay ? "One-day event" : "Multi-day event"}
-              </Text>
-            </View>
-            <View style={styles.switchRow}>
-              <Text style={styles.switchLabel}>Single Day</Text>
-              <Switch
-                value={data.isSingleDay}
-                onValueChange={(val) => {
-                  soundPlayer.play("click");
-                  update({
-                    isSingleDay: val,
-                    endDate: val ? data.startDate : data.endDate,
-                  });
-                }}
-                trackColor={{ false: "#DDD", true: "rgba(13, 92, 58, 0.3)" }}
-                thumbColor={data.isSingleDay ? "#0D5C3A" : "#FFF"}
-              />
-            </View>
-          </View>
+          <Text style={styles.fieldLabel}>Event Dates</Text>
 
           {/* Start Date */}
           <TouchableOpacity
@@ -167,56 +145,55 @@ export default function StepBasics({ data, onChange, onNext }: StepBasicsProps) 
             activeOpacity={0.7}
           >
             <Ionicons name="calendar-outline" size={18} color="#0D5C3A" />
-            <Text style={styles.dateText}>
-              {data.isSingleDay ? formatDate(data.startDate) : `Start: ${formatDate(data.startDate)}`}
-            </Text>
+            <Text style={styles.dateText}>Start: {formatDate(data.startDate)}</Text>
             <Ionicons name="chevron-down" size={16} color="#999" />
           </TouchableOpacity>
 
           {showStartPicker && (
-            <DateTimePicker
-              value={data.startDate}
-              mode="date"
-              display={Platform.OS === "ios" ? "spinner" : "default"}
-              minimumDate={new Date()}
-              onChange={(_, selectedDate) => {
-                setShowStartPicker(Platform.OS === "ios");
-                if (selectedDate) {
-                  update({
-                    startDate: selectedDate,
-                    endDate: data.isSingleDay ? selectedDate : data.endDate,
-                  });
-                }
-              }}
-            />
+            <View style={styles.datePickerWrapper}>
+              <DateTimePicker
+                value={data.startDate}
+                mode="date"
+                display={Platform.OS === "ios" ? "spinner" : "default"}
+                minimumDate={new Date()}
+                themeVariant="light"
+                onChange={(_, selectedDate) => {
+                  setShowStartPicker(Platform.OS === "ios");
+                  if (selectedDate) {
+                    // If end date is before new start, push it forward
+                    const newEnd = data.endDate < selectedDate ? selectedDate : data.endDate;
+                    update({ startDate: selectedDate, endDate: newEnd });
+                  }
+                }}
+              />
+            </View>
           )}
 
-          {/* End Date (multi-day only) */}
-          {!data.isSingleDay && (
-            <>
-              <TouchableOpacity
-                style={styles.dateButton}
-                onPress={() => setShowEndPicker(true)}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="calendar-outline" size={18} color="#0D5C3A" />
-                <Text style={styles.dateText}>End: {formatDate(data.endDate)}</Text>
-                <Ionicons name="chevron-down" size={16} color="#999" />
-              </TouchableOpacity>
+          {/* End Date */}
+          <TouchableOpacity
+            style={styles.dateButton}
+            onPress={() => setShowEndPicker(true)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="calendar-outline" size={18} color="#0D5C3A" />
+            <Text style={styles.dateText}>End: {formatDate(data.endDate)}</Text>
+            <Ionicons name="chevron-down" size={16} color="#999" />
+          </TouchableOpacity>
 
-              {showEndPicker && (
-                <DateTimePicker
-                  value={data.endDate}
-                  mode="date"
-                  display={Platform.OS === "ios" ? "spinner" : "default"}
-                  minimumDate={data.startDate}
-                  onChange={(_, selectedDate) => {
-                    setShowEndPicker(Platform.OS === "ios");
-                    if (selectedDate) update({ endDate: selectedDate });
-                  }}
-                />
-              )}
-            </>
+          {showEndPicker && (
+            <View style={styles.datePickerWrapper}>
+              <DateTimePicker
+                value={data.endDate}
+                mode="date"
+                display={Platform.OS === "ios" ? "spinner" : "default"}
+                minimumDate={data.startDate}
+                themeVariant="light"
+                onChange={(_, selectedDate) => {
+                  setShowEndPicker(Platform.OS === "ios");
+                  if (selectedDate) update({ endDate: selectedDate });
+                }}
+              />
+            </View>
           )}
         </View>
 
@@ -342,10 +319,6 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
-  fieldHint: {
-    fontSize: 12,
-    color: "#999",
-  },
 
   // Text input
   textInput: {
@@ -364,24 +337,6 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
 
-  // Toggle row
-  toggleRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  toggleInfo: { gap: 2 },
-  switchRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  switchLabel: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#888",
-  },
-
   // Date buttons
   dateButton: {
     flexDirection: "row",
@@ -398,6 +353,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "600",
     color: "#333",
+  },
+  datePickerWrapper: {
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    overflow: "hidden",
   },
 
   // Player presets

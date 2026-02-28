@@ -38,19 +38,23 @@ export default function CreateInvitationalWizard() {
   const [submitting, setSubmitting] = useState(false);
 
   // Step 1 state
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const dayAfter = new Date();
+  dayAfter.setDate(dayAfter.getDate() + 2);
+
   const [basics, setBasics] = useState<BasicsData>({
     name: "",
     avatarUri: null,
-    startDate: new Date(),
-    endDate: new Date(),
-    isSingleDay: true,
+    startDate: tomorrow,
+    endDate: dayAfter,
     maxPlayers: 24,
     overallScoring: "cumulative",
     handicapMethod: "swingthoughts",
   });
 
-  // Step 2 state
-  const [rounds, setRounds] = useState<RoundData[]>([createEmptyRound()]);
+  // Step 2 state — default first round to event start date
+  const [rounds, setRounds] = useState<RoundData[]>([createEmptyRound(tomorrow)]);
 
   // Step 3 state
   const [invitedPlayers, setInvitedPlayers] = useState<InvitedPlayer[]>([]);
@@ -141,8 +145,7 @@ export default function CreateInvitationalWizard() {
 
         // Schedule
         startDate: Timestamp.fromDate(basics.startDate),
-        endDate: Timestamp.fromDate(basics.isSingleDay ? basics.startDate : basics.endDate),
-        isSingleDay: basics.isSingleDay,
+        endDate: Timestamp.fromDate(basics.endDate),
 
         // Settings
         maxPlayers: basics.maxPlayers,
@@ -251,6 +254,8 @@ export default function CreateInvitationalWizard() {
           onChange={setRounds}
           onNext={() => setStep(2)}
           onBack={() => setStep(0)}
+          eventStartDate={basics.startDate}
+          eventEndDate={basics.endDate}
         />
       )}
 

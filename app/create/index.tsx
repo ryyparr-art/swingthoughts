@@ -774,7 +774,7 @@ export default function CreateScreen() {
         style={styles.content}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
-        extraScrollHeight={120}
+        extraScrollHeight={Platform.OS === "ios" ? 150 : 80}
         enableOnAndroid={true}
         enableAutomaticScroll={true}
         contentContainerStyle={{ paddingBottom: 100 }}

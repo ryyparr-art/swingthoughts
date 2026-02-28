@@ -42,7 +42,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 /* ================================================================ */
 /* TYPES                                                            */
@@ -711,7 +711,8 @@ export default function LeagueDetail() {
   }
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={styles.container}>
+      <SafeAreaView style={styles.safeTop} edges={["top"]} />
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
@@ -774,6 +775,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#F4EED8",
+  },
+  safeTop: {
+    backgroundColor: "#0D5C3A",
   },
   centered: {
     justifyContent: "center",

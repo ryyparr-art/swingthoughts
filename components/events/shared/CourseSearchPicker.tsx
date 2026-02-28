@@ -4,10 +4,10 @@
  * Search and select a golf course. Firestore-first with Golf Course API fallback.
  * Returns the selected course data to the parent.
  *
- * Used by: RoundEditor, Score posting, Outing creation, Tours (future)
+ * Used by: RoundEditor, Score posting, Outing creation, Invitationals
  *
  * Search strategy:
- *   1. Query Firestore `courses` collection (already-used courses)
+ *   1. Query Firestore `courses` collection (already-cached courses)
  *   2. If <3 results, fallback to Golf Course API
  *   3. Deduplicate by courseId
  */
@@ -82,37 +82,79 @@ export default function CourseSearchPicker({
       const allResults: CourseSelection[] = [];
       const seenIds = new Set<number>();
 
-      // 1. Search Firestore first
+      // 1. Search Firestore first (course_name prefix match)
       try {
-        const searchLower = text.toLowerCase();
         const coursesRef = collection(db, "courses");
+
+        // Firestore stores course_name as-is (mixed case)
+        // Try prefix match on course_name field
+        const searchCapitalized =
+          text.charAt(0).toUpperCase() + text.slice(1);
+
         const q = query(
           coursesRef,
-          where("searchName", ">=", searchLower),
-          where("searchName", "<=", searchLower + "\uf8ff"),
-          orderBy("searchName"),
+          where("course_name", ">=", searchCapitalized),
+          where("course_name", "<=", searchCapitalized + "\uf8ff"),
+          orderBy("course_name"),
           limit(10)
         );
         const snap = await getDocs(q);
 
-        snap.docs.forEach((doc) => {
-          const data = doc.data();
-          const courseId = data.courseId || parseInt(doc.id, 10);
-          if (!seenIds.has(courseId)) {
+        snap.docs.forEach((docSnap) => {
+          const data = docSnap.data();
+          const courseId =
+            typeof data.id === "number"
+              ? data.id
+              : parseInt(docSnap.id, 10);
+
+          if (!isNaN(courseId) && !seenIds.has(courseId)) {
             seenIds.add(courseId);
             allResults.push({
               courseId,
-              courseName: data.courseName || data.name || "Unknown",
-              clubName: data.clubName,
+              courseName: data.course_name || data.courseName || "Unknown",
+              clubName: data.club_name || data.clubName,
               location: {
-                city: data.city || data.location?.city || "",
-                state: data.state || data.location?.state || "",
-                country: data.country || data.location?.country,
+                city: data.location?.city || "",
+                state: data.location?.state || "",
+                country: data.location?.country,
               },
-              holes: data.holes || 18,
             });
           }
         });
+
+        // Also try lowercase prefix if no results
+        if (allResults.length === 0) {
+          const qLower = query(
+            coursesRef,
+            where("course_name", ">=", text),
+            where("course_name", "<=", text + "\uf8ff"),
+            orderBy("course_name"),
+            limit(10)
+          );
+          const snapLower = await getDocs(qLower);
+
+          snapLower.docs.forEach((docSnap) => {
+            const data = docSnap.data();
+            const courseId =
+              typeof data.id === "number"
+                ? data.id
+                : parseInt(docSnap.id, 10);
+
+            if (!isNaN(courseId) && !seenIds.has(courseId)) {
+              seenIds.add(courseId);
+              allResults.push({
+                courseId,
+                courseName: data.course_name || data.courseName || "Unknown",
+                clubName: data.club_name || data.clubName,
+                location: {
+                  city: data.location?.city || "",
+                  state: data.location?.state || "",
+                  country: data.location?.country,
+                },
+              });
+            }
+          });
+        }
       } catch (firestoreError) {
         console.warn("Firestore course search error:", firestoreError);
       }
@@ -144,7 +186,6 @@ export default function CourseSearchPicker({
                     state: c.location?.state || "",
                     country: c.location?.country,
                   },
-                  holes: c.holes || 18,
                 });
               }
             });

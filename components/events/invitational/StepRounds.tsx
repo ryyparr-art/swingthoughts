@@ -4,6 +4,8 @@
  * Add one or more rounds to the invitational.
  * Each round uses the shared RoundEditor component.
  * Minimum 1 round required to proceed.
+ *
+ * Receives event date range from StepBasics to constrain round dates.
  */
 
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -28,6 +30,10 @@ interface StepRoundsProps {
   onChange: (rounds: RoundData[]) => void;
   onNext: () => void;
   onBack: () => void;
+  /** Event start date from StepBasics — constrains round date pickers */
+  eventStartDate: Date;
+  /** Event end date from StepBasics — constrains round date pickers */
+  eventEndDate: Date;
 }
 
 export default function StepRounds({
@@ -35,6 +41,8 @@ export default function StepRounds({
   onChange,
   onNext,
   onBack,
+  eventStartDate,
+  eventEndDate,
 }: StepRoundsProps) {
   const handleRoundChange = (index: number, updated: RoundData) => {
     const newRounds = [...rounds];
@@ -45,7 +53,8 @@ export default function StepRounds({
   const handleAddRound = () => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    onChange([...rounds, createEmptyRound()]);
+    // Default new round date to event start
+    onChange([...rounds, createEmptyRound(eventStartDate)]);
   };
 
   const handleRemoveRound = (index: number) => {
@@ -83,6 +92,8 @@ export default function StepRounds({
             onChange={(updated) => handleRoundChange(index, updated)}
             onRemove={() => handleRemoveRound(index)}
             canRemove={rounds.length > 1}
+            minDate={eventStartDate}
+            maxDate={eventEndDate}
           />
         ))}
 
