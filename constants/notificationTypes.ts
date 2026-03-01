@@ -35,6 +35,7 @@ export interface Notification {
   inviteId?: string;
   roundId?: string;
   rivalryId?: string;
+  invitationalId?: string;
   changeType?: string;
 
   // Navigation

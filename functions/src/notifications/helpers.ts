@@ -75,6 +75,7 @@ export function generateGroupedMessage(
     pollQuestion?: string;
     pollChoice?: string;
     message?: string;
+    invitationalName?: string;
   }
 ): string {
   const othersCount = actorCount - 1;
@@ -233,6 +234,12 @@ export function generateGroupedMessage(
       return extraData?.message || `Your outing at ${extraData?.courseName || "the course"} is complete`;
     case "rivalry_update":
       return extraData?.message || `Rivalry update`;
+
+    // Invitational notifications
+    case "invitational_welcome":
+      return `Welcome to ${extraData?.invitationalName || "the invitational"}! ${actorName} invited you. Tap to view the event. 🏆`;
+    case "invitational_player_joined":
+      return `${actorName} joined ${extraData?.invitationalName || "your invitational"} 🎉`;
     
     default:
       return `${actorName} interacted with you`;
@@ -263,6 +270,7 @@ export async function createNotificationDocument(params: CreateNotificationParam
     inviteId,
     roundId,
     rivalryId,
+    invitationalId,
     changeType,
     message,
     regionKey,
@@ -385,6 +393,7 @@ export async function createNotificationDocument(params: CreateNotificationParam
     if (inviteId) notificationData.inviteId = inviteId;
     if (roundId) notificationData.roundId = roundId;
     if (rivalryId) notificationData.rivalryId = rivalryId;
+    if (invitationalId) notificationData.invitationalId = invitationalId;
     if (changeType) notificationData.changeType = changeType;
     if (params.navigationTarget) notificationData.navigationTarget = params.navigationTarget;
     if (params.navigationUserId) notificationData.navigationUserId = params.navigationUserId;
@@ -423,6 +432,7 @@ export async function createNotificationDocument(params: CreateNotificationParam
   if (inviteId) notificationData.inviteId = inviteId;
   if (roundId) notificationData.roundId = roundId;
   if (rivalryId) notificationData.rivalryId = rivalryId;
+  if (invitationalId) notificationData.invitationalId = invitationalId;
   if (changeType) notificationData.changeType = changeType;
   if (params.navigationTarget) notificationData.navigationTarget = params.navigationTarget;
   if (params.navigationUserId) notificationData.navigationUserId = params.navigationUserId;

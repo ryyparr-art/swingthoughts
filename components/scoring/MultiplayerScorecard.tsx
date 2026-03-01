@@ -24,7 +24,21 @@
  * File: components/scoring/MultiplayerScorecard.tsx
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  getBack9Par,
+  getBack9Yardage,
+  getFront9Par,
+  getFront9Yardage,
+  getStrokesForHole,
+  getTotalPar,
+  getTotalYardage,
+} from "@/components/leagues/post-score/helpers";
+import type { HoleInfo } from "@/components/leagues/post-score/types";
+import { getFormatById } from "@/constants/gameFormats";
+import { soundPlayer } from "@/utils/soundPlayer";
+import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Modal,
   Platform,
@@ -35,22 +49,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
-import { soundPlayer } from "@/utils/soundPlayer";
-import {
-  getStrokesForHole,
-  getFront9Par,
-  getBack9Par,
-  getTotalPar,
-  getFront9Yardage,
-  getBack9Yardage,
-  getTotalYardage,
-} from "@/components/leagues/post-score/helpers";
-import { getFormatById, getStablefordPoints } from "@/constants/gameFormats";
-import type { HoleInfo } from "@/components/leagues/post-score/types";
-import type { PlayerSlot, HolePlayerData } from "./scoringTypes";
 import PostHoleStatsSheet from "./PostHoleStatsSheet";
+import type { HolePlayerData, PlayerSlot } from "./scoringTypes";
 
 // ============================================================================
 // TYPES
@@ -887,21 +887,25 @@ const cs = StyleSheet.create({
   },
 
   // ── Score Display (read-only) — handwritten font ────────────
+  // Uses absolute fill so the Text centers itself via textAlign
+  // regardless of Caveat's font metrics or device text scale.
   scoreDisplay: {
     width: 36,
     height: 36,
     borderRadius: 4,
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: -2,
   },
   scoreText: {
-    fontSize: 30,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    textAlign: "center",
+    textAlignVertical: "center",
+    fontSize: 28,
     fontFamily: HANDWRITTEN,
     fontWeight: "700",
-    lineHeight: 34,
     includeFontPadding: false,
-    textAlignVertical: "center",
   },
   netSubscript: {
     fontSize: 10,
@@ -909,17 +913,16 @@ const cs = StyleSheet.create({
     fontWeight: "800",
     position: "absolute",
     bottom: 0,
-    right: -0,
+    right: 0,
   },
 
   // ── Score Input (edit mode) — handwritten font ──────────────
   scoreInput: {
     width: 36,
     height: 36,
-    fontSize: 30,
+    fontSize: 28,
     fontFamily: HANDWRITTEN,
     fontWeight: "700",
-    lineHeight: 34,
     textAlign: "center",
     textAlignVertical: "center",
     includeFontPadding: false,
@@ -929,8 +932,6 @@ const cs = StyleSheet.create({
     borderColor: GOLD,
     color: "#333",
     padding: 0,
-    paddingRight: 2,
-    paddingTop: Platform.OS === "ios" ? 2 : 0,
   },
 
   // ── Score cell color coding ─────────────────────────────────

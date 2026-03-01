@@ -13,6 +13,7 @@
  * Updates:
  *   - Handwritten Caveat font on score cells (matching MultiplayerScorecard)
  *   - Larger stroke dots, net subscript, and cell padding
+ *   - Fixed score centering across devices
  *
  * File: components/scoring/RoundScorecardViewer.tsx
  */
@@ -331,7 +332,6 @@ export default function RoundScorecardViewer({
   );
 
   const renderYardageRow = () => {
-    // Only show if yardage data exists
     const hasYardage = holes.some(h => h.yardage !== null);
     if (!hasYardage) return null;
 
@@ -402,7 +402,6 @@ export default function RoundScorecardViewer({
     const backTotal = is18 ? getPlayerTotal(player.playerId, 10, 18) : null;
     const grandTotal = getPlayerTotal(player.playerId, 1, holeCount);
 
-    // FIR/GIR totals for the current nine
     const nineFrom = activeTab === "back" ? 10 : 1;
     const nineTo = activeTab === "back" ? 18 : (is18 ? 9 : holeCount);
     const firNine = getStatCount(player.playerId, "fir", nineFrom, nineTo);
@@ -410,7 +409,6 @@ export default function RoundScorecardViewer({
     const firTotal = is18 ? getStatCount(player.playerId, "fir", 1, 18) : firNine;
     const girTotal = is18 ? getStatCount(player.playerId, "gir", 1, 18) : girNine;
 
-    // Check if this player has any stat data
     const hasStats = (() => {
       for (let h = 1; h <= holeCount; h++) {
         const fir = getStat(h, player.playerId, "fir");
@@ -875,21 +873,25 @@ const cs = StyleSheet.create({
   },
 
   // ── Score Display — handwritten font ────────────────────────
+  // Uses absolute fill so the Text centers itself via textAlign
+  // regardless of Caveat's font metrics or device text scale.
   scoreDisplay: {
     width: 36,
     height: 36,
     borderRadius: 4,
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: -2,
   },
   scoreText: {
-    fontSize: 30,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    textAlign: "center",
+    textAlignVertical: "center",
+    fontSize: 28,
     fontFamily: HANDWRITTEN,
     fontWeight: "700",
-    lineHeight: 34,
     includeFontPadding: false,
-    textAlignVertical: "center",
   },
   netSubscript: {
     fontSize: 10,
@@ -897,7 +899,7 @@ const cs = StyleSheet.create({
     fontWeight: "800",
     position: "absolute",
     bottom: 0,
-    right: -0,
+    right: 0,
   },
 
   // ── Score cell color coding ─────────────────────────────────

@@ -2,11 +2,15 @@
  * RoundEditor
  *
  * Editable card for a single round within an invitational/tour.
- * Contains: course picker, date, optional tee time, format + scoring type.
+ * Contains: course picker, date, optional tee time, format (modal), scoring type.
+ *
+ * Format selection opens FormatPickerModal (full card-based picker).
+ * Scoring type (gross/net) stays inline.
  *
  * Used by: StepRounds in create wizard, Invitational Home (edit rounds)
  */
 
+import { getFormatById } from "@/constants/gameFormats";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -22,7 +26,9 @@ import {
 } from "react-native";
 
 import CourseSearchPicker, { CourseSelection } from "./CourseSearchPicker";
-import FormatPicker, { GolfFormat, ScoringType } from "./FormatPicker";
+import FormatPickerModal from "./FormatPickerModal";
+
+export type ScoringType = "gross" | "net";
 
 export interface RoundData {
   id: string;
@@ -30,7 +36,8 @@ export interface RoundData {
   date: Date;
   hasTeeTime: boolean;
   teeTime: Date; // time portion only
-  format: GolfFormat;
+  /** Format ID from gameFormats (e.g. "stroke_play", "best_ball", "scramble") */
+  formatId: string;
   scoringType: ScoringType;
 }
 
@@ -57,6 +64,7 @@ export default function RoundEditor({
 }: RoundEditorProps) {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
+  const [showFormatModal, setShowFormatModal] = useState(false);
 
   const update = (partial: Partial<RoundData>) => {
     onChange({ ...round, ...partial });
@@ -77,6 +85,10 @@ export default function RoundEditor({
       day: "numeric",
     });
   };
+
+  // Get the display name for the current format
+  const currentFormat = getFormatById(round.formatId);
+  const formatDisplayName = currentFormat?.name || "Stroke Play";
 
   return (
     <View style={styles.container}>
@@ -192,15 +204,58 @@ export default function RoundEditor({
         )}
       </View>
 
-      {/* Format */}
+      {/* Format — opens modal */}
       <View style={styles.field}>
-        <FormatPicker
-          format={round.format}
-          scoringType={round.scoringType}
-          onFormatChange={(format) => update({ format })}
-          onScoringTypeChange={(scoringType) => update({ scoringType })}
-        />
+        <Text style={styles.fieldLabel}>Format</Text>
+        <TouchableOpacity
+          style={styles.formatButton}
+          onPress={() => {
+            soundPlayer.play("click");
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            setShowFormatModal(true);
+          }}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="golf-outline" size={18} color="#0D5C3A" />
+          <Text style={styles.formatButtonText}>{formatDisplayName}</Text>
+          <Text style={styles.formatChangeText}>Change</Text>
+          <Ionicons name="chevron-forward" size={16} color="#0D5C3A" />
+        </TouchableOpacity>
       </View>
+
+      {/* Scoring Type — inline gross/net toggle */}
+      <View style={styles.field}>
+        <Text style={styles.fieldLabel}>Scoring</Text>
+        <View style={styles.scoringRow}>
+          {(["gross", "net"] as const).map((type) => (
+            <TouchableOpacity
+              key={type}
+              style={[styles.scoringOption, round.scoringType === type && styles.scoringOptionActive]}
+              onPress={() => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                update({ scoringType: type });
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.scoringLabel, round.scoringType === type && styles.scoringLabelActive]}>
+                {type === "gross" ? "Gross" : "Net"}
+              </Text>
+              <Text style={[styles.scoringDesc, round.scoringType === type && styles.scoringDescActive]}>
+                {type === "gross" ? "Raw scores" : "Handicap-adjusted"}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      </View>
+
+      {/* Format Picker Modal */}
+      <FormatPickerModal
+        visible={showFormatModal}
+        currentFormatId={round.formatId}
+        onSelect={(formatId) => update({ formatId })}
+        onClose={() => setShowFormatModal(false)}
+      />
     </View>
   );
 }
@@ -219,7 +274,7 @@ export function createEmptyRound(defaultDate?: Date): RoundData {
     date: defaultDate || new Date(),
     hasTeeTime: false,
     teeTime: defaultTeeTime,
-    format: "stroke",
+    formatId: "stroke_play",
     scoringType: "gross",
   };
 }
@@ -316,5 +371,62 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
     color: "#888",
+  },
+
+  // Format button
+  formatButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    padding: 12,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "#E0E0E0",
+  },
+  formatButtonText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#333",
+  },
+  formatChangeText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#0D5C3A",
+  },
+
+  // Scoring type
+  scoringRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  scoringOption: {
+    flex: 1,
+    backgroundColor: "#FFF",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 2,
+    borderColor: "#E0E0E0",
+    gap: 2,
+  },
+  scoringOptionActive: {
+    borderColor: "#0D5C3A",
+    backgroundColor: "rgba(13, 92, 58, 0.04)",
+  },
+  scoringLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#333",
+  },
+  scoringLabelActive: {
+    color: "#0D5C3A",
+  },
+  scoringDesc: {
+    fontSize: 11,
+    color: "#999",
+  },
+  scoringDescActive: {
+    color: "#0D5C3A",
   },
 });

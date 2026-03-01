@@ -78,6 +78,9 @@ export const GROUPABLE_TYPES = {
     "round_invite",
     "round_complete",
     "round_notable",
+    // Invitational notifications (always individual)
+    "invitational_welcome",
+    "invitational_player_joined",
   ],
 };
 
@@ -111,6 +114,7 @@ export interface CreateNotificationParams {
   inviteId?: string;
   roundId?: string;
   rivalryId?: string;
+  invitationalId?: string;
   changeType?: string;
   message: string;
   regionKey?: string;

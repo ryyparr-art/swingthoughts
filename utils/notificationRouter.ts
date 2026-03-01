@@ -54,7 +54,6 @@ export function navigateForNotification(notification: Notification, router: Rout
     // ==========================================
     case "outing_complete":
       if (notification.roundId) {
-        // Open the player's group round scorecard
         const uid = auth.currentUser?.uid;
         if (uid) {
           router.push(`/profile/${uid}?tab=rounds`);
@@ -65,8 +64,6 @@ export function navigateForNotification(notification: Notification, router: Rout
 
     case "rivalry_update":
       if (notification.rivalryId) {
-        // rivalryId format: "playerAId_playerBId" (sorted alphabetically)
-        // Navigate to the OTHER player's profile
         const ids = notification.rivalryId.split("_");
         const currentUserId = auth.currentUser?.uid;
         const rivalId = ids.find((id: string) => id !== currentUserId) || ids[0];
@@ -74,6 +71,22 @@ export function navigateForNotification(notification: Notification, router: Rout
         return true;
       }
       return false;
+
+    // ==========================================
+    // INVITATIONAL
+    // ==========================================
+    case "invitational_welcome":
+    case "invitational_player_joined":
+      if (notification.invitationalId) {
+        router.push({
+          pathname: "/invitationals/home" as any,
+          params: { invitationalId: notification.invitationalId },
+        });
+        return true;
+      }
+      // Fallback to events hub if no ID
+      router.push("/events" as any);
+      return true;
 
     // ==========================================
     // HOLE-IN-ONE
@@ -146,7 +159,6 @@ export function navigateForNotification(notification: Notification, router: Rout
         router.push(`/messages/${notification.threadId}`);
         return true;
       }
-      // Fallback: construct deterministic ID for legacy 1:1 notifications
       const messageActorId = notification.lastActorId || notification.actorId;
       const currentUserId = auth.currentUser?.uid;
       if (messageActorId && currentUserId) {
@@ -234,7 +246,6 @@ export function navigateForNotification(notification: Notification, router: Rout
       return true;
 
     case "league_removed":
-      // No navigation, just mark as read
       return false;
 
     case "league_manager_invite":

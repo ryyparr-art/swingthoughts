@@ -2,9 +2,12 @@
  * CreateInvitationalWizard
  *
  * Container component that manages the 3-step wizard:
- *   Step 1: Basics (name, dates, scoring, handicap)
+ *   Step 1: Basics (name, dates, rounds count, scoring, handicap, points table)
  *   Step 2: Rounds (course, date, tee time, format per round)
  *   Step 3: Invite (partners, ghost players)
+ *
+ * When moving from Step 1 → Step 2, the rounds array is synced to
+ * match numberOfRounds (adding/removing from the end as needed).
  *
  * All-or-nothing: nothing is saved to Firestore until the final
  * "Create Invitational" button on Step 3. Backing out = no data.
@@ -25,7 +28,7 @@ import React, { useState } from "react";
 import { Alert, StyleSheet, Text, View } from "react-native";
 
 import { RoundData, createEmptyRound } from "../shared/RoundEditor";
-import StepBasics, { BasicsData } from "./StepBasics";
+import StepBasics, { BasicsData, DEFAULT_POINTS_TABLE } from "./StepBasics";
 import StepInvite, { InvitedPlayer } from "./StepInvite";
 import StepRounds from "./StepRounds";
 
@@ -48,16 +51,47 @@ export default function CreateInvitationalWizard() {
     avatarUri: null,
     startDate: tomorrow,
     endDate: dayAfter,
+    numberOfRounds: 2,
     maxPlayers: 24,
     overallScoring: "cumulative",
     handicapMethod: "swingthoughts",
+    pointsTable: [...DEFAULT_POINTS_TABLE],
   });
 
-  // Step 2 state — default first round to event start date
-  const [rounds, setRounds] = useState<RoundData[]>([createEmptyRound(tomorrow)]);
+  const [rounds, setRounds] = useState<RoundData[]>([
+    createEmptyRound(tomorrow),
+    createEmptyRound(tomorrow),
+  ]);
 
   // Step 3 state
   const [invitedPlayers, setInvitedPlayers] = useState<InvitedPlayer[]>([]);
+
+  /**
+   * Sync rounds array to match basics.numberOfRounds.
+   * Called when transitioning from Step 1 → Step 2.
+   * Adds empty rounds to the end or removes from the end.
+   */
+  const syncRoundsToCount = () => {
+    const target = basics.numberOfRounds;
+    let updated = [...rounds];
+
+    if (updated.length < target) {
+      // Add rounds, spreading dates across the event window
+      while (updated.length < target) {
+        updated.push(createEmptyRound(basics.startDate));
+      }
+    } else if (updated.length > target) {
+      // Remove from the end
+      updated = updated.slice(0, target);
+    }
+
+    setRounds(updated);
+  };
+
+  const handleGoToStep2 = () => {
+    syncRoundsToCount();
+    setStep(1);
+  };
 
   const handleSubmit = async () => {
     if (submitting) return;
@@ -86,7 +120,6 @@ export default function CreateInvitationalWizard() {
 
       // Build roster
       const roster = [
-        // Host is always on the roster as accepted
         {
           userId: currentUserId,
           displayName: hostName,
@@ -96,7 +129,6 @@ export default function CreateInvitationalWizard() {
           status: "accepted",
           isGhost: false,
         },
-        // Invited players
         ...invitedPlayers.map((p) => ({
           userId: p.userId,
           displayName: p.displayName,
@@ -106,8 +138,8 @@ export default function CreateInvitationalWizard() {
           status: p.isGhost ? "ghost" : "invited",
           isGhost: p.isGhost,
           ghostName: p.ghostName || null,
-          ghostEmail: p.ghostEmail || null,
           ghostPhone: p.ghostPhone || null,
+          inviteCode: p.inviteCode || null,
           ghostClaimToken: null,
         })),
       ];
@@ -126,7 +158,7 @@ export default function CreateInvitationalWizard() {
               hour12: true,
             })
           : null,
-        format: r.format,
+        formatId: r.formatId,
         scoringType: r.scoringType,
         status: "upcoming",
         outingId: null,
@@ -148,9 +180,13 @@ export default function CreateInvitationalWizard() {
         endDate: Timestamp.fromDate(basics.endDate),
 
         // Settings
+        numberOfRounds: basics.numberOfRounds,
         maxPlayers: basics.maxPlayers,
         overallScoring: basics.overallScoring,
         handicapMethod: basics.handicapMethod,
+
+        // Points table (only relevant for "points" scoring)
+        pointsTable: basics.overallScoring === "points" ? basics.pointsTable : null,
 
         // Roster
         roster,
@@ -244,7 +280,7 @@ export default function CreateInvitationalWizard() {
         <StepBasics
           data={basics}
           onChange={setBasics}
-          onNext={() => setStep(1)}
+          onNext={handleGoToStep2}
         />
       )}
 
@@ -268,6 +304,7 @@ export default function CreateInvitationalWizard() {
           onSubmit={handleSubmit}
           submitting={submitting}
           maxPlayers={basics.maxPlayers}
+          invitationalName={basics.name}
         />
       )}
     </View>
@@ -279,8 +316,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#F4EED8",
   },
-
-  // Progress bar
   progressBar: {
     flexDirection: "row",
     alignItems: "center",

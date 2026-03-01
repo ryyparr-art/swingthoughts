@@ -21,7 +21,7 @@ import {
 } from "@/utils/rateLimitHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
 
-import { Video } from "expo-av";
+import { AVPlaybackStatus, Video } from "expo-av";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, where } from "firebase/firestore";
@@ -115,12 +115,19 @@ export default function CreateScreen() {
   const [trimEnd, setTrimEnd] = useState(30);
   const [showVideoTrimmer, setShowVideoTrimmer] = useState(false);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
+  const [currentVideoTime, setCurrentVideoTime] = useState(0);
 
   // Refs
   const videoRef = useRef<Video>(null);
   const textInputRef = useRef<TextInput>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isInitialLoadRef = useRef(false);
+
+  // Keep trim bounds in refs for playback status callback
+  const trimStartRef = useRef(trimStart);
+  const trimEndRef = useRef(trimEnd);
+  useEffect(() => { trimStartRef.current = trimStart; }, [trimStart]);
+  useEffect(() => { trimEndRef.current = trimEnd; }, [trimEnd]);
 
   // User data
   const [userData, setUserData] = useState<any>(null);
@@ -279,6 +286,7 @@ export default function CreateScreen() {
       setMediaType("video");
       setImageUris([]);
       setIsVideoPlaying(false);
+      setCurrentVideoTime(0);
       setTrimStart(0);
       setTrimEnd(Math.min(result.durationSeconds, MAX_VIDEO_DURATION));
       setShowVideoTrimmer(true);
@@ -318,6 +326,7 @@ export default function CreateScreen() {
     setMediaType(null);
     setShowVideoTrimmer(false);
     setIsVideoPlaying(false);
+    setCurrentVideoTime(0);
     setMediaAspectRatio(null);
   };
 
@@ -383,8 +392,20 @@ export default function CreateScreen() {
   };
 
   /* ---------------------------------------------------------------- */
-  /* VIDEO PLAYBACK                                                   */
+  /* VIDEO PLAYBACK & TRIM                                            */
   /* ---------------------------------------------------------------- */
+
+  /** Track playback position for the filmstrip playhead + loop within trim range */
+  const onPlaybackStatusUpdate = useCallback((status: AVPlaybackStatus) => {
+    if (!status.isLoaded) return;
+    const posSeconds = (status.positionMillis || 0) / 1000;
+    setCurrentVideoTime(posSeconds);
+
+    // Loop within trim range
+    if (posSeconds >= trimEndRef.current) {
+      videoRef.current?.setPositionAsync(trimStartRef.current * 1000);
+    }
+  }, []);
 
   const toggleVideoPlayback = async () => {
     if (!videoRef.current) return;
@@ -392,22 +413,31 @@ export default function CreateScreen() {
       await videoRef.current.pauseAsync();
       setIsVideoPlaying(false);
     } else {
+      // Start from trim start if outside range
+      const status = await videoRef.current.getStatusAsync();
+      if (status.isLoaded) {
+        const pos = (status.positionMillis || 0) / 1000;
+        if (pos < trimStart || pos >= trimEnd) {
+          await videoRef.current.setPositionAsync(trimStart * 1000);
+        }
+      }
       await videoRef.current.playAsync();
       setIsVideoPlaying(true);
     }
   };
 
-  const seekToTrimStart = async () => {
-    if (videoRef.current) {
-      await videoRef.current.setPositionAsync(trimStart * 1000);
-    }
-  };
+  /** Combined trim change handler from filmstrip trimmer */
+  const handleTrimChange = useCallback((start: number, end: number) => {
+    setTrimStart(start);
+    setTrimEnd(end);
+  }, []);
 
-  const handleTrimStartChange = (value: number) => {
-    setTrimStart(value);
-    if (trimEnd - value > MAX_VIDEO_DURATION) setTrimEnd(value + MAX_VIDEO_DURATION);
-    if (trimEnd <= value) setTrimEnd(Math.min(value + 1, videoDuration));
-  };
+  /** Seek video to a specific position (called when handle drag ends) */
+  const handleSeekToPosition = useCallback(async (seconds: number) => {
+    if (videoRef.current) {
+      await videoRef.current.setPositionAsync(seconds * 1000);
+    }
+  }, []);
 
   /* ---------------------------------------------------------------- */
   /* AUTOCOMPLETE                                                     */
@@ -792,6 +822,7 @@ export default function CreateScreen() {
           trimEnd={trimEnd}
           showVideoTrimmer={showVideoTrimmer}
           isVideoPlaying={isVideoPlaying}
+          currentVideoTime={currentVideoTime}
           currentImageIndex={currentImageIndex}
           setCurrentImageIndex={setCurrentImageIndex}
           onAddMedia={handleAddMedia}
@@ -799,9 +830,9 @@ export default function CreateScreen() {
           onRemoveImage={handleRemoveImage}
           onRemoveVideo={handleRemoveVideo}
           onToggleVideoPlayback={toggleVideoPlayback}
-          onTrimStartChange={handleTrimStartChange}
-          onTrimEndChange={setTrimEnd}
-          onSeekToTrimStart={seekToTrimStart}
+          onTrimChange={handleTrimChange}
+          onSeekToPosition={handleSeekToPosition}
+          onPlaybackStatusUpdate={onPlaybackStatusUpdate}
         />
 
         <TypeSelector

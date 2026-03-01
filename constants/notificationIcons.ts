@@ -86,12 +86,22 @@ export const NOTIFICATION_ICONS: Record<string, NotificationIconConfig> = {
   // League - Announcements
   league_announcement: { icon: "megaphone", color: "#0D5C3A" },
 
+  // Invitational
+  invitational_welcome: { icon: "trophy", color: "#B8860B" },
+  invitational_player_joined: { icon: "person-add", color: "#0D5C3A" },
+
   // Challenge
   challenge_earned: { icon: "trophy", color: "#FFD700" },
   challenge_tier: { icon: "star", color: "#FFD700" },
   challenge_progress: { icon: "flag", color: "#0D5C3A" },
   dtp_claimed: { icon: "location", color: "#D32F2F" },
   dtp_lost: { icon: "location", color: "#D32F2F" },
+
+  // Round
+  round_invite: { icon: "golf", color: "#0D5C3A" },
+  round_complete: { icon: "checkmark-circle", color: "#34C759" },
+  outing_complete: { icon: "flag", color: "#0D5C3A" },
+  rivalry_update: { icon: "git-compare", color: "#9C27B0" },
 
   // System
   system: { icon: "information-circle", color: "#8E8E93" },

@@ -1,18 +1,21 @@
 /**
  * StepInvite — Wizard Step 3
  *
- * Invite players from partners list, add ghost players,
- * or share an invite link. Final "Create Invitational" button.
+ * Two invite paths:
+ *   1. On-platform: Search partners → toggle to invite → push notification on create
+ *   2. Off-platform: "Invite via Text" → contacts picker → ghost entry with
+ *      invite code → SMS with pre-filled message
  *
- * Ghost players: commissioner enters a name (+ optional email/phone)
- * for players not on the app. They appear on the roster and can
- * claim their data later.
+ * Ghost players get a 6-character invite code. New users enter the code
+ * during onboarding to auto-join the invitational.
  */
 
 import { db } from "@/constants/firebaseConfig";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
+import * as Contacts from "expo-contacts";
 import * as Haptics from "expo-haptics";
+import * as SMS from "expo-sms";
 import {
   collection,
   getDocs,
@@ -33,14 +36,18 @@ import {
   View,
 } from "react-native";
 
+// ============================================================================
+// TYPES
+// ============================================================================
+
 export interface InvitedPlayer {
-  userId: string | null;       // null for ghost players
+  userId: string | null; // null for ghost players
   displayName: string;
   avatar?: string;
   handicap?: number;
   ghostName?: string;
-  ghostEmail?: string;
   ghostPhone?: string;
+  inviteCode?: string; // 6-char code for ghost players
   isGhost: boolean;
 }
 
@@ -52,6 +59,8 @@ interface StepInviteProps {
   onSubmit: () => void;
   submitting: boolean;
   maxPlayers: number;
+  /** Invitational name — used in the SMS invite message */
+  invitationalName: string;
 }
 
 interface PartnerOption {
@@ -61,6 +70,41 @@ interface PartnerOption {
   handicap?: number;
 }
 
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+/** Generate a 6-character alphanumeric invite code (uppercase) */
+function generateInviteCode(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // No I/O/1/0 to avoid confusion
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+}
+
+/** Extract the best phone number from a contact */
+function getPhoneNumber(contact: Contacts.Contact): string | null {
+  if (!contact.phoneNumbers || contact.phoneNumbers.length === 0) return null;
+  // Prefer mobile, then any
+  const mobile = contact.phoneNumbers.find(
+    (p) => p.label?.toLowerCase().includes("mobile") || p.label?.toLowerCase().includes("cell")
+  );
+  return (mobile || contact.phoneNumbers[0])?.number || null;
+}
+
+/** Get display name from contact */
+function getContactName(contact: Contacts.Contact): string {
+  if (contact.name) return contact.name;
+  const parts = [contact.firstName, contact.lastName].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : "Unknown";
+}
+
+// ============================================================================
+// COMPONENT
+// ============================================================================
+
 export default function StepInvite({
   currentUserId,
   invitedPlayers,
@@ -69,13 +113,11 @@ export default function StepInvite({
   onSubmit,
   submitting,
   maxPlayers,
+  invitationalName,
 }: StepInviteProps) {
   const [partners, setPartners] = useState<PartnerOption[]>([]);
   const [loadingPartners, setLoadingPartners] = useState(true);
   const [searchText, setSearchText] = useState("");
-  const [showGhostForm, setShowGhostForm] = useState(false);
-  const [ghostName, setGhostName] = useState("");
-  const [ghostEmail, setGhostEmail] = useState("");
 
   useEffect(() => {
     loadPartners();
@@ -83,7 +125,6 @@ export default function StepInvite({
 
   const loadPartners = async () => {
     try {
-      // Query partnerships where current user is participant
       const q1 = query(
         collection(db, "partners"),
         where("user1Id", "==", currentUserId)
@@ -99,7 +140,6 @@ export default function StepInvite({
       snap1.docs.forEach((d) => partnerIds.add(d.data().user2Id));
       snap2.docs.forEach((d) => partnerIds.add(d.data().user1Id));
 
-      // Load partner user docs
       const partnerList: PartnerOption[] = [];
       for (const uid of partnerIds) {
         try {
@@ -129,6 +169,7 @@ export default function StepInvite({
     }
   };
 
+  // ── On-platform invite (partners) ────────────────────────
   const isSelected = (userId: string) =>
     invitedPlayers.some((p) => p.userId === userId);
 
@@ -156,37 +197,100 @@ export default function StepInvite({
     }
   };
 
-  const addGhostPlayer = () => {
-    if (!ghostName.trim()) return;
-
+  // ── Off-platform invite (contacts + SMS) ─────────────────
+  const handleInviteViaText = async () => {
     soundPlayer.play("click");
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
+    // Check player limit
     if (invitedPlayers.length >= maxPlayers - 1) {
       Alert.alert("Max Players", `This invitational is limited to ${maxPlayers} players.`);
       return;
     }
 
-    onChange([
-      ...invitedPlayers,
-      {
-        userId: null,
-        displayName: ghostName.trim(),
-        ghostName: ghostName.trim(),
-        ghostEmail: ghostEmail.trim() || undefined,
-        isGhost: true,
-      },
-    ]);
+    // Request contacts permission
+    const { status } = await Contacts.requestPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Contacts Access Needed",
+        "SwingThoughts needs access to your contacts to invite players. You can enable this in Settings.",
+        [{ text: "OK" }]
+      );
+      return;
+    }
 
-    setGhostName("");
-    setGhostEmail("");
-    setShowGhostForm(false);
+    // Open contacts picker
+    const contact = await Contacts.presentContactPickerAsync();
+
+    if (!contact) return; // User cancelled
+
+    const name = getContactName(contact);
+    const phone = getPhoneNumber(contact);
+
+    if (!phone) {
+      Alert.alert(
+        "No Phone Number",
+        `${name} doesn't have a phone number in your contacts. Please add one and try again.`
+      );
+      return;
+    }
+
+    // Generate invite code
+    const inviteCode = generateInviteCode();
+
+    // Add ghost player to roster
+    const ghostPlayer: InvitedPlayer = {
+      userId: null,
+      displayName: name,
+      ghostName: name,
+      ghostPhone: phone,
+      inviteCode,
+      isGhost: true,
+    };
+
+    onChange([...invitedPlayers, ghostPlayer]);
+
+    // Check if SMS is available
+    const smsAvailable = await SMS.isAvailableAsync();
+    if (!smsAvailable) {
+      Alert.alert(
+        "SMS Not Available",
+        `${name} was added to the roster. You'll need to share their invite code (${inviteCode}) manually.`
+      );
+      return;
+    }
+
+    // Compose and open SMS
+    const message = `You've been invited to ${invitationalName || "an invitational"} on SwingThoughts! 🏌️\n\nDownload the app and enter invite code ${inviteCode} during signup to join.\n\nhttps://apps.apple.com/app/swingthoughts/id0000000000`;
+
+    const { result } = await SMS.sendSMSAsync([phone], message);
+
+    if (result === "sent") {
+      soundPlayer.play("postThought");
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
   };
 
+  // ── Remove player ────────────────────────────────────────
   const removePlayer = (index: number) => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     onChange(invitedPlayers.filter((_, i) => i !== index));
+  };
+
+  // ── Resend SMS for ghost player ──────────────────────────
+  const handleResendSMS = async (player: InvitedPlayer) => {
+    if (!player.ghostPhone || !player.inviteCode) return;
+
+    const smsAvailable = await SMS.isAvailableAsync();
+    if (!smsAvailable) {
+      Alert.alert("SMS Not Available", `Invite code: ${player.inviteCode}`);
+      return;
+    }
+
+    const message = `You've been invited to ${invitationalName || "an invitational"} on SwingThoughts! 🏌️\n\nDownload the app and enter invite code ${player.inviteCode} during signup to join.\n\nhttps://apps.apple.com/app/swingthoughts/id0000000000`;
+
+    await SMS.sendSMSAsync([player.ghostPhone], message);
   };
 
   const filteredPartners = partners.filter((p) =>
@@ -219,10 +323,12 @@ export default function StepInvite({
             <Text style={styles.sectionLabel}>Invited</Text>
             {invitedPlayers.map((player, index) => (
               <View key={`invited-${index}`} style={styles.selectedRow}>
-                <View style={[
-                  styles.avatarCircle,
-                  player.isGhost && styles.avatarGhost,
-                ]}>
+                <View
+                  style={[
+                    styles.avatarCircle,
+                    player.isGhost && styles.avatarGhost,
+                  ]}
+                >
                   <Ionicons
                     name={player.isGhost ? "person-outline" : "person"}
                     size={16}
@@ -232,18 +338,36 @@ export default function StepInvite({
                 <View style={styles.selectedInfo}>
                   <Text style={styles.selectedName}>{player.displayName}</Text>
                   {player.isGhost && (
-                    <Text style={styles.ghostLabel}>Ghost Player</Text>
+                    <View style={styles.ghostMetaRow}>
+                      <Text style={styles.ghostLabel}>Off-platform</Text>
+                      {player.inviteCode && (
+                        <View style={styles.codeBadge}>
+                          <Text style={styles.codeBadgeText}>{player.inviteCode}</Text>
+                        </View>
+                      )}
+                    </View>
                   )}
-                  {player.ghostEmail && (
-                    <Text style={styles.ghostMeta}>{player.ghostEmail}</Text>
+                  {player.ghostPhone && (
+                    <Text style={styles.ghostMeta}>{player.ghostPhone}</Text>
                   )}
                 </View>
-                <TouchableOpacity
-                  onPress={() => removePlayer(index)}
-                  style={styles.removeButton}
-                >
-                  <Ionicons name="close-circle" size={20} color="#FF3B30" />
-                </TouchableOpacity>
+                <View style={styles.selectedActions}>
+                  {player.isGhost && player.ghostPhone && (
+                    <TouchableOpacity
+                      onPress={() => handleResendSMS(player)}
+                      style={styles.resendButton}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons name="chatbubble-outline" size={16} color="#0D5C3A" />
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    onPress={() => removePlayer(index)}
+                    style={styles.removeButton}
+                  >
+                    <Ionicons name="close-circle" size={20} color="#FF3B30" />
+                  </TouchableOpacity>
+                </View>
               </View>
             ))}
           </View>
@@ -269,7 +393,9 @@ export default function StepInvite({
             <ActivityIndicator size="small" color="#0D5C3A" style={{ marginTop: 16 }} />
           ) : filteredPartners.length === 0 ? (
             <Text style={styles.emptyText}>
-              {searchText ? "No partners match your search" : "No partners yet — add partners from the messaging tab"}
+              {searchText
+                ? "No partners match your search"
+                : "No partners yet — add partners from the messaging tab"}
             </Text>
           ) : (
             filteredPartners.map((partner) => {
@@ -303,67 +429,23 @@ export default function StepInvite({
           )}
         </View>
 
-        {/* Ghost Player */}
-        <View style={styles.ghostSection}>
+        {/* Invite via Text */}
+        <View style={styles.smsSection}>
           <Text style={styles.sectionLabel}>Not on SwingThoughts?</Text>
-
-          {showGhostForm ? (
-            <View style={styles.ghostForm}>
-              <TextInput
-                style={styles.ghostInput}
-                placeholder="Player name"
-                placeholderTextColor="#999"
-                value={ghostName}
-                onChangeText={setGhostName}
-                autoCapitalize="words"
-              />
-              <TextInput
-                style={styles.ghostInput}
-                placeholder="Email (optional — for invite notification)"
-                placeholderTextColor="#999"
-                value={ghostEmail}
-                onChangeText={setGhostEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
-              <View style={styles.ghostFormActions}>
-                <TouchableOpacity
-                  style={styles.ghostCancelButton}
-                  onPress={() => {
-                    setShowGhostForm(false);
-                    setGhostName("");
-                    setGhostEmail("");
-                  }}
-                >
-                  <Text style={styles.ghostCancelText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.ghostAddButton,
-                    !ghostName.trim() && styles.ghostAddDisabled,
-                  ]}
-                  onPress={addGhostPlayer}
-                  disabled={!ghostName.trim()}
-                >
-                  <Ionicons name="person-add" size={16} color="#FFF" />
-                  <Text style={styles.ghostAddText}>Add Ghost Player</Text>
-                </TouchableOpacity>
-              </View>
+          <TouchableOpacity
+            style={styles.smsButton}
+            onPress={handleInviteViaText}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="chatbubble-ellipses-outline" size={20} color="#B8860B" />
+            <View style={styles.smsButtonTextWrap}>
+              <Text style={styles.smsButtonTitle}>Invite via Text</Text>
+              <Text style={styles.smsButtonDesc}>
+                Pick a contact and send them an invite code
+              </Text>
             </View>
-          ) : (
-            <TouchableOpacity
-              style={styles.addGhostButton}
-              onPress={() => {
-                soundPlayer.play("click");
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                setShowGhostForm(true);
-              }}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="person-add-outline" size={18} color="#B8860B" />
-              <Text style={styles.addGhostText}>Add a Player Manually</Text>
-            </TouchableOpacity>
-          )}
+            <Ionicons name="chevron-forward" size={18} color="#B8860B" />
+          </TouchableOpacity>
         </View>
 
         <View style={{ height: 100 }} />
@@ -408,6 +490,10 @@ export default function StepInvite({
   );
 }
 
+// ============================================================================
+// STYLES
+// ============================================================================
+
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   container: { flex: 1 },
@@ -422,15 +508,8 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 12,
   },
-  countText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#0D5C3A",
-  },
-  countHint: {
-    fontSize: 12,
-    color: "#888",
-  },
+  countText: { fontSize: 14, fontWeight: "700", color: "#0D5C3A" },
+  countHint: { fontSize: 12, color: "#888" },
 
   // Section labels
   sectionLabel: {
@@ -452,21 +531,26 @@ const styles = StyleSheet.create({
     padding: 10,
     gap: 10,
   },
-  selectedInfo: { flex: 1, gap: 1 },
-  selectedName: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#333",
+  selectedInfo: { flex: 1, gap: 2 },
+  selectedName: { fontSize: 14, fontWeight: "600", color: "#333" },
+  ghostMetaRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  ghostLabel: { fontSize: 11, fontWeight: "600", color: "#B8860B" },
+  codeBadge: {
+    backgroundColor: "rgba(184, 134, 11, 0.12)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
-  ghostLabel: {
-    fontSize: 11,
-    fontWeight: "600",
+  codeBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
     color: "#B8860B",
+    letterSpacing: 1,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
   },
-  ghostMeta: {
-    fontSize: 11,
-    color: "#999",
-  },
+  ghostMeta: { fontSize: 11, color: "#999" },
+  selectedActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  resendButton: { padding: 4 },
   removeButton: { padding: 4 },
 
   // Avatar
@@ -478,9 +562,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  avatarGhost: {
-    backgroundColor: "#B8860B",
-  },
+  avatarGhost: { backgroundColor: "#B8860B" },
 
   // Partners section
   partnersSection: { gap: 6 },
@@ -495,11 +577,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E0E0E0",
   },
-  searchInput: {
-    flex: 1,
-    fontSize: 14,
-    color: "#333",
-  },
+  searchInput: { flex: 1, fontSize: 14, color: "#333" },
   emptyText: {
     fontSize: 13,
     color: "#999",
@@ -521,83 +599,24 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(13, 92, 58, 0.03)",
   },
   partnerInfo: { flex: 1, gap: 1 },
-  partnerName: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#333",
-  },
-  partnerHandicap: {
-    fontSize: 12,
-    color: "#888",
-  },
+  partnerName: { fontSize: 14, fontWeight: "600", color: "#333" },
+  partnerHandicap: { fontSize: 12, color: "#888" },
 
-  // Ghost player section
-  ghostSection: {},
-  addGhostButton: {
+  // SMS invite section
+  smsSection: {},
+  smsButton: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: "rgba(184, 134, 11, 0.3)",
-    borderStyle: "dashed",
-  },
-  addGhostText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#B8860B",
-  },
-  ghostForm: {
+    gap: 12,
     backgroundColor: "#FFF",
     borderRadius: 12,
     padding: 14,
-    gap: 10,
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
+    borderWidth: 1.5,
+    borderColor: "rgba(184, 134, 11, 0.3)",
   },
-  ghostInput: {
-    backgroundColor: "#F8F8F8",
-    borderRadius: 10,
-    padding: 12,
-    fontSize: 14,
-    color: "#333",
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-  },
-  ghostFormActions: {
-    flexDirection: "row",
-    gap: 10,
-    marginTop: 4,
-  },
-  ghostCancelButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-  },
-  ghostCancelText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#999",
-  },
-  ghostAddButton: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    backgroundColor: "#B8860B",
-    borderRadius: 10,
-    paddingVertical: 10,
-  },
-  ghostAddDisabled: {
-    opacity: 0.4,
-  },
-  ghostAddText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#FFF",
-  },
+  smsButtonTextWrap: { flex: 1, gap: 2 },
+  smsButtonTitle: { fontSize: 14, fontWeight: "700", color: "#B8860B" },
+  smsButtonDesc: { fontSize: 12, color: "#999" },
 
   // Footer
   footer: {
@@ -620,11 +639,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: "#0D5C3A",
   },
-  backButtonText: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "#0D5C3A",
-  },
+  backButtonText: { fontSize: 15, fontWeight: "700", color: "#0D5C3A" },
   createButton: {
     flex: 1,
     flexDirection: "row",
@@ -635,12 +650,6 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 16,
   },
-  createButtonDisabled: {
-    opacity: 0.6,
-  },
-  createButtonText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#FFF",
-  },
+  createButtonDisabled: { opacity: 0.6 },
+  createButtonText: { fontSize: 16, fontWeight: "700", color: "#FFF" },
 });

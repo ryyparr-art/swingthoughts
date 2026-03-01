@@ -1,25 +1,26 @@
 /**
  * MediaSection Component
  * 
- * Handles image and video display, selection, and trimming
+ * Handles image and video display, selection, and trimming.
+ * Uses VideoFilmstripTrimmer for Instagram-style video trim UI.
  */
 
 import { Ionicons } from "@expo/vector-icons";
-import Slider from "@react-native-community/slider";
 import { ResizeMode, Video } from "expo-av";
 import React from "react";
 import {
-    ActivityIndicator,
-    Dimensions,
-    FlatList,
-    Image,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Dimensions,
+  FlatList,
+  Image,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
-import { MAX_IMAGES, MAX_VIDEO_DURATION } from "./types";
+import { MAX_IMAGES } from "./types";
+import VideoFilmstripTrimmer from "./VideoFilmstripTrimmer";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
@@ -38,6 +39,7 @@ interface MediaSectionProps {
   trimEnd: number;
   showVideoTrimmer: boolean;
   isVideoPlaying: boolean;
+  currentVideoTime?: number;
   // Image carousel
   currentImageIndex: number;
   setCurrentImageIndex: (index: number) => void;
@@ -47,9 +49,9 @@ interface MediaSectionProps {
   onRemoveImage: (index: number) => void;
   onRemoveVideo: () => void;
   onToggleVideoPlayback: () => void;
-  onTrimStartChange: (value: number) => void;
-  onTrimEndChange: (value: number) => void;
-  onSeekToTrimStart: () => void;
+  onTrimChange: (start: number, end: number) => void;
+  onSeekToPosition: (seconds: number) => void;
+  onPlaybackStatusUpdate?: (status: any) => void;
 }
 
 export default function MediaSection({
@@ -65,6 +67,7 @@ export default function MediaSection({
   trimEnd,
   showVideoTrimmer,
   isVideoPlaying,
+  currentVideoTime = 0,
   currentImageIndex,
   setCurrentImageIndex,
   onAddMedia,
@@ -72,9 +75,9 @@ export default function MediaSection({
   onRemoveImage,
   onRemoveVideo,
   onToggleVideoPlayback,
-  onTrimStartChange,
-  onTrimEndChange,
-  onSeekToTrimStart,
+  onTrimChange,
+  onSeekToPosition,
+  onPlaybackStatusUpdate,
 }: MediaSectionProps) {
   // Processing state
   if (isProcessingMedia && !showCropModal) {
@@ -151,9 +154,10 @@ export default function MediaSection({
                 source={{ uri: videoUri }}
                 style={styles.mediaPreview}
                 resizeMode={ResizeMode.COVER}
-                isLooping
+                isLooping={false}
                 isMuted
                 shouldPlay={false}
+                onPlaybackStatusUpdate={onPlaybackStatusUpdate}
               />
 
               {!isVideoPlaying && (
@@ -179,15 +183,16 @@ export default function MediaSection({
               )}
             </View>
 
-            {/* Video Trimmer */}
+            {/* Filmstrip Trimmer — Instagram-style */}
             {showVideoTrimmer && (
-              <VideoTrimmer
+              <VideoFilmstripTrimmer
+                videoUri={videoUri}
                 videoDuration={videoDuration}
                 trimStart={trimStart}
                 trimEnd={trimEnd}
-                onTrimStartChange={onTrimStartChange}
-                onTrimEndChange={onTrimEndChange}
-                onSeekToTrimStart={onSeekToTrimStart}
+                onTrimChange={onTrimChange}
+                currentTime={currentVideoTime}
+                onSeekToPosition={onSeekToPosition}
               />
             )}
 
@@ -213,104 +218,6 @@ export default function MediaSection({
         <Text style={styles.addMediaText}>Add Media</Text>
         <Text style={styles.addMediaHint}>Up to {MAX_IMAGES} photos or 1 video</Text>
       </TouchableOpacity>
-    </View>
-  );
-}
-
-/* ================================================================ */
-/* VIDEO TRIMMER SUB-COMPONENT                                       */
-/* ================================================================ */
-
-interface VideoTrimmerProps {
-  videoDuration: number;
-  trimStart: number;
-  trimEnd: number;
-  onTrimStartChange: (value: number) => void;
-  onTrimEndChange: (value: number) => void;
-  onSeekToTrimStart: () => void;
-}
-
-function VideoTrimmer({
-  videoDuration,
-  trimStart,
-  trimEnd,
-  onTrimStartChange,
-  onTrimEndChange,
-  onSeekToTrimStart,
-}: VideoTrimmerProps) {
-  return (
-    <View style={styles.videoTrimmer}>
-      <View style={styles.trimmerHeader}>
-        <Ionicons name="cut-outline" size={20} color="#0D5C3A" />
-        <Text style={styles.trimmerLabel}>
-          Select Clip: {trimStart.toFixed(1)}s - {trimEnd.toFixed(1)}s
-        </Text>
-        <Text style={styles.trimmerDuration}>({(trimEnd - trimStart).toFixed(1)}s)</Text>
-      </View>
-
-      <View style={styles.timelineContainer}>
-        <View style={styles.timeline}>
-          <View
-            style={[
-              styles.timelineSelected,
-              {
-                left: `${(trimStart / videoDuration) * 100}%`,
-                width: `${((trimEnd - trimStart) / videoDuration) * 100}%`,
-              },
-            ]}
-          />
-        </View>
-        <View style={styles.timelineLabels}>
-          <Text style={styles.timelineLabel}>0s</Text>
-          <Text style={styles.timelineLabel}>{videoDuration.toFixed(0)}s</Text>
-        </View>
-      </View>
-
-      <View style={styles.sliderContainer}>
-        <Text style={styles.sliderLabel}>Start Time</Text>
-        <View style={styles.sliderRow}>
-          <Slider
-            style={styles.slider}
-            minimumValue={0}
-            maximumValue={Math.max(0, videoDuration - 1)}
-            value={trimStart}
-            onValueChange={(value) => {
-              onTrimStartChange(value);
-            }}
-            onSlidingComplete={onSeekToTrimStart}
-            minimumTrackTintColor="#0D5C3A"
-            maximumTrackTintColor="#E0E0E0"
-            thumbTintColor="#0D5C3A"
-          />
-          <Text style={styles.sliderValue}>{trimStart.toFixed(1)}s</Text>
-        </View>
-      </View>
-
-      <View style={styles.sliderContainer}>
-        <Text style={styles.sliderLabel}>End Time</Text>
-        <View style={styles.sliderRow}>
-          <Slider
-            style={styles.slider}
-            minimumValue={Math.max(trimStart + 0.5, 0.5)}
-            maximumValue={Math.min(videoDuration, trimStart + MAX_VIDEO_DURATION)}
-            value={trimEnd}
-            onValueChange={onTrimEndChange}
-            minimumTrackTintColor="#0D5C3A"
-            maximumTrackTintColor="#E0E0E0"
-            thumbTintColor="#0D5C3A"
-          />
-          <Text style={styles.sliderValue}>{trimEnd.toFixed(1)}s</Text>
-        </View>
-      </View>
-
-      {videoDuration > MAX_VIDEO_DURATION && (
-        <View style={styles.trimmerWarning}>
-          <Ionicons name="information-circle-outline" size={16} color="#664D03" />
-          <Text style={styles.trimmerWarningText}>
-            Maximum clip length is {MAX_VIDEO_DURATION} seconds
-          </Text>
-        </View>
-      )}
     </View>
   );
 }
@@ -435,57 +342,4 @@ const styles = StyleSheet.create({
     backgroundColor: "#FF3B30",
   },
   removeMediaText: { color: "#FFF", fontWeight: "600", fontSize: 14 },
-
-  // Video Trimmer
-  videoTrimmer: {
-    backgroundColor: "#FFF",
-    borderRadius: 12,
-    padding: 16,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: "#E0E0E0",
-  },
-  trimmerHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 16 },
-  trimmerLabel: { fontSize: 14, fontWeight: "700", color: "#0D5C3A", flex: 1 },
-  trimmerDuration: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#FFD700",
-    backgroundColor: "#0D5C3A",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  timelineContainer: { marginBottom: 16 },
-  timeline: {
-    height: 8,
-    backgroundColor: "#E0E0E0",
-    borderRadius: 4,
-    overflow: "hidden",
-    position: "relative",
-  },
-  timelineSelected: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    backgroundColor: "#0D5C3A",
-    borderRadius: 4,
-  },
-  timelineLabels: { flexDirection: "row", justifyContent: "space-between", marginTop: 4 },
-  timelineLabel: { fontSize: 10, color: "#999" },
-  sliderContainer: { marginBottom: 12 },
-  sliderLabel: { fontSize: 12, fontWeight: "600", color: "#666", marginBottom: 4 },
-  sliderRow: { flexDirection: "row", alignItems: "center" },
-  slider: { flex: 1, height: 40 },
-  sliderValue: { fontSize: 13, color: "#0D5C3A", fontWeight: "700", width: 45, textAlign: "right" },
-  trimmerWarning: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: "#FFF3CD",
-    padding: 10,
-    borderRadius: 8,
-    marginTop: 8,
-  },
-  trimmerWarningText: { fontSize: 12, color: "#664D03", flex: 1 },
 });
