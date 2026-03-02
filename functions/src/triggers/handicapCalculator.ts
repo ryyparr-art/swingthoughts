@@ -99,7 +99,8 @@ function calculateDifferential(input: DifferentialInput): DifferentialResult {
 
   // 9-hole calculation with expected score modeling
   // Step 1: Calculate the 9-hole differential
-  const nineHoleDiff = (113 / slopeRating) * (grossScore - courseRating);
+  const nineHoleRating = courseRating / 2;
+  const nineHoleDiff = (113 / slopeRating) * (grossScore - nineHoleRating);
 
   // Step 2: Calculate expected back-9 differential
   // GHIN uses the player's handicap index / 2 as the expected 9-hole differential

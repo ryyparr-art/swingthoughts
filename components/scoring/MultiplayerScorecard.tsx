@@ -71,6 +71,8 @@ interface MultiplayerScorecardProps {
   onEnableStatsSheet?: () => void;
   dtpEligiblePlayers?: Set<string>;
   initialHole?: number;
+  onStatsSheetShow?: () => void;
+  onStatsSheetHide?: () => void;
 }
 
 // ============================================================================
@@ -88,7 +90,7 @@ const CELL_W = 38;
 const LABEL_W = 70;
 const TOTAL_W = 46;
 
-const HANDWRITTEN = "Caveat_400Regular";
+const HANDWRITTEN = Platform.OS === "ios" ? "Caveat_400Regular" : "Caveat_700Bold";
 
 // ============================================================================
 // COMPONENT
@@ -107,6 +109,8 @@ export default function MultiplayerScorecard({
   onEnableStatsSheet,
   dtpEligiblePlayers,
   initialHole,
+  onStatsSheetShow,
+  onStatsSheetHide,
 }: MultiplayerScorecardProps) {
   const format = getFormatById(formatId);
   const isEdit = mode === "edit";
@@ -260,6 +264,7 @@ export default function MultiplayerScorecard({
       initStatsForHole(activeHole);
       setPendingStatsHole(activeHole);
       setShowStatsSheet(true);
+      onStatsSheetShow?.();
     }
   }, [holeData, activeHole, isEdit, showStatsSheet, roundComplete]);
 
@@ -335,6 +340,7 @@ export default function MultiplayerScorecard({
   const handleStatsSave = useCallback(() => {
     if (pendingStatsHole === null) return;
     setShowStatsSheet(false);
+    onStatsSheetHide?.();
     setConsecutiveSkips(0);
     onHoleComplete?.(pendingStatsHole, holeStats);
     advanceToNextHole(pendingStatsHole);
@@ -344,6 +350,7 @@ export default function MultiplayerScorecard({
   const handleStatsSkip = useCallback(() => {
     if (pendingStatsHole === null) return;
     setShowStatsSheet(false);
+    onStatsSheetHide?.();
     setConsecutiveSkips((prev) => prev + 1);
     onHoleComplete?.(pendingStatsHole, {});
     advanceToNextHole(pendingStatsHole);

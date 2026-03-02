@@ -42,9 +42,37 @@ export function navigateForNotification(notification: Notification, router: Rout
       return false;
 
     case "round_complete":
-      const myUid = auth.currentUser?.uid;
-      if (myUid) {
-        router.push(`/profile/${myUid}?tab=rounds`);
+      if (notification.roundId) {
+        router.push(`/round/${notification.roundId}` as any);
+        return true;
+      }
+      return false;
+
+    // ==========================================
+    // ROUND INVITES (Live Scoring)
+    // ==========================================
+    case "round_invite":
+      if (notification.roundId) {
+        if (notification.navigationTarget === "scoring") {
+          router.push(`/scoring?roundId=${notification.roundId}&resume=true` as any);
+        } else {
+          router.push(`/round/${notification.roundId}` as any);
+        }
+        return true;
+      }
+      return false;
+
+    case "round_notable":
+      if (notification.roundId) {
+        router.push(`/round/${notification.roundId}` as any);
+        return true;
+      }
+      return false;
+
+    case "marker_transfer":
+    case "marker_transfer_request":
+      if (notification.roundId) {
+        router.push(`/scoring?roundId=${notification.roundId}&resume=true` as any);
         return true;
       }
       return false;
@@ -54,11 +82,8 @@ export function navigateForNotification(notification: Notification, router: Rout
     // ==========================================
     case "outing_complete":
       if (notification.roundId) {
-        const uid = auth.currentUser?.uid;
-        if (uid) {
-          router.push(`/profile/${uid}?tab=rounds`);
-          return true;
-        }
+        router.push(`/round/${notification.roundId}` as any);
+        return true;
       }
       return false;
 

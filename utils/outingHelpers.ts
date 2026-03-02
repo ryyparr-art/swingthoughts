@@ -4,6 +4,8 @@
  * All functions are stateless and testable. No Firestore dependencies.
  * Used by: OutingGroupSetup, OutingReview, OutingDashboard, Cloud Functions
  *
+ * v2: movePlayerBetweenGroups now supports swapping when target group is full
+ *
  * File: utils/outingHelpers.ts
  */
 
@@ -82,47 +84,88 @@ export function shotgunAssignStartingHoles(
 
 /**
  * Moves a player from one group to another.
- * Updates both groups' playerIds and the player's groupId in the roster.
+ * If the target group is at max capacity, swaps with the last non-marker player.
+ * If the player is unassigned (groupId is null), simply adds them (or swaps if full).
  * Returns updated groups and roster.
  */
 export function movePlayerBetweenGroups(
   roster: OutingPlayer[],
   groups: OutingGroup[],
   playerId: string,
-  targetGroupId: string
+  targetGroupId: string,
+  maxGroupSize: number = 4
 ): { roster: OutingPlayer[]; groups: OutingGroup[] } {
-  const updatedRoster = roster.map((p) => {
+  const player = roster.find((p) => p.playerId === playerId);
+  if (!player) return { roster, groups };
+
+  const sourceGroupId = player.groupId;
+  const targetGroup = groups.find((g) => g.groupId === targetGroupId);
+  if (!targetGroup) return { roster, groups };
+
+  // Don't move to the same group
+  if (sourceGroupId === targetGroupId) return { roster, groups };
+
+  // Check if target group is full and we need to swap
+  const targetIsFull = targetGroup.playerIds.length >= maxGroupSize;
+  let swapPlayerId: string | null = null;
+
+  if (targetIsFull) {
+    // Find a non-marker player in the target group to swap with
+    // Pick the last player in the list (most recently added), skip the marker
+    const swapCandidates = [...targetGroup.playerIds]
+      .reverse()
+      .filter((id) => id !== targetGroup.markerId);
+    if (swapCandidates.length === 0) return { roster, groups }; // All are markers, can't swap
+    swapPlayerId = swapCandidates[0];
+  }
+
+  // Update roster assignments
+  let updatedRoster = roster.map((p) => {
     if (p.playerId === playerId) {
       return { ...p, groupId: targetGroupId, isGroupMarker: false };
+    }
+    if (swapPlayerId && p.playerId === swapPlayerId) {
+      // Swap player goes to the source group, or becomes unassigned if source was null
+      return { ...p, groupId: sourceGroupId || null, isGroupMarker: false };
     }
     return p;
   });
 
-  const updatedGroups = groups.map((g) => {
-    // Remove from old group
-    const filteredPlayerIds = g.playerIds.filter((id) => id !== playerId);
-
+  // Update groups
+  let updatedGroups = groups.map((g) => {
     if (g.groupId === targetGroupId) {
-      // Add to target group
-      return { ...g, playerIds: [...filteredPlayerIds, playerId] };
+      let newPlayerIds = g.playerIds.filter((id) => id !== playerId);
+      if (swapPlayerId) {
+        newPlayerIds = newPlayerIds.filter((id) => id !== swapPlayerId);
+      }
+      newPlayerIds.push(playerId);
+      return { ...g, playerIds: newPlayerIds };
     }
 
-    // If the removed player was the marker, reassign
-    if (g.markerId === playerId && filteredPlayerIds.length > 0) {
-      const newMarker =
-        updatedRoster.find(
-          (p) => filteredPlayerIds.includes(p.playerId) && !p.isGhost
-        ) || updatedRoster.find((p) => filteredPlayerIds.includes(p.playerId));
+    if (sourceGroupId && g.groupId === sourceGroupId) {
+      let newPlayerIds = g.playerIds.filter((id) => id !== playerId);
+      // Add swap player to source group
+      if (swapPlayerId) {
+        newPlayerIds.push(swapPlayerId);
+      }
 
-      return {
-        ...g,
-        playerIds: filteredPlayerIds,
-        markerId: newMarker?.playerId ?? filteredPlayerIds[0],
-      };
+      // If the moved player was the marker, reassign
+      let newMarkerId = g.markerId;
+      if (g.markerId === playerId && newPlayerIds.length > 0) {
+        const newMarker = updatedRoster.find(
+          (p) => newPlayerIds.includes(p.playerId) && !p.isGhost
+        );
+        newMarkerId = newMarker?.playerId ?? newPlayerIds[0];
+      }
+
+      return { ...g, playerIds: newPlayerIds, markerId: newMarkerId };
     }
 
-    return { ...g, playerIds: filteredPlayerIds };
+    return g;
   });
+
+  // Remove empty groups
+  updatedGroups = updatedGroups.filter((g) => g.playerIds.length > 0);
 
   return { roster: updatedRoster, groups: updatedGroups };
 }

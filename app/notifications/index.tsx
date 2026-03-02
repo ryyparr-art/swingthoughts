@@ -16,6 +16,7 @@ import {
   FlatList,
   Image,
   Modal,
+  Platform,
   RefreshControl,
   StyleSheet,
   Text,
@@ -271,7 +272,7 @@ export default function NotificationsScreen() {
     <Modal
       visible={showArchivedModal}
       animationType="slide"
-      presentationStyle="pageSheet"
+      presentationStyle={Platform.OS === "ios" ? "pageSheet" : "fullScreen"}
       onRequestClose={() => setShowArchivedModal(false)}
     >
       <SafeAreaView style={styles.archivedModalContainer} edges={["top"]}>
@@ -341,7 +342,7 @@ export default function NotificationsScreen() {
   const unreadCount = activeNotifications.filter((n) => !n.read).length;
 
   return (
-    <SafeAreaView style={styles.container} edges={["top"]}>
+    <SafeAreaView style={styles.container} edges={["top", "bottom"]}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity

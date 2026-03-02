@@ -48,6 +48,7 @@ import { getFormatById } from "@/constants/gameFormats";
 import {
   useLiveRound,
   useRoundChat,
+  useOutingChat,
   type ChatMessage,
   type LeaderboardEntry,
 } from "@/hooks/useLiveRound";
@@ -73,7 +74,10 @@ export default function LiveRoundViewer({ roundId }: LiveRoundViewerProps) {
   const insets = useSafeAreaInsets();
   const currentUserId = auth.currentUser?.uid || "";
   const { round, isLoading, error, isLive, currentHole, leaderboard } = useLiveRound(roundId);
-  const { messages, isLoading: chatLoading, sendMessage } = useRoundChat(roundId);
+  const roundChat = useRoundChat(roundId);
+  const outingChat = useOutingChat(round?.outingId || null);
+  const chatSource = round?.outingId ? outingChat : roundChat;
+  const { messages, isLoading: chatLoading, sendMessage } = chatSource;
 
   const [activeTab, setActiveTab] = useState<ViewerTab>("scorecard");
   const [chatInput, setChatInput] = useState("");

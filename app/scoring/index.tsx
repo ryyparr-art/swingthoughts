@@ -51,8 +51,9 @@ import type {
   RoundTeam,
 } from "@/components/scoring/scoringTypes";
 
-import { useRoundChat, type ChatMessage } from "@/hooks/useLiveRound";
+import { useRoundChat, useOutingChat, type ChatMessage } from "@/hooks/useLiveRound";
 import { soundPlayer } from "@/utils/soundPlayer";
+import OutingLeaderboardFAB from "@/app/round/OutingLeaderboardFAB";
 
 const closeIcon = require("@/assets/icons/Close.png");
 
@@ -127,6 +128,7 @@ export default function ScoringScreen() {
   const [showRoundSettingsSheet, setShowRoundSettingsSheet] = useState(false);
   const [players, setPlayers] = useState<PlayerSlot[]>([]);
   const [roundId, setRoundId] = useState<string | null>(null);
+  const [outingId, setOutingId] = useState<string | null>(null);
   const [currentHole, setCurrentHole] = useState(1);
   const [holeData, setHoleData] = useState<Record<string, Record<string, HolePlayerData>>>({});
   const [statsSheetSuppressed, setStatsSheetSuppressed] = useState(false);
@@ -138,11 +140,15 @@ export default function ScoringScreen() {
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
   const chatListRef = React.useRef<FlatList<ChatMessage>>(null);
-  const { messages: chatMessages, sendMessage } = useRoundChat(roundId);
+  const roundChat = useRoundChat(roundId);
+  const outingChat = useOutingChat(outingId);
+  const chatMessages = outingId ? outingChat.messages : roundChat.messages;
+  const sendMessage = outingId ? outingChat.sendMessage : roundChat.sendMessage;
 
   const transferRequestAlertShown = useRef<string | null>(null);
   const [transferRequestVisible, setTransferRequestVisible] = useState(false);
   const [transferRequestData, setTransferRequestData] = useState<{ requestedBy: string; requestedByName: string } | null>(null);
+  const [statsSheetVisible, setStatsSheetVisible] = useState(false);
 
   // ── DATA LOADING ──
   useEffect(() => { if (currentUserId) loadUserData(); }, [currentUserId]);
@@ -197,6 +203,7 @@ export default function ScoringScreen() {
         setTeams(roundData.teams || undefined);
         setCurrentHole(roundData.currentHole || 1);
         setHoleData(roundData.holeData || {});
+        setOutingId(roundData.outingId || null);
         if (roundData.courseId) {
           const courseData = await loadFullCourseData(roundData.courseId, roundData.courseName, roundData.location);
           if (courseData) {
@@ -452,10 +459,11 @@ export default function ScoringScreen() {
         groups,
       });
 
-      const { outingId, organizerRoundId } = result.data as {
+      const { outingId: newOutingId, organizerRoundId } = result.data as {
         success: boolean; outingId: string; roundIds: string[]; organizerRoundId: string;
       };
-      console.log(`✅ Outing launched: ${outingId}, organizer round: ${organizerRoundId}`);
+      console.log(`✅ Outing launched: ${newOutingId}, organizer round: ${organizerRoundId}`);
+      setOutingId(newOutingId);
 
       // If the organizer is a group marker, navigate to their scorecard
       const organizerGroup = groups.find((g) => g.markerId === currentUserId);
@@ -466,6 +474,7 @@ export default function ScoringScreen() {
           const roundData = roundSnap.data();
           setPlayers(roundData.players || []);
           setHoleData(roundData.holeData || {});
+          setOutingId(roundData.outingId || null);
           setStartingHole(roundData.startingHole || 1);
           setCurrentHole(1);
           setCurrentScreen("scorecard");
@@ -858,7 +867,9 @@ export default function ScoringScreen() {
               return order.map((h) => allHoles[h - 1] || { par: 4, yardage: 0 });
             })()}
             holeData={holeData} onScoreChange={handleScoreChange} onHoleComplete={handleHoleComplete}
-            statsSheetSuppressed={statsSheetSuppressed} onEnableStatsSheet={() => setStatsSheetSuppressed(false)} formatId={formatId} players={players} holeCount={holeCount} />
+            statsSheetSuppressed={statsSheetSuppressed} onEnableStatsSheet={() => setStatsSheetSuppressed(false)} formatId={formatId} players={players} holeCount={holeCount}
+            onStatsSheetShow={() => setStatsSheetVisible(true)}
+            onStatsSheetHide={() => setStatsSheetVisible(false)} />
 
           {/* Chat Sheet */}
           <Modal visible={showChatSheet} transparent animationType="slide">
@@ -983,6 +994,10 @@ export default function ScoringScreen() {
               if (transferRequestData) executeMarkerTransfer(transferRequestData.requestedBy, transferRequestData.requestedByName);
             }}
           />
+
+          {outingId && !statsSheetVisible && (
+            <OutingLeaderboardFAB outingId={outingId} />
+          )}
         </View>
       )}
 

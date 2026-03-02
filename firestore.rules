@@ -1054,6 +1054,23 @@ service cloud.firestore {
       allow delete: if isSignedIn() &&
         resource.data.organizerId == request.auth.uid &&
         resource.data.status == "draft";
+    
+       // ========================================================================
+      // OUTING CHAT MESSAGES SUBCOLLECTION
+      // ========================================================================
+      match /messages/{messageId} {
+        allow read, list: if isSignedIn();
+
+        allow create: if isSignedIn() &&
+          isEmailVerified() &&
+          request.resource.data.userId == request.auth.uid &&
+          request.resource.data.content.size() <= 500;
+
+        allow update: if false;
+
+        allow delete: if isSignedIn() &&
+          (request.auth.uid == resource.data.userId || isAdmin());
+      }
     }
 
     // ============================================================================
@@ -1290,6 +1307,25 @@ match /rounds/{roundId} {
       // Only Cloud Functions write email docs (via Admin SDK in ghostInvite.ts)
       // The firebase-send-email extension reads and updates these
       allow read, write: if false;
+    }
+
+    // ============================================================================
+    // EVENT FOLLOWERS (EMAIL SIGNUP FOR STANDINGS UPDATES)
+    // ============================================================================
+
+    match /eventFollowers/{eventId}/followers/{followerId} {
+      // Anyone can sign up (create only, no auth required)
+      allow create: if request.resource.data.keys().hasAll(['name', 'email', 'subscribedAt', 'unsubscribed'])
+                    && request.resource.data.name is string
+                    && request.resource.data.email is string
+                    && request.resource.data.unsubscribed == false;
+      
+      // Allow unsubscribe — only flipping unsubscribed to true, no other changes
+      allow update: if request.resource.data.unsubscribed == true
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['unsubscribed']);
+      
+      // No client-side read or delete
+      allow read, delete: if false;
     }
 
     // ============================================================================

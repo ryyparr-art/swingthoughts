@@ -7,10 +7,7 @@
  *   - "review": Read-only summary before launch
  *   - "dashboard": Live progress with status badges
  *
- * Fixes:
- *   - Clearer "Make Scorer" button (text label, not just icon)
- *   - Move player between groups via swap icon → group picker
- *   - Scorer tee change cascades to all group members (via onScorerTeeChange)
+ * v2: Move picker now allows moving to full groups (triggers swap)
  *
  * File: components/outings/OutingGroupCard.tsx
  */
@@ -48,6 +45,7 @@ interface OutingGroupCardProps {
   availableTees?: TeeOption[];
   holeCount?: 9 | 18;
   nineHoleSide?: "front" | "back";
+  roster?: OutingPlayer[];
 
   // Setup mode callbacks
   onMarkerChange?: (groupId: string, newMarkerId: string) => void;
@@ -72,6 +70,7 @@ export default function OutingGroupCard({
   availableTees,
   holeCount = 18,
   nineHoleSide = "front",
+  roster,
   onMarkerChange,
   onStartingHoleChange,
   onMovePlayer,
@@ -401,11 +400,23 @@ export default function OutingGroupCard({
                 .map((targetGroup) => {
                   const targetPlayerCount = targetGroup.playerIds.length;
                   const isFull = targetPlayerCount >= 4;
+
+                  // Find who would be swapped out (last non-marker)
+                  let swapPlayerName: string | null = null;
+                  if (isFull && roster) {
+                    const swapCandidates = [...targetGroup.playerIds]
+                      .reverse()
+                      .filter((id) => id !== targetGroup.markerId);
+                    if (swapCandidates.length > 0) {
+                      const swapPlayer = roster.find((p) => p.playerId === swapCandidates[0]);
+                      swapPlayerName = swapPlayer?.displayName || null;
+                    }
+                  }
+
                   return (
                     <TouchableOpacity
                       key={targetGroup.groupId}
-                      style={[s.moveOption, isFull && s.moveOptionDisabled]}
-                      disabled={isFull}
+                      style={s.moveOption}
                       onPress={() => {
                         soundPlayer.play("click");
                         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -413,15 +424,23 @@ export default function OutingGroupCard({
                         setShowMovePicker(null);
                       }}
                     >
-                      <Ionicons name="people-outline" size={20} color={isFull ? "#CCC" : HEADER_GREEN} />
+                      <Ionicons
+                        name={isFull ? "swap-horizontal" : "people-outline"}
+                        size={20}
+                        color={HEADER_GREEN}
+                      />
                       <View style={{ flex: 1 }}>
-                        <Text style={[s.moveOptionName, isFull && { color: "#CCC" }]}>{targetGroup.name}</Text>
+                        <Text style={s.moveOptionName}>{targetGroup.name}</Text>
                         <Text style={s.moveOptionSub}>
                           {targetPlayerCount}/4 player{targetPlayerCount !== 1 ? "s" : ""}
-                          {isFull ? " — Full" : ""}
+                          {isFull && swapPlayerName ? ` — Swap with ${swapPlayerName}` : ""}
                         </Text>
                       </View>
-                      {!isFull && <Ionicons name="arrow-forward" size={18} color="#CCC" />}
+                      <Ionicons
+                        name={isFull ? "swap-horizontal-outline" : "arrow-forward"}
+                        size={18}
+                        color="#CCC"
+                      />
                     </TouchableOpacity>
                   );
                 })}
@@ -635,7 +654,6 @@ const s = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#E8E4DA",
   },
-  moveOptionDisabled: { opacity: 0.5 },
   moveOptionName: { fontSize: 15, fontWeight: "700", color: "#333" },
   moveOptionSub: { fontSize: 12, color: "#999", marginTop: 1 },
 });

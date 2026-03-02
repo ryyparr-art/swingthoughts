@@ -85,7 +85,7 @@ function buildPlayingOrder(startingHole: number, totalHoles: number, baseHole: n
 // ============================================================================
 
 export const launchOuting = onCall(
-  { maxInstances: 10, region: "us-east1" },
+  { maxInstances: 10, region: "us-central1" },
   async (request) => {
     // ── Auth check ──
     const uid = request.auth?.uid;

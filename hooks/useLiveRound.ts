@@ -333,3 +333,63 @@ export function useRoundChat(roundId: string | null): UseRoundChatReturn {
 
   return { messages, isLoading, sendMessage };
 }
+
+// ============================================================================
+// useOutingChat — Listen to outing-wide chat messages
+// ============================================================================
+
+export function useOutingChat(outingId: string | null): UseRoundChatReturn {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    if (!outingId) {
+      setMessages([]);
+      setIsLoading(false);
+      return;
+    }
+
+    const messagesRef = collection(db, "outings", outingId, "messages");
+    const q = query(messagesRef, orderBy("createdAt", "asc"), limit(200));
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const msgs: ChatMessage[] = snap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        })) as ChatMessage[];
+        setMessages(msgs);
+        setIsLoading(false);
+      },
+      (err) => {
+        console.error("useOutingChat error:", err);
+        setIsLoading(false);
+      }
+    );
+
+    return () => unsub();
+  }, [outingId]);
+
+  const sendMessage = async (
+    userId: string,
+    displayName: string,
+    avatar: string | undefined,
+    content: string
+  ) => {
+    if (!outingId || !content.trim()) return;
+
+    const { addDoc, serverTimestamp } = await import("firebase/firestore");
+    const messagesRef = collection(db, "outings", outingId, "messages");
+
+    await addDoc(messagesRef, {
+      userId,
+      displayName,
+      avatar: avatar || null,
+      content: content.trim(),
+      createdAt: serverTimestamp(),
+    });
+  };
+
+  return { messages, isLoading, sendMessage };
+}

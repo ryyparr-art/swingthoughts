@@ -1,15 +1,18 @@
 /**
  * OutingGroupSetup — Group assignment & management for outings
  *
- * Fixes:
- *   - Scorer tee change cascades to all players in that group
- *   - Passes onScorerTeeChange + onMovePlayer to OutingGroupCard
+ * v2:
+ *   - Unassigned players section with "Assign to Group" picker
+ *   - Swap support when moving to full groups
+ *   - Passes roster to OutingGroupCard for swap name display
  *
  * File: components/outings/OutingGroupSetup.tsx
  */
 
 import React, { useCallback, useMemo, useState } from "react";
 import {
+  Image,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
@@ -39,6 +42,8 @@ import OutingGroupCard from "./OutingGroupCard";
 import OutingRosterBuilder from "./OutingRosterBuilder";
 
 const GREEN = "#0D5C3A";
+const HEADER_GREEN = "#147A52";
+const WALNUT = "#4A3628";
 
 const MAX_PLAYERS = 20;
 const GROUP_SIZE = 4;
@@ -106,6 +111,7 @@ export default function OutingGroupSetup({
 
   const [groups, setGroups] = useState<OutingGroup[]>(initialGroups ?? []);
   const [isShotgun, setIsShotgun] = useState(false);
+  const [assignPickerPlayer, setAssignPickerPlayer] = useState<string | null>(null);
 
   // ── Derived ──
   const unassigned = useMemo(() => getUnassignedPlayers(roster), [roster]);
@@ -245,14 +251,25 @@ export default function OutingGroupSetup({
     []
   );
 
-  // ── Move player between groups ──
+  // ── Move player between groups (now supports swap) ──
   const handleMovePlayer = useCallback(
     (playerId: string, targetGroupId: string) => {
-      const result = movePlayerBetweenGroups(roster, groups, playerId, targetGroupId);
+      const result = movePlayerBetweenGroups(roster, groups, playerId, targetGroupId, groupSize);
       setRoster(result.roster);
       setGroups(result.groups);
     },
-    [roster, groups]
+    [roster, groups, groupSize]
+  );
+
+  // ── Assign unassigned player to a group ──
+  const handleAssignToGroup = useCallback(
+    (playerId: string, targetGroupId: string) => {
+      const result = movePlayerBetweenGroups(roster, groups, playerId, targetGroupId, groupSize);
+      setRoster(result.roster);
+      setGroups(result.groups);
+      setAssignPickerPlayer(null);
+    },
+    [roster, groups, groupSize]
   );
 
   // ── Remove player from group (back to unassigned) ──
@@ -351,12 +368,50 @@ export default function OutingGroupSetup({
               </View>
             </View>
 
+            {/* ── Unassigned Players Section ── */}
             {unassigned.length > 0 && groups.length > 0 && (
-              <View style={s.unassignedBanner}>
-                <Ionicons name="alert-circle" size={18} color="#FF9500" />
-                <Text style={s.unassignedText}>
-                  {unassigned.length} player{unassigned.length !== 1 ? "s" : ""} not assigned to a group
-                </Text>
+              <View style={s.unassignedSection}>
+                <View style={s.unassignedHeader}>
+                  <Ionicons name="alert-circle" size={18} color="#FF9500" />
+                  <Text style={s.unassignedTitle}>
+                    {unassigned.length} Unassigned Player{unassigned.length !== 1 ? "s" : ""}
+                  </Text>
+                </View>
+                {unassigned.map((player) => (
+                  <View key={player.playerId} style={s.unassignedRow}>
+                    <View style={s.unassignedPlayerLeft}>
+                      {player.avatar ? (
+                        <Image source={{ uri: player.avatar }} style={s.unassignedAvatar} />
+                      ) : (
+                        <View style={[s.unassignedAvatar, s.unassignedAvatarFallback]}>
+                          <Text style={s.unassignedAvatarText}>
+                            {player.displayName.charAt(0).toUpperCase()}
+                          </Text>
+                        </View>
+                      )}
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.unassignedName} numberOfLines={1}>
+                          {player.displayName}
+                        </Text>
+                        <Text style={s.unassignedHcp}>
+                          HCP {player.handicapIndex.toFixed(1)}
+                          {player.isGhost ? " • Guest" : ""}
+                        </Text>
+                      </View>
+                    </View>
+                    <TouchableOpacity
+                      style={s.assignBtn}
+                      onPress={() => {
+                        soundPlayer.play("click");
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setAssignPickerPlayer(player.playerId);
+                      }}
+                    >
+                      <Ionicons name="add-circle-outline" size={16} color={HEADER_GREEN} />
+                      <Text style={s.assignBtnText}>Assign</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
               </View>
             )}
 
@@ -375,6 +430,7 @@ export default function OutingGroupSetup({
                 players={getGroupPlayers(roster, group.groupId)}
                 mode="setup"
                 allGroups={groups}
+                roster={roster}
                 availableTees={availableTees}
                 holeCount={holeCount}
                 nineHoleSide={nineHoleSide}
@@ -419,6 +475,80 @@ export default function OutingGroupSetup({
           <Ionicons name="arrow-forward" size={20} color="#FFF" />
         </TouchableOpacity>
       </View>
+
+      {/* ── Assign to Group Picker Modal ── */}
+      <Modal visible={!!assignPickerPlayer} transparent animationType="slide">
+        <View style={s.pickerOverlay}>
+          <TouchableOpacity
+            style={s.pickerBackdrop}
+            activeOpacity={1}
+            onPress={() => setAssignPickerPlayer(null)}
+          />
+          <View style={s.pickerSheet}>
+            <View style={s.pickerHeader}>
+              <View>
+                <Text style={s.pickerTitle}>Assign to Group</Text>
+                {assignPickerPlayer && (
+                  <Text style={s.pickerSubtitle}>
+                    {roster.find((p) => p.playerId === assignPickerPlayer)?.displayName}
+                  </Text>
+                )}
+              </View>
+              <TouchableOpacity onPress={() => setAssignPickerPlayer(null)}>
+                <Ionicons name="close" size={24} color="#333" />
+              </TouchableOpacity>
+            </View>
+            {groups.map((targetGroup) => {
+              const targetPlayerCount = targetGroup.playerIds.length;
+              const isFull = targetPlayerCount >= groupSize;
+
+              // Find who would be swapped out
+              let swapPlayerName: string | null = null;
+              if (isFull) {
+                const swapCandidates = [...targetGroup.playerIds]
+                  .reverse()
+                  .filter((id) => id !== targetGroup.markerId);
+                if (swapCandidates.length > 0) {
+                  const swapPlayer = roster.find((p) => p.playerId === swapCandidates[0]);
+                  swapPlayerName = swapPlayer?.displayName || null;
+                }
+              }
+
+              return (
+                <TouchableOpacity
+                  key={targetGroup.groupId}
+                  style={s.assignOption}
+                  onPress={() => {
+                    soundPlayer.play("click");
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                    if (assignPickerPlayer) {
+                      handleAssignToGroup(assignPickerPlayer, targetGroup.groupId);
+                    }
+                  }}
+                >
+                  <Ionicons
+                    name={isFull ? "swap-horizontal" : "people-outline"}
+                    size={20}
+                    color={HEADER_GREEN}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.assignOptionName}>{targetGroup.name}</Text>
+                    <Text style={s.assignOptionSub}>
+                      {targetPlayerCount}/{groupSize} player{targetPlayerCount !== 1 ? "s" : ""}
+                      {isFull && swapPlayerName ? ` — Swap with ${swapPlayerName}` : ""}
+                    </Text>
+                  </View>
+                  <Ionicons
+                    name={isFull ? "swap-horizontal-outline" : "add-circle-outline"}
+                    size={18}
+                    color="#CCC"
+                  />
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -437,8 +567,81 @@ const s = StyleSheet.create({
   toggleBtnTextActive: { color: "#FFF" },
   autoAssignBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: "#E8F5E9" },
   autoAssignText: { fontSize: 13, fontWeight: "600", color: GREEN },
-  unassignedBanner: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "#FFF3CD", paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, marginBottom: 12 },
-  unassignedText: { fontSize: 13, fontWeight: "600", color: "#664D03", flex: 1 },
+
+  // Unassigned players section
+  unassignedSection: {
+    backgroundColor: "#FFF8E1",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#FFE0B2",
+    marginBottom: 14,
+  },
+  unassignedHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 10,
+  },
+  unassignedTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#E65100",
+  },
+  unassignedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#FFE0B2",
+  },
+  unassignedPlayerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+    gap: 10,
+  },
+  unassignedAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+  },
+  unassignedAvatarFallback: {
+    backgroundColor: "#FFE0B2",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  unassignedAvatarText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#E65100",
+  },
+  unassignedName: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#333",
+  },
+  unassignedHcp: {
+    fontSize: 11,
+    color: "#999",
+    marginTop: 1,
+  },
+  assignBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: "#E8F5E9",
+  },
+  assignBtnText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: HEADER_GREEN,
+  },
+
   promptCard: { alignItems: "center", paddingVertical: 30, borderRadius: 14, borderWidth: 2, borderColor: "#E0DCD4", borderStyle: "dashed", gap: 8 },
   promptText: { fontSize: 15, fontWeight: "600", color: "#999" },
   promptSub: { fontSize: 13, color: "#CCC" },
@@ -449,4 +652,46 @@ const s = StyleSheet.create({
   confirmBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: GREEN, paddingVertical: 14, borderRadius: 12 },
   confirmBtnDisabled: { opacity: 0.4 },
   confirmBtnText: { fontSize: 16, fontWeight: "700", color: "#FFF" },
+
+  // Assign picker modal
+  pickerOverlay: { flex: 1, justifyContent: "flex-end" },
+  pickerBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.4)" },
+  pickerSheet: {
+    backgroundColor: "#FFF",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: Platform.OS === "ios" ? 40 : 20,
+  },
+  pickerHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E8E4DA",
+  },
+  pickerTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#333",
+    fontFamily: Platform.OS === "ios" ? "Georgia" : "serif",
+  },
+  pickerSubtitle: {
+    fontSize: 13,
+    color: HEADER_GREEN,
+    fontWeight: "600",
+    marginTop: 2,
+  },
+  assignOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#E8E4DA",
+  },
+  assignOptionName: { fontSize: 15, fontWeight: "700", color: "#333" },
+  assignOptionSub: { fontSize: 12, color: "#999", marginTop: 1 },
 });
