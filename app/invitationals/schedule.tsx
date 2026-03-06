@@ -16,22 +16,22 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
-    doc,
-    onSnapshot,
-    Timestamp,
+  doc,
+  onSnapshot,
+  Timestamp,
 } from "firebase/firestore";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import React, { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    Image,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Image,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -58,7 +58,7 @@ interface InvitationalRound {
   courseLocation: { city: string; state: string };
   date: Timestamp;
   teeTime: string | null;
-  format: string;
+  formatId: string;
   scoringType: string;
   status: "upcoming" | "active" | "completed";
   outingId: string | null;
@@ -176,10 +176,8 @@ export default function InvitationalSchedule() {
   const handleManageGroups = (round: InvitationalRound) => {
     soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    // TODO: Navigate to group management screen
-    Alert.alert(
-      "Coming Soon",
-      "Group management will let you assign players to groups and set tee times."
+    router.push(
+      `/invitationals/groups?id=${invitationalId}&roundId=${round.roundId}` as any
     );
   };
 
@@ -210,12 +208,13 @@ export default function InvitationalSchedule() {
     });
   };
 
-  const getFormatLabel = (format: string) => {
-    switch (format) {
-      case "stroke": return "Stroke Play";
+  const getFormatLabel = (formatId: string) => {
+    switch (formatId) {
+      case "stroke_play": return "Stroke Play";
       case "stableford": return "Stableford";
       case "scramble": return "Scramble";
-      default: return format;
+      case "match_play": return "Match Play";
+      default: return formatId;
     }
   };
 
@@ -290,6 +289,15 @@ export default function InvitationalSchedule() {
       <TouchableOpacity style={[styles.tab, styles.tabActive]}>
         <Text style={[styles.tabText, styles.tabTextActive]}>Schedule</Text>
       </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => {
+          soundPlayer.play("click");
+          router.replace(`/invitationals/roster?id=${invitationalId}` as any);
+        }}
+      >
+        <Text style={styles.tabText}>Roster</Text>
+      </TouchableOpacity>
     </View>
   );
 
@@ -350,7 +358,7 @@ export default function InvitationalSchedule() {
             <View style={styles.detailChip}>
               <Ionicons name="golf-outline" size={12} color="#888" />
               <Text style={styles.detailChipText}>
-                {getFormatLabel(round.format)}
+                {getFormatLabel(round.formatId)}
               </Text>
             </View>
             <View style={styles.detailChip}>
@@ -534,7 +542,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   tabActive: { backgroundColor: "#B8860B" },
-  tabText: { fontSize: 14, fontWeight: "600", color: "#666" },
+  tabText: { fontSize: 13, fontWeight: "600", color: "#666" },
   tabTextActive: { color: "#FFF", fontWeight: "700" },
 
   // Content

@@ -55,6 +55,7 @@ interface LeaguePreview {
 interface InvitationalPreview {
   id: string;
   name: string;
+  avatar?: string;
   hostName: string;
   courseName: string;
   date: Date;
@@ -123,6 +124,7 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
             invitationals.push({
               id: invDoc.id,
               name: data.name || "Unnamed Invitational",
+              avatar: data.avatar || undefined,
               hostName: data.hostName || "Unknown",
               courseName: data.courseName || "",
               date: data.date?.toDate?.() || new Date(),
@@ -367,15 +369,16 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
               onPress={() => {
                 soundPlayer.play("click");
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                router.push({
-                  pathname: "/invitationals/[id]" as any,
-                  params: { id: inv.id },
-                });
+                router.push("/invitationals/home" as any);
               }}
             >
-              <View style={styles.inviteBadge}>
-                <Ionicons name="mail" size={14} color="#FFF" />
-              </View>
+              {inv.avatar ? (
+                <Image source={{ uri: inv.avatar }} style={styles.inviteAvatar} />
+              ) : (
+                <View style={styles.inviteBadge}>
+                  <Ionicons name="mail" size={14} color="#FFF" />
+                </View>
+              )}
               <View style={styles.inviteContent}>
                 <Text style={styles.inviteLabel}>You're Invited!</Text>
                 <Text style={styles.inviteName} numberOfLines={1}>
@@ -405,15 +408,16 @@ export default function Gallery({ userId, onSwitchTab }: GalleryProps) {
                   onPress={() => {
                     soundPlayer.play("click");
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    router.push({
-                      pathname: "/invitationals/[id]" as any,
-                      params: { id: inv.id },
-                    });
+                    router.push("/invitationals/home" as any);
                   }}
                 >
-                  <View style={styles.competeAvatarGold}>
-                    <Ionicons name="trophy" size={18} color="#FFF" />
-                  </View>
+                  {inv.avatar ? (
+                    <Image source={{ uri: inv.avatar }} style={styles.competeAvatar} />
+                  ) : (
+                    <View style={styles.competeAvatarGold}>
+                      <Ionicons name="trophy" size={18} color="#FFF" />
+                    </View>
+                  )}
                   <Text style={styles.competeName} numberOfLines={1}>
                     {inv.name}
                   </Text>
@@ -701,6 +705,11 @@ const styles = StyleSheet.create({
     backgroundColor: "#B8860B",
     alignItems: "center",
     justifyContent: "center",
+  },
+  inviteAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
   },
   inviteContent: {
     flex: 1,

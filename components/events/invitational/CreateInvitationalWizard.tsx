@@ -213,10 +213,7 @@ export default function CreateInvitationalWizard() {
       // TODO: Send email/SMS to ghost players with ghostEmail/ghostPhone
 
       // Navigate to the new invitational
-      router.replace({
-        pathname: "/invitationals/[id]" as any,
-        params: { id: docRef.id },
-      });
+      router.replace("/invitationals/home" as any);
     } catch (error) {
       console.error("Error creating invitational:", error);
       Alert.alert(

@@ -90,7 +90,7 @@ interface InvitationalRound {
   courseLocation: { city: string; state: string };
   date: Timestamp;
   teeTime: string | null;
-  format: string;
+  formatId: string;
   scoringType: string;
   status: "upcoming" | "active" | "completed";
   outingId: string | null;
@@ -436,6 +436,19 @@ export default function InvitationalHome() {
     return invitational.standings.length > 0 ? invitational.standings[0] : null;
   };
 
+  const getRoundTeeTime = (round: InvitationalRound): string | null => {
+    console.log("getRoundTeeTime:", round.roundNumber, round.teeTime, JSON.stringify(round.groups));
+    if (round.teeTime) return round.teeTime;
+    const times = (round.groups || [])
+      .map((g: any) => g.teeTime)
+      .filter(Boolean) as string[];
+    if (times.length === 0) return null;
+    return times.sort()[0];
+  };
+
+  const getRoundGroupCount = (round: InvitationalRound): number =>
+    (round.groups || []).length;
+
   /* ================================================================ */
   /* RENDER COMPONENTS                                               */
   /* ================================================================ */
@@ -488,6 +501,17 @@ export default function InvitationalHome() {
         }}
       >
         <Text style={styles.tabText}>Schedule</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => {
+          soundPlayer.play("click");
+          router.replace(`/invitationals/roster?id=${selectedId}` as any);
+        }}
+      >
+  
+        <Text style={styles.tabText}>Roster</Text>
       </TouchableOpacity>
     </View>
   );
@@ -718,7 +742,7 @@ export default function InvitationalHome() {
               <Text style={styles.roundCourseName}>{activeRound.courseName}</Text>
               <Text style={styles.roundMeta}>
                 {formatDate(activeRound.date)}
-                {activeRound.teeTime ? ` • ${activeRound.teeTime}` : ""}
+                {getRoundTeeTime(activeRound) ? ` • ${getRoundTeeTime(activeRound)}` : ""}
               </Text>
             </View>
             <View style={styles.liveBadge}>
@@ -742,10 +766,10 @@ export default function InvitationalHome() {
               </Text>
               <Text style={styles.roundMeta}>
                 {formatDate(round.date)}
-                {round.teeTime ? ` • ${round.teeTime}` : " • Tee time TBD"}
+                {getRoundTeeTime(round) ? ` • ${getRoundTeeTime(round)}` : " • Tee time TBD"}
               </Text>
               <Text style={styles.roundFormat}>
-                {round.format === "stroke" ? "Stroke" : round.format === "stableford" ? "Stableford" : "Scramble"}
+                {round.formatId === "stroke_play" ? "Stroke" : round.formatId === "stableford" ? "Stableford" : round.formatId === "match_play" ? "Match Play" : round.formatId === "scramble" ? "Scramble" : round.formatId}
                 {" • "}
                 {round.scoringType === "net" ? "Net" : "Gross"}
               </Text>
@@ -1053,7 +1077,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#B8860B",
   },
   tabText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: "600",
     color: "#666",
   },

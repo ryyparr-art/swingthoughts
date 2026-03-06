@@ -16,10 +16,8 @@ import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   doc,
-  getDocs,
-  collection,
   onSnapshot,
-  Timestamp,
+  Timestamp
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -55,7 +53,7 @@ interface InvitationalRound {
   roundId: string;
   courseName: string;
   date: Timestamp;
-  format: string;
+  formatId: string;
   scoringType: string;
   status: string;
   roundNumber: number;
@@ -216,6 +214,15 @@ export default function InvitationalStandings() {
         }}
       >
         <Text style={styles.tabText}>Schedule</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.tab}
+        onPress={() => {
+          soundPlayer.play("click");
+          router.replace(`/invitationals/roster?id=${invitationalId}` as any);
+        }}
+      >
+        <Text style={styles.tabText}>Roster</Text>
       </TouchableOpacity>
     </View>
   );
@@ -522,7 +529,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   tabActive: { backgroundColor: "#B8860B" },
-  tabText: { fontSize: 14, fontWeight: "600", color: "#666" },
+  tabText: { fontSize: 13, fontWeight: "600", color: "#666" },
   tabTextActive: { color: "#FFF", fontWeight: "700" },
 
   // Content

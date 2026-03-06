@@ -372,10 +372,7 @@ export default function Compete({ userId }: CompeteProps) {
               onPress={() => {
                 soundPlayer.play("click");
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                router.push({
-                  pathname: "/invitationals/[id]" as any,
-                  params: { id: inv.id },
-                });
+                router.push("/invitationals/home" as any);
               }}
               activeOpacity={0.7}
             >
@@ -428,10 +425,7 @@ export default function Compete({ userId }: CompeteProps) {
                   onPress={() => {
                     soundPlayer.play("click");
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    router.push({
-                      pathname: "/invitationals/[id]" as any,
-                      params: { id: inv.id },
-                    });
+                    router.push("/invitationals/home" as any);
                   }}
                   activeOpacity={0.7}
                 >
