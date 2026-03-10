@@ -555,9 +555,9 @@ function buildPlayerScoreData(
       girArr.push(null);
     }
 
-    // Par — we don't have it directly, but the marker's tee has it
-    // For score doc purposes, we'll compute on the client or use a default
-    totalPar += 4; // Placeholder — overridden by client-side calculation
+    // Par — use holePars from round doc (stored by the client when round starts).
+    // Fall back to 4 per hole only if the array is missing or too short.
+    totalPar += round.holePars?.[h - 1] ?? 4;
   }
 
   netScore = grossScore - player.courseHandicap;
@@ -630,7 +630,13 @@ async function createLeagueScores(
       courseHandicap: player.courseHandicap,
       grossScore,
       netScore,
-      scoreToPar: grossScore - (round.holeCount === 18 ? 72 : 36), // Approx
+      // Use actual holePars from the round doc rather than a hardcoded 72/36
+      // approximation — ensures scoreToPar is accurate on every course.
+      scoreToPar: grossScore - (
+        round.holePars
+          ? round.holePars.slice(0, round.holeCount).reduce((s, par) => s + par, 0)
+          : round.holeCount === 18 ? 72 : 36
+      ),
       teamId: player.teamId || null,
       roundId,
       formatId: round.formatId,

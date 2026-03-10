@@ -10,6 +10,7 @@
  *   - Continue button sticky at bottom
  *   - Selected course shows confirmation bar with X to clear
  *   - Marker Transfer: hand off scoring via settings or approve incoming requests
+ *   - Remove Player: remove a player who left or didn't show via settings menu
  *
  * File: app/scoring/index.tsx
  */
@@ -137,6 +138,7 @@ export default function ScoringScreen() {
   const [showChatSheet, setShowChatSheet] = useState(false);
   const [showSettingsSheet, setShowSettingsSheet] = useState(false);
   const [showTransferPicker, setShowTransferPicker] = useState(false);
+  const [showRemovePlayerPicker, setShowRemovePlayerPicker] = useState(false); // ← NEW
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
   const chatListRef = React.useRef<FlatList<ChatMessage>>(null);
@@ -259,7 +261,6 @@ export default function ScoringScreen() {
       if (!snap.exists()) return;
       const data = snap.data();
       if (currentScreen === "scorecard" && data.markerId !== currentUserId && data.status === "live") {
-        // Dismiss transfer modal if it's showing
         setTransferRequestVisible(false);
         setTransferRequestData(null);
         const name = data.players?.find((p: any) => p.playerId === data.markerId)?.displayName || "Another player";
@@ -268,7 +269,6 @@ export default function ScoringScreen() {
         ]);
         return;
       }
-      // Skip transfer request logic if we're no longer the marker
       if (data.markerId !== currentUserId) {
         setTransferRequestVisible(false);
         setTransferRequestData(null);
@@ -324,6 +324,71 @@ export default function ScoringScreen() {
       });
       console.log(`✅ Marker transferred to ${newMarkerName}`);
     } catch (err) { console.error("Error transferring marker:", err); Alert.alert("Error", "Failed to transfer scoring duties."); }
+  };
+
+  // ══════════════════════════════════════════════════════════════════════
+  // REMOVE PLAYER
+  // ══════════════════════════════════════════════════════════════════════
+
+  const handleRemovePlayer = () => {
+    const removable = players.filter((p) => p.playerId !== currentUserId);
+    if (removable.length === 0) {
+      Alert.alert("Can't Remove", "There are no other players to remove.");
+      return;
+    }
+    setShowSettingsSheet(false);
+
+    if (removable.length === 1) {
+      const target = removable[0];
+      Alert.alert(
+        "Remove Player",
+        `Remove ${target.displayName} from the round? Their scores will be cleared.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Remove", style: "destructive", onPress: () => executeRemovePlayer(target) },
+        ]
+      );
+    } else {
+      setShowRemovePlayerPicker(true);
+    }
+  };
+
+  const executeRemovePlayer = async (player: PlayerSlot) => {
+    soundPlayer.play("click");
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+
+    const updatedPlayers = players.filter((p) => p.playerId !== player.playerId);
+    setPlayers(updatedPlayers);
+
+    // Clear their scores from local holeData
+    setHoleData((prev) => {
+      const updated: typeof prev = {};
+      for (const [hole, holeScores] of Object.entries(prev)) {
+        const { [player.playerId]: _removed, ...rest } = holeScores;
+        updated[hole] = rest;
+      }
+      return updated;
+    });
+
+    // Persist to Firestore
+    if (roundId) {
+      try {
+        const roundRef = doc(db, "rounds", roundId);
+        await updateDoc(roundRef, {
+          players: updatedPlayers.map((p) => ({
+            playerId: p.playerId, displayName: p.displayName, avatar: p.avatar || null,
+            isGhost: p.isGhost, isMarker: p.isMarker, handicapIndex: p.handicapIndex,
+            courseHandicap: p.courseHandicap, teeName: p.teeName, slopeRating: p.slopeRating,
+            courseRating: p.courseRating, teamId: p.teamId || null,
+            contactInfo: p.contactInfo || null, contactType: p.contactType || null,
+          })),
+        });
+        console.log(`✅ Removed player ${player.displayName} from round`);
+      } catch (err) {
+        console.error("Error removing player:", err);
+        Alert.alert("Error", "Failed to remove player.");
+      }
+    }
   };
 
   const handleSelectCourse = async (course: CourseBasic) => {
@@ -465,7 +530,6 @@ export default function ScoringScreen() {
       console.log(`✅ Outing launched: ${newOutingId}, organizer round: ${organizerRoundId}`);
       setOutingId(newOutingId);
 
-      // If the organizer is a group marker, navigate to their scorecard
       const organizerGroup = groups.find((g) => g.markerId === currentUserId);
       if (organizerGroup && organizerRoundId) {
         setRoundId(organizerRoundId);
@@ -480,7 +544,6 @@ export default function ScoringScreen() {
           setCurrentScreen("scorecard");
         }
       } else {
-        // Organizer is not scoring — go back to home with success message
         Alert.alert(
           "Outing Launched! 🏌️",
           `Your group outing at ${courseName} is live. Group scorers have been notified.`,
@@ -910,7 +973,7 @@ export default function ScoringScreen() {
           <Modal visible={showSettingsSheet} transparent animationType="slide">
             <View style={st.sheetOverlay}>
               <TouchableOpacity style={st.sheetBackdrop} activeOpacity={1} onPress={() => setShowSettingsSheet(false)} />
-              <View style={[st.sheetContainer, { maxHeight: 420 }]}>
+              <View style={[st.sheetContainer, { maxHeight: 480 }]}>
                 <View style={st.sheetHeader}>
                   <View style={st.sheetHandle} />
                   <Text style={st.sheetTitle}>Round Settings</Text>
@@ -926,6 +989,19 @@ export default function ScoringScreen() {
                     <TouchableOpacity style={st.settingsRow} onPress={handleTransferScoring}>
                       <View style={st.settingsRowIcon}><Ionicons name="swap-horizontal-outline" size={20} color={HEADER_GREEN} /></View>
                       <View style={{ flex: 1 }}><Text style={st.settingsRowLabel}>Transfer Scoring</Text><Text style={st.settingsRowSub}>Hand off scorekeeper duties</Text></View>
+                      <Ionicons name="chevron-forward" size={18} color="#CCC" />
+                    </TouchableOpacity>
+                  )}
+                  {/* ── Remove Player ── */}
+                  {players.length > 1 && (
+                    <TouchableOpacity style={st.settingsRow} onPress={handleRemovePlayer}>
+                      <View style={[st.settingsRowIcon, { backgroundColor: "rgba(204,102,0,0.08)" }]}>
+                        <Ionicons name="person-remove-outline" size={20} color="#CC6600" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[st.settingsRowLabel, { color: "#CC6600" }]}>Remove Player</Text>
+                        <Text style={st.settingsRowSub}>Remove a player who left or didn't show</Text>
+                      </View>
                       <Ionicons name="chevron-forward" size={18} color="#CCC" />
                     </TouchableOpacity>
                   )}
@@ -973,6 +1049,56 @@ export default function ScoringScreen() {
                       <Ionicons name="arrow-forward-circle-outline" size={22} color={HEADER_GREEN} />
                     </TouchableOpacity>
                   ))}
+                </ScrollView>
+              </View>
+            </View>
+          </Modal>
+
+          {/* Remove Player Picker */}
+          <Modal visible={showRemovePlayerPicker} transparent animationType="slide">
+            <View style={st.sheetOverlay}>
+              <TouchableOpacity style={st.sheetBackdrop} activeOpacity={1} onPress={() => setShowRemovePlayerPicker(false)} />
+              <View style={[st.sheetContainer, { maxHeight: 400 }]}>
+                <View style={st.sheetHeader}>
+                  <View style={st.sheetHandle} />
+                  <Text style={st.sheetTitle}>Remove Player</Text>
+                  <TouchableOpacity onPress={() => setShowRemovePlayerPicker(false)}>
+                    <Image source={closeIcon} style={{ width: 22, height: 22, tintColor: "#666" }} />
+                  </TouchableOpacity>
+                </View>
+                <ScrollView style={{ paddingVertical: 8 }}>
+                  {players
+                    .filter((p) => p.playerId !== currentUserId)
+                    .map((p) => (
+                      <TouchableOpacity
+                        key={p.playerId}
+                        style={st.transferPlayerRow}
+                        onPress={() => {
+                          setShowRemovePlayerPicker(false);
+                          Alert.alert(
+                            "Remove Player",
+                            `Remove ${p.displayName} from the round? Their scores will be cleared.`,
+                            [
+                              { text: "Cancel", style: "cancel" },
+                              { text: "Remove", style: "destructive", onPress: () => executeRemovePlayer(p) },
+                            ]
+                          );
+                        }}
+                      >
+                        {p.avatar ? (
+                          <Image source={{ uri: p.avatar }} style={st.transferPlayerAvatar} />
+                        ) : (
+                          <View style={st.transferPlayerAvatarFallback}>
+                            <Ionicons name="person" size={18} color="#999" />
+                          </View>
+                        )}
+                        <View style={{ flex: 1 }}>
+                          <Text style={st.transferPlayerName}>{p.displayName}</Text>
+                          <Text style={st.transferPlayerSub}>{p.isGhost ? "Guest" : "SwingThoughts"}</Text>
+                        </View>
+                        <Ionicons name="person-remove-outline" size={20} color="#CC6600" />
+                      </TouchableOpacity>
+                    ))}
                 </ScrollView>
               </View>
             </View>

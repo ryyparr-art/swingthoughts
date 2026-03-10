@@ -3,7 +3,7 @@ import { auth, db } from "@/constants/firebaseConfig";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -36,6 +36,8 @@ interface GolfCourse {
 
 export default function CourseSearchScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
+  const holeCount = (Array.isArray(params.holeCount) ? params.holeCount[0] : params.holeCount) || "18";
   const [courseSearch, setCourseSearch] = useState("");
   const [courseResults, setCourseResults] = useState<GolfCourse[]>([]);
   const [selectedCourse, setSelectedCourse] = useState<GolfCourse | null>(null);
@@ -300,6 +302,7 @@ export default function CourseSearchScreen() {
           filterType: "course",
           courseId: selectedCourse.id.toString(),
           courseName: selectedCourse.course_name,
+          holeCount, // ✅ Forward hole count from filter screen
         },
       });
     } catch (error) {

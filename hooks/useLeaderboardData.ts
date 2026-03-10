@@ -1,32 +1,36 @@
 /**
  * useLeaderboardData Hook
- * 
- * Handles all leaderboard data fetching, processing, and caching.
- * Used by both:
- * 1. Leaderboard screen (full functionality)
- * 2. Background preload (nearMe only, for faster navigation)
- * 
- * Cache format:
- * {
- *   boards: CourseBoard[],
- *   pinnedBoard: CourseBoard | null,
- *   displayedCourseIds: number[]
- * }
+ *
+ * Optimizations vs previous version:
+ *
+ * 1. Single user doc read on mount — regionKey, lat/lon, and pinnedLeaderboard
+ *    all come from one getDoc. fetchLeaderboards never reads the user doc;
+ *    loadPinnedCourseId only re-reads after a pin/unpin action.
+ *
+ * 2. Batched course distance lookup — one where("id","in",[...]) query
+ *    replaces N sequential getDocs calls in buildBoardsWithDistance.
+ *    For 8 boards that's 7 fewer network round-trips before first render.
+ *
+ * 3. holeCount toggling is instant — raw leaderboard docs (containing both
+ *    topScores9 and topScores18) are stored as rawBoards. boards and
+ *    pinnedBoard are derived via useMemo, so switching 9↔18 is zero-cost.
+ *
+ * 4. useEffect dep array no longer includes holeCount for the same reason.
  */
 
 import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { auth, db } from "@/constants/firebaseConfig";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { getCourseById } from "@/utils/courseHelpers";
 import { milesBetween } from "@/utils/geo";
 import {
-    getLeaderboard,
-    getLeaderboardsByPartners,
-    getLeaderboardsByPlayer,
-    getLeaderboardsByRegion,
-    hydrateLeaderboardsForRegion,
+  getLeaderboard,
+  getLeaderboardsByPartners,
+  getLeaderboardsByPlayer,
+  getLeaderboardsByRegion,
+  hydrateLeaderboardsForRegion,
 } from "@/utils/leaderboardHelpers";
 import { findNearestRegions } from "@/utils/regionHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -35,7 +39,6 @@ import { soundPlayer } from "@/utils/soundPlayer";
 /* TYPES                                                            */
 /* ================================================================ */
 
-// Re-export Score type from leaderboardHelpers for consistency
 export interface Score {
   scoreId: string;
   userId: string;
@@ -48,8 +51,8 @@ export interface Score {
   teePar: number;
   teeYardage: number;
   createdAt: any;
-  displayName?: string;  // Used in UI
-  userName?: string;     // From leaderboardHelpers
+  displayName?: string;
+  userName?: string;
   userAvatar?: string | null;
   challengeBadges?: string[];
 }
@@ -99,6 +102,92 @@ interface UseLeaderboardDataReturn {
 }
 
 /* ================================================================ */
+/* INTERNAL TYPE                                                    */
+/* Holds the raw Firestore doc so holeCount can switch client-side */
+/* ================================================================ */
+
+interface RawBoard {
+  courseId: number;
+  courseName: string;
+  rawDoc: any;
+  distance?: number;
+  location?: { city?: string; state?: string };
+}
+
+/* ================================================================ */
+/* MODULE-LEVEL HELPERS (no hook state needed)                     */
+/* ================================================================ */
+
+function selectScores(rawDoc: any, holeCount: HoleCount): Score[] {
+  if (holeCount === "18") {
+    return rawDoc.topScores18?.length > 0 ? rawDoc.topScores18 : rawDoc.topScores || [];
+  }
+  return rawDoc.topScores9 || [];
+}
+
+function toBoard(raw: RawBoard, holeCount: HoleCount): CourseBoard {
+  return {
+    courseId: raw.courseId,
+    courseName: raw.courseName,
+    scores: selectScores(raw.rawDoc, holeCount),
+    distance: raw.distance,
+    location: raw.location,
+  };
+}
+
+/**
+ * Replaces the N sequential getDocs calls that were inside buildBoardsWithDistance.
+ * One batched where("id","in",[...]) read + synchronous map — no loop I/O.
+ */
+async function buildRawBoards(
+  leaderboards: any[],
+  userLat: number | undefined,
+  userLon: number | undefined
+): Promise<RawBoard[]> {
+  if (leaderboards.length === 0) return [];
+
+  const courseIds = leaderboards.map((lb) => lb.courseId);
+
+  // Firestore "in" supports up to 30 values — chunk defensively
+  const chunks: number[][] = [];
+  for (let i = 0; i < courseIds.length; i += 30) {
+    chunks.push(courseIds.slice(i, i + 30));
+  }
+
+  const snaps = await Promise.all(
+    chunks.map((chunk) =>
+      getDocs(query(collection(db, "courses"), where("id", "in", chunk)))
+    )
+  );
+
+  const courseMap = new Map<number, any>();
+  for (const snap of snaps) {
+    snap.docs.forEach((d) => {
+      const data = d.data();
+      courseMap.set(data.id, data);
+    });
+  }
+
+  const result: RawBoard[] = leaderboards.map((lb) => {
+    const cd = courseMap.get(lb.courseId);
+    let distance: number | undefined;
+    let location = lb.location;
+
+    if (cd?.location?.latitude && cd?.location?.longitude && userLat && userLon) {
+      distance = milesBetween(userLat, userLon, cd.location.latitude, cd.location.longitude);
+    }
+    if (!location && cd?.location) {
+      location = { city: cd.location.city, state: cd.location.state };
+    }
+
+    return { courseId: lb.courseId, courseName: lb.courseName, rawDoc: lb, distance, location };
+  });
+
+  result.sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999));
+  return result;
+}
+
+/* ================================================================ */
 /* HOOK                                                             */
 /* ================================================================ */
 
@@ -112,37 +201,67 @@ export function useLeaderboardData({
 }: UseLeaderboardDataOptions): UseLeaderboardDataReturn {
   const { getCache, setCache } = useCache();
 
-  // State
-  const [boards, setBoards] = useState<CourseBoard[]>([]);
-  const [pinnedBoard, setPinnedBoard] = useState<CourseBoard | null>(null);
+  const [rawBoards, setRawBoards] = useState<RawBoard[]>([]);
+  const [rawPinnedBoard, setRawPinnedBoard] = useState<RawBoard | null>(null);
   const [displayedCourseIds, setDisplayedCourseIds] = useState<number[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [showingCached, setShowingCached] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+
   const [userRegionKey, setUserRegionKey] = useState("");
   const [pinnedCourseId, setPinnedCourseId] = useState<number | null>(null);
 
+  // Holds user data between renders so fetchLeaderboards never re-reads the doc
+  const userDataRef = useRef<{
+    regionKey: string;
+    lat?: number;
+    lon?: number;
+    pinnedLeaderboard?: any;
+  } | null>(null);
+
   /* ---------------------------------------------------------------- */
-  /* LOAD USER REGION                                                 */
+  /* Derived boards — instant on holeCount change, no network call   */
+  /* ---------------------------------------------------------------- */
+
+  const boards = useMemo(
+    () => rawBoards.map((rb) => toBoard(rb, holeCount)),
+    [rawBoards, holeCount]
+  );
+
+  const pinnedBoard = useMemo(
+    () => (rawPinnedBoard ? toBoard(rawPinnedBoard, holeCount) : null),
+    [rawPinnedBoard, holeCount]
+  );
+
+  /* ---------------------------------------------------------------- */
+  /* SINGLE USER DOC READ ON MOUNT                                   */
   /* ---------------------------------------------------------------- */
 
   useEffect(() => {
-    const loadUserRegion = async () => {
+    const loadUserData = async () => {
       const uid = auth.currentUser?.uid;
       if (!uid) return;
 
       const snap = await getDoc(doc(db, "users", uid));
-      if (snap.exists()) {
-        const userData = snap.data();
-        setUserRegionKey(userData.regionKey || "");
-      }
+      if (!snap.exists()) return;
+
+      const data = snap.data();
+      const rk = data.regionKey || "";
+      const lat = data.currentLatitude || data.latitude;
+      const lon = data.currentLongitude || data.longitude;
+      const pinned = data.pinnedLeaderboard || null;
+
+      setUserRegionKey(rk);
+      if (pinned?.courseId) setPinnedCourseId(pinned.courseId);
+      userDataRef.current = { regionKey: rk, lat, lon, pinnedLeaderboard: pinned };
     };
 
-    loadUserRegion();
+    loadUserData();
   }, []);
 
   /* ---------------------------------------------------------------- */
-  /* LOAD PINNED COURSE ID                                            */
+  /* loadPinnedCourseId — only called after pin/unpin actions        */
   /* ---------------------------------------------------------------- */
 
   const loadPinnedCourseId = useCallback(async () => {
@@ -150,56 +269,31 @@ export function useLeaderboardData({
       const uid = auth.currentUser?.uid;
       if (!uid) return;
 
-      const userDoc = await getDoc(doc(db, "users", uid));
-      if (userDoc.exists()) {
-        const pinned = userDoc.data()?.pinnedLeaderboard;
-        if (pinned?.courseId) {
-          setPinnedCourseId(pinned.courseId);
-          console.log("📌 Loaded pinned course ID:", pinned.courseId);
-        }
-      }
+      const snap = await getDoc(doc(db, "users", uid));
+      if (!snap.exists()) return;
+
+      const pinned = snap.data()?.pinnedLeaderboard || null;
+      setPinnedCourseId(pinned?.courseId ?? null);
+      if (userDataRef.current) userDataRef.current.pinnedLeaderboard = pinned;
     } catch (error) {
       console.error("Error loading pinned course ID:", error);
     }
   }, []);
 
-  useEffect(() => {
-    loadPinnedCourseId();
-  }, [loadPinnedCourseId]);
-
   /* ---------------------------------------------------------------- */
-  /* LOAD PARTNER USER IDS                                            */
+  /* PARTNER IDS                                                      */
   /* ---------------------------------------------------------------- */
 
   const loadPartnerUserIds = async (userId: string): Promise<string[]> => {
     try {
-      const partnersQuery1 = query(
-        collection(db, "partners"),
-        where("user1Id", "==", userId)
-      );
-      const partnersQuery2 = query(
-        collection(db, "partners"),
-        where("user2Id", "==", userId)
-      );
-
       const [snap1, snap2] = await Promise.all([
-        getDocs(partnersQuery1),
-        getDocs(partnersQuery2),
+        getDocs(query(collection(db, "partners"), where("user1Id", "==", userId))),
+        getDocs(query(collection(db, "partners"), where("user2Id", "==", userId))),
       ]);
-
-      const partnerIds = new Set<string>();
-
-      snap1.forEach((doc) => {
-        const data = doc.data();
-        partnerIds.add(data.user2Id);
-      });
-
-      snap2.forEach((doc) => {
-        const data = doc.data();
-        partnerIds.add(data.user1Id);
-      });
-
-      return Array.from(partnerIds);
+      const ids = new Set<string>();
+      snap1.forEach((d) => ids.add(d.data().user2Id));
+      snap2.forEach((d) => ids.add(d.data().user1Id));
+      return Array.from(ids);
     } catch (error) {
       console.error("Error loading partners:", error);
       soundPlayer.play("error");
@@ -208,38 +302,57 @@ export function useLeaderboardData({
   };
 
   /* ---------------------------------------------------------------- */
-  /* FETCH WITH CACHE                                                 */
+  /* TRIGGER — holeCount intentionally omitted from deps             */
   /* ---------------------------------------------------------------- */
 
   useEffect(() => {
     if (userRegionKey) {
       fetchLeaderboardsWithCache();
     }
-  }, [filterType, filterCourseId, filterPlayerId, userRegionKey, holeCount]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterType, filterCourseId, filterPlayerId, userRegionKey]);
 
   const fetchLeaderboardsWithCache = async () => {
     try {
       const uid = auth.currentUser?.uid;
       if (!uid) return;
 
-      // Only use cache for "nearMe" view
       if (filterType === "nearMe" && userRegionKey) {
         const cached = await getCache(
           CACHE_KEYS.LEADERBOARD(uid, userRegionKey, holeCount),
           userRegionKey
         );
 
-        if (cached && cached.boards) {
+        if (cached?.boards) {
           console.log(`⚡ Using cached leaderboards (${holeCount}-hole)`);
-          setBoards(cached.boards || []);
-          setPinnedBoard(cached.pinnedBoard || null);
+          setRawBoards(
+            cached.boards.map((b: CourseBoard) => ({
+              courseId: b.courseId,
+              courseName: b.courseName,
+              rawDoc: { topScores: b.scores, topScores18: b.scores, topScores9: b.scores },
+              distance: b.distance,
+              location: b.location,
+            }))
+          );
+          if (cached.pinnedBoard) {
+            setRawPinnedBoard({
+              courseId: cached.pinnedBoard.courseId,
+              courseName: cached.pinnedBoard.courseName,
+              rawDoc: {
+                topScores: cached.pinnedBoard.scores,
+                topScores18: cached.pinnedBoard.scores,
+                topScores9: cached.pinnedBoard.scores,
+              },
+              distance: cached.pinnedBoard.distance,
+              location: cached.pinnedBoard.location,
+            });
+          }
           setDisplayedCourseIds(cached.displayedCourseIds || []);
           setShowingCached(true);
           setLoading(false);
         }
       }
 
-      // Fetch fresh data (always)
       await fetchLeaderboards(true);
     } catch (error) {
       console.error("❌ Leaderboard cache error:", error);
@@ -248,362 +361,188 @@ export function useLeaderboardData({
   };
 
   /* ---------------------------------------------------------------- */
-  /* FETCH LEADERBOARDS (CORE LOGIC)                                  */
+  /* FETCH LEADERBOARDS                                               */
   /* ---------------------------------------------------------------- */
 
-  const fetchLeaderboards = useCallback(async (isBackgroundRefresh: boolean = false) => {
-    try {
-      if (!isBackgroundRefresh) {
-        setLoading(true);
-      }
+  const fetchLeaderboards = useCallback(
+    async (isBackgroundRefresh = false) => {
+      try {
+        if (!isBackgroundRefresh) setLoading(true);
 
-      const uid = auth.currentUser?.uid;
-      if (!uid) {
-        console.log("❌ No user authenticated");
-        soundPlayer.play("error");
-        setLoading(false);
-        return;
-      }
-
-      // Get user data
-      const userDoc = await getDoc(doc(db, "users", uid));
-      if (!userDoc.exists()) {
-        console.log("❌ User document not found");
-        setLoading(false);
-        return;
-      }
-
-      const userData = userDoc.data();
-      const currentUserRegionKey = userData.regionKey;
-      const userLat = userData.currentLatitude || userData.latitude;
-      const userLon = userData.currentLongitude || userData.longitude;
-
-      if (!currentUserRegionKey) {
-        console.log("⚠️ User has no regionKey - needs migration");
-        setLoading(false);
-        return;
-      }
-
-      let leaderboards: any[] = [];
-      let displayedIds: number[] = [];
-
-      // ============================================================
-      // HANDLE DIFFERENT FILTER TYPES
-      // ============================================================
-
-      if (filterType === "course" && filterCourseId) {
-        // SPECIFIC COURSE FILTER — query leaderboards directly by courseId
-        console.log("🔍 Filter: Specific Course -", filterCourseName);
-
-        const leaderboardQuery = query(
-          collection(db, "leaderboards"),
-          where("courseId", "==", filterCourseId)
-        );
-        const leaderboardSnap = await getDocs(leaderboardQuery);
-
-        if (!leaderboardSnap.empty) {
-          leaderboards = [leaderboardSnap.docs[0].data()];
-          console.log("✅ Found leaderboard for course:", filterCourseId);
-        } else {
-          // No leaderboard yet — fall back to course API data for metadata
-          console.log("⚠️ No leaderboard for course, showing empty board");
-          const course = await getCourseById(filterCourseId);
-
-          leaderboards = [
-            {
-              courseId: filterCourseId,
-              courseName: filterCourseName || course?.course_name || "Unknown Course",
-              topScores18: [],
-              topScores9: [],
-              topScores: [],
-              location: course?.location
-                ? { city: course.location.city, state: course.location.state }
-                : undefined,
-            },
-          ];
-        }
-
-        displayedIds = [filterCourseId];
-      } else if (filterType === "partnersOnly") {
-        // PARTNERS ONLY FILTER
-        console.log("🔍 Filter: Partners Only");
-
-        const partnerIds = await loadPartnerUserIds(uid);
-
-        if (partnerIds.length === 0) {
-          console.log("⚠️ User has no partners");
-          setBoards([]);
-          setDisplayedCourseIds([]);
-          setShowingCached(false);
+        const uid = auth.currentUser?.uid;
+        if (!uid) {
+          console.log("❌ No user authenticated");
+          soundPlayer.play("error");
           setLoading(false);
           return;
         }
 
-        leaderboards = await getLeaderboardsByPartners(partnerIds);
-        displayedIds = leaderboards.map((lb: any) => lb.courseId);
+        // Use ref — no user doc read on every call
+        let ud = userDataRef.current;
 
-        console.log("📊 Partners have top scores at", displayedIds.length, "courses");
-      } else if (filterType === "player" && filterPlayerId) {
-        // SPECIFIC PLAYER FILTER
-        console.log("🔍 Filter: Specific Player -", filterPlayerName);
+        // Fallback: if mount effect hasn't resolved yet, read once
+        if (!ud?.regionKey) {
+          const snap = await getDoc(doc(db, "users", uid));
+          if (!snap.exists()) { setLoading(false); return; }
+          const data = snap.data();
+          ud = {
+            regionKey: data.regionKey || "",
+            lat: data.currentLatitude || data.latitude,
+            lon: data.currentLongitude || data.longitude,
+            pinnedLeaderboard: data.pinnedLeaderboard || null,
+          };
+          setUserRegionKey(ud.regionKey);
+          if (ud.pinnedLeaderboard?.courseId) setPinnedCourseId(ud.pinnedLeaderboard.courseId);
+          userDataRef.current = ud;
+        }
 
-        leaderboards = await getLeaderboardsByPlayer(filterPlayerId);
-        displayedIds = leaderboards.map((lb: any) => lb.courseId);
+        const { regionKey, lat: userLat, lon: userLon, pinnedLeaderboard } = ud;
 
-        console.log("📊 Player has top scores at", displayedIds.length, "courses");
-      } else {
-        // NEAR ME (DEFAULT)
-        console.log("🔍 Filter: Near Me");
-        console.log(`🔍 Fetching leaderboards for region: ${currentUserRegionKey}`);
+        if (!regionKey) {
+          console.log("⚠️ User has no regionKey");
+          setLoading(false);
+          return;
+        }
 
-        leaderboards = await getLeaderboardsByRegion(currentUserRegionKey);
+        let leaderboards: any[] = [];
+        let displayedIds: number[] = [];
 
-        console.log(`✅ Found ${leaderboards.length} leaderboards in ${currentUserRegionKey}`);
+        // ── FILTER ROUTING ──────────────────────────────────────────
 
-        // If no leaderboards, try to hydrate
+        if (filterType === "course" && filterCourseId) {
+          console.log("🔍 Filter: Specific Course -", filterCourseName);
+
+          const snap = await getDocs(
+            query(collection(db, "leaderboards"), where("courseId", "==", filterCourseId))
+          );
+
+          if (!snap.empty) {
+            leaderboards = [snap.docs[0].data()];
+          } else {
+            const course = await getCourseById(filterCourseId);
+            leaderboards = [{
+              courseId: filterCourseId,
+              courseName: filterCourseName || course?.course_name || "Unknown Course",
+              topScores18: [], topScores9: [], topScores: [],
+              location: course?.location
+                ? { city: course.location.city, state: course.location.state }
+                : undefined,
+            }];
+          }
+          displayedIds = [filterCourseId];
+
+        } else if (filterType === "partnersOnly") {
+          console.log("🔍 Filter: Partners Only");
+          const partnerIds = await loadPartnerUserIds(uid);
+          if (partnerIds.length === 0) {
+            setRawBoards([]); setRawPinnedBoard(null); setDisplayedCourseIds([]);
+            setShowingCached(false); setLoading(false);
+            return;
+          }
+          leaderboards = await getLeaderboardsByPartners(partnerIds);
+          displayedIds = leaderboards.map((lb: any) => lb.courseId);
+
+        } else if (filterType === "player" && filterPlayerId) {
+          console.log("🔍 Filter: Specific Player -", filterPlayerName);
+          leaderboards = await getLeaderboardsByPlayer(filterPlayerId);
+          displayedIds = leaderboards.map((lb: any) => lb.courseId);
+
+        } else {
+          // NEAR ME
+          console.log("🔍 Filter: Near Me");
+          leaderboards = await getLeaderboardsByRegion(regionKey);
+
+          if (leaderboards.length === 0) {
+            const hydrated = await hydrateLeaderboardsForRegion(regionKey);
+            if (hydrated > 0) leaderboards = await getLeaderboardsByRegion(regionKey);
+          }
+
+          if (leaderboards.length < 3 && userLat && userLon) {
+            const nearbyRegions = findNearestRegions(userLat, userLon, 3, 100);
+            for (const { region } of nearbyRegions) {
+              if (leaderboards.length >= 3) break;
+              leaderboards.push(...(await getLeaderboardsByRegion(region.key)));
+            }
+          }
+
+          displayedIds = leaderboards.map((lb: any) => lb.courseId);
+        }
+
+        console.log("📦 Total leaderboards to show:", leaderboards.length);
+
         if (leaderboards.length === 0) {
-          console.log("⚠️ No leaderboards in region, attempting hydration...");
-
-          const hydrated = await hydrateLeaderboardsForRegion(currentUserRegionKey);
-
-          if (hydrated > 0) {
-            leaderboards = await getLeaderboardsByRegion(currentUserRegionKey);
-            console.log(`✅ After hydration: ${leaderboards.length} leaderboards`);
-          }
+          setRawBoards([]); setRawPinnedBoard(null); setDisplayedCourseIds([]);
+          setShowingCached(false); setLoading(false);
+          return;
         }
 
-        // Expand to nearby regions if needed
-        if (leaderboards.length < 3 && userLat && userLon) {
-          console.log("📍 Expanding to nearby regions...");
+        // ── BATCHED DISTANCE LOOKUP ──────────────────────────────────
+        const rawBoardsList = await buildRawBoards(leaderboards, userLat, userLon);
 
-          const nearbyRegions = findNearestRegions(userLat, userLon, 3, 100);
+        // ── PINNED LEADERBOARD (nearMe only) ────────────────────────
+        let finalRawBoards = rawBoardsList;
+        let finalRawPinned: RawBoard | null = null;
 
-          for (const { region } of nearbyRegions) {
-            if (leaderboards.length >= 3) break;
-
-            const moreBoards = await getLeaderboardsByRegion(region.key);
-            leaderboards.push(...moreBoards);
-
-            console.log(`✅ Added ${moreBoards.length} from ${region.displayName}`);
-          }
-        }
-
-        displayedIds = leaderboards.map((lb: any) => lb.courseId);
-      }
-
-      console.log("📦 Total leaderboards to show:", leaderboards.length);
-
-      if (leaderboards.length === 0) {
-        console.log("⚠️ No leaderboards to display");
-        setBoards([]);
-        setDisplayedCourseIds([]);
-        setShowingCached(false);
-        setLoading(false);
-        return;
-      }
-
-      // ============================================================
-      // CALCULATE DISTANCES & BUILD BOARDS
-      // ============================================================
-
-      const boardsWithDistance = await buildBoardsWithDistance(
-        leaderboards,
-        userLat,
-        userLon,
-        holeCount
-      );
-
-      console.log("✅ Built leaderboards with distances");
-
-      // ============================================================
-      // HANDLE PINNED LEADERBOARD (ONLY FOR NEAR ME)
-      // ============================================================
-
-      let finalBoards = boardsWithDistance;
-      let finalPinnedBoard: CourseBoard | null = null;
-
-      if (filterType === "nearMe") {
-        const pinnedLeaderboard = userData.pinnedLeaderboard;
-
-        if (pinnedLeaderboard?.courseId) {
-          console.log("📌 Loading pinned leaderboard:", pinnedLeaderboard.courseName);
-
+        if (filterType === "nearMe" && pinnedLeaderboard?.courseId) {
           const pinnedCourse = await getCourseById(pinnedLeaderboard.courseId);
 
           if (pinnedCourse) {
-            const pinnedLB = await getLeaderboard(
-              pinnedCourse.regionKey,
-              pinnedLeaderboard.courseId
-            );
+            const pinnedLB = await getLeaderboard(pinnedCourse.regionKey, pinnedLeaderboard.courseId);
 
-            if (pinnedLB) {
-              let pinnedDistance: number | undefined;
-              if (
-                pinnedCourse.location?.latitude &&
-                pinnedCourse.location?.longitude &&
-                userLat &&
-                userLon
-              ) {
-                pinnedDistance = milesBetween(
-                  userLat,
-                  userLon,
-                  pinnedCourse.location.latitude,
-                  pinnedCourse.location.longitude
-                );
-              }
-
-              const pinnedScores =
-                holeCount === "18"
-                  ? (pinnedLB.topScores18 && pinnedLB.topScores18.length > 0)
-                    ? pinnedLB.topScores18
-                    : (pinnedLB.topScores || [])
-                  : (pinnedLB.topScores9 || []);
-
-              finalPinnedBoard = {
-                courseId: pinnedLB.courseId,
-                courseName: pinnedLB.courseName,
-                scores: pinnedScores,
-                distance: pinnedDistance,
-                location: pinnedCourse.location
-                  ? {
-                      city: pinnedCourse.location.city,
-                      state: pinnedCourse.location.state,
-                    }
-                  : undefined,
-              };
-
-              const boardsWithoutPinned = boardsWithDistance.filter(
-                (b) => b.courseId !== pinnedLeaderboard.courseId
-              );
-              finalBoards = boardsWithoutPinned.slice(0, 2);
-
-              console.log("✅ Set pinned board at top, showing top 2 others below");
-            } else {
-              finalPinnedBoard = {
-                courseId: pinnedLeaderboard.courseId,
-                courseName: pinnedLeaderboard.courseName,
-                scores: [],
-                location: pinnedCourse.location
-                  ? {
-                      city: pinnedCourse.location.city,
-                      state: pinnedCourse.location.state,
-                    }
-                  : undefined,
-              };
-
-              const boardsWithoutPinned = boardsWithDistance.filter(
-                (b) => b.courseId !== pinnedLeaderboard.courseId
-              );
-              finalBoards = boardsWithoutPinned.slice(0, 2);
+            let pinnedDistance: number | undefined;
+            if (pinnedCourse.location?.latitude && pinnedCourse.location?.longitude && userLat && userLon) {
+              pinnedDistance = milesBetween(userLat, userLon, pinnedCourse.location.latitude, pinnedCourse.location.longitude);
             }
-          } else {
-            finalPinnedBoard = null;
-            finalBoards = boardsWithDistance.slice(0, 3);
+
+            finalRawPinned = {
+              courseId: pinnedLeaderboard.courseId,
+              courseName: pinnedLB?.courseName || pinnedLeaderboard.courseName,
+              rawDoc: pinnedLB || { topScores18: [], topScores9: [], topScores: [] },
+              distance: pinnedDistance,
+              location: pinnedCourse.location
+                ? { city: pinnedCourse.location.city, state: pinnedCourse.location.state }
+                : undefined,
+            };
           }
-        } else {
-          finalPinnedBoard = null;
-          finalBoards = boardsWithDistance.slice(0, 3);
-        }
-      }
 
-      // Update state
-      setPinnedBoard(finalPinnedBoard);
-      setBoards(finalBoards);
-      setDisplayedCourseIds(finalBoards.map((b) => b.courseId));
-
-      // Cache result (only for "nearMe")
-      if (filterType === "nearMe" && currentUserRegionKey) {
-        const cacheData: LeaderboardCacheData = {
-          boards: finalBoards,
-          pinnedBoard: finalPinnedBoard,
-          displayedCourseIds: finalBoards.map((b) => b.courseId),
-        };
-
-        await setCache(
-          CACHE_KEYS.LEADERBOARD(uid, currentUserRegionKey, holeCount),
-          cacheData,
-          currentUserRegionKey
-        );
-        console.log(`✅ Leaderboards cached (${holeCount}-hole)`);
-      }
-
-      setShowingCached(false);
-      setLoading(false);
-    } catch (e) {
-      console.error("Leaderboard error:", e);
-      soundPlayer.play("error");
-      setShowingCached(false);
-      setLoading(false);
-    }
-  }, [filterType, filterCourseId, filterCourseName, filterPlayerId, filterPlayerName, holeCount, setCache]);
-
-  /* ---------------------------------------------------------------- */
-  /* BUILD BOARDS WITH DISTANCE                                       */
-  /* ---------------------------------------------------------------- */
-
-  const buildBoardsWithDistance = async (
-    leaderboards: any[],
-    userLat: number | undefined,
-    userLon: number | undefined,
-    holeCount: HoleCount
-  ): Promise<CourseBoard[]> => {
-    const boardsWithDistance: CourseBoard[] = [];
-
-    for (const leaderboard of leaderboards) {
-      const courseQuery = query(
-        collection(db, "courses"),
-        where("id", "==", leaderboard.courseId)
-      );
-      const courseSnap = await getDocs(courseQuery);
-
-      let distance: number | undefined;
-      let location = leaderboard.location;
-
-      if (!courseSnap.empty) {
-        const courseData = courseSnap.docs[0].data();
-        if (
-          courseData.location?.latitude &&
-          courseData.location?.longitude &&
-          userLat &&
-          userLon
-        ) {
-          distance = milesBetween(
-            userLat,
-            userLon,
-            courseData.location.latitude,
-            courseData.location.longitude
-          );
+          finalRawBoards = rawBoardsList
+            .filter((b) => b.courseId !== pinnedLeaderboard.courseId)
+            .slice(0, 2);
+        } else if (filterType === "nearMe") {
+          finalRawBoards = rawBoardsList.slice(0, 3);
         }
 
-        if (!location && courseData.location) {
-          location = {
-            city: courseData.location.city,
-            state: courseData.location.state,
+        setRawBoards(finalRawBoards);
+        setRawPinnedBoard(finalRawPinned);
+        setDisplayedCourseIds(finalRawBoards.map((b) => b.courseId));
+
+        // ── CACHE (nearMe only) ──────────────────────────────────────
+        if (filterType === "nearMe" && regionKey) {
+          const cacheData: LeaderboardCacheData = {
+            boards: finalRawBoards.map((rb) => toBoard(rb, holeCount)),
+            pinnedBoard: finalRawPinned ? toBoard(finalRawPinned, holeCount) : null,
+            displayedCourseIds: finalRawBoards.map((b) => b.courseId),
           };
+          await setCache(
+            CACHE_KEYS.LEADERBOARD(uid, regionKey, holeCount),
+            cacheData,
+            regionKey
+          );
+          console.log(`✅ Leaderboards cached (${holeCount}-hole)`);
         }
+
+        setShowingCached(false);
+        setLoading(false);
+      } catch (e) {
+        console.error("Leaderboard error:", e);
+        soundPlayer.play("error");
+        setShowingCached(false);
+        setLoading(false);
       }
-
-      const scores: Score[] =
-        holeCount === "18"
-          ? (leaderboard.topScores18 && leaderboard.topScores18.length > 0)
-            ? leaderboard.topScores18
-            : (leaderboard.topScores || [])
-          : (leaderboard.topScores9 || []);
-
-      boardsWithDistance.push({
-        courseId: leaderboard.courseId,
-        courseName: leaderboard.courseName,
-        scores,
-        distance,
-        location,
-      });
-    }
-
-    // Sort by distance (closest first)
-    boardsWithDistance.sort((a, b) => (a.distance || 999) - (b.distance || 999));
-
-    return boardsWithDistance;
-  };
+    },
+    // holeCount intentionally NOT in deps — raw docs are hole-count-agnostic
+    [filterType, filterCourseId, filterCourseName, filterPlayerId, filterPlayerName, setCache]
+  );
 
   /* ---------------------------------------------------------------- */
   /* PULL TO REFRESH                                                  */
@@ -636,13 +575,6 @@ export function useLeaderboardData({
 /* STANDALONE PRELOAD FUNCTION                                      */
 /* ================================================================ */
 
-/**
- * Preload leaderboard data for background preloading.
- * Only preloads "nearMe" view since that's the default.
- * 
- * This function replicates the core fetch logic but is standalone
- * so it can be called from useBackgroundPreload without hooks.
- */
 export async function preloadLeaderboardData(
   userId: string,
   regionKey: string,
@@ -652,169 +584,66 @@ export async function preloadLeaderboardData(
   try {
     console.log("🔄 Preloading leaderboard...");
 
-    // Get user data for location
     const userDoc = await getDoc(doc(db, "users", userId));
-    if (!userDoc.exists()) {
-      console.log("⚠️ User not found for leaderboard preload");
-      return;
-    }
+    if (!userDoc.exists()) return;
 
     const userData = userDoc.data();
     const userLat = userData.currentLatitude || userData.latitude;
     const userLon = userData.currentLongitude || userData.longitude;
+    const pinnedLeaderboard = userData.pinnedLeaderboard || null;
 
-    // Fetch leaderboards for region
     let leaderboards = await getLeaderboardsByRegion(regionKey);
-    console.log(`📦 Found ${leaderboards.length} leaderboards in ${regionKey}`);
 
     if (leaderboards.length === 0) {
       const hydrated = await hydrateLeaderboardsForRegion(regionKey);
-      if (hydrated > 0) {
-        leaderboards = await getLeaderboardsByRegion(regionKey);
-      }
+      if (hydrated > 0) leaderboards = await getLeaderboardsByRegion(regionKey);
     }
 
-    // Expand to nearby regions if needed
     if (leaderboards.length < 3 && userLat && userLon) {
       const nearbyRegions = findNearestRegions(userLat, userLon, 3, 100);
       for (const { region } of nearbyRegions) {
         if (leaderboards.length >= 3) break;
-        const moreBoards = await getLeaderboardsByRegion(region.key);
-        leaderboards.push(...moreBoards);
+        leaderboards.push(...(await getLeaderboardsByRegion(region.key)));
       }
     }
 
-    if (leaderboards.length === 0) {
-      console.log("⚠️ No leaderboards to preload");
-      return;
-    }
+    if (leaderboards.length === 0) return;
 
-    // Build boards with distance
-    const boardsWithDistance: CourseBoard[] = [];
+    // Batched distance lookup — same optimisation as the hook
+    const rawBoardsList = await buildRawBoards(leaderboards, userLat, userLon);
 
-    for (const leaderboard of leaderboards) {
-      const courseQuery = query(
-        collection(db, "courses"),
-        where("id", "==", leaderboard.courseId)
-      );
-      const courseSnap = await getDocs(courseQuery);
-
-      let distance: number | undefined;
-      let location = leaderboard.location;
-
-      if (!courseSnap.empty) {
-        const courseData = courseSnap.docs[0].data();
-        if (
-          courseData.location?.latitude &&
-          courseData.location?.longitude &&
-          userLat &&
-          userLon
-        ) {
-          distance = milesBetween(
-            userLat,
-            userLon,
-            courseData.location.latitude,
-            courseData.location.longitude
-          );
-        }
-
-        if (!location && courseData.location) {
-          location = {
-            city: courseData.location.city,
-            state: courseData.location.state,
-          };
-        }
-      }
-
-      const scores: Score[] =
-        holeCount === "18"
-          ? (leaderboard.topScores18 && leaderboard.topScores18.length > 0)
-            ? leaderboard.topScores18
-            : (leaderboard.topScores || [])
-          : (leaderboard.topScores9 || []);
-
-      boardsWithDistance.push({
-        courseId: leaderboard.courseId,
-        courseName: leaderboard.courseName,
-        scores,
-        distance,
-        location,
-      });
-    }
-
-    // Sort by distance
-    boardsWithDistance.sort((a, b) => (a.distance || 999) - (b.distance || 999));
-
-    // Handle pinned leaderboard
-    let finalBoards = boardsWithDistance;
-    let finalPinnedBoard: CourseBoard | null = null;
-
-    const pinnedLeaderboard = userData.pinnedLeaderboard;
+    let finalRawBoards = rawBoardsList;
+    let finalRawPinned: RawBoard | null = null;
 
     if (pinnedLeaderboard?.courseId) {
       const pinnedCourse = await getCourseById(pinnedLeaderboard.courseId);
-
       if (pinnedCourse) {
-        const pinnedLB = await getLeaderboard(
-          pinnedCourse.regionKey,
-          pinnedLeaderboard.courseId
-        );
-
-        if (pinnedLB) {
-          let pinnedDistance: number | undefined;
-          if (
-            pinnedCourse.location?.latitude &&
-            pinnedCourse.location?.longitude &&
-            userLat &&
-            userLon
-          ) {
-            pinnedDistance = milesBetween(
-              userLat,
-              userLon,
-              pinnedCourse.location.latitude,
-              pinnedCourse.location.longitude
-            );
-          }
-
-          const pinnedScores: Score[] =
-            holeCount === "18"
-              ? (pinnedLB.topScores18 && pinnedLB.topScores18.length > 0)
-                ? pinnedLB.topScores18
-                : (pinnedLB.topScores || [])
-              : (pinnedLB.topScores9 || []);
-
-          finalPinnedBoard = {
-            courseId: pinnedLB.courseId,
-            courseName: pinnedLB.courseName,
-            scores: pinnedScores,
-            distance: pinnedDistance,
-            location: pinnedCourse.location
-              ? {
-                  city: pinnedCourse.location.city,
-                  state: pinnedCourse.location.state,
-                }
-              : undefined,
-          };
-
-          const boardsWithoutPinned = boardsWithDistance.filter(
-            (b) => b.courseId !== pinnedLeaderboard.courseId
-          );
-          finalBoards = boardsWithoutPinned.slice(0, 2);
-        } else {
-          finalBoards = boardsWithDistance.slice(0, 3);
+        const pinnedLB = await getLeaderboard(pinnedCourse.regionKey, pinnedLeaderboard.courseId);
+        let pinnedDistance: number | undefined;
+        if (pinnedCourse.location?.latitude && pinnedCourse.location?.longitude && userLat && userLon) {
+          pinnedDistance = milesBetween(userLat, userLon, pinnedCourse.location.latitude, pinnedCourse.location.longitude);
         }
-      } else {
-        finalBoards = boardsWithDistance.slice(0, 3);
+        finalRawPinned = {
+          courseId: pinnedLeaderboard.courseId,
+          courseName: pinnedLB?.courseName || pinnedLeaderboard.courseName,
+          rawDoc: pinnedLB || { topScores18: [], topScores9: [], topScores: [] },
+          distance: pinnedDistance,
+          location: pinnedCourse.location
+            ? { city: pinnedCourse.location.city, state: pinnedCourse.location.state }
+            : undefined,
+        };
       }
+      finalRawBoards = rawBoardsList
+        .filter((b) => b.courseId !== pinnedLeaderboard.courseId)
+        .slice(0, 2);
     } else {
-      finalBoards = boardsWithDistance.slice(0, 3);
+      finalRawBoards = rawBoardsList.slice(0, 3);
     }
 
-    // Cache the result
     const cacheData: LeaderboardCacheData = {
-      boards: finalBoards,
-      pinnedBoard: finalPinnedBoard,
-      displayedCourseIds: finalBoards.map((b) => b.courseId),
+      boards: finalRawBoards.map((rb) => toBoard(rb, holeCount)),
+      pinnedBoard: finalRawPinned ? toBoard(finalRawPinned, holeCount) : null,
+      displayedCourseIds: finalRawBoards.map((b) => b.courseId),
     };
 
     await setCache(
@@ -823,7 +652,7 @@ export async function preloadLeaderboardData(
       regionKey
     );
 
-    console.log(`✅ Leaderboard preloaded: ${finalBoards.length} boards`);
+    console.log(`✅ Leaderboard preloaded: ${finalRawBoards.length} boards`);
   } catch (error) {
     console.log("⚠️ Leaderboard preload failed (non-critical):", error);
   }

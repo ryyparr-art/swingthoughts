@@ -153,58 +153,68 @@ export const onLeagueScoreCreated = onDocumentCreated(
 
       // ============================================
       // UPDATE USER CAREER STATS
+      // ⚠️ DUPLICATE GUARD: Skip if this score originated from a multiplayer
+      // round — onScoreCreated in scores.ts already called updateUserCareerStats
+      // when rounds.ts wrote the mirrored doc to the root scores collection.
+      // Running it again here would double-increment every career stat counter.
       // ============================================
-      try {
-        await updateUserCareerStats(userId, {
-          grossScore: grossScore || 0,
-          netScore: netScore || grossScore || 0,
-          holeScores: score.holeScores,
-          courseId: score.courseId,
-          fairwaysHit: score.fairwaysHit,
-          fairwaysPossible: score.fairwaysPossible,
-          greensInRegulation: score.greensInRegulation,
-          totalPenalties: score.totalPenalties,
-        });
-      } catch (statsErr) {
-        console.error(`⚠️ Career stats update failed for ${userId}:`, statsErr);
-      }
+      if (score.source !== "multiplayer_round") {
+        try {
+          await updateUserCareerStats(userId, {
+            grossScore: grossScore || 0,
+            netScore: netScore || grossScore || 0,
+            holeScores: score.holeScores,
+            courseId: score.courseId,
+            fairwaysHit: score.fairwaysHit,
+            fairwaysPossible: score.fairwaysPossible,
+            greensInRegulation: score.greensInRegulation,
+            totalPenalties: score.totalPenalties,
+          });
+        } catch (statsErr) {
+          console.error(`⚠️ Career stats update failed for ${userId}:`, statsErr);
+        }
 
-      // ============================================
-      // EVALUATE CHALLENGES
-      // ============================================
-      try {
-        const { evaluateChallenges } = await import("./challengeEvaluator.js");
+        // ============================================
+        // EVALUATE CHALLENGES
+        // Same guard — challenges are evaluated by onScoreCreated for
+        // multiplayer rounds, so we only run them here for solo league scores.
+        // ============================================
+        try {
+          const { evaluateChallenges } = await import("./challengeEvaluator.js");
 
-        // Build holePars from course data
-        const courseDoc = await db.collection("courses").doc(String(score.courseId)).get();
-        const courseTees = courseDoc.exists ? courseDoc.data()?.tees : null;
-        const allTees = [...(courseTees?.male || []), ...(courseTees?.female || [])];
-        const holePars = allTees[0]?.holes?.map((h: any) => h.par || 4) || [];
+          // Build holePars from course data
+          const courseDoc = await db.collection("courses").doc(String(score.courseId)).get();
+          const courseTees = courseDoc.exists ? courseDoc.data()?.tees : null;
+          const allTees = [...(courseTees?.male || []), ...(courseTees?.female || [])];
+          const holePars = allTees[0]?.holes?.map((h: any) => h.par || 4) || [];
 
-        const fir = score.fir || [];
-        const gir = score.gir || [];
-        const hasFirData = fir.some((v: any) => v !== null);
-        const hasGirData = gir.some((v: any) => v !== null);
+          const fir = score.fir || [];
+          const gir = score.gir || [];
+          const hasFirData = fir.some((v: any) => v !== null);
+          const hasGirData = gir.some((v: any) => v !== null);
 
-        await evaluateChallenges({
-          userId,
-          grossScore: grossScore || 0,
-          holeScores: score.holeScores || [],
-          holePars: holePars.slice(0, score.holeScores?.length || 0),
-          holesCount: score.holeScores?.length || 0,
-          courseId: score.courseId,
-          courseName: score.courseName,
-          fairwaysHit: score.fairwaysHit,
-          fairwaysPossible: score.fairwaysPossible,
-          greensHit: score.greensInRegulation,
-          greensPossible: score.holeScores?.length || 0,
-          hasFirData,
-          hasGirData,
-          dtpMeasurements: score.dtpMeasurements,
-          scoreId: event.params.scoreId,
-        });
-      } catch (challengeErr) {
-        console.error(`⚠️ Challenge evaluation failed for ${userId}:`, challengeErr);
+          await evaluateChallenges({
+            userId,
+            grossScore: grossScore || 0,
+            holeScores: score.holeScores || [],
+            holePars: holePars.slice(0, score.holeScores?.length || 0),
+            holesCount: score.holeScores?.length || 0,
+            courseId: score.courseId,
+            courseName: score.courseName,
+            fairwaysHit: score.fairwaysHit,
+            fairwaysPossible: score.fairwaysPossible,
+            greensHit: score.greensInRegulation,
+            greensPossible: score.holeScores?.length || 0,
+            hasFirData,
+            hasGirData,
+            dtpMeasurements: score.dtpMeasurements,
+            scoreId: event.params.scoreId,
+          });
+        } catch (challengeErr) {
+          console.error(`⚠️ Challenge evaluation failed for ${userId}:`, challengeErr);
+        }
+      } else {
+        console.log(`⏭️ Skipping career stats + challenges for ${userId} — already handled by onScoreCreated (multiplayer_round)`);
       }
     } catch (error) { console.error("🔥 onLeagueScoreCreated failed:", error); }
   }
@@ -507,7 +517,9 @@ export const onLeagueUpdated = onDocumentUpdated(
       if (before.status !== "active" && after.status === "active") {
         if (isProcessorUpdate) {
           console.log("⏭️ Skipping season_started - handled by leagueProcessor");
-          await db.collection("leagues").doc(leagueId).update({ _updatedByProcessor: FieldValue.delete() });
+          // ⚠️ Do NOT call db.update() here to clean up _updatedByProcessor —
+          // that write re-fires this trigger, causing a redundant second pass.
+          // The processor is responsible for cleaning up its own flag.
         } else {
           const memberIds = await getMemberIds();
           for (const memberId of memberIds) {
@@ -526,7 +538,7 @@ export const onLeagueUpdated = onDocumentUpdated(
       if (before.status !== "completed" && after.status === "completed") {
         if (isProcessorUpdate) {
           console.log("⏭️ Skipping season_complete - handled by leagueProcessor");
-          await db.collection("leagues").doc(leagueId).update({ _updatedByProcessor: FieldValue.delete() });
+          // ⚠️ Do NOT call db.update() here — see season_started note above.
         } else {
           const championName = after.championName || "the champion";
           const championId = after.championId;
@@ -547,7 +559,7 @@ export const onLeagueUpdated = onDocumentUpdated(
       if (before.currentWeek !== after.currentWeek && after.currentWeek > (before.currentWeek || 0)) {
         if (isProcessorUpdate) {
           console.log("⏭️ Skipping week_start - handled by leagueProcessor");
-          await db.collection("leagues").doc(leagueId).update({ _updatedByProcessor: FieldValue.delete() });
+          // ⚠️ Do NOT call db.update() here — see season_started note above.
         } else {
           const memberIds = await getMemberIds();
           for (const memberId of memberIds) {

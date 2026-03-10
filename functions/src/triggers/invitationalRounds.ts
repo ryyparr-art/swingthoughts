@@ -213,9 +213,11 @@ export const startInvitationalRound = onCall(async (request) => {
           ? p.invitationalHandicap
           : p.handicap || 0;
 
-      // Simplified course handicap calculation
-      // Real calc needs slope/rating from the specific tee
-      const courseHandicap = Math.round(handicapIndex);
+      // USGA course handicap formula: Handicap Index × (Slope / 113)
+      // slope and rating are already loaded from courseData above.
+      // Fall back to 113/72 (standard scratch values) if course data is missing.
+      const slope = courseData?.tees?.male?.[0]?.slope || 113;
+      const courseHandicap = Math.round(handicapIndex * (slope / 113));
 
       return {
         playerId: p.userId || `ghost_${p.ghostName || p.displayName}`,

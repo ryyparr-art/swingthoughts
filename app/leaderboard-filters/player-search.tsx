@@ -2,7 +2,7 @@ import { db } from "@/constants/firebaseConfig";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { collection, getDocs } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -26,6 +26,8 @@ interface Player {
 
 export default function PlayerSearchScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams();
+  const holeCount = (Array.isArray(params.holeCount) ? params.holeCount[0] : params.holeCount) || "18";
   const [playerSearch, setPlayerSearch] = useState("");
   const [allPlayers, setAllPlayers] = useState<Player[]>([]); // ✅ Store all players
   const [playerResults, setPlayerResults] = useState<Player[]>([]);
@@ -124,6 +126,7 @@ export default function PlayerSearchScreen() {
         filterType: "player",
         playerId: selectedPlayer.userId,
         playerName: selectedPlayer.displayName,
+        holeCount, // ✅ Forward hole count from filter screen
       },
     });
   };

@@ -509,7 +509,11 @@ export default function LeaderboardScreen() {
                       cachePolicy="memory-disk"
                     />
                   ) : (
-                    <View style={styles.avatarFallback} />
+                    <View style={styles.avatarFallback}>
+                      <Text style={styles.avatarFallbackInitial}>
+                        {(s.displayName || s.userName || "?").charAt(0).toUpperCase()}
+                      </Text>
+                    </View>
                   )}
 
                   <Text
@@ -788,7 +792,19 @@ const styles = StyleSheet.create({
   },
 
   avatar: { width: 26, height: 26, borderRadius: 13 },
-  avatarFallback: { width: 26, height: 26, borderRadius: 13, backgroundColor: "#CCC" },
+  avatarFallback: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: "#0D5C3A",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  avatarFallbackInitial: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
   playerName: { fontWeight: "700", flexShrink: 1 },
 
   lowNet: { color: "#C9A400", fontWeight: "900" },

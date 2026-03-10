@@ -17,6 +17,7 @@
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import { createNotificationDocument } from "../notifications/helpers";
+import { upsertLeaderboardPlayer } from "../utils/leaderboardPlayers";
 import {
   writeAceTierEarnedActivity,
   writeLowLeaderChangeActivity,
@@ -67,8 +68,6 @@ export const onScoreCreated = onDocumentCreated(
       }
 
       // ── ELIGIBILITY FLAGS ─────────────────────────────────────
-      // Set by rounds.ts for multiplayer scores.
-      // Legacy solo scores won't have these → default to eligible.
       const isSimulator = score.isSimulator === true;
       const isLeaderboardEligible = score.isLeaderboardEligible !== false;
       const countsForHandicap = score.countsForHandicap !== false;
@@ -79,7 +78,6 @@ export const onScoreCreated = onDocumentCreated(
       if ((holeCount === 18 || holeCount === 9) && regionKey && isLeaderboardEligible && !isSimulator) {
         const leaderboardId = `${regionKey}_${courseId}`;
         const leaderboardRef = db.collection("leaderboards").doc(leaderboardId);
-        const leaderboardSnap = await leaderboardRef.get();
 
         const is18 = holeCount === 18;
         const scoresKey = is18 ? "topScores18" : "topScores9";
@@ -97,59 +95,88 @@ export const onScoreCreated = onDocumentCreated(
           scoreId, createdAt: Timestamp.now(),
         };
 
-        if (!leaderboardSnap.exists) {
-          const newDoc: Record<string, any> = {
-            regionKey, courseId, courseName, location: location || null,
-            topScores18: [], lowNetScore18: null, totalScores18: 0,
-            topScores9: [], lowNetScore9: null, totalScores9: 0,
-            totalScores: 1, holesInOne: [],
-            createdAt: Timestamp.now(), lastUpdated: Timestamp.now(),
-          };
-          // Set the relevant hole count fields
-          newDoc[scoresKey] = [newScoreEntry];
-          newDoc[lowNetKey] = netScore;
-          newDoc[totalKey] = 1;
+        await db.runTransaction(async (tx) => {
+          const leaderboardSnap = await tx.get(leaderboardRef);
 
-          await leaderboardRef.set(newDoc);
+          if (!leaderboardSnap.exists) {
+            const newDoc: Record<string, any> = {
+              regionKey, courseId, courseName, location: location || null,
+              topScores18: [], lowNetScore18: null, totalScores18: 0,
+              topScores9: [], lowNetScore9: null, totalScores9: 0,
+              totalScores: 1, holesInOne: [],
+              createdAt: Timestamp.now(), lastUpdated: Timestamp.now(),
+            };
+            newDoc[scoresKey] = [newScoreEntry];
+            newDoc[lowNetKey] = netScore;
+            newDoc[totalKey] = 1;
 
-          if (is18) {
-            isNewLowman = true;
-            console.log("✅ New leaderboard created, user is lowman (18-hole)");
+            tx.set(leaderboardRef, newDoc);
+
+            if (is18) {
+              isNewLowman = true;
+              console.log("✅ New leaderboard created, user is lowman (18-hole)");
+            } else {
+              console.log("✅ New leaderboard created with 9-hole score");
+            }
           } else {
-            console.log("✅ New leaderboard created with 9-hole score");
+            const leaderboardData = leaderboardSnap.data()!;
+            const topScores = [...(leaderboardData[scoresKey] || [])];
+            const previousLowNet = leaderboardData[lowNetKey] ?? 999;
+
+            topScores.push(newScoreEntry);
+            topScores.sort((a: any, b: any) => {
+              if (a.netScore !== b.netScore) return a.netScore - b.netScore;
+              if (a.grossScore !== b.grossScore) return a.grossScore - b.grossScore;
+              return a.createdAt.toMillis() - b.createdAt.toMillis();
+            });
+
+            const updatedTopScores = topScores.slice(0, 10);
+            const newLowNet = updatedTopScores[0].netScore;
+
+            if (is18 && updatedTopScores[0].userId === userId && newLowNet < previousLowNet) {
+              isNewLowman = true;
+              console.log("🏆 NEW LOWMAN! User:", userId);
+            }
+
+            tx.update(leaderboardRef, {
+              [scoresKey]: updatedTopScores,
+              [lowNetKey]: newLowNet,
+              [totalKey]: FieldValue.increment(1),
+              totalScores: FieldValue.increment(1),
+              lastUpdated: Timestamp.now(),
+            });
+            console.log(`✅ Leaderboard updated (${holeCount}-hole)`);
           }
-        } else {
-          const leaderboardData = leaderboardSnap.data();
-          const topScores = leaderboardData?.[scoresKey] || [];
-          const previousLowNet = leaderboardData?.[lowNetKey] || 999;
+        });
 
-          topScores.push(newScoreEntry);
-          topScores.sort((a: any, b: any) => {
-            if (a.netScore !== b.netScore) return a.netScore - b.netScore;
-            if (a.grossScore !== b.grossScore) return a.grossScore - b.grossScore;
-            return a.createdAt.toMillis() - b.createdAt.toMillis();
+        // ── LEADERBOARD PLAYERS INDEX ─────────────────────────────
+        // Outside the transaction — upsertLeaderboardPlayer does its own
+        // getDoc internally which would conflict with the tx read set.
+        // Non-critical: errors are swallowed inside upsertLeaderboardPlayer
+        // and never block the rest of score processing.
+        try {
+          await upsertLeaderboardPlayer({
+            userId,
+            courseId,
+            courseName,
+            regionKey: regionKey || "",
+            displayName: userName || userData?.displayName || "Unknown",
+            userAvatar: userData?.avatar || null,
+            grossScore,
+            netScore,
+            scoreToPar: grossScore - (score.par || (holeCount === 18 ? 72 : 36)),
+            courseRating: score.courseRating ?? null,
+            slopeRating: score.slopeRating ?? null,
+            tees: tee || null,
+            handicapIndex: score.handicapIndex ?? null,
+            createdAt: Timestamp.now(),
+            location: location || undefined,
           });
-
-          const updatedTopScores = topScores.slice(0, 10);
-          const newLowNet = updatedTopScores[0].netScore;
-
-          // Lowman only for 18-hole
-          if (is18 && updatedTopScores[0].userId === userId && newLowNet < previousLowNet) {
-            isNewLowman = true;
-            console.log("🏆 NEW LOWMAN! User:", userId);
-          }
-
-          await leaderboardRef.update({
-            [scoresKey]: updatedTopScores,
-            [lowNetKey]: newLowNet,
-            [totalKey]: FieldValue.increment(1),
-            totalScores: FieldValue.increment(1),
-            lastUpdated: Timestamp.now(),
-          });
-          console.log(`✅ Leaderboard updated (${holeCount}-hole)`);
+        } catch (lpErr) {
+          console.error("⚠️ leaderboardPlayers upsert failed (non-critical):", lpErr);
         }
 
-        // AWARD BADGES (18-hole only)
+        // ── AWARD BADGES (18-hole only) ───────────────────────────
         if (isNewLowman && is18) {
           console.log("🏆 Awarding badges...");
 
@@ -161,7 +188,6 @@ export const onScoreCreated = onDocumentCreated(
           await userRef.update({ Badges: [...currentBadges, lowmanBadge] });
           console.log("✅ Lowman badge awarded");
 
-          // Feed activity: low leader change
           await writeLowLeaderChangeActivity(
             userId,
             userData?.displayName || "Unknown",
@@ -171,7 +197,6 @@ export const onScoreCreated = onDocumentCreated(
             regionKey || ""
           );
 
-          // Tier upgrades
           const leaderboardsSnap = await db
             .collection("leaderboards")
             .where("regionKey", "==", regionKey)
@@ -235,11 +260,9 @@ export const onScoreCreated = onDocumentCreated(
         console.log("⏭️ Score not leaderboard eligible (format or simulator) — skipping leaderboard");
       }
 
-     // ── PARTNER NOTIFICATIONS ─────────────────────────────────
-      // Always send regardless of format/simulator
+      // ── PARTNER NOTIFICATIONS ─────────────────────────────────
       const partners = userData?.partners || [];
       if (Array.isArray(partners) && partners.length > 0) {
-        // Get round data if this score came from a multiplayer round
         const roundId = score.roundId || null;
         let roundPlayers: any[] = [];
         let roundPlayerIdSet = new Set<string>();
@@ -261,12 +284,10 @@ export const onScoreCreated = onDocumentCreated(
           }
         }
 
-        // Build dynamic "with X" string
         const actorName = userName || userData?.displayName || "Unknown";
         let withString = "";
         if (roundPlayers.length > 1) {
           const others = roundPlayers.filter((p: any) => p.playerId !== userId);
-          // Prefer on-platform users, fall back to ghosts
           const namedPlayer = others.find((p: any) => !p.isGhost) || others[0];
           const remainingCount = others.length - 1;
 
@@ -284,8 +305,6 @@ export const onScoreCreated = onDocumentCreated(
         const message = `${actorName} played a round at ${courseName}${withString}`;
 
         for (const partnerId of partners) {
-          // DEDUP: Skip if this partner was IN the round
-          // (they already got a round_complete notification from rounds.ts)
           if (roundPlayerIdSet.has(partnerId)) {
             console.log(`⏭️ Skipping partner_scored for ${partnerId} — was in the round`);
             continue;
@@ -297,7 +316,6 @@ export const onScoreCreated = onDocumentCreated(
             actorAvatar: userData?.avatar || undefined,
             scoreId, courseId, courseName, regionKey,
             message,
-            // Navigation data
             navigationTarget: "profile",
             navigationUserId: userId,
             navigationTab: "rounds",
@@ -305,7 +323,6 @@ export const onScoreCreated = onDocumentCreated(
         }
         console.log("✅ Sent partner_scored notifications to partners (with dedup)");
 
-        // Feed activity: career best round (only for eligible scores)
         if (countsForHandicap) {
           const prevBest = userData?.personalDetails?.bestRound ?? 999;
           if (grossScore < prevBest && holeCount === 18) {
@@ -369,7 +386,6 @@ export const onScoreCreated = onDocumentCreated(
       }
 
       // ── EVALUATE CHALLENGES ───────────────────────────────────
-      // Challenges run for all scores (some may apply to any format)
       try {
         const { evaluateChallenges } = await import("./challengeEvaluator.js");
 
