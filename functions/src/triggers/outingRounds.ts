@@ -30,6 +30,12 @@ import {
   sendRivalryNotifications,
   writeRivalryFeedCards,
 } from "../rivalries/rivalryEngine";
+import {
+  calculateFieldStrength,
+  calculatePlayerRanking,
+  calculateRoundPoints,
+  normaliseGameFormatId,
+} from "../utils/rankingEngine";
 
 const db = admin.firestore();
 
@@ -196,6 +202,107 @@ export const onOutingRoundUpdated = onDocumentUpdated(
             } catch (err) {
               logger.error(`Invitational update failed for outing ${outingId}:`, err);
             }
+          }
+
+          // ── Step 5: ST Power Ranking — outing (casual) ───────
+          // All groups are done — now write playerRounds for all on-platform
+          // players and recalculate rankings using the full outing field.
+          try {
+            const regionKey = outingData.regionKey || null;
+            if (regionKey) {
+              const onPlatformEntries = finalLeaderboard.filter((e) => !e.isGhost);
+              const playerIds = onPlatformEntries.map((e) => e.playerId);
+
+              // Build handicap map from leaderboard entries (courseHandicap proxy)
+              const handicapMap: Record<string, number | null> = {};
+              onPlatformEntries.forEach((e) => { handicapMap[e.playerId] = null; });
+
+              const fieldStrength = await calculateFieldStrength(playerIds, handicapMap);
+              const gameFormatId = normaliseGameFormatId(outingData.formatId);
+
+              const formatType = outingData.parentType === "invitational"
+                ? "invitational"
+                : outingData.parentType === "league"
+                ? "league"
+                : "casual";
+
+              for (const entry of onPlatformEntries) {
+                try {
+                  // Fetch slope from the group's round doc for accuracy
+                  const groupRoundId = groups.find(
+                    (g: any) => (g.playerIds || []).includes(entry.playerId)
+                  )?.roundId;
+
+                  let slopeRating = 113;
+                  let courseRating: number | null = null;
+                  let handicapIndex: number | null = null;
+                  let par = entry.scoreToPar + entry.grossScore; // gross - scoreToPar = par
+
+                  if (groupRoundId) {
+                    const roundSnap = await db.collection("rounds").doc(groupRoundId).get();
+                    if (roundSnap.exists) {
+                      const roundData = roundSnap.data()!;
+                      const playerSlot = (roundData.players || []).find(
+                        (p: any) => p.playerId === entry.playerId
+                      );
+                      if (playerSlot) {
+                        slopeRating = playerSlot.slopeRating || 113;
+                        courseRating = playerSlot.courseRating || null;
+                        handicapIndex = playerSlot.handicapIndex ?? null;
+                      }
+                      par = roundData.holePars
+                        ? roundData.holePars
+                            .slice(0, roundData.holeCount || 18)
+                            .reduce((s: number, p: number) => s + p, 0)
+                        : roundData.holeCount === 9 ? 36 : 72;
+                    }
+                  }
+
+                  const finalRoundPoints = calculateRoundPoints(
+                    entry.netScore,
+                    par,
+                    slopeRating,
+                    fieldStrength,
+                    formatType as any,
+                    gameFormatId
+                  );
+
+                  const playerRoundRef = db
+                    .collection("playerRounds")
+                    .doc(`${entry.playerId}_${outingId}`);
+
+                  await playerRoundRef.set({
+                    userId: entry.playerId,
+                    roundId: outingId,
+                    courseId: outingData.courseId,
+                    regionKey,
+                    netScore: entry.netScore,
+                    par,
+                    slopeRating,
+                    courseRating,
+                    handicapIndex,
+                    fieldStrength,
+                    formatType,
+                    gameFormatId,
+                    roundPoints: finalRoundPoints,
+                    challengePoints: 0,
+                    createdAt: outingData.completedAt || admin.firestore.Timestamp.now(),
+                  });
+
+                  await calculatePlayerRanking(
+                    entry.playerId,
+                    entry.displayName,
+                    entry.avatar,
+                    regionKey
+                  );
+                } catch (playerRankErr) {
+                  logger.error(`Ranking update failed for ${entry.displayName}:`, playerRankErr);
+                }
+              }
+              logger.info(`✅ Power rankings updated for ${onPlatformEntries.length} outing players`);
+            }
+          } catch (rankErr) {
+            logger.error(`Power ranking block failed for outing ${outingId}:`, rankErr);
           }
         }
       } else {

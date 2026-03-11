@@ -5,6 +5,7 @@ import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import ClubCardModal from "@/components/profile/ClubCardModal";
 import ProfileRoundCard from "@/components/profile/ProfileRoundCard";
+import RoundScorecardViewer from "@/components/scoring/RoundScorecardViewer";
 import { auth, db } from "@/constants/firebaseConfig";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -12,7 +13,6 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Image as ExpoImage } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import RoundScorecardViewer from "@/components/scoring/RoundScorecardViewer";
 import {
   collection,
   doc,
@@ -142,6 +142,12 @@ export default function ProfileScreen() {
   );
   const [clubCardModalVisible, setClubCardModalVisible] = useState(false);
   const [memberSince, setMemberSince] = useState<any>(null);
+  const [worldRanking, setWorldRanking] = useState<{
+    powerRating: number | null;
+    rank: number | null;
+    roundsInWindow: number;
+    previousRating: number | null;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [showingCached, setShowingCached] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -160,6 +166,18 @@ export default function ProfileScreen() {
     if (userId && typeof userId === "string") {
       fetchProfileDataWithCache(userId);
       fetchPartnerCount();
+      // Fetch ST Power Ranking (non-blocking, best-effort)
+      getDoc(doc(db, "worldRankings", userId)).then((snap) => {
+        if (snap.exists()) {
+          const d = snap.data();
+          setWorldRanking({
+            powerRating: d.powerRating ?? null,
+            rank: d.rank ?? null,
+            roundsInWindow: d.roundsInWindow ?? 0,
+            previousRating: d.previousRating ?? null,
+          });
+        }
+      }).catch(() => {});
     }
   }, [userId]);
 
@@ -711,6 +729,23 @@ export default function ProfileScreen() {
                       : "—"}
                   </Text>
                 </View>
+                {/* ===== ST POWER RANKING (compact) ===== */}
+                {worldRanking?.powerRating != null && (
+                  <View style={styles.powerRow}>
+                    <View style={styles.powerRatingCol}>
+                      <Text style={styles.powerLabel}>ST POWER</Text>
+                      <Text style={styles.powerValue}>
+                        {worldRanking.powerRating.toFixed(1)}
+                      </Text>
+                    </View>
+                    {worldRanking.rank != null && (
+                      <View style={styles.powerRankCol}>
+                        <Text style={styles.powerRankLabel}>ST RANK</Text>
+                        <Text style={styles.powerRankValue}>#{worldRanking.rank}</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
               </View>
             </View>
 
@@ -991,6 +1026,10 @@ export default function ProfileScreen() {
           setClubCardModalVisible(false);
           setTimeout(() => setPartnersModalVisible(true), 300);
         }}
+        powerRating={worldRanking?.powerRating ?? null}
+        globalRank={worldRanking?.rank ?? null}
+        roundsInWindow={worldRanking?.roundsInWindow ?? 0}
+        previousRating={worldRanking?.previousRating ?? null}
       />
       <RoundScorecardViewer
         visible={!!scorecardRoundId}
@@ -1189,6 +1228,50 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "800",
     color: "#C5A55A",
+  },
+
+  powerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 8,
+  },
+
+  powerRatingCol: {
+    alignItems: "center",
+  },
+
+  powerLabel: {
+    fontSize: 8,
+    fontWeight: "800",
+    color: "#8B7355",
+    letterSpacing: 1,
+    marginBottom: 1,
+  },
+
+  powerValue: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#C5A55A",
+  },
+
+  powerRankCol: {
+    alignItems: "center",
+  },
+
+  powerRankLabel: {
+    fontSize: 8,
+    fontWeight: "800",
+    color: "#8B7355",
+    letterSpacing: 1,
+    marginBottom: 1,
+  },
+
+  powerRankValue: {
+    fontSize: 22,
+    fontWeight: "900",
+    color: "#F4EED8",
+    letterSpacing: -0.5,
   },
 
   cardDivider: {

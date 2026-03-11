@@ -9,6 +9,7 @@ import ResumeRoundSheet from "@/components/scoring/ResumeRoundSheet";
 import { Caveat_400Regular, Caveat_700Bold, useFonts } from '@expo-google-fonts/caveat';
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Notifications from 'expo-notifications';
+import LocationPickerModal from "@/components/modals/LocationPickerModal";
 import { Slot, router, usePathname } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Linking, Text, View } from "react-native";
@@ -17,6 +18,7 @@ export default function RootLayout() {
   const [initializing, setInitializing] = useState(true);
   const pathname = usePathname();
   const hasPlayedAppOpenSound = useRef(false);
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
 
   // Load Caveat font
   const [fontsLoaded] = useFonts({
@@ -59,15 +61,11 @@ export default function RootLayout() {
           if (!user) {
             console.log("❌ No user logged in");
             
-            // Allowed when logged out:
-            // - Hero page
-            // - Auth flows (login/signup pages only, NOT user-type)
             if (isPublicRoute || isInAuthFlow) {
               setInitializing(false);
               return;
             }
 
-            // Block access to onboarding / app / user-type
             console.log("🔄 Redirecting to hero page");
             router.replace("/");
             setInitializing(false);
@@ -82,18 +80,14 @@ export default function RootLayout() {
           const userRef = doc(db, "users", user.uid);
           const userSnap = await getDoc(userRef);
 
-          // User exists in Auth but not Firestore yet (still in email verification modal on hero page)
           if (!userSnap.exists()) {
             console.log("📝 No Firestore doc, allowing to stay on current page");
             
-            // Allow staying on hero page (where email verification modal is)
-            // or user-type page (if they skipped verification)
             if (isPublicRoute || pathname === "/auth/user-type") {
               setInitializing(false);
               return;
             }
             
-            // Otherwise redirect to hero page
             router.replace("/");
             setInitializing(false);
             return;
@@ -120,25 +114,22 @@ export default function RootLayout() {
             userData.handicap !== undefined;
 
           const hasLocker = userData.lockerCompleted === true;
-
           const hasAcceptedTerms = userData.acceptedTerms === true;
 
           /* =====================================================
              🧭 ONBOARDING GATE (ENTRY ONLY)
              ===================================================== */
 
-          // ⛔ If already inside onboarding flow OR welcome tour, DO NOT redirect
           if (isInOnboardingFlow || isWelcomeTour) {
             console.log("🚧 Already in onboarding flow or welcome tour, staying put");
             setInitializing(false);
             return;
           }
 
-          // 🔐 Email Verification Gate - MUST verify before continuing
+          // 🔐 Email Verification Gate
           const hasVerifiedEmail = userData.emailVerified === true;
           if (!hasVerifiedEmail) {
             console.log("📧 Email not verified, staying on hero page for verification modal");
-            // Keep user on hero page where email verification modal will show
             if (!isPublicRoute) {
               router.replace("/");
             }
@@ -154,7 +145,7 @@ export default function RootLayout() {
             return;
           }
 
-          // 2️⃣ Profile (displayName + handicap) - SKIP FOR COURSES
+          // 2️⃣ Profile
           if (!hasProfile && userData.userType !== "Course") {
             console.log("🔄 No profile, redirecting to setup-profile");
             router.replace("/onboarding/setup-profile");
@@ -162,7 +153,7 @@ export default function RootLayout() {
             return;
           }
 
-          // 3️⃣ Locker - SKIP FOR COURSES
+          // 3️⃣ Locker
           if (!hasLocker && userData.userType !== "Course") {
             console.log("🔄 Locker not completed, redirecting to setup-locker");
             router.replace("/onboarding/setup-locker");
@@ -231,7 +222,6 @@ export default function RootLayout() {
               console.log("🔊 Playing app open sound (first time only)");
               hasPlayedAppOpenSound.current = true;
               
-              // Small delay to ensure sounds are loaded
               setTimeout(async () => {
                 await soundPlayer.play('appOpen');
               }, 300);
@@ -255,12 +245,11 @@ export default function RootLayout() {
           // - Leaderboards are hydrated when user visits their region
           // - No need for upfront course caching on app launch
           // - User's regionKey is assigned/updated via locationHelpers
-          
+
           // ⚠️ Check if user has regionKey (for migration period)
           if (!userData.regionKey) {
-            console.log("⚠️ User missing regionKey - will be assigned on next location update");
-            // This is fine - regionKey will be assigned next time location is checked
-            // or when user visits leaderboards
+            console.log("⚠️ User missing regionKey, showing location picker");
+            setShowLocationPicker(true);
           }
 
           // ✅ Only redirect if user is on public/auth routes - allow all app routes
@@ -290,7 +279,6 @@ export default function RootLayout() {
   useEffect(() => {
     let authModule: any = null;
 
-    // ✅ Clear badge when app opens
     Notifications.setBadgeCountAsync(0);
     
     const setupPushNotifications = async () => {
@@ -303,7 +291,6 @@ export default function RootLayout() {
           return;
         }
 
-        // Register for push notifications
         const token = await registerForPushNotificationsAsync(uid);
         if (token) {
           console.log("✅ Push notifications registered successfully");
@@ -313,7 +300,6 @@ export default function RootLayout() {
       }
     };
 
-    // Set up listener for when user taps on a notification
     const notificationResponseSubscription = setupNotificationResponseListener(async (response) => {
       const data = response.notification.request.content.data;
       const type = data.type as string;
@@ -321,7 +307,6 @@ export default function RootLayout() {
       
       console.log("📬 Notification tapped:", { type, notificationId, ...data });
 
-      // ✅ Mark notification as read when tapped from push
       if (notificationId) {
         try {
           await markNotificationAsRead(notificationId);
@@ -331,18 +316,11 @@ export default function RootLayout() {
         }
       }
 
-      // Ensure we have auth module loaded
       if (!authModule) {
         authModule = await import("../constants/firebaseConfig");
       }
 
-      // ============================================
-      // ROUTE BASED ON NOTIFICATION TYPE
-      // ============================================
       switch (type) {
-        // ============================================
-        // POST INTERACTIONS - Go to Clubhouse with highlight
-        // ============================================
         case "like":
         case "comment":
         case "comment_like":
@@ -360,9 +338,6 @@ export default function RootLayout() {
           }
           break;
 
-        // ============================================
-        // SCORE-RELATED - Go to Clubhouse with highlight
-        // ============================================
         case "partner_scored":
         case "partner_holeinone":
         case "holeinone_verified":
@@ -373,7 +348,6 @@ export default function RootLayout() {
               params: { highlightPostId: data.postId as string },
             });
           } else if (data.scoreId) {
-            // Fallback for older notifications without postId
             router.push({
               pathname: "/clubhouse",
               params: { highlightScoreId: data.scoreId as string },
@@ -381,9 +355,6 @@ export default function RootLayout() {
           }
           break;
 
-        // ============================================
-        // LOWMAN - Go to Leaderboard with highlight
-        // ============================================
         case "partner_lowman":
           if (data.courseId) {
             router.push({
@@ -398,27 +369,18 @@ export default function RootLayout() {
           }
           break;
 
-        // ============================================
-        // HOLE-IN-ONE VERIFICATION REQUEST - Go to verify screen
-        // ============================================
         case "holeinone_verification_request":
           if (data.scoreId) {
             router.push(`/verify-holeinone/${data.scoreId}`);
           }
           break;
 
-        // ============================================
-        // HOLE-IN-ONE DENIED - Go to own locker
-        // ============================================
         case "holeinone_denied":
           if (data.userId) {
             router.push(`/locker/${data.userId}`);
           }
           break;
 
-        // ============================================
-        // PARTNER INTERACTIONS - Go to their profile
-        // ============================================
         case "partner_request":
         case "partner_accepted":
           if (data.actorId) {
@@ -426,16 +388,11 @@ export default function RootLayout() {
           }
           break;
 
-        // ============================================
-        // MESSAGES - Go to message thread (1:1 and Group)
-        // ============================================
         case "message":
         case "group_message":
-          // ✅ Use threadId if provided (works for both 1:1 and groups)
           if (data.threadId) {
             router.push(`/messages/${data.threadId}`);
           } else if (data.actorId) {
-            // Fallback: construct threadId for legacy 1:1 notifications
             const currentUserId = authModule.auth.currentUser?.uid;
             if (currentUserId) {
               const threadId = [currentUserId, data.actorId as string].sort().join("_");
@@ -444,21 +401,15 @@ export default function RootLayout() {
               router.push("/messages");
             }
           } else {
-            // Last resort: go to messages list
             router.push("/messages");
           }
           break;
 
-        // ============================================
-        // ROUND NOTIFICATIONS - Go to round viewer or scoring
-        // ============================================
        case "round_invite":
           if (data.roundId) {
             if (data.navigationTarget === "scoring") {
-            // Marker — open scoring screen in resume mode
             router.push(`/scoring?roundId=${data.roundId}&resume=true`);
           } else {
-            // Non-marker player — open round viewer (FAB auto-detects outing)
             router.push(`/round/${data.roundId}`);
           }
         }
@@ -489,13 +440,9 @@ export default function RootLayout() {
           }
           break;  
 
-        // ============================================
-        // FALLBACK - Use generic routing based on available data
-        // ============================================
         default:
           console.log("⚠️ Unknown notification type, using fallback routing:", type);
           
-          // Priority: postId > scoreId > actorId > courseId
           if (data.postId) {
             router.push({
               pathname: "/clubhouse",
@@ -514,14 +461,12 @@ export default function RootLayout() {
               params: { highlightCourseId: String(data.courseId) },
             });
           } else {
-            // Last resort - go to notifications screen
             router.push("/notifications");
           }
           break;
       }
     });
 
-    // Initialize push notifications
     setupPushNotifications();
 
     return () => {
@@ -576,6 +521,11 @@ export default function RootLayout() {
       <NewPostProvider>
         <Slot />
         <ResumeRoundSheet />
+        <LocationPickerModal
+          visible={showLocationPicker}
+          onClose={() => setShowLocationPicker(false)}
+          onLocationSet={() => setShowLocationPicker(false)}
+        />
       </NewPostProvider>
     </CacheProvider>
   );

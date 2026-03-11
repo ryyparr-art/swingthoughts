@@ -135,6 +135,9 @@ export { startInvitationalRound } from "./triggers/invitationalRounds";
 
 export { claimInviteCode } from "./invites/claimInviteCode";
 
+// Ranking System
+export { weeklyRankingSort } from "./triggers/worldRankings";
+
 
 
 

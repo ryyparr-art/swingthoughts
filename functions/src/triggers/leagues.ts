@@ -23,6 +23,12 @@ import { onDocumentCreated, onDocumentDeleted, onDocumentUpdated } from "firebas
 import { createNotificationDocument, generateGroupedMessage, getUserData } from "../notifications/helpers";
 import { writeJoinedLeagueActivity, writeLeagueResultActivity } from "./feedActivity";
 import { updateUserCareerStats } from "./userStats";
+import {
+  calculateFieldStrength,
+  calculatePlayerRanking,
+  calculateRoundPoints,
+  normaliseGameFormatId,
+} from "../utils/rankingEngine";
 
 const db = getFirestore();
 
@@ -215,6 +221,80 @@ export const onLeagueScoreCreated = onDocumentCreated(
         }
       } else {
         console.log(`⏭️ Skipping career stats + challenges for ${userId} — already handled by onScoreCreated (multiplayer_round)`);
+      }
+
+      // ── ST POWER RANKING — league score ──────────────────────
+      // Run for all league scores (solo post or multiplayer).
+      // Multiplayer rounds are not double-counted — playerRounds doc ID is
+      // userId_scoreId which is unique per score document.
+      try {
+        const scoreId = event.params.scoreId;
+        const regionKey = score.regionKey || null;
+
+        if (regionKey && userId) {
+          const par = score.totalPar || score.par || (score.holeCount === 9 ? 36 : 72);
+          const slopeRating = score.slopeRating ?? 113;
+          const gameFormatId = normaliseGameFormatId(score.formatId);
+
+          // For league scores, field = all league members who have rankings
+          const memberIds = await db
+            .collection("leagues").doc(leagueId)
+            .collection("members").get()
+            .then((snap) => snap.docs.map((d) => d.id));
+
+          const handicapMap: Record<string, number | null> = {};
+          handicapMap[userId] = score.handicapIndex ?? null;
+
+          const fieldStrength = await calculateFieldStrength(memberIds, handicapMap);
+
+          const roundPoints = calculateRoundPoints(
+            netScore || grossScore || 0,
+            par,
+            slopeRating,
+            fieldStrength,
+            "league",
+            gameFormatId
+          );
+
+          const playerRoundRef = db
+            .collection("playerRounds")
+            .doc(`${userId}_${scoreId}`);
+
+          // Use set with merge:false — if multiplayer already wrote this doc, skip
+          const existing = await playerRoundRef.get();
+          if (!existing.exists) {
+            await playerRoundRef.set({
+              userId,
+              roundId: scoreId,
+              courseId: score.courseId ?? null,
+              regionKey,
+              netScore: netScore || grossScore || 0,
+              par,
+              slopeRating,
+              courseRating: score.courseRating ?? null,
+              handicapIndex: score.handicapIndex ?? null,
+              fieldStrength,
+              formatType: "league",
+              gameFormatId,
+              roundPoints,
+              challengePoints: 0,
+              createdAt: score.createdAt || Timestamp.now(),
+            });
+
+            const userDoc = await db.collection("users").doc(userId).get();
+            const userData = userDoc.data();
+            await calculatePlayerRanking(
+              userId,
+              displayName || userData?.displayName || "Unknown",
+              avatar || userData?.avatar || null,
+              regionKey
+            );
+          } else {
+            console.log(`⏭️ playerRounds doc ${userId}_${scoreId} already exists — skipping ranking write`);
+          }
+        }
+      } catch (rankErr) {
+        console.error(`⚠️ Power ranking update failed for league score (non-critical):`, rankErr);
       }
     } catch (error) { console.error("🔥 onLeagueScoreCreated failed:", error); }
   }

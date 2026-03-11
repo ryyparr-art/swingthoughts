@@ -49,8 +49,8 @@ import {
 import { soundPlayer } from "@/utils/soundPlayer";
 
 // Components
-import AllCoursesLeaderboardModal from "@/components/modals/AllCoursesLeaderboardModal";
 import BadgeRow from "@/components/challenges/BadgeRow";
+import AllCoursesLeaderboardModal from "@/components/modals/AllCoursesLeaderboardModal";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import LowmanCarousel from "@/components/navigation/LowmanCarousel";
 import SwingFooter from "@/components/navigation/SwingFooter";
@@ -399,6 +399,13 @@ export default function LeaderboardScreen() {
     router.push({ pathname: "/scoring", params: { courseId } });
   };
 
+  // ✅ STWR toggle — replace so tapping back on worldrank returns here
+  const goToWorldRankings = () => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    router.replace("/leaderboard/worldrank" as any);
+  };
+
   /* ---------------------------------------------------------------- */
   /* RENDER LEADERBOARD CARD                                          */
   /* ---------------------------------------------------------------- */
@@ -552,15 +559,25 @@ export default function LeaderboardScreen() {
       <SafeAreaView edges={["top"]} style={styles.safeTop} />
 
       <View style={styles.carouselWrapper}>
-        <LowmanCarousel courseIds={displayedCourseIds} />
+        <LowmanCarousel />
       </View>
 
       <TopNavBar />
 
-      {/* Location row */}
+      {/* Location row + STWR toggle */}
       <View style={styles.locationRow}>
         <Image source={LocationIcon} style={styles.locationIcon} />
         <Text style={styles.locationText}>{locationLabel}</Text>
+
+        {/* ✅ STWR toggle pill */}
+        <TouchableOpacity
+          style={styles.stwrToggle}
+          onPress={goToWorldRankings}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.stwrToggleText}>STWR</Text>
+          <Ionicons name="globe-outline" size={13} color="#F4EED8" style={{ marginLeft: 4 }} />
+        </TouchableOpacity>
       </View>
 
       {/* 9-hole indicator */}
@@ -668,7 +685,7 @@ export default function LeaderboardScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F4EED8" },
   safeTop: { backgroundColor: "#0D5C3A" },
-  carouselWrapper: { height: 50 },
+  carouselWrapper: { height: 70 },
 
   cacheIndicator: {
     flexDirection: "row",
@@ -695,9 +712,28 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 10,
     paddingVertical: 12,
+    paddingHorizontal: 16,
   },
   locationIcon: { width: 22, height: 22, tintColor: "#B0433B" },
-  locationText: { fontWeight: "800", fontSize: 15 },
+  locationText: { fontWeight: "800", fontSize: 15, flex: 1 },
+
+  // ✅ STWR toggle pill
+  stwrToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#0D5C3A",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#C5A55A",
+  },
+  stwrToggleText: {
+    fontSize: 11,
+    fontWeight: "900",
+    color: "#F4EED8",
+    letterSpacing: 1.5,
+  },
 
   holeCountBadge: {
     flexDirection: "row",

@@ -19,6 +19,11 @@ import { onDocumentCreated } from "firebase-functions/v2/firestore";
 import { createNotificationDocument } from "../notifications/helpers";
 import { upsertLeaderboardPlayer } from "../utils/leaderboardPlayers";
 import {
+  calculatePlayerRanking,
+  normaliseGameFormatId,
+  soloFieldStrength,
+} from "../utils/rankingEngine";
+import {
   writeAceTierEarnedActivity,
   writeLowLeaderChangeActivity,
   writeLowRoundActivity,
@@ -72,191 +77,207 @@ export const onScoreCreated = onDocumentCreated(
       const isLeaderboardEligible = score.isLeaderboardEligible !== false;
       const countsForHandicap = score.countsForHandicap !== false;
 
+      // ── FETCH COURSE DOC ──────────────────────────────────────
+      // Fetched once and reused for: leaderboard regionKey, location, and
+      // challenge hole pars. Prevents duplicate reads later in the pipeline.
+      const courseDocSnap = await db.collection("courses").doc(String(courseId)).get();
+      const courseDocData = courseDocSnap.data();
+
       // ── LEADERBOARD UPDATE ────────────────────────────────────
       let isNewLowman = false;
 
-      if ((holeCount === 18 || holeCount === 9) && regionKey && isLeaderboardEligible && !isSimulator) {
-        const leaderboardId = `${regionKey}_${courseId}`;
-        const leaderboardRef = db.collection("leaderboards").doc(leaderboardId);
+      if ((holeCount === 18 || holeCount === 9) && isLeaderboardEligible && !isSimulator) {
 
-        const is18 = holeCount === 18;
-        const scoresKey = is18 ? "topScores18" : "topScores9";
-        const lowNetKey = is18 ? "lowNetScore18" : "lowNetScore9";
-        const totalKey = is18 ? "totalScores18" : "totalScores9";
+        // Always resolve regionKey from the COURSE doc, not the user.
+        // This prevents a travelling user (e.g. DC player in Cancun) from
+        // writing a leaderboard doc into the wrong region.
+        const courseRegionKey: string | null = courseDocData?.regionKey ?? null;
 
-        const newScoreEntry = {
-          userId,
-          displayName: userName || userData?.displayName || "Unknown",
-          userAvatar: userData?.avatar || null,
-          challengeBadges: userData?.earnedChallengeBadges || [],
-          grossScore, netScore, courseId, courseName,
-          tees: tee || null, teeYardage: teeYardage || null,
-          teePar: score.par || (is18 ? 72 : 36), par: score.par || (is18 ? 72 : 36),
-          scoreId, createdAt: Timestamp.now(),
-        };
+        if (!courseRegionKey) {
+          console.log(`⏭️ Skipping leaderboard — course ${courseId} has no regionKey`);
+        } else {
+          const leaderboardId = `${courseRegionKey}_${courseId}`;
+          const leaderboardRef = db.collection("leaderboards").doc(leaderboardId);
 
-        await db.runTransaction(async (tx) => {
-          const leaderboardSnap = await tx.get(leaderboardRef);
+          const is18 = holeCount === 18;
+          const scoresKey = is18 ? "topScores18" : "topScores9";
+          const lowNetKey = is18 ? "lowNetScore18" : "lowNetScore9";
+          const totalKey = is18 ? "totalScores18" : "totalScores9";
 
-          if (!leaderboardSnap.exists) {
-            const newDoc: Record<string, any> = {
-              regionKey, courseId, courseName, location: location || null,
-              topScores18: [], lowNetScore18: null, totalScores18: 0,
-              topScores9: [], lowNetScore9: null, totalScores9: 0,
-              totalScores: 1, holesInOne: [],
-              createdAt: Timestamp.now(), lastUpdated: Timestamp.now(),
-            };
-            newDoc[scoresKey] = [newScoreEntry];
-            newDoc[lowNetKey] = netScore;
-            newDoc[totalKey] = 1;
-
-            tx.set(leaderboardRef, newDoc);
-
-            if (is18) {
-              isNewLowman = true;
-              console.log("✅ New leaderboard created, user is lowman (18-hole)");
-            } else {
-              console.log("✅ New leaderboard created with 9-hole score");
-            }
-          } else {
-            const leaderboardData = leaderboardSnap.data()!;
-            const topScores = [...(leaderboardData[scoresKey] || [])];
-            const previousLowNet = leaderboardData[lowNetKey] ?? 999;
-
-            topScores.push(newScoreEntry);
-            topScores.sort((a: any, b: any) => {
-              if (a.netScore !== b.netScore) return a.netScore - b.netScore;
-              if (a.grossScore !== b.grossScore) return a.grossScore - b.grossScore;
-              return a.createdAt.toMillis() - b.createdAt.toMillis();
-            });
-
-            const updatedTopScores = topScores.slice(0, 10);
-            const newLowNet = updatedTopScores[0].netScore;
-
-            if (is18 && updatedTopScores[0].userId === userId && newLowNet < previousLowNet) {
-              isNewLowman = true;
-              console.log("🏆 NEW LOWMAN! User:", userId);
-            }
-
-            tx.update(leaderboardRef, {
-              [scoresKey]: updatedTopScores,
-              [lowNetKey]: newLowNet,
-              [totalKey]: FieldValue.increment(1),
-              totalScores: FieldValue.increment(1),
-              lastUpdated: Timestamp.now(),
-            });
-            console.log(`✅ Leaderboard updated (${holeCount}-hole)`);
-          }
-        });
-
-        // ── LEADERBOARD PLAYERS INDEX ─────────────────────────────
-        // Outside the transaction — upsertLeaderboardPlayer does its own
-        // getDoc internally which would conflict with the tx read set.
-        // Non-critical: errors are swallowed inside upsertLeaderboardPlayer
-        // and never block the rest of score processing.
-        try {
-          await upsertLeaderboardPlayer({
+          const newScoreEntry = {
             userId,
-            courseId,
-            courseName,
-            regionKey: regionKey || "",
             displayName: userName || userData?.displayName || "Unknown",
             userAvatar: userData?.avatar || null,
-            grossScore,
-            netScore,
-            scoreToPar: grossScore - (score.par || (holeCount === 18 ? 72 : 36)),
-            courseRating: score.courseRating ?? null,
-            slopeRating: score.slopeRating ?? null,
-            tees: tee || null,
-            handicapIndex: score.handicapIndex ?? null,
-            createdAt: Timestamp.now(),
-            location: location || undefined,
-          });
-        } catch (lpErr) {
-          console.error("⚠️ leaderboardPlayers upsert failed (non-critical):", lpErr);
-        }
-
-        // ── AWARD BADGES (18-hole only) ───────────────────────────
-        if (isNewLowman && is18) {
-          console.log("🏆 Awarding badges...");
-
-          const lowmanBadge = {
-            type: "lowman", courseId, courseName,
-            achievedAt: Timestamp.now(), score: grossScore, displayName: "Lowman",
+            challengeBadges: userData?.earnedChallengeBadges || [],
+            grossScore, netScore, courseId, courseName,
+            tees: tee || null, teeYardage: teeYardage || null,
+            teePar: score.par || (is18 ? 72 : 36), par: score.par || (is18 ? 72 : 36),
+            scoreId, createdAt: Timestamp.now(),
           };
-          const currentBadges = userData?.Badges || [];
-          await userRef.update({ Badges: [...currentBadges, lowmanBadge] });
-          console.log("✅ Lowman badge awarded");
 
-          await writeLowLeaderChangeActivity(
-            userId,
-            userData?.displayName || "Unknown",
-            userData?.avatar || null,
-            courseName,
-            netScore,
-            regionKey || ""
-          );
+          await db.runTransaction(async (tx) => {
+            const leaderboardSnap = await tx.get(leaderboardRef);
 
-          const leaderboardsSnap = await db
-            .collection("leaderboards")
-            .where("regionKey", "==", regionKey)
-            .get();
+            if (!leaderboardSnap.exists) {
+              const newDoc: Record<string, any> = {
+                regionKey: courseRegionKey,
+                courseId, courseName,
+                location: courseDocData?.location || location || null,
+                topScores18: [], lowNetScore18: null, totalScores18: 0,
+                topScores9: [], lowNetScore9: null, totalScores9: 0,
+                totalScores: 1, holesInOne: [],
+                createdAt: Timestamp.now(), lastUpdated: Timestamp.now(),
+              };
+              newDoc[scoresKey] = [newScoreEntry];
+              newDoc[lowNetKey] = netScore;
+              newDoc[totalKey] = 1;
 
-          let lowmanCount = 0;
-          leaderboardsSnap.forEach((doc) => {
-            const data = doc.data();
-            const topScores = data.topScores18 || [];
-            if (topScores.length > 0 && topScores[0].userId === userId) lowmanCount++;
+              tx.set(leaderboardRef, newDoc);
+
+              if (is18) {
+                isNewLowman = true;
+                console.log("✅ New leaderboard created, user is lowman (18-hole)");
+              } else {
+                console.log("✅ New leaderboard created with 9-hole score");
+              }
+            } else {
+              const leaderboardData = leaderboardSnap.data()!;
+              const topScores = [...(leaderboardData[scoresKey] || [])];
+              const previousLowNet = leaderboardData[lowNetKey] ?? 999;
+
+              topScores.push(newScoreEntry);
+              topScores.sort((a: any, b: any) => {
+                if (a.netScore !== b.netScore) return a.netScore - b.netScore;
+                if (a.grossScore !== b.grossScore) return a.grossScore - b.grossScore;
+                return a.createdAt.toMillis() - b.createdAt.toMillis();
+              });
+
+              const updatedTopScores = topScores.slice(0, 10);
+              const newLowNet = updatedTopScores[0].netScore;
+
+              if (is18 && updatedTopScores[0].userId === userId && newLowNet < previousLowNet) {
+                isNewLowman = true;
+                console.log("🏆 NEW LOWMAN! User:", userId);
+              }
+
+              tx.update(leaderboardRef, {
+                [scoresKey]: updatedTopScores,
+                [lowNetKey]: newLowNet,
+                [totalKey]: FieldValue.increment(1),
+                totalScores: FieldValue.increment(1),
+                lastUpdated: Timestamp.now(),
+              });
+              console.log(`✅ Leaderboard updated (${holeCount}-hole)`);
+            }
           });
 
-          const existingBadges = userData?.Badges || [];
-          const filteredBadges = existingBadges.filter((b: any) => b.type !== "scratch" && b.type !== "ace");
-
-          if (lowmanCount >= 3) {
-            await userRef.update({
-              Badges: [...filteredBadges, { type: "ace", courseId: 0, courseName: "Multiple Courses", achievedAt: Timestamp.now(), displayName: "Ace" }],
+          // ── LEADERBOARD PLAYERS INDEX ───────────────────────────
+          // Outside the transaction — upsertLeaderboardPlayer does its own
+          // getDoc internally which would conflict with the tx read set.
+          try {
+            await upsertLeaderboardPlayer({
+              userId,
+              courseId,
+              courseName,
+              regionKey: courseRegionKey,
+              displayName: userName || userData?.displayName || "Unknown",
+              userAvatar: userData?.avatar || null,
+              grossScore,
+              netScore,
+              scoreToPar: grossScore - (score.par || (holeCount === 18 ? 72 : 36)),
+              courseRating: score.courseRating ?? null,
+              slopeRating: score.slopeRating ?? null,
+              tees: tee || null,
+              handicapIndex: score.handicapIndex ?? null,
+              createdAt: Timestamp.now(),
+              location: courseDocData?.location || location || undefined,
             });
-            console.log("🏆 Upgraded to Ace badge!");
+          } catch (lpErr) {
+            console.error("⚠️ leaderboardPlayers upsert failed (non-critical):", lpErr);
+          }
 
-            const aceCourseNames: string[] = [];
-            leaderboardsSnap.forEach((lbDoc) => {
-              const lbData = lbDoc.data();
-              const top = lbData.topScores18 || [];
-              if (top.length > 0 && top[0].userId === userId) {
-                aceCourseNames.push(lbData.courseName || "Unknown");
-              }
-            });
-            await writeAceTierEarnedActivity(
+          // ── AWARD BADGES (18-hole only) ─────────────────────────
+          if (isNewLowman && is18) {
+            console.log("🏆 Awarding badges...");
+
+            const lowmanBadge = {
+              type: "lowman", courseId, courseName,
+              achievedAt: Timestamp.now(), score: grossScore, displayName: "Lowman",
+            };
+            const currentBadges = userData?.Badges || [];
+            await userRef.update({ Badges: [...currentBadges, lowmanBadge] });
+            console.log("✅ Lowman badge awarded");
+
+            await writeLowLeaderChangeActivity(
               userId,
               userData?.displayName || "Unknown",
               userData?.avatar || null,
-              aceCourseNames.slice(0, 3),
-              regionKey || ""
+              courseName,
+              netScore,
+              courseRegionKey
             );
-          } else if (lowmanCount >= 2) {
-            await userRef.update({
-              Badges: [...filteredBadges, { type: "scratch", courseId: 0, courseName: "Multiple Courses", achievedAt: Timestamp.now(), displayName: "Scratch" }],
-            });
-            console.log("🏆 Upgraded to Scratch badge!");
 
-            const scratchCourseNames: string[] = [];
-            leaderboardsSnap.forEach((lbDoc) => {
-              const lbData = lbDoc.data();
-              const top = lbData.topScores18 || [];
-              if (top.length > 0 && top[0].userId === userId) {
-                scratchCourseNames.push(lbData.courseName || "Unknown");
-              }
+            const leaderboardsSnap = await db
+              .collection("leaderboards")
+              .where("regionKey", "==", courseRegionKey)
+              .get();
+
+            let lowmanCount = 0;
+            leaderboardsSnap.forEach((doc) => {
+              const data = doc.data();
+              const topScores = data.topScores18 || [];
+              if (topScores.length > 0 && topScores[0].userId === userId) lowmanCount++;
             });
-            await writeScratchEarnedActivity(
-              userId,
-              userData?.displayName || "Unknown",
-              userData?.avatar || null,
-              scratchCourseNames.slice(0, 2),
-              regionKey || ""
-            );
+
+            const existingBadges = userData?.Badges || [];
+            const filteredBadges = existingBadges.filter((b: any) => b.type !== "scratch" && b.type !== "ace");
+
+            if (lowmanCount >= 3) {
+              await userRef.update({
+                Badges: [...filteredBadges, { type: "ace", courseId: 0, courseName: "Multiple Courses", achievedAt: Timestamp.now(), displayName: "Ace" }],
+              });
+              console.log("🏆 Upgraded to Ace badge!");
+
+              const aceCourseNames: string[] = [];
+              leaderboardsSnap.forEach((lbDoc) => {
+                const lbData = lbDoc.data();
+                const top = lbData.topScores18 || [];
+                if (top.length > 0 && top[0].userId === userId) {
+                  aceCourseNames.push(lbData.courseName || "Unknown");
+                }
+              });
+              await writeAceTierEarnedActivity(
+                userId,
+                userData?.displayName || "Unknown",
+                userData?.avatar || null,
+                aceCourseNames.slice(0, 3),
+                courseRegionKey
+              );
+            } else if (lowmanCount >= 2) {
+              await userRef.update({
+                Badges: [...filteredBadges, { type: "scratch", courseId: 0, courseName: "Multiple Courses", achievedAt: Timestamp.now(), displayName: "Scratch" }],
+              });
+              console.log("🏆 Upgraded to Scratch badge!");
+
+              const scratchCourseNames: string[] = [];
+              leaderboardsSnap.forEach((lbDoc) => {
+                const lbData = lbDoc.data();
+                const top = lbData.topScores18 || [];
+                if (top.length > 0 && top[0].userId === userId) {
+                  scratchCourseNames.push(lbData.courseName || "Unknown");
+                }
+              });
+              await writeScratchEarnedActivity(
+                userId,
+                userData?.displayName || "Unknown",
+                userData?.avatar || null,
+                scratchCourseNames.slice(0, 2),
+                courseRegionKey
+              );
+            }
           }
         }
-      } else if ((holeCount === 18 || holeCount === 9) && regionKey && (!isLeaderboardEligible || isSimulator)) {
+      } else if ((holeCount === 18 || holeCount === 9) && (!isLeaderboardEligible || isSimulator)) {
         console.log("⏭️ Score not leaderboard eligible (format or simulator) — skipping leaderboard");
       }
 
@@ -389,8 +410,7 @@ export const onScoreCreated = onDocumentCreated(
       try {
         const { evaluateChallenges } = await import("./challengeEvaluator.js");
 
-        const courseDoc = await db.collection("courses").doc(String(courseId)).get();
-        const courseTees = courseDoc.exists ? courseDoc.data()?.tees : null;
+        const courseTees = courseDocSnap.exists ? courseDocData?.tees : null;
         const allTees = [...(courseTees?.male || []), ...(courseTees?.female || [])];
         const holePars = allTees[0]?.holes?.map((h: any) => h.par || 4) || [];
 
@@ -418,6 +438,55 @@ export const onScoreCreated = onDocumentCreated(
         });
       } catch (challengeErr) {
         console.error("⚠️ Challenge evaluation failed:", challengeErr);
+      }
+
+      // ── ST POWER RANKING — solo round ────────────────────────
+      // Only rank eligible solo scores (not ghost, not simulator, has regionKey)
+      if (!isSimulator && regionKey && countsForHandicap) {
+        try {
+          const par = score.par || (holeCount === 18 ? 72 : 36);
+          const slopeRating = score.slopeRating ?? 113;
+          const fieldStrength = soloFieldStrength(slopeRating);
+          const gameFormatId = normaliseGameFormatId(score.formatId);
+
+          const { calculateRoundPoints } = await import("../utils/rankingEngine.js");
+          const roundPoints = calculateRoundPoints(
+            netScore,
+            par,
+            slopeRating,
+            fieldStrength,
+            "solo",
+            gameFormatId
+          );
+
+          const playerRoundRef = db
+            .collection("playerRounds")
+            .doc(`${userId}_${scoreId}`);
+
+          await playerRoundRef.set({
+            userId,
+            roundId: scoreId,
+            courseId,
+            regionKey,
+            netScore,
+            par,
+            slopeRating,
+            courseRating: score.courseRating ?? null,
+            handicapIndex: score.handicapIndex ?? null,
+            fieldStrength,
+            formatType: "solo",
+            gameFormatId,
+            roundPoints,
+            challengePoints: 0,
+            createdAt: Timestamp.now(),
+          });
+
+          const displayName = userName || userData?.displayName || "Unknown";
+          const userAvatar = userData?.avatar || null;
+          await calculatePlayerRanking(userId, displayName, userAvatar, regionKey);
+        } catch (rankErr) {
+          console.error("⚠️ Power ranking update failed (non-critical):", rankErr);
+        }
       }
 
       console.log("✅ Score processing complete");

@@ -1,9 +1,9 @@
 /**
  * ClubCardModal
- * 
+ *
  * Full screen modal showing an expanded version of the user's Club Card.
- * Includes: avatar, displayName, real name, HCI, stats, member since date,
- * and SwingThoughts branding.
+ * Includes: avatar, displayName, real name, HCI, ST Power Ranking, stats,
+ * member since date, and SwingThoughts branding.
  */
 
 import { soundPlayer } from "@/utils/soundPlayer";
@@ -34,6 +34,11 @@ interface ClubCardModalProps {
   memberSince?: any; // Firestore Timestamp or Date
   isOwnProfile: boolean;
   onPartnersPress: () => void;
+  // ST Power Ranking (optional — hides panel if powerRating is null/undefined)
+  powerRating?: number | null;
+  globalRank?: number | null;
+  roundsInWindow?: number;
+  previousRating?: number | null;
 }
 
 export default function ClubCardModal({
@@ -49,15 +54,16 @@ export default function ClubCardModal({
   memberSince,
   isOwnProfile,
   onPartnersPress,
+  powerRating,
+  globalRank,
+  roundsInWindow = 0,
+  previousRating,
 }: ClubCardModalProps) {
   const formatMemberSince = (): string => {
     if (!memberSince) return "—";
     try {
       const date = memberSince.toDate ? memberSince.toDate() : new Date(memberSince);
-      return date.toLocaleDateString("en-US", {
-        month: "long",
-        year: "numeric",
-      });
+      return date.toLocaleDateString("en-US", { month: "long", year: "numeric" });
     } catch {
       return "—";
     }
@@ -71,10 +77,30 @@ export default function ClubCardModal({
     );
   };
 
+  const showPowerRankingInfo = () => {
+    Alert.alert(
+      "ST Power Ranking",
+      "Your Power Rating is a rolling 12-month score based on net performance, course difficulty, field strength, and event type. Requires 3 rounds to earn a Global Rank.",
+      [{ text: "Got it" }]
+    );
+  };
+
   const formatStat = (value: number | undefined | null): string => {
     if (value === undefined || value === null) return "—";
     return value.toString();
   };
+
+  // Derive trend from previousRating
+  const trendDelta =
+    powerRating != null && previousRating != null
+      ? powerRating - previousRating
+      : null;
+
+  const isUnranked = globalRank == null;
+  const hasRankingData = powerRating != null;
+  const roundsNeeded = Math.max(0, 3 - roundsInWindow);
+
+  console.log("🃏 ClubCardModal props — powerRating:", powerRating, "globalRank:", globalRank, "hasRankingData:", hasRankingData);
 
   return (
     <Modal
@@ -158,6 +184,96 @@ export default function ClubCardModal({
                       {handicap !== undefined && handicap !== null ? handicap : "—"}
                     </Text>
                   </View>
+
+                  {/* ===== ST POWER RANKING PANEL ===== */}
+                  {hasRankingData && (
+                    <View style={styles.rankingPanel}>
+                      {/* Gradient hairline — simulated with a thin gold View */}
+                      <View style={styles.rankingHairline} />
+
+                      <View style={styles.rankingInner}>
+                        {/* LEFT: Power Rating */}
+                        <View style={styles.rankingCell}>
+                          <View style={styles.rankingLabelRow}>
+                            <Text style={styles.rankingMetaLabel}>ST POWER</Text>
+                            <TouchableOpacity
+                              onPress={() => {
+                                soundPlayer.play("click");
+                                showPowerRankingInfo();
+                              }}
+                              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                            >
+                              <Ionicons
+                                name="information-circle-outline"
+                                size={11}
+                                color="#8B7355"
+                              />
+                            </TouchableOpacity>
+                          </View>
+
+                          <View style={styles.rankingValueRow}>
+                            <Text style={styles.rankingRating}>
+                              {powerRating!.toFixed(1)}
+                            </Text>
+                            {trendDelta !== null && Math.abs(trendDelta) >= 0.5 && (
+                              <View style={styles.trendBadge}>
+                                <Text
+                                  style={[
+                                    styles.trendArrow,
+                                    trendDelta > 0
+                                      ? styles.trendUp
+                                      : styles.trendDown,
+                                  ]}
+                                >
+                                  {trendDelta > 0 ? "↑" : "↓"}
+                                </Text>
+                                <Text
+                                  style={[
+                                    styles.trendDelta,
+                                    trendDelta > 0
+                                      ? styles.trendUp
+                                      : styles.trendDown,
+                                  ]}
+                                >
+                                  {Math.abs(trendDelta).toFixed(1)}
+                                </Text>
+                              </View>
+                            )}
+                          </View>
+
+                          <Text style={styles.rankingSubLabel}>
+                            {roundsInWindow} round{roundsInWindow !== 1 ? "s" : ""} in window
+                          </Text>
+                        </View>
+
+                        {/* CENTER DIVIDER */}
+                        <View style={styles.rankingCellDivider} />
+
+                        {/* RIGHT: Global Rank */}
+                        <View style={styles.rankingCell}>
+                          <Text style={styles.rankingMetaLabel}>GLOBAL RANK</Text>
+
+                          {isUnranked ? (
+                            <>
+                              <Text style={styles.rankingUnranked}>UNRANKED</Text>
+                              <Text style={styles.rankingSubLabel}>
+                                {roundsNeeded} round{roundsNeeded !== 1 ? "s" : ""} to qualify
+                              </Text>
+                            </>
+                          ) : (
+                            <>
+                              <View style={styles.rankNumberRow}>
+                                <Text style={styles.rankHash}>#</Text>
+                                <Text style={styles.rankNumber}>{globalRank}</Text>
+                              </View>
+                              <Text style={styles.rankingSubLabel}>worldwide</Text>
+                            </>
+                          )}
+                        </View>
+                      </View>
+                    </View>
+                  )}
+                  {/* ===== END RANKING PANEL ===== */}
                 </View>
               </View>
 
@@ -372,6 +488,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
+    marginBottom: 10,
   },
 
   hciLabel: {
@@ -385,6 +502,129 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: "800",
     color: "#C5A55A",
+  },
+
+  /* ===== ST POWER RANKING PANEL ===== */
+  rankingPanel: {
+    width: "100%",
+    borderRadius: 8,
+    backgroundColor: "rgba(0, 0, 0, 0.28)",
+    borderWidth: 1,
+    borderColor: "rgba(197, 165, 90, 0.22)",
+    overflow: "hidden",
+  },
+
+  rankingHairline: {
+    height: 1,
+    backgroundColor: "rgba(197, 165, 90, 0.45)",
+  },
+
+  rankingInner: {
+    flexDirection: "row",
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+  },
+
+  rankingCell: {
+    flex: 1,
+    alignItems: "center",
+  },
+
+  rankingCellDivider: {
+    width: 1,
+    backgroundColor: "rgba(197, 165, 90, 0.2)",
+    marginHorizontal: 8,
+    marginVertical: 2,
+  },
+
+  rankingLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginBottom: 4,
+  },
+
+  rankingMetaLabel: {
+    fontSize: 7,
+    fontWeight: "700",
+    color: "#8B7355",
+    letterSpacing: 1.5,
+  },
+
+  rankingValueRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: 4,
+  },
+
+  rankingRating: {
+    fontSize: 26,
+    fontWeight: "800",
+    color: "#C5A55A",
+    lineHeight: 30,
+  },
+
+  trendBadge: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: 1,
+    marginBottom: 2,
+  },
+
+  trendArrow: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  trendDelta: {
+    fontSize: 9,
+    fontWeight: "600",
+  },
+
+  trendUp: {
+    color: "#5DBE7A",
+  },
+
+  trendDown: {
+    color: "#E07070",
+  },
+
+  rankingSubLabel: {
+    fontSize: 8,
+    color: "#8B7355",
+    marginTop: 3,
+    letterSpacing: 0.2,
+    textAlign: "center",
+  },
+
+  rankingUnranked: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#8B7355",
+    letterSpacing: 2,
+    marginTop: 2,
+    marginBottom: 2,
+    lineHeight: 26,
+  },
+
+  rankNumberRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: 1,
+  },
+
+  rankHash: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#8B7355",
+    lineHeight: 30,
+  },
+
+  rankNumber: {
+    fontSize: 26,
+    fontWeight: "800",
+    color: "#F4EED8",
+    lineHeight: 30,
   },
 
   displayName: {

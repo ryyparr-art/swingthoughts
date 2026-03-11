@@ -1329,6 +1329,26 @@ match /rounds/{roundId} {
     }
 
     // ============================================================================
+    // WORLD RANKINGS (ST POWER RANKING)
+    // ============================================================================
+
+    match /worldRankings/{userId} {
+      // Public read — Club Card and future global rankings screen
+      allow read, list: if isSignedIn();
+      // Cloud Functions only (Admin SDK bypasses rules)
+      allow write: if false;
+    }
+
+    // ============================================================================
+    // PLAYER ROUNDS (RANKING ENGINE FEED)
+    // ============================================================================
+
+    match /playerRounds/{docId} {
+      // No client access — Cloud Functions only
+      allow read, write: if false;
+    }
+
+    // ============================================================================
     // DEFAULT DENY
     // ============================================================================
 

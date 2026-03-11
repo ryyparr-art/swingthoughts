@@ -224,7 +224,7 @@ export default function LowmanCarousel({
 
     console.log("🏆 Carousel: Win counts:", wins);
 
-    const built: CarouselItem[] = [];
+    const allBuilt: CarouselItem[] = [];
 
     candidates.forEach((l) => {
       const userWins = wins[l.lowman.userId] || 1;
@@ -239,7 +239,7 @@ export default function LowmanCarousel({
         icon = LowLeaderAce;
       }
 
-      built.push({
+      allBuilt.push({
         userId: l.lowman.userId,
         displayName: l.lowman.displayName,
         netScore: l.lowman.netScore,
@@ -250,12 +250,11 @@ export default function LowmanCarousel({
         regionKey: l.regionKey,
       });
 
-      // Add hole-in-ones (will show when populated by post scores)
+      // Add hole-in-ones
       if (l.holeinones && l.holeinones.length > 0) {
         console.log(`  ⛳ Adding ${l.holeinones.length} hole-in-one(s) from ${l.courseName}`);
-        
         l.holeinones.forEach((hio) => {
-          built.push({
+          allBuilt.push({
             userId: hio.userId,
             displayName: hio.displayName,
             courseName: l.courseName,
@@ -270,14 +269,31 @@ export default function LowmanCarousel({
       }
     });
 
-    // Shuffle
-    for (let i = built.length - 1; i > 0; i--) {
+    // Shuffle all candidates first
+    for (let i = allBuilt.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
-      [built[i], built[j]] = [built[j], built[i]];
+      [allBuilt[i], allBuilt[j]] = [allBuilt[j], allBuilt[i]];
     }
 
-    const final = built.slice(0, TARGET_COUNT);
-    console.log("✅ Carousel: Final", final.length, "cards");
+    // Pass 1: one card per unique userId — unique players always shown first
+    const seenUsers = new Set<string>();
+    const uniqueFirst: CarouselItem[] = [];
+    const duplicates: CarouselItem[] = [];
+
+    for (const item of allBuilt) {
+      if (!seenUsers.has(item.userId)) {
+        seenUsers.add(item.userId);
+        uniqueFirst.push(item);
+      } else {
+        duplicates.push(item);
+      }
+    }
+
+    // Pass 2: fill remaining slots with duplicates if needed
+    const combined = [...uniqueFirst, ...duplicates];
+    const final = combined.slice(0, TARGET_COUNT);
+
+    console.log("✅ Carousel: Final", final.length, "cards,", seenUsers.size, "unique players");
     
     shuffledOnce.current = final;
     return shuffledOnce.current;

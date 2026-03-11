@@ -32,6 +32,12 @@ import {
   sendRivalryNotifications,
   writeRivalryFeedCards,
 } from "../rivalries/rivalryEngine";
+import {
+  calculateFieldStrength,
+  calculatePlayerRanking,
+  calculateRoundPoints,
+  normaliseGameFormatId,
+} from "../utils/rankingEngine";
 
 const db = admin.firestore();
 
@@ -453,6 +459,84 @@ export const onRoundUpdated = onDocumentUpdated(
 
       // ── 7. Update recentPlayedWith cache on user docs ─────────
       await updateRecentPlayedWith(after.players);
+
+      // ── 8. ST Power Ranking — casual multiplayer ──────────────
+      // Runs for all non-outing, non-simulator rounds with regionKey.
+      // Outing-linked rounds are handled by outingRounds.ts at outing completion.
+      if (!isOutingLinked && !isSimulator && after.regionKey) {
+        try {
+          const onPlatformPlayers = after.players.filter((p) => !p.isGhost);
+          const playerIds = onPlatformPlayers.map((p) => p.playerId);
+          const handicapMap: Record<string, number | null> = {};
+          onPlatformPlayers.forEach((p) => { handicapMap[p.playerId] = p.handicapIndex; });
+
+          const fieldStrength = await calculateFieldStrength(playerIds, handicapMap);
+          const gameFormatId = normaliseGameFormatId(after.formatId);
+          const totalPar = after.holePars
+            ? after.holePars.slice(0, after.holeCount).reduce((s, p) => s + p, 0)
+            : after.holeCount === 18 ? 72 : 36;
+
+          for (const player of onPlatformPlayers) {
+            try {
+              const grossScore = calculateGrossScore(player, after);
+              const netScore = grossScore - player.courseHandicap;
+
+              // Derive match play result if applicable
+              const liveScore = after.liveScores?.[player.playerId];
+              let matchPlayResult: "win" | "halve" | "loss" | undefined;
+              if (gameFormatId === "match_play" || gameFormatId === "singles_match_play") {
+                const won = liveScore?.holesWon ?? 0;
+                const lost = liveScore?.holesLost ?? 0;
+                matchPlayResult = won > lost ? "win" : won === lost ? "halve" : "loss";
+              }
+
+              const roundPoints = calculateRoundPoints(
+                netScore,
+                totalPar,
+                player.slopeRating,
+                fieldStrength,
+                "casual",
+                gameFormatId,
+                matchPlayResult
+              );
+
+              const playerRoundRef = db
+                .collection("playerRounds")
+                .doc(`${player.playerId}_${roundId}`);
+
+              await playerRoundRef.set({
+                userId: player.playerId,
+                roundId,
+                courseId: after.courseId,
+                regionKey: after.regionKey,
+                netScore,
+                par: totalPar,
+                slopeRating: player.slopeRating,
+                courseRating: player.courseRating,
+                handicapIndex: player.handicapIndex,
+                fieldStrength,
+                formatType: "casual",
+                gameFormatId,
+                matchPlayResult: matchPlayResult ?? null,
+                roundPoints,
+                challengePoints: 0,
+                createdAt: admin.firestore.Timestamp.now(),
+              });
+
+              await calculatePlayerRanking(
+                player.playerId,
+                player.displayName,
+                player.avatar || null,
+                after.regionKey!
+              );
+            } catch (playerRankErr) {
+              logger.error(`Ranking update failed for ${player.displayName}:`, playerRankErr);
+            }
+          }
+        } catch (rankErr) {
+          logger.error(`Power ranking block failed for round ${roundId}:`, rankErr);
+        }
+      }
 
       // ── 8. Update rivalries ─────────────────────────────────────
       // For non-outing rounds, process rivalries between all on-platform players.

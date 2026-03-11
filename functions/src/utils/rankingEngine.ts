@@ -8,10 +8,15 @@
  *   CourseAdjustedScore = (NetScore - Par) x (SlopeRating / 113)
  *   BasePoints          = max(0, 40 - CourseAdjustedScore)
  *   FieldMultiplier     = 1 + (FieldStrength / 100)
- *   FormatWeight        = 0.75 | 1.0 | 1.25 | 1.5 | 2.0
- *   RoundPoints         = BasePoints x FieldMultiplier x FormatWeight
+ *   FormatWeight        = 0.75 | 1.0 | 1.25 | 1.5 | 2.0   (event type)
+ *   GameFormatWeight    = 0.65 – 1.0                        (game type)
+ *   RoundPoints         = BasePoints x FieldMultiplier x FormatWeight x GameFormatWeight
  *   AdjustedPoints      = RoundPoints x RecencyWeight (decay over 52 weeks)
  *   PowerRating         = Sum(AdjustedPoints) / max(3, roundsInWindow)
+ *
+ * Match play exception:
+ *   No stroke total available — flat points awarded based on result:
+ *   Win = 35pts, Halve = 25pts, Loss = 15pts  (then x FieldMultiplier x FormatWeight x GameFormatWeight)
  */
 
 import { getFirestore, Timestamp } from "firebase-admin/firestore";
@@ -21,6 +26,36 @@ import { getFirestore, Timestamp } from "firebase-admin/firestore";
 /* ================================================================ */
 
 export type FormatType = "solo" | "casual" | "league" | "invitational" | "tour";
+
+/**
+ * Game format IDs — matches formatId values in RoundData / gameFormats constants.
+ * No player is excluded for format choice — lesser formats get reduced weight, not zero.
+ */
+export type GameFormatType =
+  // Full weight — stroke-based individual scoring
+  | "stroke_play"
+  | "stroke_play_with_skins"
+  // Near-full — still individually meaningful
+  | "stableford"
+  // Better ball — individual scores tracked, best counts
+  | "fourball"
+  | "better_ball"
+  // Match play — result-based, no stroke total
+  | "match_play"
+  | "singles_match_play"
+  // Skins only
+  | "skins"
+  // Team scramble — least individual signal
+  | "scramble"
+  | "texas_scramble"
+  // Alternate shot — shared score
+  | "foursomes"
+  | "alternate_shot"
+  // Fallback for any unrecognised format
+  | "unknown";
+
+/** For match play: the outcome for this player */
+export type MatchPlayResult = "win" | "halve" | "loss";
 
 export interface PlayerRoundInput {
   userId: string;
@@ -34,6 +69,10 @@ export interface PlayerRoundInput {
   handicapIndex: number | null;
   fieldStrength: number;
   formatType: FormatType;
+  /** Game format id from RoundData.formatId */
+  gameFormatId: GameFormatType;
+  /** Only required for match_play / singles_match_play */
+  matchPlayResult?: MatchPlayResult;
   challengePoints: number;
   createdAt: Timestamp;
 }
@@ -60,12 +99,61 @@ export interface WorldRankingDoc {
 /* CONSTANTS                                                        */
 /* ================================================================ */
 
+/** Event-type weight — how competitive is the context? */
 export const FORMAT_WEIGHTS: Record<FormatType, number> = {
   solo: 0.75,
   casual: 1.0,
   league: 1.25,
   invitational: 1.5,
   tour: 2.0,
+};
+
+/**
+ * Game-format weight — how much individual signal does this format produce?
+ *
+ * Philosophy: nobody gets zero. Recreational golfers play all kinds of formats.
+ * Scrambles and skins nights still tell us something about the player.
+ * We just dial back the signal strength relative to clean stroke play.
+ */
+export const GAME_FORMAT_WEIGHTS: Record<GameFormatType, number> = {
+  // Stroke-based individual — full signal
+  stroke_play: 1.0,
+  stroke_play_with_skins: 1.0,
+
+  // Stableford — still individually meaningful, minor discount for non-stroke scoring
+  stableford: 0.9,
+
+  // Better ball / fourball — individual scores tracked, best ball counts
+  fourball: 0.85,
+  better_ball: 0.85,
+
+  // Match play — result-based scoring, no stroke total
+  match_play: 0.8,
+  singles_match_play: 0.8,
+
+  // Skins — gross/net score used as proxy; participation valued
+  skins: 0.75,
+
+  // Scramble — team score, least individual isolation
+  scramble: 0.7,
+  texas_scramble: 0.7,
+
+  // Alternate shot — shared strokes, lowest individual signal
+  foursomes: 0.65,
+  alternate_shot: 0.65,
+
+  // Unknown / future formats — treat conservatively
+  unknown: 0.75,
+};
+
+/**
+ * Flat base points for match play results (before field/format multipliers).
+ * Replaces the score-based BasePoints calculation.
+ */
+const MATCH_PLAY_POINTS: Record<MatchPlayResult, number> = {
+  win: 35,
+  halve: 25,
+  loss: 15,
 };
 
 const FULL_VALUE_WEEKS = 8;
@@ -84,7 +172,7 @@ const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
  * Never displayed to users directly.
  */
 export function initialPowerRating(handicapIndex: number | null): number {
-  if (handicapIndex == null) return 20; // Default for unknown HCP
+  if (handicapIndex == null) return 20;
   return Math.max(0, 50 - handicapIndex * 1.5);
 }
 
@@ -113,20 +201,48 @@ export function applyDecay(points: number, createdAt: Timestamp): number {
 }
 
 /**
+ * Normalise a raw formatId string from Firestore to our GameFormatType enum.
+ * Safe to call with any string — unknown formats fall back to "unknown".
+ */
+export function normaliseGameFormatId(rawFormatId: string | undefined | null): GameFormatType {
+  if (!rawFormatId) return "unknown";
+  const known = Object.keys(GAME_FORMAT_WEIGHTS) as GameFormatType[];
+  return known.includes(rawFormatId as GameFormatType)
+    ? (rawFormatId as GameFormatType)
+    : "unknown";
+}
+
+/**
  * Calculate raw round points (before decay).
+ *
+ * Match play formats bypass the score-based calculation entirely —
+ * flat points are awarded based on win/halve/loss result.
  */
 export function calculateRoundPoints(
   netScore: number,
   par: number,
   slopeRating: number,
   fieldStrength: number,
-  formatType: FormatType
+  formatType: FormatType,
+  gameFormatId: GameFormatType = "stroke_play",
+  matchPlayResult?: MatchPlayResult
 ): number {
-  const courseAdjustedScore = (netScore - par) * (slopeRating / 113);
-  const basePoints = Math.max(0, 40 - courseAdjustedScore);
   const fieldMultiplier = 1 + fieldStrength / 100;
   const formatWeight = FORMAT_WEIGHTS[formatType];
-  return basePoints * fieldMultiplier * formatWeight;
+  const gameFormatWeight = GAME_FORMAT_WEIGHTS[gameFormatId];
+
+  // Match play — flat points based on result, no score calculation
+  const isMatchPlay = gameFormatId === "match_play" || gameFormatId === "singles_match_play";
+  if (isMatchPlay) {
+    const result = matchPlayResult ?? "loss"; // Conservative default if result unknown
+    const basePoints = MATCH_PLAY_POINTS[result];
+    return basePoints * fieldMultiplier * formatWeight * gameFormatWeight;
+  }
+
+  // All other formats — score-based calculation
+  const courseAdjustedScore = (netScore - par) * (slopeRating / 113);
+  const basePoints = Math.max(0, 40 - courseAdjustedScore);
+  return basePoints * fieldMultiplier * formatWeight * gameFormatWeight;
 }
 
 /* ================================================================ */
@@ -197,6 +313,17 @@ export async function calculatePlayerRanking(
   const db = getFirestore();
   const cutoff = Timestamp.fromMillis(Date.now() - DECAY_WINDOW_WEEKS * MS_PER_WEEK);
 
+  // Fetch challengeBadges from user doc to surface on world rankings
+  let challengeBadges: string[] = [];
+  try {
+    const userSnap = await db.collection("users").doc(userId).get();
+    if (userSnap.exists) {
+      challengeBadges = (userSnap.data() as any)?.earnedChallengeBadges || [];
+    }
+  } catch {
+    // Non-critical — rankings will still write without badges
+  }
+
   // Fetch all eligible rounds in the 52-week window
   const roundsSnap = await db
     .collection("playerRounds")
@@ -205,9 +332,9 @@ export async function calculatePlayerRanking(
     .get();
 
   if (roundsSnap.empty) {
-    // No rounds in window — write zeroed doc, rank = null
     await db.collection("worldRankings").doc(userId).set({
       userId, displayName, userAvatar, regionKey,
+      challengeBadges,
       powerRating: 0,
       rank: null,
       roundsInWindow: 0,
@@ -243,19 +370,17 @@ export async function calculatePlayerRanking(
     ((totalAdjustedPoints + totalAdjustedChallengePoints) / divisor).toFixed(2)
   );
 
-  // Only assign rank: null until weekly sort runs
-  // rank position is written by weeklyRankingSort, not here
   const existingSnap = await db.collection("worldRankings").doc(userId).get();
   const existingRank = existingSnap.exists
     ? (existingSnap.data() as WorldRankingDoc).rank
     : null;
-
   const existingTotal = existingSnap.exists
     ? (existingSnap.data() as WorldRankingDoc).totalRoundsAllTime ?? 0
     : 0;
 
   await db.collection("worldRankings").doc(userId).set({
     userId, displayName, userAvatar, regionKey,
+    challengeBadges,
     powerRating,
     rank: roundsInWindow >= MIN_ROUNDS_TO_RANK ? existingRank : null,
     roundsInWindow,

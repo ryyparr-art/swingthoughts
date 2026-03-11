@@ -16,6 +16,9 @@
  *    pinnedBoard are derived via useMemo, so switching 9↔18 is zero-cost.
  *
  * 4. useEffect dep array no longer includes holeCount for the same reason.
+ *
+ * 5. Boards with scores are always shown before empty boards (within
+ *    distance ordering) so users see populated leaderboards first.
  */
 
 import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
@@ -103,7 +106,6 @@ interface UseLeaderboardDataReturn {
 
 /* ================================================================ */
 /* INTERNAL TYPE                                                    */
-/* Holds the raw Firestore doc so holeCount can switch client-side */
 /* ================================================================ */
 
 interface RawBoard {
@@ -115,7 +117,7 @@ interface RawBoard {
 }
 
 /* ================================================================ */
-/* MODULE-LEVEL HELPERS (no hook state needed)                     */
+/* MODULE-LEVEL HELPERS                                             */
 /* ================================================================ */
 
 function selectScores(rawDoc: any, holeCount: HoleCount): Score[] {
@@ -135,9 +137,26 @@ function toBoard(raw: RawBoard, holeCount: HoleCount): CourseBoard {
   };
 }
 
+function hasScores(raw: RawBoard, holeCount: HoleCount): boolean {
+  if (holeCount === "18") {
+    return (raw.rawDoc.topScores18?.length > 0) || (raw.rawDoc.topScores?.length > 0);
+  }
+  return raw.rawDoc.topScores9?.length > 0;
+}
+
 /**
- * Replaces the N sequential getDocs calls that were inside buildBoardsWithDistance.
- * One batched where("id","in",[...]) read + synchronous map — no loop I/O.
+ * Sort boards: scored boards first (by distance), then empty boards (by distance).
+ * Preserves the batched distance lookup performance from the previous version.
+ */
+function sortBoardsWithScoresFirst(boards: RawBoard[], holeCount: HoleCount): RawBoard[] {
+  const withScores = boards.filter((b) => hasScores(b, holeCount)).sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999));
+  const empty = boards.filter((b) => !hasScores(b, holeCount)).sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999));
+  return [...withScores, ...empty];
+}
+
+/**
+ * Batched course distance lookup — one where("id","in",[...]) query
+ * replaces N sequential getDocs calls. No loop I/O.
  */
 async function buildRawBoards(
   leaderboards: any[],
@@ -148,7 +167,6 @@ async function buildRawBoards(
 
   const courseIds = leaderboards.map((lb) => lb.courseId);
 
-  // Firestore "in" supports up to 30 values — chunk defensively
   const chunks: number[][] = [];
   for (let i = 0; i < courseIds.length; i += 30) {
     chunks.push(courseIds.slice(i, i + 30));
@@ -183,6 +201,7 @@ async function buildRawBoards(
     return { courseId: lb.courseId, courseName: lb.courseName, rawDoc: lb, distance, location };
   });
 
+  // Initial sort by distance — sortBoardsWithScoresFirst will re-sort with score priority
   result.sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999));
   return result;
 }
@@ -212,7 +231,6 @@ export function useLeaderboardData({
   const [userRegionKey, setUserRegionKey] = useState("");
   const [pinnedCourseId, setPinnedCourseId] = useState<number | null>(null);
 
-  // Holds user data between renders so fetchLeaderboards never re-reads the doc
   const userDataRef = useRef<{
     regionKey: string;
     lat?: number;
@@ -221,7 +239,7 @@ export function useLeaderboardData({
   } | null>(null);
 
   /* ---------------------------------------------------------------- */
-  /* Derived boards — instant on holeCount change, no network call   */
+  /* Derived boards — instant on holeCount change                    */
   /* ---------------------------------------------------------------- */
 
   const boards = useMemo(
@@ -261,7 +279,7 @@ export function useLeaderboardData({
   }, []);
 
   /* ---------------------------------------------------------------- */
-  /* loadPinnedCourseId — only called after pin/unpin actions        */
+  /* loadPinnedCourseId — only called after pin/unpin                */
   /* ---------------------------------------------------------------- */
 
   const loadPinnedCourseId = useCallback(async () => {
@@ -302,7 +320,7 @@ export function useLeaderboardData({
   };
 
   /* ---------------------------------------------------------------- */
-  /* TRIGGER — holeCount intentionally omitted from deps             */
+  /* TRIGGER                                                          */
   /* ---------------------------------------------------------------- */
 
   useEffect(() => {
@@ -377,10 +395,8 @@ export function useLeaderboardData({
           return;
         }
 
-        // Use ref — no user doc read on every call
         let ud = userDataRef.current;
 
-        // Fallback: if mount effect hasn't resolved yet, read once
         if (!ud?.regionKey) {
           const snap = await getDoc(doc(db, "users", uid));
           if (!snap.exists()) { setLoading(false); return; }
@@ -479,8 +495,13 @@ export function useLeaderboardData({
         // ── BATCHED DISTANCE LOOKUP ──────────────────────────────────
         const rawBoardsList = await buildRawBoards(leaderboards, userLat, userLon);
 
+        // ── SORT: scored boards first, then empty (within distance order)
+        const sortedBoardsList = filterType === "nearMe"
+          ? sortBoardsWithScoresFirst(rawBoardsList, holeCount)
+          : rawBoardsList;
+
         // ── PINNED LEADERBOARD (nearMe only) ────────────────────────
-        let finalRawBoards = rawBoardsList;
+        let finalRawBoards = sortedBoardsList;
         let finalRawPinned: RawBoard | null = null;
 
         if (filterType === "nearMe" && pinnedLeaderboard?.courseId) {
@@ -505,11 +526,11 @@ export function useLeaderboardData({
             };
           }
 
-          finalRawBoards = rawBoardsList
+          finalRawBoards = sortedBoardsList
             .filter((b) => b.courseId !== pinnedLeaderboard.courseId)
             .slice(0, 2);
         } else if (filterType === "nearMe") {
-          finalRawBoards = rawBoardsList.slice(0, 3);
+          finalRawBoards = sortedBoardsList.slice(0, 3);
         }
 
         setRawBoards(finalRawBoards);
@@ -540,7 +561,6 @@ export function useLeaderboardData({
         setLoading(false);
       }
     },
-    // holeCount intentionally NOT in deps — raw docs are hole-count-agnostic
     [filterType, filterCourseId, filterCourseName, filterPlayerId, filterPlayerName, setCache]
   );
 
@@ -609,10 +629,12 @@ export async function preloadLeaderboardData(
 
     if (leaderboards.length === 0) return;
 
-    // Batched distance lookup — same optimisation as the hook
     const rawBoardsList = await buildRawBoards(leaderboards, userLat, userLon);
 
-    let finalRawBoards = rawBoardsList;
+    // Sort: scored boards first, then empty
+    const sortedBoardsList = sortBoardsWithScoresFirst(rawBoardsList, holeCount);
+
+    let finalRawBoards = sortedBoardsList;
     let finalRawPinned: RawBoard | null = null;
 
     if (pinnedLeaderboard?.courseId) {
@@ -633,11 +655,11 @@ export async function preloadLeaderboardData(
             : undefined,
         };
       }
-      finalRawBoards = rawBoardsList
+      finalRawBoards = sortedBoardsList
         .filter((b) => b.courseId !== pinnedLeaderboard.courseId)
         .slice(0, 2);
     } else {
-      finalRawBoards = rawBoardsList.slice(0, 3);
+      finalRawBoards = sortedBoardsList.slice(0, 3);
     }
 
     const cacheData: LeaderboardCacheData = {
