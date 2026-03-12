@@ -19,27 +19,28 @@ import * as Haptics from "expo-haptics";
 import { Image as ExpoImage } from "expo-image";
 import { router } from "expo-router";
 import {
-    collection,
-    doc,
-    DocumentData,
-    getDoc,
-    getDocs,
-    limit,
-    orderBy,
-    query,
-    QueryDocumentSnapshot,
-    startAfter,
-    where,
+  collection,
+  doc,
+  DocumentData,
+  getDoc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  QueryDocumentSnapshot,
+  startAfter,
+  where,
 } from "firebase/firestore";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-    ActivityIndicator,
-    FlatList,
-    RefreshControl,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -311,8 +312,16 @@ export default function WorldRankScreen() {
     router.push(`/profile/${userId}` as any);
   };
 
+  const showInfo = () => {
+    Alert.alert(
+      "How ST World Rankings Work",
+      "Your ST Power Rating is built from your performance across every round you post in the last 52 weeks. Stroke play carries the most weight, with other formats like scrambles and match play contributing at a reduced rate.\n\nThe context of your round matters too — league, invitational, and tour rounds are worth significantly more than casual or solo play.\n\nCompleting challenges also factors into your rating, rewarding well-rounded golfers who compete beyond just stroke play.\n\nRounds hold full value for 8 weeks then decay over 52, so recent form always matters most. Your Rank is simply where your Power Rating places you against every other player. You need at least 3 rounds in the window to earn an official ranking.",
+      [{ text: "Got it", style: "default" }]
+    );
+  };
+
   // --------------------------------------------------------------------------
-  // RENDER ROW — matches leaderboard row pattern: avatar → name → badges → rating
+  // RENDER ROW
   // --------------------------------------------------------------------------
 
   const renderRow = useCallback(
@@ -332,7 +341,7 @@ export default function WorldRankScreen() {
           <TrendArrow current={entry.powerRating} previous={entry.previousRating} />
         </View>
 
-        {/* Avatar — matches leaderboard 26px circle */}
+        {/* Avatar */}
         {entry.userAvatar ? (
           <ExpoImage
             source={{ uri: entry.userAvatar }}
@@ -348,7 +357,7 @@ export default function WorldRankScreen() {
           </View>
         )}
 
-        {/* Name + badges — flex:1 like leaderboard playerCell */}
+        {/* Name + badges */}
         <View style={styles.playerCell}>
           <Text
             style={[styles.playerName, isMyRow && styles.myPlayerName]}
@@ -375,7 +384,6 @@ export default function WorldRankScreen() {
 
   const renderItem = useCallback(
     ({ item }: { item: WorldRankEntry }) => {
-      // Section divider
       if (item.userId === DIVIDER_ID) {
         return (
           <View style={styles.sectionDivider}>
@@ -404,10 +412,18 @@ export default function WorldRankScreen() {
 
       <TopNavBar />
 
-      {/* Header — mirrors locationRow in index */}
+      {/* Header */}
       <View style={styles.headerRow}>
         <Ionicons name="globe-outline" size={18} color="#0D5C3A" />
         <Text style={styles.headerTitle}>ST World Rankings</Text>
+
+        {/* Info icon */}
+        <TouchableOpacity
+          onPress={showInfo}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Ionicons name="information-circle-outline" size={20} color="#8B7355" />
+        </TouchableOpacity>
 
         {/* Toggle back pill */}
         <TouchableOpacity
@@ -424,7 +440,7 @@ export default function WorldRankScreen() {
         <Text style={styles.subText}>Updated weekly · Decays over 52 weeks</Text>
       </View>
 
-      {/* Column headers — matches leaderboard rowHeader style */}
+      {/* Column headers */}
       <View style={styles.colHeader}>
         <Text style={[styles.colHeaderText, { width: 52 }]}>RANK</Text>
         <Text style={[styles.colHeaderText, { width: 36 }]}> </Text>
@@ -479,7 +495,7 @@ export default function WorldRankScreen() {
         />
       )}
 
-      {/* Sticky my-rank footer — only when current user is outside loaded list */}
+      {/* Sticky my-rank footer */}
       {!loading && !myInList && myEntry && (
         <TouchableOpacity
           style={styles.stickyMyRank}
@@ -538,7 +554,6 @@ const styles = StyleSheet.create({
   safeTop: { backgroundColor: "#0D5C3A" },
   carouselWrapper: { height: 50 },
 
-  // Header — mirrors locationRow
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -573,7 +588,6 @@ const styles = StyleSheet.create({
   subRow: { paddingHorizontal: 16, paddingBottom: 6 },
   subText: { fontSize: 11, color: "#8B7355", fontWeight: "600", letterSpacing: 0.3 },
 
-  // Column headers — matches leaderboard rowHeader
   colHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -588,7 +602,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 
-  // Row — closely mirrors leaderboard row
   row: {
     flexDirection: "row",
     alignItems: "center",
@@ -604,55 +617,34 @@ const styles = StyleSheet.create({
     borderLeftColor: "#0D5C3A",
   },
 
-  // Rank col
-  rankCol: {
-    width: 52,
-    alignItems: "center",
-    gap: 2,
-  },
-  rankNum: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#4A3628",
-    textAlign: "center",
-  },
+  rankCol: { width: 52, alignItems: "center", gap: 2 },
+  rankNum: { fontSize: 15, fontWeight: "800", color: "#4A3628", textAlign: "center" },
   rank1: { color: "#C5A55A", fontWeight: "900" },
   rank2: { color: "#888" },
   rank3: { color: "#A0522D" },
   rankDash: { fontSize: 15, fontWeight: "700", color: "#BBB", textAlign: "center" },
   trendNew: { fontSize: 8, fontWeight: "900", color: "#0D5C3A", letterSpacing: 0.5 },
 
-  // Avatar — matches leaderboard exactly
   avatar: { width: 26, height: 26, borderRadius: 13 },
   avatarFallback: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+    width: 26, height: 26, borderRadius: 13,
     backgroundColor: "#0D5C3A",
-    alignItems: "center",
-    justifyContent: "center",
+    alignItems: "center", justifyContent: "center",
   },
   avatarInitial: { fontSize: 11, fontWeight: "700", color: "#F4EED8" },
 
-  // Player cell — matches leaderboard playerCell
   playerCell: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    minWidth: 0,
-    marginLeft: 8,
+    flex: 1, flexDirection: "row", alignItems: "center",
+    gap: 8, minWidth: 0, marginLeft: 8,
   },
   playerName: { fontWeight: "700", fontSize: 14, flexShrink: 1, color: "#1A1A1A" },
   myPlayerName: { color: "#0D5C3A", fontWeight: "800" },
 
-  // Rating col
   ratingCol: { width: 60, alignItems: "flex-end" },
   ratingValue: { fontSize: 15, fontWeight: "900", color: "#4A3628" },
   myRatingValue: { color: "#0D5C3A" },
   ratingLabel: { fontSize: 8, fontWeight: "700", color: "#8B7355", letterSpacing: 1 },
 
-  // Loading / empty
   loading: { flex: 1, alignItems: "center", justifyContent: "center", gap: 16 },
   loadingText: { fontSize: 15, fontWeight: "700", color: "#0D5C3A" },
   emptyState: { flex: 1, alignItems: "center", justifyContent: "center", padding: 40 },
@@ -663,7 +655,6 @@ const styles = StyleSheet.create({
   endOfList: { paddingVertical: 24, alignItems: "center" },
   endOfListText: { fontSize: 11, fontWeight: "700", color: "#8B7355", letterSpacing: 2 },
 
-  // Sticky my-rank footer
   stickyMyRank: {
     position: "absolute",
     bottom: 100,
@@ -688,20 +679,11 @@ const styles = StyleSheet.create({
   stickyRatingValue: { fontSize: 15, fontWeight: "900", color: "#F4EED8" },
   stickyRatingLabel: { fontSize: 8, fontWeight: "700", color: "#C5A55A", letterSpacing: 1 },
 
-  // Unranked section divider
   sectionDivider: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 10,
+    flexDirection: "row", alignItems: "center",
+    paddingHorizontal: 16, paddingVertical: 12, gap: 10,
     backgroundColor: "#F4EED8",
   },
   sectionDividerLine: { flex: 1, height: 1, backgroundColor: "#C5A55A" },
-  sectionDividerText: {
-    fontSize: 10,
-    fontWeight: "900",
-    color: "#8B7355",
-    letterSpacing: 2,
-  },
+  sectionDividerText: { fontSize: 10, fontWeight: "900", color: "#8B7355", letterSpacing: 2 },
 });
