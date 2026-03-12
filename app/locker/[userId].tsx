@@ -1,19 +1,22 @@
+import AchievementNotecard, { seededAchievementRotation } from "@/components/locker/AchievementNotecard";
+import HonorPlaque from "@/components/locker/HonorPlaque";
+import LockerClubsDisplay from "@/components/locker/LockerClubsDisplay";
+import LockerRailDivider from "@/components/locker/LockerRailDivider";
 import LockerRivals from "@/components/locker/LockerRivals";
+import SectionBanner from "@/components/locker/SectionBanner";
+import StatsRow from "@/components/locker/StatsRow";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
 import { auth, db } from "@/constants/firebaseConfig";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
-import { soundPlayer } from "@/utils/soundPlayer";
-
 import {
   acceptPartnerRequest,
   arePartnersAlready,
   checkExistingRequest,
   sendPartnerRequest,
 } from "@/utils/partnerUtils";
-
-import LockerClubsDisplay from "@/components/locker/LockerClubsDisplay";
+import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
@@ -22,334 +25,176 @@ import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Image,
   ImageBackground,
-  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-// Badge icon imports
-const LowLeaderTrophy = require("@/assets/icons/LowLeaderTrophy.png");
+const LowLeaderTrophy  = require("@/assets/icons/LowLeaderTrophy.png");
 const LowLeaderScratch = require("@/assets/icons/LowLeaderScratch.png");
-const LowLeaderAce = require("@/assets/icons/LowLeaderAce.png");
-const HoleInOne = require("@/assets/icons/HoleinOne.png");
+const LowLeaderAce     = require("@/assets/icons/LowLeaderAce.png");
+const HoleInOne        = require("@/assets/icons/HoleinOne.png");
+const LockerBg         = require("@/assets/locker/locker-bg.png");
 
 export default function LockerUserScreen() {
-  const router = useRouter();
-  const params = useLocalSearchParams();
+  const router   = useRouter();
+  const params   = useLocalSearchParams();
+  const insets   = useSafeAreaInsets();
   const { getCache, setCache, cleanupOldProfiles } = useCache();
 
   const currentUserId = auth.currentUser?.uid;
   const viewingUserId = params.userId as string;
-  const isOwnLocker = viewingUserId === currentUserId;
+  const isOwnLocker   = viewingUserId === currentUserId;
 
-  const [profile, setProfile] = useState<any>(null);
-  const [clubs, setClubs] = useState<any>(null);
-  const [badges, setBadges] = useState<any[]>([]);
+  const [profile,           setProfile]           = useState<any>(null);
+  const [clubs,             setClubs]             = useState<any>(null);
+  const [badges,            setBadges]            = useState<any[]>([]);
   const [partnershipStatus, setPartnershipStatus] =
     useState<"none" | "pending_sent" | "pending_received" | "partners">("none");
-  const [loading, setLoading] = useState(true);
   const [showingCached, setShowingCached] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
+  const [refreshing,    setRefreshing]    = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
-  /* ========================= LOAD USER WITH CACHE ========================= */
+  /* ========================= LOAD ========================= */
 
   useFocusEffect(
     useCallback(() => {
       if (!viewingUserId) return;
-
       let unsubscribe: (() => void) | undefined;
 
-      const loadUserWithCache = async () => {
+      const load = async () => {
         try {
           const cached = await getCache(CACHE_KEYS.USER_PROFILE(viewingUserId));
-          
           if (cached) {
-            console.log("⚡ User locker cache hit:", viewingUserId);
             setProfile(cached.profile);
             setClubs(cached.clubs);
             setBadges(cached.badges || []);
-            if (cached.partnershipStatus) {
-              setPartnershipStatus(cached.partnershipStatus);
-            }
+            if (cached.partnershipStatus) setPartnershipStatus(cached.partnershipStatus);
             setShowingCached(true);
-            setLoading(false);
           }
 
           const userRef = doc(db, "users", viewingUserId);
+          unsubscribe = onSnapshot(userRef, async (snap) => {
+            if (snap.exists()) {
+              const data = snap.data();
+              const badgesData    = data.Badges || [];
+              const validBadges   = badgesData.filter((b: any) => b && !(typeof b === "string" && !b.trim()));
+              const displayBadges = data.displayBadges || validBadges.slice(0, 3);
 
-          unsubscribe = onSnapshot(
-            userRef,
-            async (snap) => {
-              if (snap.exists()) {
-                const data = snap.data();
-                
-                const badgesData = data.Badges || [];
-                const validBadges = badgesData.filter((badge: any) => {
-                  if (!badge) return false;
-                  if (typeof badge === "string" && badge.trim() === "") return false;
-                  return true;
-                });
-                
-                const displayBadges = data.displayBadges || validBadges.slice(0, 3);
-                
-                setProfile(data);
-                setClubs(data.clubs || {});
-                setBadges(displayBadges);
-                
-                let currentPartnershipStatus = partnershipStatus;
-                if (!isOwnLocker && currentUserId) {
-                  currentPartnershipStatus = await checkPartnershipStatus();
-                }
-                
-                await setCache(CACHE_KEYS.USER_PROFILE(viewingUserId), {
-                  profile: data,
-                  clubs: data.clubs || {},
-                  badges: displayBadges,
-                  partnershipStatus: currentPartnershipStatus,
-                });
-                
-                setShowingCached(false);
-              }
-              setLoading(false);
-            },
-            (error) => {
-              console.error("Error loading user:", error);
-              soundPlayer.play('error');
+              setProfile(data);
+              setClubs(data.clubs || {});
+              setBadges(displayBadges);
+
+              let ps = partnershipStatus;
+              if (!isOwnLocker && currentUserId) ps = await checkPartnershipStatus();
+
+              await setCache(CACHE_KEYS.USER_PROFILE(viewingUserId), {
+                profile: data, clubs: data.clubs || {}, badges: displayBadges, partnershipStatus: ps,
+              });
               setShowingCached(false);
-              setLoading(false);
             }
-          );
+          }, (err) => {
+            console.error("Error loading user:", err);
+            soundPlayer.play("error");
+            setShowingCached(false);
+          });
 
-          if (Math.random() < 0.1) {
-            cleanupOldProfiles();
-          }
-        } catch (error) {
-          console.error("❌ User locker cache error:", error);
-          setLoading(false);
+          if (Math.random() < 0.1) cleanupOldProfiles();
+        } catch (e) {
+          console.error("❌ Locker cache error:", e);
         }
       };
 
-      loadUserWithCache();
-
-      return () => {
-        if (unsubscribe) {
-          unsubscribe();
-        }
-      };
+      load();
+      return () => { if (unsubscribe) unsubscribe(); };
     }, [viewingUserId, currentUserId, isOwnLocker])
   );
 
-  /* ========================= PULL TO REFRESH ========================= */
+  /* ========================= REFRESH ========================= */
 
   const onRefresh = useCallback(async () => {
     if (!viewingUserId) return;
-    
     setRefreshing(true);
     setShowingCached(false);
-    
     try {
-      const userRef = doc(db, "users", viewingUserId);
-      const snap = await getDoc(userRef);
-      
+      const snap = await getDoc(doc(db, "users", viewingUserId));
       if (snap.exists()) {
         const data = snap.data();
-        
-        const badgesData = data.Badges || [];
-        const validBadges = badgesData.filter((badge: any) => {
-          if (!badge) return false;
-          if (typeof badge === "string" && badge.trim() === "") return false;
-          return true;
-        });
-        
+        const validBadges   = (data.Badges || []).filter((b: any) => b && !(typeof b === "string" && !b.trim()));
         const displayBadges = data.displayBadges || validBadges.slice(0, 3);
-        
         setProfile(data);
         setClubs(data.clubs || {});
         setBadges(displayBadges);
-        
-        let currentPartnershipStatus = partnershipStatus;
-        if (!isOwnLocker && currentUserId) {
-          currentPartnershipStatus = await checkPartnershipStatus();
-        }
-        
+        let ps = partnershipStatus;
+        if (!isOwnLocker && currentUserId) ps = await checkPartnershipStatus();
         await setCache(CACHE_KEYS.USER_PROFILE(viewingUserId), {
-          profile: data,
-          clubs: data.clubs || {},
-          badges: displayBadges,
-          partnershipStatus: currentPartnershipStatus,
+          profile: data, clubs: data.clubs || {}, badges: displayBadges, partnershipStatus: ps,
         });
       }
-    } catch (error) {
-      console.error("Error refreshing user locker:", error);
-      soundPlayer.play('error');
+    } catch (e) {
+      soundPlayer.play("error");
     }
-    
     setRefreshing(false);
   }, [viewingUserId, currentUserId, isOwnLocker]);
 
+  /* ========================= PARTNERSHIP ========================= */
+
   const checkPartnershipStatus = async () => {
     if (!currentUserId || !viewingUserId) return "none";
-
     try {
       if (await arePartnersAlready(currentUserId, viewingUserId)) {
-        setPartnershipStatus("partners");
-        return "partners";
+        setPartnershipStatus("partners"); return "partners";
       }
-
-      const existingRequest = await checkExistingRequest(currentUserId, viewingUserId);
-      if (existingRequest.exists) {
-        if (existingRequest.sentByMe) {
-          setPartnershipStatus("pending_sent");
-          return "pending_sent";
-        } else if (existingRequest.sentToMe) {
-          setPartnershipStatus("pending_received");
-          return "pending_received";
-        }
+      const req = await checkExistingRequest(currentUserId, viewingUserId);
+      if (req.exists) {
+        if (req.sentByMe)   { setPartnershipStatus("pending_sent");     return "pending_sent"; }
+        if (req.sentToMe)   { setPartnershipStatus("pending_received"); return "pending_received"; }
       }
-
-      setPartnershipStatus("none");
-      return "none";
-    } catch (error) {
-      console.log("⚠️ Error checking partnership status (likely permissions):", error);
-      setPartnershipStatus("none");
-      return "none";
+      setPartnershipStatus("none"); return "none";
+    } catch {
+      setPartnershipStatus("none"); return "none";
     }
   };
 
   /* ========================= HELPERS ========================= */
 
-  const formatBadgeDate = (timestamp: any) => {
-    if (!timestamp) return "";
-    
-    try {
-      const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
-      return date.toLocaleDateString("en-US", { 
-        month: "short", 
-        day: "numeric", 
-        year: "numeric" 
-      });
-    } catch {
-      return "";
-    }
-  };
-
   const parseBadge = (badge: any) => {
-    // Handle string badges (legacy)
-    if (typeof badge === "string") {
-      return { 
-        label: badge, 
-        courseName: null, 
-        date: null,
-        icon: LowLeaderTrophy,
-        type: "lowman"
-      };
-    }
-
-    // Handle flat structure with direct "type" field (MOST COMMON)
+    if (typeof badge === "string") return { label: badge, courseName: null, date: null, icon: LowLeaderTrophy, type: "lowman" };
     if (badge.type) {
-      const badgeType = badge.type.toLowerCase();
-      let icon = LowLeaderTrophy;
-      
-      switch (badgeType) {
-        case "lowman": icon = LowLeaderTrophy; break;
-        case "scratch": icon = LowLeaderScratch; break;
-        case "ace": icon = LowLeaderAce; break;
-        case "holeinone": icon = HoleInOne; break;
-      }
-      
-      return {
-        label: badge.displayName || (badgeType.charAt(0).toUpperCase() + badgeType.slice(1)),
-        courseName: badge.courseName || null,
-        date: badge.achievedAt || null,
-        icon,
-        type: badgeType
-      };
+      const t = badge.type.toLowerCase();
+      const icon = t === "scratch" ? LowLeaderScratch : t === "ace" ? LowLeaderAce : t === "holeinone" ? HoleInOne : LowLeaderTrophy;
+      return { label: badge.displayName || t, courseName: badge.courseName || null, date: badge.achievedAt || null, icon, type: t };
     }
-
-    // FALLBACK: Handle nested structure
-    const badgeKeys = Object.keys(badge || {}).filter(key => key !== 'courseName');
-    const badgeTypeKey = badgeKeys.find(key => 
-      badge[key] && typeof badge[key] === 'object' && badge[key].displayName
-    );
-
-    if (badgeTypeKey) {
-      const badgeData = badge[badgeTypeKey];
-      const badgeType = badgeTypeKey.toLowerCase();
-      let icon = LowLeaderTrophy;
-      
-      switch (badgeType) {
-        case "lowman": icon = LowLeaderTrophy; break;
-        case "scratch": icon = LowLeaderScratch; break;
-        case "ace": icon = LowLeaderAce; break;
-        case "holeinone": icon = HoleInOne; break;
-      }
-      
-      return {
-        label: badgeData.displayName || (badgeTypeKey.charAt(0).toUpperCase() + badgeTypeKey.slice(1)),
-        courseName: badge.courseName || null,
-        date: badgeData.achievedAt || null,
-        icon,
-        type: badgeType
-      };
-    }
-
-    return {
-      label: badge.displayName || "Achievement",
-      courseName: badge.courseName || null,
-      date: badge.achievedAt || null,
-      icon: LowLeaderTrophy,
-      type: "lowman"
-    };
+    return { label: badge.displayName || "Achievement", courseName: badge.courseName || null, date: badge.achievedAt || null, icon: LowLeaderTrophy, type: "lowman" };
   };
 
   /* ========================= ACTIONS ========================= */
 
   const handlePartnerUp = async () => {
     if (!currentUserId || !viewingUserId) return;
-
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setActionLoading(true);
-
     try {
       if (partnershipStatus === "pending_received") {
         await acceptPartnerRequest(currentUserId, viewingUserId);
-        soundPlayer.play('postThought');
+        soundPlayer.play("postThought");
         setPartnershipStatus("partners");
-        
-        const cached = await getCache(CACHE_KEYS.USER_PROFILE(viewingUserId));
-        if (cached) {
-          await setCache(CACHE_KEYS.USER_PROFILE(viewingUserId), {
-            ...cached,
-            partnershipStatus: "partners",
-          });
-        }
-        
         Alert.alert("Partners! 🤝", "You're now partners!");
       } else {
         await sendPartnerRequest(currentUserId, viewingUserId);
-        soundPlayer.play('postThought');
+        soundPlayer.play("postThought");
         setPartnershipStatus("pending_sent");
-        
-        const cached = await getCache(CACHE_KEYS.USER_PROFILE(viewingUserId));
-        if (cached) {
-          await setCache(CACHE_KEYS.USER_PROFILE(viewingUserId), {
-            ...cached,
-            partnershipStatus: "pending_sent",
-          });
-        }
-        
         Alert.alert("Request Sent", "Your partner request is pending.");
       }
+      const cached = await getCache(CACHE_KEYS.USER_PROFILE(viewingUserId));
+      if (cached) await setCache(CACHE_KEYS.USER_PROFILE(viewingUserId), { ...cached, partnershipStatus });
     } catch (e: any) {
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       Alert.alert("Error", e.message);
     } finally {
       setActionLoading(false);
@@ -358,223 +203,154 @@ export default function LockerUserScreen() {
 
   const handleLockerNote = () => {
     if (partnershipStatus !== "partners") {
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-      Alert.alert(
-        "Locker Note Locked",
-        `Notes in the locker aren't available until ${profile?.displayName} accepts your Partner invitation.`
-      );
+      Alert.alert("Locker Note Locked", `Notes aren't available until ${profile?.displayName} accepts your Partner invitation.`);
       return;
     }
-
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const threadId = [currentUserId, viewingUserId].sort().join("_");
-    router.push(`/messages/${threadId}`);
+    router.push(`/messages/${[currentUserId, viewingUserId].sort().join("_")}`);
   };
+
+  /* ========================= DERIVED ========================= */
+
+  const homeCourse   = profile?.homeCourse?.courseName
+    ?? (typeof profile?.homeCourse === "string" ? profile.homeCourse : null)
+    ?? profile?.homeCourseName ?? null;
+  const gameIdentity = profile?.gameIdentity ?? null;
 
   /* ========================= UI ========================= */
 
-  if (loading && !showingCached) {
-    return (
-      <View style={styles.container}>
-        <SafeAreaView edges={["top"]} style={styles.safeTop} />
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#0D5C3A" />
-        </View>
-      </View>
-    );
-  }
-
   return (
     <View style={styles.container}>
-      <SafeAreaView edges={["top"]} style={styles.safeTop} />
+      <View style={[styles.navWrapper, { paddingTop: insets.top }]}>
+        <TopNavBar />
+      </View>
 
       <ImageBackground
-        source={require("@/assets/locker/locker-bg.png")}
-        resizeMode="cover"
-        style={styles.background}
+        source={LockerBg}
+        resizeMode="stretch"
+        style={styles.contentArea}
       >
-        <TopNavBar />
-
-        {showingCached && !loading && (
+        {showingCached && (
           <View style={styles.cacheIndicator}>
             <ActivityIndicator size="small" color="#0D5C3A" />
             <Text style={styles.cacheText}>Updating locker...</Text>
           </View>
         )}
 
-        <ScrollView
-          contentContainerStyle={styles.contentContainer}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor="#FFF"
-              colors={["#FFF"]}
-            />
-          }
-        >
-          {/* ═══════════════════════════════════════════════════════════
-              PROFILE SECTION — NEW LAYOUT ORDER
-              Name → HCI → Rivals → Stats → Identity → Actions → Badges
-              ═══════════════════════════════════════════════════════════ */}
-          <View style={styles.profileSection}>
+        <View style={styles.doorPanel}>
 
-            {/* ── DISPLAY NAME ── */}
-            <Text style={styles.name}>{profile?.displayName ?? "Player"}</Text>
+          <HonorPlaque
+            name={profile?.displayName ?? "Player"}
+            hci={profile?.handicap ?? "N/A"}
+          />
+          <View style={styles.plaqueSeparator} />
 
-            {/* ── HANDICAP ── */}
-            <Text style={styles.handicap}>
-              HCI: {profile?.handicap ?? "N/A"}
-            </Text>
+          {!isOwnLocker ? (
+            <View style={styles.rivalsHeader}>
+              <TouchableOpacity
+                disabled={partnershipStatus === "pending_sent" || partnershipStatus === "partners" || actionLoading}
+                onPress={handlePartnerUp}
+                style={[
+                  styles.inlineButton,
+                  partnershipStatus === "pending_sent"     && styles.pendingButton,
+                  partnershipStatus === "pending_received" && styles.acceptButton,
+                  partnershipStatus === "partners"         && styles.disabledButton,
+                ]}
+              >
+                <Ionicons
+                  name={partnershipStatus === "pending_sent" ? "time-outline" : partnershipStatus === "pending_received" ? "checkmark-circle-outline" : "people"}
+                  size={13} color="#fff"
+                />
+                <Text style={styles.inlineButtonText}>
+                  {partnershipStatus === "none" ? "Partner Up" : partnershipStatus === "pending_sent" ? "Pending" : partnershipStatus === "pending_received" ? "Accept" : "Partners"}
+                </Text>
+              </TouchableOpacity>
 
-            {/* ── RIVALS (Nemesis / Threat / Target) ── */}
-            <LockerRivals userId={viewingUserId} />
-
-            {/* ── CAREER STATS ROW ── */}
-            <TouchableOpacity
-              onPress={() => router.push(`/locker/stats-tracker?userId=${viewingUserId}`)}
-              activeOpacity={0.7}
-            >
-              <View style={styles.careerStatsContainer}>
-                <View style={styles.statItem}>
-                  <Text style={styles.statEmoji}>🦩</Text>
-                  <Text style={styles.statCount}>
-                    {profile?.totalBirdies > 0 ? profile.totalBirdies : "-"}
-                  </Text>
-                </View>
-                
-                <View style={styles.statItem}>
-                  <Text style={styles.statEmoji}>🦅</Text>
-                  <Text style={styles.statCount}>
-                    {profile?.totalEagles > 0 ? profile.totalEagles : "-"}
-                  </Text>
-                </View>
-                
-                <View style={styles.statItem}>
-                  <Text style={styles.statEmoji}>🦢</Text>
-                  <Text style={styles.statCount}>
-                    {profile?.totalAlbatross > 0 ? profile.totalAlbatross : "-"}
-                  </Text>
-                </View>
-                
-                <View style={styles.statItem}>
-                  <Image source={HoleInOne} style={styles.statIcon} />
-                  <Text style={styles.statCount}>
-                    {profile?.totalHoleInOnes > 0 ? profile.totalHoleInOnes : "-"}
-                  </Text>
-                </View>
+              <View style={styles.rivalsBadge}>
+                <Text style={styles.rivalsBadgeText}>RIVALS</Text>
               </View>
-            </TouchableOpacity>
 
-            {/* ── HOME COURSE & GAME IDENTITY ── */}
-            {(profile?.homeCourse || profile?.gameIdentity) && (
-              <View style={styles.identityContainer}>
-                {profile?.homeCourse && (
-                  <View style={styles.identityRow}>
-                    <Ionicons name="flag" size={16} color="rgba(255,255,255,0.9)" />
-                    <Text style={styles.identityText}>
-                      {typeof profile.homeCourse === "string"
-                        ? profile.homeCourse
-                        : profile.homeCourse?.courseName || "Home Course"}
-                    </Text>
-                  </View>
-                )}
-                {profile?.gameIdentity && (
-                  <View style={styles.identityRow}>
-                    <Ionicons name="chatbubble-ellipses" size={16} color="rgba(255,255,255,0.9)" />
-                    <Text style={styles.identityText}>"{profile.gameIdentity}"</Text>
-                  </View>
-                )}
-              </View>
-            )}
+              <TouchableOpacity
+                onPress={handleLockerNote}
+                style={[styles.inlineButton, partnershipStatus !== "partners" && styles.lockerNoteLocked]}
+              >
+                <Ionicons name="mail" size={13} color="#fff" />
+                <Text style={styles.inlineButtonText}>Note</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <SectionBanner label="RIVALS" />
+          )}
+          <LockerRivals userId={viewingUserId} />
 
-            {/* ── ACTION BUTTONS ── */}
-            {!isOwnLocker && (
-              <View style={styles.actionRow}>
-                <TouchableOpacity
-                  disabled={partnershipStatus === "pending_sent" || partnershipStatus === "partners" || actionLoading}
-                  onPress={handlePartnerUp}
-                  style={[
-                    styles.actionButton,
-                    partnershipStatus === "pending_sent" && styles.pendingButton,
-                    partnershipStatus === "pending_received" && styles.acceptButton,
-                    partnershipStatus === "partners" && styles.disabledButton,
-                  ]}
-                >
-                  <Ionicons
-                    name={
-                      partnershipStatus === "pending_sent"
-                        ? "time-outline"
-                        : partnershipStatus === "pending_received"
-                        ? "checkmark-circle-outline"
-                        : "people"
-                    }
-                    size={18}
-                    color="#fff"
+          <StatsRow
+            stats={{
+              totalBirdies:    profile?.totalBirdies,
+              totalEagles:     profile?.totalEagles,
+              totalAlbatross:  profile?.totalAlbatross,
+              totalHoleInOnes: profile?.totalHoleInOnes,
+            }}
+            onPress={() => router.push(`/locker/stats-tracker?userId=${viewingUserId}` as any)}
+          />
+
+          <SectionBanner label="ACHIEVEMENTS" />
+          {badges.length > 0 ? (
+            <View style={styles.achievementsScroll}>
+              {badges.map((badge, i) => {
+                const parsed   = parseBadge(badge);
+                const rotation = seededAchievementRotation(parsed.type + i);
+                return (
+                  <AchievementNotecard
+                    key={i}
+                    badge={{
+                      icon:     parsed.icon,
+                      name:     parsed.label,
+                      location: parsed.courseName ?? undefined,
+                      year:     parsed.date
+                        ? String(new Date(parsed.date.toDate?.() ?? parsed.date).getFullYear()).slice(2)
+                        : undefined,
+                      type: parsed.type,
+                    }}
+                    rotation={rotation}
+                    pinColor={["green", "blue", "red", "gold"][i % 4] as any}
                   />
-                  <Text style={styles.actionText}>
-                    {partnershipStatus === "none"
-                      ? "Partner Up"
-                      : partnershipStatus === "pending_sent"
-                      ? "Pending"
-                      : partnershipStatus === "pending_received"
-                      ? "Accept"
-                      : "Partners"}
-                  </Text>
-                </TouchableOpacity>
+                );
+              })}
+            </View>
+          ) : (
+            <View style={styles.achievementsScroll}>
+              <AchievementNotecard
+                badge={{
+                  icon: undefined,
+                  emoji: "🏆",
+                  name: "No badges yet",
+                  location: "Win a round to earn one",
+                }}
+                rotation={0}
+                pinColor="gold"
+              />
+            </View>
+          )}
 
-                <TouchableOpacity
-                  onPress={handleLockerNote}
-                  style={[
-                    styles.actionButton,
-                    partnershipStatus !== "partners" && styles.lockerNoteLocked,
-                  ]}
-                >
-                  <Ionicons name="mail" size={18} color="#fff" />
-                  <Text style={styles.actionText}>Locker Note</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+          <LockerRailDivider course={homeCourse} quote={gameIdentity} />
+        </View>
 
-            {/* ── ACHIEVEMENTS — 3 across, compact ── */}
-            {badges.length > 0 && (
-              <View style={styles.badgesWrapper}>
-                <Text style={styles.badgesSectionLabel}>ACHIEVEMENTS</Text>
-                <View style={styles.badgesRow}>
-                  {badges.slice(0, 3).map((badge, i) => {
-                    const parsed = parseBadge(badge);
-                    return (
-                      <View key={i} style={styles.badgeCompact}>
-                        <Image source={parsed.icon} style={styles.badgeIconCompact} />
-                        <Text style={styles.badgeLabel} numberOfLines={1}>
-                          {parsed.label}
-                        </Text>
-                        {parsed.courseName && (
-                          <Text style={styles.badgeCourse} numberOfLines={1}>
-                            {parsed.courseName}
-                          </Text>
-                        )}
-                      </View>
-                    );
-                  })}
-                </View>
-              </View>
-            )}
-          </View>
+        <View style={styles.clubsPanel}>
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.clubsScroll}
+          >
+            <LockerClubsDisplay clubs={clubs} isOwnLocker={isOwnLocker} />
+          </ScrollView>
+        </View>
 
-          {/* ═══ CLUBS ═══ */}
-          <LockerClubsDisplay clubs={clubs} isOwnLocker={isOwnLocker} />
-        </ScrollView>
-
-        <BottomActionBar 
-          isViewingOtherUser={!isOwnLocker} 
-          viewingUserId={viewingUserId}
-        />
-        <SwingFooter />
       </ImageBackground>
+
+      <BottomActionBar isViewingOtherUser={!isOwnLocker} viewingUserId={viewingUserId} />
+      <SwingFooter />
     </View>
   );
 }
@@ -582,187 +358,79 @@ export default function LockerUserScreen() {
 /* ========================= STYLES ========================= */
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F4EED8" },
-  safeTop: { backgroundColor: "#0D5C3A" },
-  background: { flex: 1 },
+  container:        { flex: 1, backgroundColor: "#1a0f06" },
+  navWrapper:       { backgroundColor: "#0D5C3A" },
 
-  loadingContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
+  contentArea: { flex: 1 },
 
   cacheIndicator: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center",
+    gap: 8, paddingVertical: 8,
+    backgroundColor: "rgba(255,243,205,0.95)",
+    borderBottomWidth: 1, borderBottomColor: "rgba(255,236,181,0.95)",
+  },
+  cacheText: { fontSize: 12, color: "#664D03", fontWeight: "600" },
+
+  doorPanel:        { width: "100%" },
+  plaqueSeparator:  { height: 0 },
+
+  achievementsScroll: {
     flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingVertical: 8,
-    backgroundColor: "rgba(255, 243, 205, 0.95)",
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 236, 181, 0.95)",
-  },
-  
-  cacheText: {
-    fontSize: 12,
-    color: "#664D03",
-    fontWeight: "600",
-  },
-
-  contentContainer: {
-    paddingHorizontal: 20,
-    paddingTop: 24,
-    paddingBottom: 120,
-    gap: 24,
-  },
-
-  profileSection: { alignItems: "center", gap: 14 },
-
-  // ── Name & Handicap ──
-  name: {
-    fontSize: 32,
-    fontWeight: "800",
-    color: "white",
-  },
-
-  handicap: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "rgba(255,255,255,0.8)",
-    letterSpacing: 0.5,
-  },
-
-  // ── Career Stats Row ──
-  careerStatsContainer: {
-    flexDirection: "row",
-    backgroundColor: "rgba(0,0,0,0.3)",
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    gap: 20,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  statItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-
-  statEmoji: {
-    fontSize: 24,
-  },
-
-  statIcon: {
-    width: 24,
-    height: 24,
-    resizeMode: "contain",
-  },
-
-  statCount: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "white",
-  },
-
-  // ── Identity ──
-  identityContainer: {
-    backgroundColor: "rgba(0,0,0,0.25)",
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    gap: 8,
-    alignItems: "center",
-  },
-
-  identityRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-
-  identityText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "rgba(255,255,255,0.95)",
-    fontStyle: "italic",
-  },
-
-  // ── Action Buttons ──
-  actionRow: {
-    flexDirection: "row",
-    gap: 12,
-  },
-
-  actionButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "#0D5C3A",
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 14,
-  },
-
-  pendingButton: { backgroundColor: "#888" },
-  acceptButton: { backgroundColor: "#FFD700" },
-  disabledButton: { backgroundColor: "#555" },
-  lockerNoteLocked: { backgroundColor: "#999" },
-
-  actionText: {
-    color: "#fff",
-    fontSize: 15,
-    fontWeight: "700",
-  },
-
-  // ── Achievements — compact 3 across ──
-  badgesWrapper: {
-    width: "100%",
-    alignItems: "center",
-  },
-
-  badgesSectionLabel: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "rgba(255,255,255,0.5)",
-    letterSpacing: 1.2,
-    marginBottom: 10,
-  },
-
-  badgesRow: {
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: 10,
-  },
-
-  badgeCompact: {
-    backgroundColor: "rgba(0,0,0,0.35)",
-    borderRadius: 12,
-    paddingVertical: 10,
+    justifyContent: "space-evenly",
+    alignItems: "flex-start",
     paddingHorizontal: 8,
+    paddingTop: 8,
+    paddingBottom: 17,
+  },
+
+  rivalsHeader: {
+    flexDirection: "row",
     alignItems: "center",
-    width: 100,
+    justifyContent: "space-between",
+    marginTop: 4,
+    marginHorizontal: 16,
+  },
+  inlineButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     gap: 4,
+    backgroundColor: "#0D5C3A",
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    width: 90,
   },
-
-  badgeIconCompact: {
-    width: 28,
-    height: 28,
-    resizeMode: "contain",
-  },
-
-  badgeLabel: {
-    fontSize: 11,
+  inlineButtonText: {
+    color: "#fff",
+    fontSize: 10,
     fontWeight: "700",
-    color: "#FFF",
-    textAlign: "center",
+    letterSpacing: 0.3,
   },
+  rivalsBadge: {
+    backgroundColor: "#3A2010",
+    borderWidth: 1,
+    borderColor: "#C5A55A",
+    borderRadius: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 3,
+  },
+  rivalsBadgeText: {
+    fontFamily: "Georgia",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 2.5,
+    color: "#C5A55A",
+  },
+  pendingButton:    { backgroundColor: "#888" },
+  acceptButton:     { backgroundColor: "#C5A55A" },
+  disabledButton:   { backgroundColor: "#555" },
+  lockerNoteLocked: { backgroundColor: "#888" },
 
-  badgeCourse: {
-    fontSize: 9,
-    fontWeight: "500",
-    color: "rgba(255,255,255,0.5)",
-    textAlign: "center",
+  clubsPanel: { flex: 1, width: "100%" },
+  clubsScroll: {
+    paddingHorizontal: 16,
+    paddingTop: 0,
+    paddingBottom: 20,
   },
 });

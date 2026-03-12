@@ -1,18 +1,19 @@
-import "../patches/disableClippedSubviews";
+import LocationPickerModal from "@/components/modals/LocationPickerModal";
+import ResumeRoundSheet from "@/components/scoring/ResumeRoundSheet";
 import { CacheProvider } from "@/contexts/CacheContext";
 import { NewPostProvider } from "@/contexts/NewPostContext";
 import { claimGhostScores } from "@/utils/ghostClaim";
 import { markNotificationAsRead } from "@/utils/notificationHelpers";
 import { registerForPushNotificationsAsync, setupNotificationResponseListener } from "@/utils/pushNotificationHelpers";
 import { soundPlayer } from "@/utils/soundPlayer";
-import ResumeRoundSheet from "@/components/scoring/ResumeRoundSheet";
 import { Caveat_400Regular, Caveat_700Bold, useFonts } from '@expo-google-fonts/caveat';
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Asset } from "expo-asset";
 import * as Notifications from 'expo-notifications';
-import LocationPickerModal from "@/components/modals/LocationPickerModal";
 import { Slot, router, usePathname } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Linking, Text, View } from "react-native";
+import "../patches/disableClippedSubviews";
 
 export default function RootLayout() {
   const [initializing, setInitializing] = useState(true);
@@ -30,6 +31,9 @@ export default function RootLayout() {
   useEffect(() => {
     // Initialize audio session immediately so sounds work from first tap
     soundPlayer.init();
+
+    // Preload locker background so it renders instantly on first visit
+    Asset.loadAsync(require("@/assets/locker/locker-bg.png"));
     
     return () => {
       soundPlayer.release();

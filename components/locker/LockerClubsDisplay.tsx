@@ -1,12 +1,13 @@
 /**
  * LockerClubsDisplay
- * 
- * Expandable club cards for the locker view.
- * Reads both legacy (simple strings) and new structured format.
- * 
- * - Only shows sections that have data (no "Not added" clutter)
- * - Compact cards with tap-to-expand for Woods, Irons, Wedges
- * - Putter & Ball are always single-line (no expand)
+ *
+ * Expandable club rows for the locker — Section 6.
+ * Logic unchanged from v2. Visual treatment updated to spec v3:
+ * - Row bg: rgba(18,8,2,0.74)
+ * - Border: 1px solid rgba(197,165,90,0.20)
+ * - Category label: Georgia, 10px, #C5A55A
+ * - Club value: Georgia, 13px, #F4EED8
+ * - Chevron: #C5A55A at 40% opacity
  */
 
 import { Ionicons } from "@expo/vector-icons";
@@ -21,61 +22,39 @@ import {
   View,
 } from "react-native";
 
-// Enable LayoutAnimation on Android
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-/* ================================================================ */
-/* TYPES                                                            */
-/* ================================================================ */
-
 interface LockerClubsDisplayProps {
-  clubs: any; // Raw clubs data from Firestore (could be legacy or new)
+  clubs: any;
   isOwnLocker: boolean;
 }
 
-interface WoodEntry { label: string; name: string }
-interface WedgeEntry { loft: string; name: string }
-interface IronEntry { number: string; name: string }
-
-/* ================================================================ */
-/* DATA PARSING                                                     */
-/* ================================================================ */
+interface WoodEntry  { label: string; name: string }
+interface WedgeEntry { loft: string;  name: string }
+interface IronEntry  { number: string; name: string }
 
 function parseClubsForDisplay(clubs: any) {
   if (!clubs) return { woods: [], irons: null, wedges: [], putter: "", ball: "" };
 
-  // --- WOODS ---
   const woods: WoodEntry[] = [];
-  if (clubs.driver) {
-    woods.push({ label: "Driver", name: clubs.driver });
-  }
-  // New structured woods
+  if (clubs.driver) woods.push({ label: "Driver", name: clubs.driver });
   if (clubs.woods && typeof clubs.woods === "object") {
-    const woodOrder = ["3W", "5W", "7W", "9W"];
-    woodOrder.forEach((w) => {
-      if (clubs.woods[w]) {
-        woods.push({ label: w, name: clubs.woods[w] });
-      }
+    ["3W", "5W", "7W", "9W"].forEach((w) => {
+      if (clubs.woods[w]) woods.push({ label: w, name: clubs.woods[w] });
     });
   }
 
-  // --- IRONS ---
   let irons: { summary: string; details: IronEntry[] } | null = null;
-
-  if (clubs.ironSet && clubs.ironSet.name) {
-    // New structured format
+  if (clubs.ironSet?.name) {
     const details: IronEntry[] = [];
     if (clubs.ironSet.range !== "mixed") {
       details.push({ number: clubs.ironSet.range, name: clubs.ironSet.name });
     }
-    // Individual irons
     if (Array.isArray(clubs.individualIrons)) {
       clubs.individualIrons.forEach((iron: any) => {
-        if (iron.name) {
-          details.push({ number: iron.number, name: iron.name });
-        }
+        if (iron.name) details.push({ number: iron.number, name: iron.name });
       });
     }
     const summary =
@@ -84,39 +63,23 @@ function parseClubsForDisplay(clubs: any) {
         : `${clubs.ironSet.name} (${clubs.ironSet.range})`;
     irons = { summary, details };
   } else if (clubs.irons && typeof clubs.irons === "string" && clubs.irons.trim()) {
-    // Legacy string format
     irons = { summary: clubs.irons, details: [] };
   }
 
-  // --- WEDGES ---
   const wedges: WedgeEntry[] = [];
-
   if (Array.isArray(clubs.wedgesList) && clubs.wedgesList.length > 0) {
-    // New structured format
     clubs.wedgesList.forEach((w: any) => {
-      if (w.name || w.loft) {
-        wedges.push({ loft: w.loft || "?", name: w.name || "" });
-      }
+      if (w.name || w.loft) wedges.push({ loft: w.loft || "?", name: w.name || "" });
     });
   } else if (clubs.wedges && typeof clubs.wedges === "string" && clubs.wedges.trim()) {
-    // Legacy string: store as single entry with no loft
     wedges.push({ loft: "", name: clubs.wedges });
   }
 
-  // --- PUTTER & BALL ---
-  const putter = clubs.putter || "";
-  const ball = clubs.ball || "";
-
-  return { woods, irons, wedges, putter, ball };
+  return { woods, irons, wedges, putter: clubs.putter || "", ball: clubs.ball || "" };
 }
-
-/* ================================================================ */
-/* COMPONENT                                                        */
-/* ================================================================ */
 
 export default function LockerClubsDisplay({ clubs, isOwnLocker }: LockerClubsDisplayProps) {
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
-
   const parsed = parseClubsForDisplay(clubs);
 
   const toggleSection = (section: string) => {
@@ -125,58 +88,44 @@ export default function LockerClubsDisplay({ clubs, isOwnLocker }: LockerClubsDi
   };
 
   const hasAnyClubs =
-    parsed.woods.length > 0 ||
-    parsed.irons !== null ||
-    parsed.wedges.length > 0 ||
-    parsed.putter !== "" ||
-    parsed.ball !== "";
+    parsed.woods.length > 0 || parsed.irons !== null ||
+    parsed.wedges.length > 0 || parsed.putter !== "" || parsed.ball !== "";
 
   if (!hasAnyClubs) {
     return (
-      <View style={styles.clubsSection}>
-        <Text style={styles.sectionTitle}>
-          {isOwnLocker ? "My Clubs" : "Their Clubs"}
-        </Text>
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>{isOwnLocker ? "MY CLUBS" : "THEIR CLUBS"}</Text>
         <Text style={styles.emptyText}>No clubs added yet</Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.clubsSection}>
-      <Text style={styles.sectionTitle}>
-        {isOwnLocker ? "My Clubs" : "Their Clubs"}
-      </Text>
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{isOwnLocker ? "MY CLUBS" : "THEIR CLUBS"}</Text>
 
       {/* WOODS */}
       {parsed.woods.length > 0 && (
         <TouchableOpacity
-          style={styles.clubCard}
+          style={styles.row}
           onPress={() => parsed.woods.length > 1 && toggleSection("woods")}
           activeOpacity={parsed.woods.length > 1 ? 0.7 : 1}
         >
-          <View style={styles.clubCardHeader}>
-            <Text style={styles.clubLabel}>WOODS</Text>
-            {parsed.woods.length > 1 && (
-              <View style={styles.clubCardRight}>
-                <Text style={styles.clubSummary}>
-                  {parsed.woods[0].name}
-                  {parsed.woods.length > 1 && ` · +${parsed.woods.length - 1} more`}
+          <View style={styles.rowHeader}>
+            <Text style={styles.categoryLabel}>WOODS</Text>
+            {parsed.woods.length > 1 ? (
+              <View style={styles.rowRight}>
+                <Text style={styles.clubValue}>
+                  {parsed.woods[0].name}{parsed.woods.length > 1 ? ` · +${parsed.woods.length - 1}` : ""}
                 </Text>
-                <Ionicons
-                  name={expandedSections.woods ? "chevron-up" : "chevron-down"}
-                  size={16}
-                  color="rgba(255,255,255,0.6)"
-                />
+                <Text style={styles.chevron}>{expandedSections.woods ? "▲" : "▼"}</Text>
               </View>
-            )}
-            {parsed.woods.length === 1 && (
+            ) : (
               <Text style={styles.clubValue}>{parsed.woods[0].name}</Text>
             )}
           </View>
-
           {expandedSections.woods && parsed.woods.length > 1 && (
-            <View style={styles.expandedContent}>
+            <View style={styles.expanded}>
               {parsed.woods.map((wood, i) => (
                 <View key={i} style={styles.expandedRow}>
                   <Text style={styles.expandedLabel}>{wood.label}</Text>
@@ -191,26 +140,21 @@ export default function LockerClubsDisplay({ clubs, isOwnLocker }: LockerClubsDi
       {/* IRONS */}
       {parsed.irons && (
         <TouchableOpacity
-          style={styles.clubCard}
+          style={styles.row}
           onPress={() => parsed.irons!.details.length > 1 && toggleSection("irons")}
           activeOpacity={parsed.irons.details.length > 1 ? 0.7 : 1}
         >
-          <View style={styles.clubCardHeader}>
-            <Text style={styles.clubLabel}>IRONS</Text>
-            <View style={styles.clubCardRight}>
-              <Text style={styles.clubSummary}>{parsed.irons.summary}</Text>
+          <View style={styles.rowHeader}>
+            <Text style={styles.categoryLabel}>IRONS</Text>
+            <View style={styles.rowRight}>
+              <Text style={styles.clubValue}>{parsed.irons.summary}</Text>
               {parsed.irons.details.length > 1 && (
-                <Ionicons
-                  name={expandedSections.irons ? "chevron-up" : "chevron-down"}
-                  size={16}
-                  color="rgba(255,255,255,0.6)"
-                />
+                <Text style={styles.chevron}>{expandedSections.irons ? "▲" : "▼"}</Text>
               )}
             </View>
           </View>
-
           {expandedSections.irons && parsed.irons.details.length > 1 && (
-            <View style={styles.expandedContent}>
+            <View style={styles.expanded}>
               {parsed.irons.details.map((iron, i) => (
                 <View key={i} style={styles.expandedRow}>
                   <Text style={styles.expandedLabel}>{iron.number}</Text>
@@ -225,30 +169,25 @@ export default function LockerClubsDisplay({ clubs, isOwnLocker }: LockerClubsDi
       {/* WEDGES */}
       {parsed.wedges.length > 0 && (
         <TouchableOpacity
-          style={styles.clubCard}
+          style={styles.row}
           onPress={() => parsed.wedges.length > 1 && toggleSection("wedges")}
           activeOpacity={parsed.wedges.length > 1 ? 0.7 : 1}
         >
-          <View style={styles.clubCardHeader}>
-            <Text style={styles.clubLabel}>WEDGES</Text>
-            <View style={styles.clubCardRight}>
-              <Text style={styles.clubSummary}>
+          <View style={styles.rowHeader}>
+            <Text style={styles.categoryLabel}>WEDGES</Text>
+            <View style={styles.rowRight}>
+              <Text style={styles.clubValue}>
                 {parsed.wedges[0].loft
                   ? parsed.wedges.map((w) => `${w.loft}°`).join(" · ")
                   : parsed.wedges[0].name}
               </Text>
               {parsed.wedges.length > 1 && parsed.wedges[0].loft !== "" && (
-                <Ionicons
-                  name={expandedSections.wedges ? "chevron-up" : "chevron-down"}
-                  size={16}
-                  color="rgba(255,255,255,0.6)"
-                />
+                <Text style={styles.chevron}>{expandedSections.wedges ? "▲" : "▼"}</Text>
               )}
             </View>
           </View>
-
           {expandedSections.wedges && parsed.wedges.length > 1 && parsed.wedges[0].loft !== "" && (
-            <View style={styles.expandedContent}>
+            <View style={styles.expanded}>
               {parsed.wedges.map((wedge, i) => (
                 <View key={i} style={styles.expandedRow}>
                   <Text style={styles.expandedLabel}>{wedge.loft}°</Text>
@@ -260,21 +199,21 @@ export default function LockerClubsDisplay({ clubs, isOwnLocker }: LockerClubsDi
         </TouchableOpacity>
       )}
 
-      {/* PUTTER - simple, no expand */}
+      {/* PUTTER */}
       {parsed.putter !== "" && (
-        <View style={styles.clubCard}>
-          <View style={styles.clubCardHeader}>
-            <Text style={styles.clubLabel}>PUTTER</Text>
+        <View style={styles.row}>
+          <View style={styles.rowHeader}>
+            <Text style={styles.categoryLabel}>PUTTER</Text>
             <Text style={styles.clubValue}>{parsed.putter}</Text>
           </View>
         </View>
       )}
 
-      {/* BALL - simple, no expand */}
+      {/* BALL */}
       {parsed.ball !== "" && (
-        <View style={styles.clubCard}>
-          <View style={styles.clubCardHeader}>
-            <Text style={styles.clubLabel}>BALL</Text>
+        <View style={styles.row}>
+          <View style={styles.rowHeader}>
+            <Text style={styles.categoryLabel}>BALL</Text>
             <Text style={styles.clubValue}>{parsed.ball}</Text>
           </View>
         </View>
@@ -283,92 +222,96 @@ export default function LockerClubsDisplay({ clubs, isOwnLocker }: LockerClubsDi
   );
 }
 
-/* ================================================================ */
-/* STYLES                                                           */
-/* ================================================================ */
-
 const styles = StyleSheet.create({
-  clubsSection: {
+  section: {
     width: "100%",
   },
   sectionTitle: {
-    fontSize: 22,
-    fontWeight: "800",
-    color: "white",
-    marginBottom: 14,
+    fontFamily: "Georgia",
+    fontSize: 11,
+    fontWeight: "700",
+    color: "rgba(244,238,216,0.73)",
+    letterSpacing: 2.5,
+    marginBottom: 10,
+    textShadowColor: "rgba(0,0,0,0.8)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   emptyText: {
-    color: "rgba(255,255,255,0.6)",
+    fontFamily: "Caveat_400Regular",
+    fontSize: 15,
+    color: "rgba(255,255,255,0.5)",
     fontStyle: "italic",
     textAlign: "center",
   },
 
-  // Card
-  clubCard: {
-    backgroundColor: "rgba(255,255,255,0.22)",
-    borderRadius: 14,
-    paddingVertical: 12,
+  // Row
+  row: {
+    backgroundColor: "rgba(18,8,2,0.74)",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(197,165,90,0.20)",
+    paddingVertical: 11,
     paddingHorizontal: 16,
-    marginBottom: 10,
+    marginBottom: 8,
   },
-  clubCardHeader: {
+  rowHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
-  clubCardRight: {
+  rowRight: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
     flex: 1,
     justifyContent: "flex-end",
   },
-  clubLabel: {
-    fontSize: 12,
-    fontWeight: "900",
-    color: "rgba(255,255,255,0.9)",
-    letterSpacing: 1.5,
-    minWidth: 70,
-  },
-  clubSummary: {
-    fontSize: 15,
+  categoryLabel: {
+    fontFamily: "Georgia",
+    fontSize: 10,
     fontWeight: "700",
-    color: "white",
+    color: "#C5A55A",
+    letterSpacing: 2,
+    minWidth: 60,
+  },
+  clubValue: {
+    fontFamily: "Georgia",
+    fontSize: 13,
+    color: "#F4EED8",
     textAlign: "right",
     flexShrink: 1,
   },
-  clubValue: {
-    fontSize: 15,
-    fontWeight: "700",
-    color: "white",
-    flex: 1,
-    textAlign: "right",
+  chevron: {
+    color: "rgba(197,165,90,0.4)",
+    fontSize: 11,
   },
 
-  // Expanded content
-  expandedContent: {
+  // Expanded
+  expanded: {
     marginTop: 10,
     paddingTop: 10,
     borderTopWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.15)",
+    borderTopColor: "rgba(197,165,90,0.15)",
   },
   expandedRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingVertical: 5,
+    paddingVertical: 4,
   },
   expandedLabel: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "rgba(255,255,255,0.7)",
+    fontFamily: "Georgia",
+    fontSize: 11,
+    fontWeight: "700",
+    color: "rgba(197,165,90,0.7)",
     letterSpacing: 0.5,
     minWidth: 50,
   },
   expandedValue: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "white",
+    fontFamily: "Georgia",
+    fontSize: 13,
+    color: "#F4EED8",
     flex: 1,
     textAlign: "right",
   },
