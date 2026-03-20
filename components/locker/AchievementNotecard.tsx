@@ -1,7 +1,6 @@
 /**
  * AchievementNotecard — Section 5
  * Cream notecard with pushpin for achievements/badges.
- * Slightly smaller than RivalNotecard (118×130px).
  * Rotation seeded by badge type for stable renders.
  */
 
@@ -10,11 +9,11 @@ import { Image, StyleSheet, Text, View } from "react-native";
 import PushPin, { PinColor } from "./PushPin";
 
 interface BadgeData {
-  icon?: any;        // image source (require'd asset)
-  emoji?: string;    // fallback emoji if no image
+  icon?: any;
+  emoji?: string;
   name: string;
   location?: string;
-  year?: string;     // short year e.g. "24"
+  year?: string;
   type?: string;
 }
 
@@ -80,13 +79,13 @@ const styles = StyleSheet.create({
     overflow: "visible",
   },
   card: {
-    width: 82,
-    height: 80,
+    width: 97,
+    height: 95,
     backgroundColor: "#EDE0B5",
     borderRadius: 5,
-    paddingTop: 10,
-    paddingBottom: 6,
-    paddingHorizontal: 6,
+    paddingTop: 11,
+    paddingBottom: 7,
+    paddingHorizontal: 7,
     alignItems: "center",
     borderWidth: 1,
     borderColor: "rgba(160,130,80,0.2)",
@@ -102,31 +101,31 @@ const styles = StyleSheet.create({
     top: 6,
     right: 8,
     fontFamily: "Caveat_400Regular",
-    fontSize: 10,
+    fontSize: 11,
     color: "#8B7355",
   },
   iconImage: {
-    width: 22,
-    height: 22,
+    width: 26,
+    height: 26,
     resizeMode: "contain",
     marginBottom: 5,
   },
   iconEmoji: {
-    fontSize: 22,
+    fontSize: 26,
     marginBottom: 2,
-    lineHeight: 34,
+    lineHeight: 37,
   },
   name: {
     fontFamily: "Caveat_700Bold",
-    fontSize: 11,
+    fontSize: 13,
     color: "#4A3628",
     textTransform: "uppercase",
     textAlign: "center",
-    lineHeight: 16,
+    lineHeight: 17,
   },
   location: {
     fontFamily: "Caveat_400Regular",
-    fontSize: 10,
+    fontSize: 11,
     color: "#9B8060",
     marginTop: 4,
     textAlign: "center",

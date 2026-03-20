@@ -50,6 +50,8 @@ interface InvitationalRound {
   outingId: string | null;
   groups: any[];
   roundNumber: number;
+  regionKey?: string | null;
+  leaderboardId?: string | null;
 }
 
 // ============================================================================
@@ -145,6 +147,22 @@ export const startInvitationalRound = onCall(async (request) => {
   } catch (err) {
     logger.warn(`Could not load course data for ${round.courseId}:`, err);
   }
+
+  // Resolve leaderboardId — priority chain:
+  //   1. Baked into the invitational round doc at wizard creation time
+  //      (CourseSearchPicker reads regionKey/leaderboardId from Firestore course doc)
+  //   2. Course doc lookup (for rounds created before this change)
+  //   3. Construct from regionKey + courseId as final fallback
+  const resolvedRegionKey =
+    round.regionKey ||
+    invData.regionKey ||
+    courseData?.regionKey ||
+    null;
+
+  const resolvedLeaderboardId =
+    round.leaderboardId ||
+    courseData?.leaderboardId ||
+    (resolvedRegionKey ? `${resolvedRegionKey}_${round.courseId}` : null);
 
   // ── 7. Create the backing outing doc ──
   const outingRef = db.collection("outings").doc();
@@ -266,9 +284,13 @@ export const startInvitationalRound = onCall(async (request) => {
       invitationalRoundId: roundId,
       invitationalRoundNumber: round.roundNumber,
 
-      // Location
-      regionKey: invData.regionKey || null,
+      // Location & region
+      regionKey: resolvedRegionKey,
       location: round.courseLocation || null,
+
+      // Leaderboard key — baked in so onScoreCreated writes to the correct
+      // leaderboard without a course doc lookup (avoids missing regionKey bug).
+      leaderboardId: resolvedLeaderboardId,
     };
 
     await roundRef.set(roundDoc);

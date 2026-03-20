@@ -1,18 +1,51 @@
 /**
  * HonorPlaque — Section 1
- * Gold engraved nameplate, centered on wood, with LinearGradient.
+ * Gold engraved nameplate with embedded stats row.
+ * Name centered on top, stats (birdies/eagles/albatross/HIO) below.
+ * HCI relocated to LockerRailDivider.
  */
 
 import { LinearGradient } from "expo-linear-gradient";
 import React from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+
+const LowLeaderTrophy  = require("@/assets/icons/LowLeaderTrophy.png");
+const LowLeaderScratch = require("@/assets/icons/LowLeaderScratch.png");
+const LowLeaderAce     = require("@/assets/icons/LowLeaderAce.png");
+const HoleInOne        = require("@/assets/icons/HoleinOne.png");
+
+interface StatItem {
+  emoji: string;
+  label: string;
+  value?: number | string;
+}
 
 interface Props {
   name: string;
-  hci: number | string;
+  stats?: {
+    totalBirdies?: number;
+    totalEagles?: number;
+    totalAlbatross?: number;
+    totalHoleInOnes?: number;
+  };
+  onStatsPress?: () => void;
 }
 
-export default function HonorPlaque({ name, hci }: Props) {
+const STATS: StatItem[] = [
+  { emoji: "🐦", label: "BIRDIE" },
+  { emoji: "🦅", label: "EAGLE" },
+  { emoji: "🦢", label: "ALBATROSS" },
+  { emoji: "🕳️", label: "HIO" },
+];
+
+export default function HonorPlaque({ name, stats, onStatsPress }: Props) {
+  const values = [
+    stats?.totalBirdies,
+    stats?.totalEagles,
+    stats?.totalAlbatross,
+    stats?.totalHoleInOnes,
+  ];
+
   return (
     <View style={styles.wrapper}>
       <LinearGradient
@@ -24,10 +57,26 @@ export default function HonorPlaque({ name, hci }: Props) {
         {/* Inset engraving border */}
         <View style={styles.insetBorder} />
 
-
-
+        {/* Name */}
         <Text style={styles.name} numberOfLines={1}>{name}</Text>
-        <Text style={styles.hci}>HCI · {hci}</Text>
+
+        {/* Divider line */}
+        <View style={styles.divider} />
+
+        {/* Stats row — tappable to open stats tracker */}
+        <TouchableOpacity
+          onPress={onStatsPress}
+          activeOpacity={onStatsPress ? 0.7 : 1}
+          style={styles.statsRow}
+        >
+          {STATS.map((stat, i) => (
+            <View key={stat.label} style={styles.statItem}>
+              <Text style={styles.statEmoji}>{stat.emoji}</Text>
+              <Text style={styles.statValue}>{values[i] ?? 0}</Text>
+              <Text style={styles.statLabel}>{stat.label}</Text>
+            </View>
+          ))}
+        </TouchableOpacity>
       </LinearGradient>
     </View>
   );
@@ -35,14 +84,15 @@ export default function HonorPlaque({ name, hci }: Props) {
 
 const styles = StyleSheet.create({
   wrapper: {
-    paddingHorizontal: 82,
-    paddingTop: 28,
+    paddingHorizontal: 80,
+    paddingTop: 32,
     paddingBottom: 4,
-    marginTop: 8,
+    marginTop: 2,
   },
   plaque: {
     borderRadius: 7,
-    paddingVertical: 12,
+    paddingTop: 6,
+    paddingBottom: 5,
     paddingHorizontal: 10,
     alignItems: "center",
     justifyContent: "center",
@@ -65,24 +115,52 @@ const styles = StyleSheet.create({
 
   name: {
     fontFamily: "Georgia",
-    fontSize: 22,
+    fontSize: 19,
     fontWeight: "700",
     color: "#2C1600",
     letterSpacing: 2,
     textShadowColor: "rgba(255,215,80,0.45)",
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 1,
-    lineHeight: 26,
+    lineHeight: 20,
   },
-  hci: {
+
+  divider: {
+    width: "70%",
+    height: 1,
+    backgroundColor: "rgba(0,0,0,0.18)",
+    marginTop: 4,
+    marginBottom: 4,
+  },
+
+  statsRow: {
+    flexDirection: "row",
+    justifyContent: "space-evenly",
+    width: "100%",
+    paddingHorizontal: 4,
+  },
+  statItem: {
+    alignItems: "center",
+    flex: 1,
+  },
+  statEmoji: {
+    fontSize: 13,
+    marginBottom: 0,
+  },
+  statValue: {
     fontFamily: "Georgia",
-    fontSize: 12,
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#2C1600",
+    letterSpacing: 0.5,
+    lineHeight: 15,
+  },
+  statLabel: {
+    fontFamily: "Georgia",
+    fontSize: 7,
     color: "#3A2000",
-    letterSpacing: 2.5,
-    marginTop: 5,
-    textShadowColor: "rgba(255,215,60,0.35)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 1,
-    opacity: 0.88,
+    letterSpacing: 1.5,
+    opacity: 0.75,
+    marginTop: 1,
   },
 });

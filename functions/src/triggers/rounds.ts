@@ -93,6 +93,7 @@ interface RoundData {
   leagueId?: string;
   leagueWeek?: number;
   regionKey?: string;
+  leaderboardId?: string | null;
   location?: { city: string; state: string; latitude?: number; longitude?: number };
   startedAt: admin.firestore.Timestamp;
   completedAt?: admin.firestore.Timestamp;
@@ -321,6 +322,10 @@ export const onRoundUpdated = onDocumentUpdated(
             groupId: after.groupId || null,
             // Location & region
             regionKey: after.regionKey || null,
+            // Leaderboard key — baked in at round creation via CourseSelector.
+            // onScoreCreated reads this directly to avoid a course doc lookup,
+            // eliminating the "course has no regionKey" bug for future rounds.
+            leaderboardId: after.leaderboardId || null,
             location: after.location || null,
             geohash: null,
             // Metadata
@@ -538,7 +543,7 @@ export const onRoundUpdated = onDocumentUpdated(
         }
       }
 
-      // ── 8. Update rivalries ─────────────────────────────────────
+      // ── 9. Update rivalries ─────────────────────────────────────
       // For non-outing rounds, process rivalries between all on-platform players.
       // Outing-linked rounds are handled by outingRounds.ts (cross-group processing).
       if (!isOutingLinked) {

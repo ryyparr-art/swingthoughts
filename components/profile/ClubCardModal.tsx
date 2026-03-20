@@ -2,6 +2,7 @@
  * ClubCardModal
  *
  * Full screen modal showing an expanded version of the user's Club Card.
+ * Single metallic walnut LinearGradient — no gold nameplate strip.
  * Includes: avatar, displayName, real name, HCI, ST Power Ranking, stats,
  * member since date, and SwingThoughts branding.
  */
@@ -9,6 +10,7 @@
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import { LinearGradient } from "expo-linear-gradient";
 import React from "react";
 import {
   Alert,
@@ -126,10 +128,23 @@ export default function ClubCardModal({
             />
           </TouchableOpacity>
 
-          {/* CARD */}
-          <View style={styles.card}>
-            {/* Gold edge top */}
-            <View style={styles.cardEdge} />
+          {/* CARD — single metallic walnut gradient, no gold nameplate */}
+          <LinearGradient
+            colors={["#9B7055", "#6B4830", "#3D2415", "#2A1A0A", "#3D2415", "#6B4830", "#9B7055"]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.card}
+          >
+            {/* Inset engraving border — mirrors HonorPlaque treatment */}
+            <View style={styles.cardInsetBorder} />
+
+            {/* ===== ENGRAVED HEADER ===== */}
+            <View style={styles.cardHeader}>
+              <Text style={styles.cardHeaderLabel}>CLUB CARD</Text>
+              <Text style={styles.cardHeaderName} numberOfLines={1}>
+                {displayName}
+              </Text>
+            </View>
 
             <View style={styles.cardContent}>
               {/* ===== TOP SECTION: Avatar + Info ===== */}
@@ -151,7 +166,6 @@ export default function ClubCardModal({
 
                 {/* RIGHT: Club Card info */}
                 <View style={styles.infoCol}>
-                  <Text style={styles.clubCardLabel}>CLUB CARD</Text>
 
                   {realName && (
                     <Text
@@ -188,7 +202,6 @@ export default function ClubCardModal({
                   {/* ===== ST POWER RANKING PANEL ===== */}
                   {hasRankingData && (
                     <View style={styles.rankingPanel}>
-                      {/* Gradient hairline — simulated with a thin gold View */}
                       <View style={styles.rankingHairline} />
 
                       <View style={styles.rankingInner}>
@@ -277,11 +290,6 @@ export default function ClubCardModal({
                 </View>
               </View>
 
-              {/* DISPLAY NAME */}
-              <Text style={styles.displayName} numberOfLines={1}>
-                {displayName}
-              </Text>
-
               {/* ===== DIVIDER ===== */}
               <View style={styles.divider} />
 
@@ -349,9 +357,7 @@ export default function ClubCardModal({
               </View>
             </View>
 
-            {/* Gold edge bottom */}
-            <View style={styles.cardEdge} />
-          </View>
+          </LinearGradient>
         </SafeAreaView>
       </View>
     </Modal>
@@ -393,19 +399,55 @@ const styles = StyleSheet.create({
   card: {
     width: "88%",
     borderRadius: 16,
-    backgroundColor: "#4A3628",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.5,
     shadowRadius: 20,
     elevation: 20,
     overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(197, 165, 90, 0.3)",
   },
 
-  cardEdge: {
-    height: 4,
-    backgroundColor: "#C5A55A",
-    opacity: 0.5,
+  /* Inset engraving border */
+  cardInsetBorder: {
+    position: "absolute",
+    top: 4,
+    left: 4,
+    right: 4,
+    bottom: 4,
+    borderWidth: 1,
+    borderColor: "rgba(197, 165, 90, 0.15)",
+    borderRadius: 13,
+    pointerEvents: "none",
+  },
+
+  /* ===== ENGRAVED HEADER (replaces gold nameplate) ===== */
+  cardHeader: {
+    paddingTop: 18,
+    paddingBottom: 12,
+    paddingHorizontal: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  cardHeaderLabel: {
+    fontSize: 9,
+    fontWeight: "900",
+    color: "rgba(197, 165, 90, 0.6)",
+    letterSpacing: 4,
+    marginBottom: 3,
+  },
+
+  cardHeaderName: {
+    fontFamily: "Georgia",
+    fontSize: 22,
+    fontWeight: "700",
+    color: "#F4EED8",
+    letterSpacing: 2,
+    textShadowColor: "rgba(0, 0, 0, 0.4)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
   },
 
   cardContent: {
@@ -438,7 +480,7 @@ const styles = StyleSheet.create({
     width: 88,
     height: 88,
     borderRadius: 44,
-    backgroundColor: "#4A3528",
+    backgroundColor: "#4A3628",
   },
 
   avatarPlaceholder: {
@@ -646,7 +688,7 @@ const styles = StyleSheet.create({
   statsBar: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    backgroundColor: "rgba(0, 0, 0, 0.2)",
     borderRadius: 12,
     borderWidth: 1,
     borderColor: "rgba(197, 165, 90, 0.18)",

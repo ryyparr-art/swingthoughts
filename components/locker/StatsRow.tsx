@@ -1,98 +1,116 @@
 /**
- * StatsRow — Section 3
- * 4-column scoring highlights strip: Birdie, Eagle, Albatross, HIO.
+ * LockerRailDivider — Section 4
+ * Physical horizontal rail dividing upper and lower locker panels.
+ * HCI left-justified in same style as course/quote text.
+ * Course name + game identity quote centered as before.
  */
 
 import React from "react";
-import { Image, StyleSheet, Text, TouchableOpacity, View } from "react-native";
-
-const HoleInOne = require("@/assets/icons/HoleinOne.png");
-
-interface Stats {
-  totalBirdies?: number;
-  totalEagles?: number;
-  totalAlbatross?: number;
-  totalHoleInOnes?: number;
-}
+import { StyleSheet, Text, View } from "react-native";
 
 interface Props {
-  stats: Stats;
-  onPress?: () => void;
+  course?: string;
+  quote?: string;
+  hci?: number | string;
 }
 
-const COLUMNS = [
-  { emoji: "🐦", label: "Birdie",    key: "totalBirdies",    useImage: false },
-  { emoji: "🦅", label: "Eagle",     key: "totalEagles",     useImage: false },
-  { emoji: "🦢", label: "Albatross", key: "totalAlbatross",  useImage: false },
-  { emoji: null,  label: "HIO",       key: "totalHoleInOnes", useImage: true  },
-] as const;
+export default function LockerRailDivider({ course, quote, hci }: Props) {
+  if (!course && !quote && hci == null) return null;
 
-export default function StatsRow({ stats, onPress }: Props) {
   return (
-    <TouchableOpacity
-      onPress={onPress}
-      activeOpacity={onPress ? 0.7 : 1}
-      style={styles.container}
-    >
-      {COLUMNS.map((col) => {
-        const value = stats[col.key as keyof Stats] ?? 0;
-        return (
-          <View key={col.key} style={styles.column}>
-            {col.useImage ? (
-              <Image source={HoleInOne} style={styles.hioImage} />
-            ) : (
-              <Text style={styles.emoji}>{col.emoji}</Text>
-            )}
-            <Text style={styles.count}>{value > 0 ? value : "–"}</Text>
-            <Text style={styles.label}>{col.label}</Text>
+    <View style={styles.wrapper}>
+      <View style={styles.topEdge} />
+
+      <View style={styles.rail}>
+        {/* HCI — left justified, same text style as courseName */}
+        {hci != null && (
+          <View style={styles.hciRow}>
+            <Text style={styles.hciText}>HCI · {hci}</Text>
           </View>
-        );
-      })}
-    </TouchableOpacity>
+        )}
+
+        {/* Course name — centered */}
+        {course ? (
+          <View style={styles.courseRow}>
+            <Text style={styles.courseEmoji}>⛳</Text>
+            <Text style={styles.courseName} numberOfLines={1}>
+              {course}
+            </Text>
+          </View>
+        ) : null}
+
+        {/* Game identity quote — centered */}
+        {quote ? (
+          <Text style={styles.quote}>"{quote}"</Text>
+        ) : null}
+      </View>
+
+      <View style={styles.bottomEdge} />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    marginHorizontal: 8,
-    marginTop: 2,
-    paddingVertical: 4,
-    paddingHorizontal: 4,
-    flexDirection: "row",
-    justifyContent: "space-around",
+  wrapper: {
+    marginTop: 4,
+  },
+  topEdge: {
+    height: 0,
+  },
+  rail: {
+    paddingHorizontal: 24,
+    paddingVertical: 6,
     alignItems: "center",
   },
-  column: {
-    alignItems: "center",
-    gap: 1,
-    minWidth: 56,
+  // HCI row — full width so text can left-align
+  hciRow: {
+    width: "100%",
+    alignItems: "flex-start",
+    marginBottom: 3,
   },
-  emoji: {
-    fontSize: 16,
-    lineHeight: 18,
-  },
-  hioImage: {
-    width: 16,
-    height: 16,
-    resizeMode: "contain",
-  },
-  count: {
-    fontFamily: "Caveat_700Bold",
-    fontSize: 16,
-    lineHeight: 18,
-    color: "#C5A55A",
-    textShadowColor: "rgba(0,0,0,0.8)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 4,
-  },
-  label: {
+  hciText: {
     fontFamily: "Georgia",
-    fontSize: 8,
-    color: "rgba(244,238,216,0.7)",
-    letterSpacing: 0.5,
-    textTransform: "uppercase",
-    textShadowColor: "rgba(0,0,0,0.8)",
+    fontSize: 13,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.88)",
+    letterSpacing: 0.8,
+    textShadowColor: "rgba(0,0,0,0.95)",
     textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
+    textShadowRadius: 5,
+  },
+  courseRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    marginBottom: 3,
+  },
+  courseEmoji: {
+    fontSize: 11,
+    opacity: 0.9,
+  },
+  courseName: {
+    fontFamily: "Georgia",
+    fontSize: 13,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.88)",
+    letterSpacing: 0.8,
+    textShadowColor: "rgba(0,0,0,0.95)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 5,
+  },
+  quote: {
+    fontFamily: "Caveat_400Regular",
+    fontSize: 17,
+    fontStyle: "italic",
+    color: "rgba(255,255,255,0.75)",
+    textShadowColor: "rgba(0,0,0,0.95)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 5,
+    letterSpacing: 0.3,
+    textAlign: "center",
+  },
+  bottomEdge: {
+    height: 0,
   },
 });

@@ -10,15 +10,11 @@
       "url": "https://u.expo.dev/5686fe17-0cdc-427b-8271-50f77a43f14b"
     },
     "orientation": "portrait",
-    "icon": "./assets/images/AppIcon.png",
+    "icon": "./assets/images/MastersIcon.png",
     "scheme": "swingthoughts",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
-    "notification": {
-      "icon": "./assets/images/notification-icon.png",
-      "color": "#0D5C3A"
-    },
     "ios": {
+      "newArchEnabled": true,
       "supportsTablet": true,
       "bundleIdentifier": "com.swingthoughts.app",
       "infoPlist": {
@@ -30,10 +26,15 @@
       }
     },
     "android": {
+      "newArchEnabled": true,
       "package": "com.swingthoughts.app",
       "adaptiveIcon": {
         "backgroundColor": "#0D5C3A",
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png"
+      },
+      "notification": {
+        "icon": "./assets/images/notification-icon.png",
+        "color": "#0D5C3A"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
@@ -63,7 +64,7 @@
         }
       ],
       [
-      "expo-contacts",
+        "expo-contacts",
         {
           "contactsPermission": "SwingThoughts needs access to your contacts to invite players to your invitational."
         }

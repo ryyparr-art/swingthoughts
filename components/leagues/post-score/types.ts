@@ -30,6 +30,12 @@ export interface CourseBasic {
     longitude?: number;
   };
   distance?: number;
+  regionKey?: string;
+  leaderboardId?: string;
+  tees?: {
+    male?: any[];
+    female?: any[];
+  } | null;
 }
 
 export interface HoleInfo {

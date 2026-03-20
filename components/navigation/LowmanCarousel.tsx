@@ -70,6 +70,7 @@ export default function LowmanCarousel({
   const [allLeaders, setAllLeaders] = useState<CourseLeader[]>([]);
   const [authReady, setAuthReady] = useState(false);
   const [userRegionKey, setUserRegionKey] = useState<string | null>(null);
+  const [regionKeyResolved, setRegionKeyResolved] = useState(false);
 
   const scrollRef = useRef<ScrollView>(null);
   const scrollX = useRef(0);
@@ -87,13 +88,13 @@ export default function LowmanCarousel({
     const unsub = auth.onAuthStateChanged(async (user) => {
       if (user) {
         setAuthReady(true);
-        
+
         try {
           const userDoc = await getDoc(doc(db, "users", user.uid));
           if (userDoc.exists()) {
             const userData = userDoc.data();
             const region = userData.regionKey;
-            
+
             if (region) {
               console.log("🌍 Carousel: User regionKey:", region);
               setUserRegionKey(region);
@@ -105,61 +106,70 @@ export default function LowmanCarousel({
         } catch (error) {
           console.error("❌ Carousel: Error fetching user region:", error);
           setUserRegionKey(null);
+        } finally {
+          // Always mark regionKey as resolved so the leaderboard query
+          // never fires before we know the user's region.
+          setRegionKeyResolved(true);
         }
       } else {
         setAuthReady(false);
         setUserRegionKey(null);
+        setRegionKeyResolved(false);
       }
     });
     return unsub;
   }, []);
 
   useEffect(() => {
-    if (!authReady) return;
+    // Wait until both auth is ready AND the regionKey lookup has completed.
+    // Without regionKeyResolved, the query fires with userRegionKey = null
+    // and fetches all 25k leaderboard docs before the user's region is known.
+    if (!authReady || !regionKeyResolved) return;
 
-    console.log("🏆 Carousel: Fetching leaders for regionKey:", userRegionKey || "ALL");
-    
-    let q;
-    if (userRegionKey) {
-      q = query(
-        collection(db, "leaderboards"),
-        where("regionKey", "==", userRegionKey)
-      );
-    } else {
-      q = query(collection(db, "leaderboards"));
+    console.log("🏆 Carousel: Fetching leaders for regionKey:", userRegionKey || "NONE — skipping");
+
+    // If there's no regionKey, don't query at all — show empty state.
+    if (!userRegionKey) {
+      setAllLeaders([]);
+      return;
     }
+
+    const q = query(
+      collection(db, "leaderboards"),
+      where("regionKey", "==", userRegionKey)
+    );
 
     const unsub = onSnapshot(q, (snap) => {
       const docs: CourseLeader[] = [];
-      
+
       console.log("📊 Carousel: Received", snap.size, "leaderboard documents");
-      
+
       snap.forEach((d) => {
         const data = d.data();
         const docId = d.id;
-        
+
         const lastUnderscoreIndex = docId.lastIndexOf('_');
-        
+
         if (lastUnderscoreIndex === -1) {
           console.warn("⚠️ Carousel: Invalid doc ID format:", docId);
           return;
         }
-        
+
         const regionKey = docId.substring(0, lastUnderscoreIndex);
         const courseIdStr = docId.substring(lastUnderscoreIndex + 1);
-        
+
         // Extract lowman from topScores array (sorted ascending)
         if (data.topScores18 && Array.isArray(data.topScores18) && data.topScores18.length > 0) {
           const lowmanScore = data.topScores18[0];
-          
+
           // Handle both displayName and userName fields
           const displayName = lowmanScore.displayName || lowmanScore.userName || "Unknown";
-          
+
           // Extract holes-in-one (try both field names)
           const holesInOne = data.holesInOne || data.holeInOnes || [];
-          
+
           console.log("  ✅", displayName, "at", data.courseName, "-", lowmanScore.netScore, "| HIOs:", holesInOne.length);
-          
+
           docs.push({
             courseId: courseIdStr,
             courseName: data.courseName || "Unknown Course",
@@ -181,7 +191,7 @@ export default function LowmanCarousel({
           });
         }
       });
-      
+
       console.log("✅ Carousel: Parsed", docs.length, "lowman achievements");
       setAllLeaders(docs);
       shuffledOnce.current = null;
@@ -189,7 +199,7 @@ export default function LowmanCarousel({
     });
 
     return () => unsub();
-  }, [authReady, userRegionKey]);
+  }, [authReady, regionKeyResolved, userRegionKey]);
 
   const filteredLeaders = useMemo(() => {
     if (!courseIds || courseIds.length === 0) {
@@ -198,7 +208,7 @@ export default function LowmanCarousel({
 
     const courseIdStrings = courseIds.map(id => String(id));
     const filtered = allLeaders.filter(l => courseIdStrings.includes(l.courseId));
-    
+
     console.log("🔍 Carousel: Filtered to", filtered.length, "leaders");
     return filtered;
   }, [allLeaders, courseIds]);
@@ -294,7 +304,7 @@ export default function LowmanCarousel({
     const final = combined.slice(0, TARGET_COUNT);
 
     console.log("✅ Carousel: Final", final.length, "cards,", seenUsers.size, "unique players");
-    
+
     shuffledOnce.current = final;
     return shuffledOnce.current;
   }, [allLeaders, filteredLeaders]);
@@ -326,9 +336,9 @@ export default function LowmanCarousel({
   const handleItemPress = (item: CarouselItem) => {
     soundPlayer.play("click");
     Haptics.selectionAsync();
-    
+
     onSelectUser?.(item.userId);
-    
+
     if (item.tier === "holeinone") {
       if (item.postId) {
         console.log("🚀 Tapped hole-in-one, navigating to post:", item.postId);
@@ -367,7 +377,7 @@ export default function LowmanCarousel({
         style={styles.scrollStrip}
         contentContainerStyle={styles.container}
       >
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.emptyCard}
           activeOpacity={0.7}
           onPress={handleEmptyCardPress}
@@ -376,7 +386,7 @@ export default function LowmanCarousel({
             <View style={styles.emptyIconContainer}>
               <Text style={styles.emptyCardIcon}>🏆</Text>
             </View>
-            
+
             <View style={styles.textContent}>
               <Text style={styles.emptyCardTitle} numberOfLines={1}>
                 No Leaders Yet
@@ -413,7 +423,7 @@ export default function LowmanCarousel({
           >
             <View style={styles.cardContent}>
               <Image source={item.icon} style={styles.iconImage} />
-              
+
               <View style={styles.textContent}>
                 <View style={styles.topRow}>
                   <Text
@@ -551,7 +561,6 @@ const styles = StyleSheet.create({
     color: "#666",
   },
 });
-
 
 
 

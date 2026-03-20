@@ -88,15 +88,22 @@ export const onScoreCreated = onDocumentCreated(
 
       if ((holeCount === 18 || holeCount === 9) && isLeaderboardEligible && !isSimulator) {
 
-        // Always resolve regionKey from the COURSE doc, not the user.
-        // This prevents a travelling user (e.g. DC player in Cancun) from
-        // writing a leaderboard doc into the wrong region.
-        const courseRegionKey: string | null = courseDocData?.regionKey ?? null;
+        // Prefer leaderboardId baked into the score at round creation time —
+        // this is set by scoring/index.tsx via CourseSelector and eliminates
+        // the need for a course doc lookup to resolve the region.
+        // Fall back to course doc regionKey for legacy rounds.
+        const courseRegionKey: string | null =
+          courseDocData?.regionKey ?? score.regionKey ?? null;
 
-        if (!courseRegionKey) {
+        const resolvedLeaderboardId: string | null =
+          score.leaderboardId ??
+          courseDocData?.leaderboardId ??
+          (courseRegionKey ? `${courseRegionKey}_${courseId}` : null);
+
+        if (!resolvedLeaderboardId || !courseRegionKey) {
           console.log(`⏭️ Skipping leaderboard — course ${courseId} has no regionKey`);
         } else {
-          const leaderboardId = `${courseRegionKey}_${courseId}`;
+          const leaderboardId = resolvedLeaderboardId;
           const leaderboardRef = db.collection("leaderboards").doc(leaderboardId);
 
           const is18 = holeCount === 18;
@@ -122,6 +129,7 @@ export const onScoreCreated = onDocumentCreated(
               const newDoc: Record<string, any> = {
                 regionKey: courseRegionKey,
                 courseId, courseName,
+                leaderboardId,
                 location: courseDocData?.location || location || null,
                 topScores18: [], lowNetScore18: null, totalScores18: 0,
                 topScores9: [], lowNetScore9: null, totalScores9: 0,

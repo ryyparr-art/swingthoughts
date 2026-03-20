@@ -4,7 +4,6 @@ import LockerClubsDisplay from "@/components/locker/LockerClubsDisplay";
 import LockerRailDivider from "@/components/locker/LockerRailDivider";
 import LockerRivals from "@/components/locker/LockerRivals";
 import SectionBanner from "@/components/locker/SectionBanner";
-import StatsRow from "@/components/locker/StatsRow";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
@@ -139,10 +138,16 @@ export default function LockerScreen() {
         {/* ── S1–S5: Fixed door panel ── */}
         <View style={styles.doorPanel}>
 
-          {/* S1: Honor Plaque */}
+          {/* S1: Honor Plaque — name + stats row */}
           <HonorPlaque
             name={profile?.displayName ?? "Player"}
-            hci={profile?.handicap ?? "N/A"}
+            stats={{
+              totalBirdies:    profile?.totalBirdies,
+              totalEagles:     profile?.totalEagles,
+              totalAlbatross:  profile?.totalAlbatross,
+              totalHoleInOnes: profile?.totalHoleInOnes,
+            }}
+            onStatsPress={() => router.push(`/locker/stats-tracker?userId=${currentUserId}` as any)}
           />
           <View style={styles.plaqueSeparator} />
 
@@ -150,18 +155,7 @@ export default function LockerScreen() {
           <SectionBanner label="RIVALS" />
           {currentUserId && <LockerRivals userId={currentUserId} />}
 
-          {/* S3: Stats Row */}
-          <StatsRow
-            stats={{
-              totalBirdies:    profile?.totalBirdies,
-              totalEagles:     profile?.totalEagles,
-              totalAlbatross:  profile?.totalAlbatross,
-              totalHoleInOnes: profile?.totalHoleInOnes,
-            }}
-            onPress={() => router.push(`/locker/stats-tracker?userId=${currentUserId}` as any)}
-          />
-
-          {/* S5: Achievements — always shown */}
+          {/* S3: Achievements */}
           <SectionBanner label="ACHIEVEMENTS" />
           {badges.length > 0 ? (
             <View style={styles.achievementsScroll}>
@@ -200,11 +194,15 @@ export default function LockerScreen() {
             </View>
           )}
 
-          {/* S4: Rail Divider */}
-          <LockerRailDivider course={homeCourse} quote={gameIdentity} />
+          {/* S4: Rail Divider — HCI + course + quote */}
+          <LockerRailDivider
+            hci={profile?.handicap ?? "N/A"}
+            course={homeCourse}
+            quote={gameIdentity}
+          />
         </View>
 
-        {/* ── S6: My Clubs — scrollable ── */}
+        {/* ── S5: My Clubs — scrollable ── */}
         <View style={styles.clubsPanel}>
           <ScrollView
             showsVerticalScrollIndicator={false}
@@ -245,7 +243,7 @@ const styles = StyleSheet.create({
   },
 
   plaqueSeparator: {
-    height: 0,
+    height: 4,
   },
 
   achievementsScroll: {

@@ -12,6 +12,7 @@ import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Image as ExpoImage } from "expo-image";
+import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import {
   collection,
@@ -663,8 +664,22 @@ export default function ProfileScreen() {
           setClubCardModalVisible(true);
         }}
       >
-        <View style={styles.clubCard}>
-          <View style={styles.cardEdgeTop} />
+        <LinearGradient
+          colors={["#9B7055", "#6B4830", "#3D2415", "#2A1A0A", "#3D2415", "#6B4830", "#9B7055"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.clubCard}
+        >
+          {/* Inset engraving border */}
+          <View style={styles.cardInsetBorder} />
+
+          {/* ===== ENGRAVED HEADER ===== */}
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardHeaderLabel}>CLUB CARD</Text>
+            <Text style={styles.cardHeaderName} numberOfLines={1}>
+              {profile.displayName}
+            </Text>
+          </View>
 
           <View style={styles.clubCardInner}>
             <View style={styles.cardTopRow}>
@@ -685,9 +700,6 @@ export default function ProfileScreen() {
                     </View>
                   )}
                 </View>
-                <Text style={styles.displayName} numberOfLines={1}>
-                  {profile.displayName}
-                </Text>
                 <BadgeRow
                   challengeBadges={profile.challengeBadges}
                   size={16}
@@ -695,7 +707,6 @@ export default function ProfileScreen() {
               </View>
 
               <View style={styles.cardRightCol}>
-                <Text style={styles.clubCardLabel}>CLUB CARD</Text>
                 {realName && (
                   <Text
                     style={[
@@ -816,9 +827,7 @@ export default function ProfileScreen() {
               </View>
             </View>
           </View>
-
-          <View style={styles.cardEdgeBottom} />
-        </View>
+        </LinearGradient>
       </TouchableOpacity>
 
       {/* ===== TAB BAR ===== */}
@@ -1103,34 +1112,61 @@ const styles = StyleSheet.create({
     marginTop: 20,
     marginBottom: 16,
     borderRadius: 14,
-    backgroundColor: "#4A3628",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.35,
     shadowRadius: 10,
     elevation: 10,
     overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(197, 165, 90, 0.35)",
   },
 
-  cardEdgeTop: {
-    height: 3,
-    backgroundColor: "#C5A55A",
-    opacity: 0.6,
+  cardInsetBorder: {
+    position: "absolute",
+    top: 4,
+    left: 4,
+    right: 4,
+    bottom: 4,
+    borderWidth: 1,
+    borderColor: "rgba(197, 165, 90, 0.15)",
+    borderRadius: 11,
+    pointerEvents: "none",
+    zIndex: 1,
   },
 
-  cardEdgeBottom: {
-    height: 3,
-    backgroundColor: "#C5A55A",
-    opacity: 0.6,
+  /* ===== ENGRAVED HEADER ===== */
+  cardHeader: {
+    paddingTop: 12,
+    paddingBottom: 10,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  cardHeaderLabel: {
+    fontSize: 7,
+    fontWeight: "900",
+    color: "rgba(197, 165, 90, 0.6)",
+    letterSpacing: 4,
+    marginBottom: 2,
+  },
+
+  cardHeaderName: {
+    fontFamily: "Georgia",
+    fontSize: 17,
+    fontWeight: "700",
+    color: "#F4EED8",
+    letterSpacing: 2,
+    textShadowColor: "rgba(0, 0, 0, 0.5)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
   },
 
   clubCardInner: {
-    paddingTop: 20,
+    paddingTop: 14,
     paddingBottom: 16,
     paddingHorizontal: 18,
-    borderLeftWidth: 1,
-    borderRightWidth: 1,
-    borderColor: "rgba(197, 165, 90, 0.15)",
   },
 
   cardTopRow: {
@@ -1283,7 +1319,7 @@ const styles = StyleSheet.create({
   statsBar: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.08)",
+    backgroundColor: "rgba(0, 0, 0, 0.2)",
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "rgba(197, 165, 90, 0.2)",

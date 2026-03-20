@@ -31,15 +31,14 @@ export default function LockerRivals({ userId }: Props) {
     setSelectedRole(role);
   };
 
-  // Empty state — single notecard
+  // Empty state — single notecard matching RivalNotecard square dimensions
   if (roles.length === 0) {
     return (
       <>
         <View style={styles.emptyWrapper}>
-          {/* Gold pushpin for empty state */}
           <PushPin color="gold" size={22} />
           <View style={styles.emptyCard}>
-<Text style={styles.emptyTitle}>No rivals yet</Text>
+            <Text style={styles.emptyTitle}>No rivals yet</Text>
             <Text style={styles.emptySub}>Play 3+ rounds{"\n"}with someone</Text>
           </View>
         </View>
@@ -93,7 +92,7 @@ const styles = StyleSheet.create({
     paddingTop: 6,
   },
 
-  // Empty state
+  // Empty state — matches RivalNotecard square (97×95)
   emptyWrapper: {
     position: "relative",
     alignItems: "center",
@@ -103,14 +102,15 @@ const styles = StyleSheet.create({
     overflow: "visible",
   },
   emptyCard: {
-    width: 120,
-    height: 58,
+    width: 97,
+    height: 95,
     backgroundColor: "#EDE0B5",
     borderRadius: 5,
-    padding: 14,
-    paddingTop: 20,
+    paddingTop: 10,
+    paddingBottom: 8,
+    paddingHorizontal: 7,
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "space-between",
     borderWidth: 1,
     borderColor: "rgba(160,130,80,0.2)",
     overflow: "hidden",
@@ -119,14 +119,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.5,
     shadowRadius: 16,
     elevation: 8,
-    gap: 4,
-  },
-  ruledLine: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: "rgba(150,120,60,0.07)",
   },
   emptyTitle: {
     fontFamily: "Caveat_700Bold",

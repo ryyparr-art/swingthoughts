@@ -10,6 +10,10 @@
  *   1. Query Firestore `courses` collection (already-cached courses)
  *   2. If <3 results, fallback to Golf Course API
  *   3. Deduplicate by courseId
+ *
+ * regionKey and leaderboardId are read from Firestore course docs and
+ * passed through so invitationalRounds.ts can bake them into round docs
+ * without needing a separate course lookup at round-start time.
  */
 
 import { db } from "@/constants/firebaseConfig";
@@ -45,6 +49,8 @@ export interface CourseSelection {
     country?: string;
   };
   holes?: number;
+  regionKey?: string | null;
+  leaderboardId?: string | null;
 }
 
 interface CourseSearchPickerProps {
@@ -86,8 +92,6 @@ export default function CourseSearchPicker({
       try {
         const coursesRef = collection(db, "courses");
 
-        // Firestore stores course_name as-is (mixed case)
-        // Try prefix match on course_name field
         const searchCapitalized =
           text.charAt(0).toUpperCase() + text.slice(1);
 
@@ -109,6 +113,7 @@ export default function CourseSearchPicker({
 
           if (!isNaN(courseId) && !seenIds.has(courseId)) {
             seenIds.add(courseId);
+            const regionKey = data.regionKey || null;
             allResults.push({
               courseId,
               courseName: data.course_name || data.courseName || "Unknown",
@@ -118,6 +123,8 @@ export default function CourseSearchPicker({
                 state: data.location?.state || "",
                 country: data.location?.country,
               },
+              regionKey,
+              leaderboardId: data.leaderboardId || (regionKey ? `${regionKey}_${courseId}` : null),
             });
           }
         });
@@ -142,6 +149,7 @@ export default function CourseSearchPicker({
 
             if (!isNaN(courseId) && !seenIds.has(courseId)) {
               seenIds.add(courseId);
+              const regionKey = data.regionKey || null;
               allResults.push({
                 courseId,
                 courseName: data.course_name || data.courseName || "Unknown",
@@ -151,6 +159,8 @@ export default function CourseSearchPicker({
                   state: data.location?.state || "",
                   country: data.location?.country,
                 },
+                regionKey,
+                leaderboardId: data.leaderboardId || (regionKey ? `${regionKey}_${courseId}` : null),
               });
             }
           });
@@ -160,6 +170,8 @@ export default function CourseSearchPicker({
       }
 
       // 2. If few results, try Golf Course API
+      // API results won't have regionKey/leaderboardId — these get resolved
+      // later by invitationalRounds.ts via the course doc lookup.
       if (allResults.length < 3 && GOLF_COURSE_API_KEY) {
         try {
           const response = await fetch(
@@ -186,6 +198,8 @@ export default function CourseSearchPicker({
                     state: c.location?.state || "",
                     country: c.location?.country,
                   },
+                  regionKey: null,
+                  leaderboardId: null,
                 });
               }
             });

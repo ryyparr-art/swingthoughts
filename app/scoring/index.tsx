@@ -27,12 +27,12 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { auth, db, functions } from "@/constants/firebaseConfig";
+import type { OutingGroup, OutingPlayer } from "@/constants/outingTypes";
 import {
   addDoc, collection, doc, getDoc, onSnapshot, serverTimestamp,
   updateDoc
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import type { OutingGroup, OutingPlayer } from "@/constants/outingTypes";
 
 import CourseSelector from "@/components/leagues/post-score/CourseSelector";
 import {
@@ -52,9 +52,9 @@ import type {
   RoundTeam,
 } from "@/components/scoring/scoringTypes";
 
-import { useRoundChat, useOutingChat, type ChatMessage } from "@/hooks/useLiveRound";
-import { soundPlayer } from "@/utils/soundPlayer";
 import OutingLeaderboardFAB from "@/app/round/OutingLeaderboardFAB";
+import { useOutingChat, useRoundChat, type ChatMessage } from "@/hooks/useLiveRound";
+import { soundPlayer } from "@/utils/soundPlayer";
 
 const closeIcon = require("@/assets/icons/Close.png");
 
@@ -113,6 +113,8 @@ export default function ScoringScreen() {
   const [isResuming, setIsResuming] = useState(false);
   const [userData, setUserData] = useState<any>(null);
   const [userRegionKey, setUserRegionKey] = useState<string | null>(null);
+  // ── PATCH 1: leaderboardId resolved at course selection time ──────────────
+  const [leaderboardId, setLeaderboardId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingCourse, setLoadingCourse] = useState(false);
   const [availableCourses, setAvailableCourses] = useState<CourseBasic[]>([]);
@@ -138,7 +140,7 @@ export default function ScoringScreen() {
   const [showChatSheet, setShowChatSheet] = useState(false);
   const [showSettingsSheet, setShowSettingsSheet] = useState(false);
   const [showTransferPicker, setShowTransferPicker] = useState(false);
-  const [showRemovePlayerPicker, setShowRemovePlayerPicker] = useState(false); // ← NEW
+  const [showRemovePlayerPicker, setShowRemovePlayerPicker] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
   const chatListRef = React.useRef<FlatList<ChatMessage>>(null);
@@ -206,6 +208,8 @@ export default function ScoringScreen() {
         setCurrentHole(roundData.currentHole || 1);
         setHoleData(roundData.holeData || {});
         setOutingId(roundData.outingId || null);
+        // Restore leaderboardId from round doc if available
+        if (roundData.leaderboardId) setLeaderboardId(roundData.leaderboardId);
         if (roundData.courseId) {
           const courseData = await loadFullCourseData(roundData.courseId, roundData.courseName, roundData.location);
           if (courseData) {
@@ -391,6 +395,7 @@ export default function ScoringScreen() {
     }
   };
 
+  // ── PATCH 2: Resolve leaderboardId when course is selected ───────────────
   const handleSelectCourse = async (course: CourseBasic) => {
     const rawCourseId = course.courseId || course.id;
     if (!rawCourseId) return;
@@ -407,6 +412,16 @@ export default function ScoringScreen() {
           const dt: TeeOption = { tee_name: "Default", course_rating: 72, slope_rating: 113, par_total: holeCount === 9 ? 36 : 72, total_yards: holeCount === 9 ? 3200 : 6400, number_of_holes: holeCount, holes: generateDefaultHoles(holeCount), source: "male" };
           setAvailableTees([dt]); setSelectedTee(dt);
         }
+
+        // Resolve leaderboardId at selection time — baked in from CourseSelector
+        // which reads it from the Firestore course doc. Falls back to constructing it.
+        const resolvedRegionKey = course.regionKey || userRegionKey;
+        const resolvedLeaderboardId =
+          course.leaderboardId ||
+          (resolvedRegionKey ? `${resolvedRegionKey}_${courseId}` : null);
+        setLeaderboardId(resolvedLeaderboardId);
+        console.log("✅ leaderboardId resolved:", resolvedLeaderboardId);
+
         soundPlayer.play("click"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       } else { Alert.alert("Error", "Could not load course data."); }
     } catch (err) { console.error("Error loading course:", err); Alert.alert("Error", "Failed to load course data."); }
@@ -436,6 +451,7 @@ export default function ScoringScreen() {
     avatar: userData?.avatar || undefined, handicapIndex: parseFloat(userData?.handicap) || 0,
   }), [currentUserId, userData]);
 
+  // ── PATCH 3: Write leaderboardId onto the round doc ──────────────────────
   const handleGroupConfirm = async (confirmedPlayers: PlayerSlot[]) => {
     soundPlayer.play("click"); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setPlayers(confirmedPlayers);
@@ -467,13 +483,14 @@ export default function ScoringScreen() {
         })),
         teams: teams || null, currentHole: 1, holeData: {}, liveScores: {}, holePars, holeDetails, playingOrder,
         startingHole, leagueId: null, leagueWeek: null, regionKey: userRegionKey,
+        leaderboardId: leaderboardId || null,  // ← baked in at round creation
         location: fullCourseData.location || null, startedAt: serverTimestamp(),
         roundType, isSimulator: roundType === "simulator", privacy: roundPrivacy,
         markerTransferRequest: null,
       };
       const docRef = await addDoc(collection(db, "rounds"), roundDoc);
       setRoundId(docRef.id); setPlayers(playersWithTeams);
-      console.log("✅ Round created:", docRef.id);
+      console.log("✅ Round created:", docRef.id, "| leaderboardId:", leaderboardId);
     } catch (err) { console.error("Error creating round:", err); Alert.alert("Error", "Failed to start round."); return; }
     finally { setSubmitting(false); }
     setCurrentScreen("scorecard");
@@ -520,6 +537,7 @@ export default function ScoringScreen() {
         privacy: roundPrivacy,
         location: fullCourseData.location || null,
         regionKey: userRegionKey || null,
+        leaderboardId: leaderboardId || null,
         roster,
         groups,
       });
@@ -624,7 +642,7 @@ export default function ScoringScreen() {
   const handleBack = () => {
     soundPlayer.play("click");
     switch (currentScreen) {
-      case "format": setSelectedTee(null); setFullCourseData(null); setAvailableTees([]); setCurrentScreen("course"); break;
+      case "format": setSelectedTee(null); setFullCourseData(null); setAvailableTees([]); setLeaderboardId(null); setCurrentScreen("course"); break;
       case "group": setCurrentScreen("format"); break;
       case "scorecard":
         Alert.alert("Abandon Round?", "Going back will abandon this round. Scores will not be saved.", [
@@ -742,12 +760,20 @@ export default function ScoringScreen() {
                 <View style={st.selectedCourseBar}>
                   <Ionicons name="checkmark-circle" size={20} color={GREEN} />
                   <Text style={st.selectedCourseName} numberOfLines={1}>{fullCourseData.courseName || fullCourseData.course_name}</Text>
-                  <TouchableOpacity onPress={() => { soundPlayer.play("click"); setFullCourseData(null); setSelectedTee(null); setAvailableTees([]); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                  <TouchableOpacity onPress={() => { soundPlayer.play("click"); setFullCourseData(null); setSelectedTee(null); setAvailableTees([]); setLeaderboardId(null); }} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                     <Ionicons name="close-circle" size={20} color="#CCC" />
                   </TouchableOpacity>
                 </View>
               ) : (
-                <CourseSelector availableCourses={availableCourses} isRestricted={false} userLocation={userData?.location || null} onSelectCourse={handleSelectCourse} onBack={() => router.back()} />
+                // ── PATCH 4: Pass userRegionKey to CourseSelector ─────────────
+                <CourseSelector
+                  availableCourses={availableCourses}
+                  isRestricted={false}
+                  userLocation={userData?.location || null}
+                  userRegionKey={userRegionKey}
+                  onSelectCourse={handleSelectCourse}
+                  onBack={() => router.back()}
+                />
               )}
             </View>
             <View style={st.divider} />
@@ -992,7 +1018,6 @@ export default function ScoringScreen() {
                       <Ionicons name="chevron-forward" size={18} color="#CCC" />
                     </TouchableOpacity>
                   )}
-                  {/* ── Remove Player ── */}
                   {players.length > 1 && (
                     <TouchableOpacity style={st.settingsRow} onPress={handleRemovePlayer}>
                       <View style={[st.settingsRowIcon, { backgroundColor: "rgba(204,102,0,0.08)" }]}>

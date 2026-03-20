@@ -4,7 +4,6 @@ import LockerClubsDisplay from "@/components/locker/LockerClubsDisplay";
 import LockerRailDivider from "@/components/locker/LockerRailDivider";
 import LockerRivals from "@/components/locker/LockerRivals";
 import SectionBanner from "@/components/locker/SectionBanner";
-import StatsRow from "@/components/locker/StatsRow";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
 import TopNavBar from "@/components/navigation/TopNavBar";
@@ -242,19 +241,29 @@ export default function LockerUserScreen() {
 
         <View style={styles.doorPanel}>
 
+          {/* S1: Honor Plaque — name + stats row */}
           <HonorPlaque
             name={profile?.displayName ?? "Player"}
-            hci={profile?.handicap ?? "N/A"}
+            stats={{
+              totalBirdies:    profile?.totalBirdies,
+              totalEagles:     profile?.totalEagles,
+              totalAlbatross:  profile?.totalAlbatross,
+              totalHoleInOnes: profile?.totalHoleInOnes,
+            }}
+            onStatsPress={() => router.push(`/locker/stats-tracker?userId=${viewingUserId}` as any)}
           />
           <View style={styles.plaqueSeparator} />
 
+          {/* S2: Rivals */}
           {!isOwnLocker ? (
             <View style={styles.rivalsHeader}>
+              {/* Partner Up — under left vent */}
               <TouchableOpacity
                 disabled={partnershipStatus === "pending_sent" || partnershipStatus === "partners" || actionLoading}
                 onPress={handlePartnerUp}
                 style={[
-                  styles.inlineButton,
+                  styles.ventButton,
+                  styles.ventButtonLeft,
                   partnershipStatus === "pending_sent"     && styles.pendingButton,
                   partnershipStatus === "pending_received" && styles.acceptButton,
                   partnershipStatus === "partners"         && styles.disabledButton,
@@ -262,23 +271,29 @@ export default function LockerUserScreen() {
               >
                 <Ionicons
                   name={partnershipStatus === "pending_sent" ? "time-outline" : partnershipStatus === "pending_received" ? "checkmark-circle-outline" : "people"}
-                  size={13} color="#fff"
+                  size={14} color="#fff"
                 />
-                <Text style={styles.inlineButtonText}>
+                <Text style={styles.ventButtonText}>
                   {partnershipStatus === "none" ? "Partner Up" : partnershipStatus === "pending_sent" ? "Pending" : partnershipStatus === "pending_received" ? "Accept" : "Partners"}
                 </Text>
               </TouchableOpacity>
 
+              {/* RIVALS badge — centered */}
               <View style={styles.rivalsBadge}>
                 <Text style={styles.rivalsBadgeText}>RIVALS</Text>
               </View>
 
+              {/* Note — under right vent */}
               <TouchableOpacity
                 onPress={handleLockerNote}
-                style={[styles.inlineButton, partnershipStatus !== "partners" && styles.lockerNoteLocked]}
+                style={[
+                  styles.ventButton,
+                  styles.ventButtonRight,
+                  partnershipStatus !== "partners" && styles.lockerNoteLocked,
+                ]}
               >
-                <Ionicons name="mail" size={13} color="#fff" />
-                <Text style={styles.inlineButtonText}>Note</Text>
+                <Ionicons name="mail" size={14} color="#fff" />
+                <Text style={styles.ventButtonText}>Note</Text>
               </TouchableOpacity>
             </View>
           ) : (
@@ -286,16 +301,7 @@ export default function LockerUserScreen() {
           )}
           <LockerRivals userId={viewingUserId} />
 
-          <StatsRow
-            stats={{
-              totalBirdies:    profile?.totalBirdies,
-              totalEagles:     profile?.totalEagles,
-              totalAlbatross:  profile?.totalAlbatross,
-              totalHoleInOnes: profile?.totalHoleInOnes,
-            }}
-            onPress={() => router.push(`/locker/stats-tracker?userId=${viewingUserId}` as any)}
-          />
-
+          {/* S3: Achievements */}
           <SectionBanner label="ACHIEVEMENTS" />
           {badges.length > 0 ? (
             <View style={styles.achievementsScroll}>
@@ -335,7 +341,12 @@ export default function LockerUserScreen() {
             </View>
           )}
 
-          <LockerRailDivider course={homeCourse} quote={gameIdentity} />
+          {/* S4: Rail Divider — HCI + course + quote */}
+          <LockerRailDivider
+            hci={profile?.handicap ?? "N/A"}
+            course={homeCourse}
+            quote={gameIdentity}
+          />
         </View>
 
         <View style={styles.clubsPanel}>
@@ -371,8 +382,8 @@ const styles = StyleSheet.create({
   },
   cacheText: { fontSize: 12, color: "#664D03", fontWeight: "600" },
 
-  doorPanel:        { width: "100%" },
-  plaqueSeparator:  { height: 0 },
+  doorPanel:        { width: "100%", position: "relative" },
+  plaqueSeparator:  { height: 4 },
 
   achievementsScroll: {
     flexDirection: "row",
@@ -386,22 +397,33 @@ const styles = StyleSheet.create({
   rivalsHeader: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "center",
     marginTop: 4,
     marginHorizontal: 16,
   },
-  inlineButton: {
+
+  // Vent buttons — absolutely positioned under each vent
+  ventButton: {
+    position: "absolute",
+    top: -120,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 4,
     backgroundColor: "#0D5C3A",
     paddingVertical: 4,
-    paddingHorizontal: 10,
+    paddingHorizontal: 9,
     borderRadius: 10,
-    width: 90,
   },
-  inlineButtonText: {
+  ventButtonLeft: {
+    left: -14,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  ventButtonRight: {
+    right: -14,
+  },
+  ventButtonText: {
     color: "#fff",
     fontSize: 10,
     fontWeight: "700",

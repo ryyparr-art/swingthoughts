@@ -39,6 +39,8 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
+  orderBy,
   query,
   serverTimestamp,
   setDoc,
@@ -286,13 +288,12 @@ export default function CreateLeague() {
       );
 
       const purseData = hasPurse ? {
-        seasonPurse: formData.purseAmount,      // Championship purse
-        weeklyPurse: formData.weeklyPurse,      // Per-week prize
-        elevatedPurse: formData.elevatedPurse,  // Bonus for elevated events
+        seasonPurse: formData.purseAmount,
+        weeklyPurse: formData.weeklyPurse,
+        elevatedPurse: formData.elevatedPurse,
         currency: formData.purseCurrency,
       } : null;
 
-      // Build league data using ORIGINAL field names for compatibility
       const leagueData = {
         name: formData.name.trim(),
         nameLower: formData.name.trim().toLowerCase(),
@@ -302,29 +303,24 @@ export default function CreateLeague() {
         leagueType: formData.leagueType,
         simPlatform: formData.leagueType === "sim" ? formData.simPlatform : null,
         format: formData.format,
-        // Original field names
         holes: formData.holes,
         courseRestriction: formData.courseRestriction,
         allowedCourses: formData.allowedCourses,
         nineHoleOption: formData.holes === 9 ? formData.nineHoleOption : null,
         handicapSystem: formData.format === "stroke" ? formData.handicapSystem : "league_managed",
         scoreApproval: formData.scoreApproval || "auto",
-        // Points per week
         pointsPerWeek: formData.pointsPerWeek,
         startDate,
         endDate,
         frequency: formData.frequency,
-        // Original field name (day of week)
         scoreDeadline: formData.scoreDeadline,
         playDay: formData.playDay,
         teeTime: formData.teeTime,
         totalWeeks: formData.numberOfWeeks,
         currentWeek: 0,
-        // Original field names for elevated events
         hasElevatedEvents: formData.hasElevatedEvents,
         elevatedWeeks: formData.elevatedWeeks,
         elevatedMultiplier: formData.elevatedMultiplier,
-        // PGA-style purse with season, weekly, and elevated purses
         purse: purseData,
         hostUserId: currentUserId,
         status: "upcoming",
@@ -371,7 +367,7 @@ export default function CreateLeague() {
   };
 
   /* ================================================================ */
-  /* COURSE SEARCH                                                    */
+  /* COURSE SEARCH — Firestore prefix query, no API calls            */
   /* ================================================================ */
 
   const searchCourses = async (searchQuery: string) => {
@@ -382,21 +378,65 @@ export default function CreateLeague() {
 
     setSearchingCourses(true);
     try {
-      const response = await fetch(
-        `https://api.golfcourseapi.com/v1/search?search_query=${encodeURIComponent(searchQuery)}&page_size=20`,
-        {
-          headers: {
-            Authorization: `Key ${process.env.EXPO_PUBLIC_GOLF_COURSE_API_KEY || ""}`,
-          },
-        }
-      );
+      const allResults: any[] = [];
+      const seenIds = new Set<number>();
+      const searchCapitalized = searchQuery.charAt(0).toUpperCase() + searchQuery.slice(1);
 
-      if (response.ok) {
-        const data = await response.json();
-        setCourseSearchResults(data.courses || []);
-      } else {
-        setCourseSearchResults([]);
+      // Try capitalized prefix first (most course names are stored title-cased)
+      const q = query(
+        collection(db, "courses"),
+        where("course_name", ">=", searchCapitalized),
+        where("course_name", "<=", searchCapitalized + "\uf8ff"),
+        orderBy("course_name"),
+        limit(15)
+      );
+      const snap = await getDocs(q);
+
+      snap.docs.forEach((docSnap) => {
+        const data = docSnap.data();
+        const courseId = typeof data.id === "number" ? data.id : parseInt(docSnap.id, 10);
+        if (!isNaN(courseId) && !seenIds.has(courseId)) {
+          seenIds.add(courseId);
+          allResults.push({
+            id: courseId,
+            name: data.course_name || data.courseName || "Unknown",
+            club_name: data.club_name || data.clubName || null,
+            city: data.location?.city || "",
+            state: data.location?.state || "",
+            country: data.location?.country || "",
+          });
+        }
+      });
+
+      // Fallback: try lowercase prefix if no results
+      if (allResults.length === 0) {
+        const qLower = query(
+          collection(db, "courses"),
+          where("course_name", ">=", searchQuery.toLowerCase()),
+          where("course_name", "<=", searchQuery.toLowerCase() + "\uf8ff"),
+          orderBy("course_name"),
+          limit(15)
+        );
+        const snapLower = await getDocs(qLower);
+
+        snapLower.docs.forEach((docSnap) => {
+          const data = docSnap.data();
+          const courseId = typeof data.id === "number" ? data.id : parseInt(docSnap.id, 10);
+          if (!isNaN(courseId) && !seenIds.has(courseId)) {
+            seenIds.add(courseId);
+            allResults.push({
+              id: courseId,
+              name: data.course_name || data.courseName || "Unknown",
+              club_name: data.club_name || data.clubName || null,
+              city: data.location?.city || "",
+              state: data.location?.state || "",
+              country: data.location?.country || "",
+            });
+          }
+        });
       }
+
+      setCourseSearchResults(allResults);
     } catch (error) {
       console.error("Course search error:", error);
       setCourseSearchResults([]);
@@ -668,7 +708,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F4EED8" },
   centered: { justifyContent: "center", alignItems: "center" },
 
-  // Header
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -682,17 +721,14 @@ const styles = StyleSheet.create({
   closeIcon: { width: 24, height: 24 },
   headerTitle: { fontSize: 18, fontWeight: "700", color: "#0D5C3A" },
 
-  // Progress
   progress: { paddingHorizontal: 24, paddingVertical: 16 },
   progressText: { fontSize: 14, color: "#666", textAlign: "center", marginBottom: 8 },
   progressBar: { height: 6, backgroundColor: "#D4D4D4", borderRadius: 3, overflow: "hidden" },
   progressFill: { height: "100%", backgroundColor: "#0D5C3A", borderRadius: 3 },
   stepTitle: { fontSize: 20, fontWeight: "700", color: "#0D5C3A", textAlign: "center", marginTop: 16 },
 
-  // Content
   scrollContent: { paddingHorizontal: 24, paddingBottom: 24 },
 
-  // Bottom Nav
   bottomNav: {
     flexDirection: "row",
     alignItems: "center",

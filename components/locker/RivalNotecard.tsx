@@ -37,18 +37,18 @@ export default function RivalNotecard({ role, rotation = 0, pinColor = "green" }
 
   return (
     <View style={[styles.wrapper, { transform: [{ rotate: `${rotation}deg` }] }]}>
-      <PushPin color={pinColor} size={18} />
+      <PushPin color={pinColor} size={20} />
       <View style={styles.card}>
-        {/* Role label top-left */}
+        {/* Role label top */}
         <Text style={styles.roleLabel}>{roleLabel}</Text>
 
-        {/* Name + score in a row */}
-        <View style={styles.row}>
-          <Text style={styles.name} numberOfLines={1}>{firstName}</Text>
-          <Text style={[styles.score, { color: scoreColor }]}>
-            {myWins}–{theirWins}
-          </Text>
-        </View>
+        {/* Name centered */}
+        <Text style={styles.name} numberOfLines={1}>{firstName}</Text>
+
+        {/* Score bottom */}
+        <Text style={[styles.score, { color: scoreColor }]}>
+          {myWins}–{theirWins}
+        </Text>
       </View>
     </View>
   );
@@ -62,12 +62,15 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   card: {
-    width: 120,
+    width: 97,
+    height: 95,
     backgroundColor: "#EDE0B5",
     borderRadius: 5,
-    paddingHorizontal: 10,
-    paddingTop: 8,
-    paddingBottom: 10,
+    paddingTop: 10,
+    paddingBottom: 8,
+    paddingHorizontal: 7,
+    alignItems: "center",
+    justifyContent: "space-between",
     borderWidth: 1,
     borderColor: "rgba(160,130,80,0.25)",
     shadowColor: "#000",
@@ -81,22 +84,17 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "#9B8B6A",
     letterSpacing: 1.5,
-    marginBottom: 2,
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "baseline",
-    justifyContent: "space-between",
+    textAlign: "center",
   },
   name: {
     fontFamily: "Caveat_700Bold",
-    fontSize: 24,
+    fontSize: 20,
     color: "#3A2010",
-    flex: 1,
-    marginRight: 6,
+    textAlign: "center",
   },
   score: {
     fontFamily: "Caveat_700Bold",
-    fontSize: 24,
+    fontSize: 18,
+    textAlign: "center",
   },
 });

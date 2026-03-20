@@ -76,12 +76,10 @@ export default function CreateInvitationalWizard() {
     let updated = [...rounds];
 
     if (updated.length < target) {
-      // Add rounds, spreading dates across the event window
       while (updated.length < target) {
         updated.push(createEmptyRound(basics.startDate));
       }
     } else if (updated.length > target) {
-      // Remove from the end
       updated = updated.slice(0, target);
     }
 
@@ -144,12 +142,19 @@ export default function CreateInvitationalWizard() {
         })),
       ];
 
-      // Build rounds array for Firestore
+      // Build rounds array for Firestore.
+      // regionKey and leaderboardId are read from the course doc by
+      // CourseSearchPicker at selection time — bake them in here so
+      // invitationalRounds.ts can write them to round docs without
+      // needing a separate course lookup at round-start time.
       const roundsDocs = rounds.map((r, index) => ({
         roundId: r.id,
         courseId: r.course?.courseId || null,
         courseName: r.course?.courseName || "",
         courseLocation: r.course?.location || { city: "", state: "" },
+        // Leaderboard resolution — baked in from CourseSearchPicker
+        regionKey: r.course?.regionKey || null,
+        leaderboardId: r.course?.leaderboardId || null,
         date: Timestamp.fromDate(r.date),
         teeTime: r.hasTeeTime
           ? r.teeTime.toLocaleTimeString("en-US", {
@@ -204,15 +209,8 @@ export default function CreateInvitationalWizard() {
         updatedAt: Timestamp.now(),
       };
 
-      const docRef = await addDoc(
-        collection(db, "invitationals"),
-        invitationalData
-      );
+      await addDoc(collection(db, "invitationals"), invitationalData);
 
-      // TODO: Send push notifications to invited users
-      // TODO: Send email/SMS to ghost players with ghostEmail/ghostPhone
-
-      // Navigate to the new invitational
       router.replace("/invitationals/home" as any);
     } catch (error) {
       console.error("Error creating invitational:", error);

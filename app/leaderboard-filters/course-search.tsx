@@ -1,10 +1,9 @@
-import { GOLF_COURSE_API_KEY, GOLF_COURSE_API_URL } from "@/constants/apiConfig";
 import { auth, db } from "@/constants/firebaseConfig";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, query, updateDoc, where } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -44,125 +43,80 @@ export default function CourseSearchScreen() {
   const [loadingCourses, setLoadingCourses] = useState(false);
   const [pinnedCourseId, setPinnedCourseId] = useState<number | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
-  
+  const [userRegionKey, setUserRegionKey] = useState<string | null>(null);
+
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    loadPinnedCourse();
+    loadUserData();
   }, []);
 
-  const loadPinnedCourse = async () => {
+  const loadUserData = async () => {
     try {
       const uid = auth.currentUser?.uid;
       if (!uid) return;
 
       const userDoc = await getDoc(doc(db, "users", uid));
       if (userDoc.exists()) {
-        const pinnedLeaderboard = userDoc.data()?.pinnedLeaderboard;
-        if (pinnedLeaderboard) {
-          setPinnedCourseId(pinnedLeaderboard.courseId);
+        const data = userDoc.data();
+        if (data?.pinnedLeaderboard) {
+          setPinnedCourseId(data.pinnedLeaderboard.courseId);
+        }
+        if (data?.regionKey) {
+          setUserRegionKey(data.regionKey);
         }
       }
     } catch (error) {
-      console.error("Error loading pinned course:", error);
+      console.error("Error loading user data:", error);
     }
   };
 
   const searchCourses = async (searchQuery: string) => {
     try {
-      console.log("🔍 Searching courses for:", searchQuery);
+      console.log("🔍 Searching leaderboards for:", searchQuery);
       setLoadingCourses(true);
       setSearchError(null);
 
-      // First, search Firestore cache
-      const coursesQuery = query(collection(db, "courses"));
-      const coursesSnap = await getDocs(coursesQuery);
-      
-      const cachedCourses: GolfCourse[] = [];
-      coursesSnap.forEach((doc) => {
-        const data = doc.data();
-        const courseName = data.course_name?.toLowerCase() || "";
-        const clubName = data.club_name?.toLowerCase() || "";
-        const searchLower = searchQuery.toLowerCase();
-        
-        if (courseName.includes(searchLower) || clubName.includes(searchLower)) {
-          cachedCourses.push({
-            id: data.id,
-            club_name: data.club_name,
-            course_name: data.course_name,
-            location: data.location,
-            tees: data.tees,
+      if (!userRegionKey) {
+        console.warn("⚠️ No regionKey available for search");
+        setSearchError("Region not found — please try again");
+        setLoadingCourses(false);
+        return;
+      }
+
+      // Query only leaderboards in the user's region — avoids full collection scan
+      const lbQuery = query(
+        collection(db, "leaderboards"),
+        where("regionKey", "==", userRegionKey)
+      );
+      const lbSnap = await getDocs(lbQuery);
+
+      const searchLower = searchQuery.toLowerCase();
+      const results: GolfCourse[] = [];
+
+      lbSnap.forEach((d) => {
+        const data = d.data();
+        const courseName = (data.courseName || "").toLowerCase();
+        if (courseName.includes(searchLower)) {
+          results.push({
+            id: data.courseId,
+            club_name: data.courseName,
+            course_name: data.courseName,
+            location: data.location || { city: "", state: "" },
           });
         }
       });
 
-      console.log(`✅ Found ${cachedCourses.length} cached courses`);
+      // Sort alphabetically by course name
+      results.sort((a, b) => a.course_name.localeCompare(b.course_name));
 
-      // Deduplicate courses by ID (keep first occurrence)
-      const uniqueCourses = Array.from(
-        new Map(cachedCourses.map(c => [c.id, c])).values()
-      );
-
-      console.log(`✅ After deduplication: ${uniqueCourses.length} unique courses`);
-
-      // If we have cached results, show them
-      if (uniqueCourses.length > 0) {
-        setCourseResults(uniqueCourses);
-        setLoadingCourses(false);
-        return;
-      }
-
-      // No cached results, try API
-      console.log("🌐 Searching API...");
-      
-      if (!GOLF_COURSE_API_URL || !GOLF_COURSE_API_KEY) {
-        console.error("❌ API credentials missing");
-        setSearchError("API credentials not configured");
-        setLoadingCourses(false);
-        return;
-      }
-
-      const apiUrl = `${GOLF_COURSE_API_URL}/search?search_query=${encodeURIComponent(searchQuery)}`;
-      console.log("📡 API URL:", apiUrl);
-
-      const res = await fetch(apiUrl, {
-        method: "GET",
-        headers: {
-          Authorization: `Key ${GOLF_COURSE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-      });
-
-      console.log("📡 API Response status:", res.status);
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error("❌ API Error:", res.status, errorText);
-        setSearchError(`API Error: ${res.status}`);
-        soundPlayer.play('error');
-        setLoadingCourses(false);
-        return;
-      }
-
-      const data = await res.json();
-      console.log("📦 API Response data:", data);
-      
-      const courses: GolfCourse[] = data.courses || [];
-      console.log(`✅ Found ${courses.length} courses from API`);
-
-      // Deduplicate courses by ID
-      const uniqueApiCourses = Array.from(
-        new Map(courses.map(c => [c.id, c])).values()
-      );
-
-      console.log(`✅ After deduplication: ${uniqueApiCourses.length} unique courses`);
-
-      setCourseResults(uniqueApiCourses);
+      console.log(`✅ Found ${results.length} leaderboards matching "${searchQuery}"`);
+      setCourseResults(results);
       setLoadingCourses(false);
     } catch (err) {
       console.error("❌ Course search error:", err);
       setSearchError(err instanceof Error ? err.message : "Search failed");
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       setLoadingCourses(false);
     }
   };
@@ -177,66 +131,35 @@ export default function CourseSearchScreen() {
     }
 
     debounceRef.current = setTimeout(() => {
-      const query = text.trim();
+      const trimmed = text.trim();
 
-      if (!query) {
+      if (!trimmed) {
         setCourseResults([]);
         setLoadingCourses(false);
         return;
       }
 
-      if (query.length >= 2) {
-        searchCourses(query);
+      if (trimmed.length >= 2) {
+        searchCourses(trimmed);
       }
     }, 300);
   };
 
   const handleSelectCourse = (course: GolfCourse) => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedCourse(course);
-    Keyboard.dismiss(); // ✅ Hide keyboard when course is selected
-  };
-
-  const saveCourseToFirestore = async (course: GolfCourse) => {
-    try {
-      const courseData = {
-        id: course.id,
-        club_name: course.club_name,
-        course_name: course.course_name,
-        location: course.location,
-        tees: course.tees || null,
-        cachedAt: new Date().toISOString(),
-      };
-
-      await setDoc(doc(db, "courses", String(course.id)), courseData, { merge: true });
-      console.log("💾 Saved course to Firestore:", course.course_name);
-    } catch (error) {
-      console.error("❌ Error saving course:", error);
-      soundPlayer.play('error');
-    }
+    Keyboard.dismiss();
   };
 
   const handlePinCourse = async (course: GolfCourse) => {
     try {
-      soundPlayer.play('click');
+      soundPlayer.play("click");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       const uid = auth.currentUser?.uid;
       if (!uid) return;
 
-      // Save course to Firestore first
-      const coursesQuery = query(
-        collection(db, "courses"),
-        where("id", "==", course.id)
-      );
-      const coursesSnap = await getDocs(coursesQuery);
-
-      if (coursesSnap.empty) {
-        await saveCourseToFirestore(course);
-      }
-
-      // Pin the course
       await updateDoc(doc(db, "users", uid), {
         pinnedLeaderboard: {
           courseId: course.id,
@@ -249,13 +172,13 @@ export default function CourseSearchScreen() {
       console.log("✅ Pinned course:", course.course_name);
     } catch (error) {
       console.error("Error pinning course:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
     }
   };
 
   const handleUnpinCourse = async () => {
     try {
-      soundPlayer.play('click');
+      soundPlayer.play("click");
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
       const uid = auth.currentUser?.uid;
@@ -269,45 +192,29 @@ export default function CourseSearchScreen() {
       console.log("✅ Unpinned course");
     } catch (error) {
       console.error("Error unpinning course:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
     }
   };
 
   const handleApply = async () => {
     if (!selectedCourse) return;
-    
+
     try {
-      soundPlayer.play('click');
+      soundPlayer.play("click");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
-      // Check if course exists in Firestore
-      const coursesQuery = query(
-        collection(db, "courses"),
-        where("id", "==", selectedCourse.id)
-      );
-      const coursesSnap = await getDocs(coursesQuery);
-
-      if (coursesSnap.empty) {
-        // Course not cached - save it
-        console.log("🔍 Course not cached, saving to Firestore...");
-        await saveCourseToFirestore(selectedCourse);
-      } else {
-        console.log("✅ Course already cached");
-      }
-
-      // Navigate to leaderboard with filter
       router.push({
         pathname: "/leaderboard",
-        params: { 
+        params: {
           filterType: "course",
           courseId: selectedCourse.id.toString(),
           courseName: selectedCourse.course_name,
-          holeCount, // ✅ Forward hole count from filter screen
+          holeCount,
         },
       });
     } catch (error) {
       console.error("Error applying course filter:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
     }
   };
 
@@ -315,173 +222,190 @@ export default function CourseSearchScreen() {
     <View style={styles.wrapper}>
       <SafeAreaView edges={["top"]} style={styles.safeTop} />
       <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity 
-          onPress={() => {
-            soundPlayer.play('click');
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            router.back();
-          }} 
-          style={styles.headerButton}
-        >
-          <Image
-            source={require("@/assets/icons/Back.png")}
-            style={styles.backIcon}
-            resizeMode="contain"
-          />
-        </TouchableOpacity>
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity
+            onPress={() => {
+              soundPlayer.play("click");
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.back();
+            }}
+            style={styles.headerButton}
+          >
+            <Image
+              source={require("@/assets/icons/Back.png")}
+              style={styles.backIcon}
+              resizeMode="contain"
+            />
+          </TouchableOpacity>
 
-        <Text style={styles.headerTitle}>Search Course</Text>
+          <Text style={styles.headerTitle}>Search Course</Text>
 
-        <View style={styles.headerButton} />
-      </View>
-
-      <View style={styles.content}>
-        <Text style={styles.instructions}>
-          Search for a course to view or pin to your leaderboard
-        </Text>
-
-        <View style={styles.searchContainer}>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Enter course name..."
-            placeholderTextColor="#999"
-            value={courseSearch}
-            onChangeText={handleCourseSearchChange}
-            autoFocus
-          />
-          {loadingCourses && (
-            <ActivityIndicator size="small" color="#0D5C3A" style={styles.searchSpinner} />
-          )}
+          <View style={styles.headerButton} />
         </View>
 
-        {searchError && (
-          <View style={styles.errorBanner}>
-            <Ionicons name="warning" size={20} color="#B0433B" />
-            <Text style={styles.errorText}>{searchError}</Text>
-          </View>
-        )}
+        <View style={styles.content}>
+          <Text style={styles.instructions}>
+            Search for a course to view or pin to your leaderboard
+          </Text>
 
-        {selectedCourse && (
-          <View style={styles.selectedCourseCard}>
-            <View style={styles.selectedCourseInfo}>
-              <Text style={styles.selectedCourseName}>{selectedCourse.course_name}</Text>
-              <Text style={styles.selectedCourseLocation}>
-                {selectedCourse.location.city}, {selectedCourse.location.state}
-              </Text>
+          <View style={styles.searchContainer}>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Enter course name..."
+              placeholderTextColor="#999"
+              value={courseSearch}
+              onChangeText={handleCourseSearchChange}
+              autoFocus
+            />
+            {loadingCourses && (
+              <ActivityIndicator
+                size="small"
+                color="#0D5C3A"
+                style={styles.searchSpinner}
+              />
+            )}
+          </View>
+
+          {searchError && (
+            <View style={styles.errorBanner}>
+              <Ionicons name="warning" size={20} color="#B0433B" />
+              <Text style={styles.errorText}>{searchError}</Text>
             </View>
-            <Ionicons name="checkmark-circle" size={24} color="#FFD700" />
-          </View>
-        )}
+          )}
 
-        <FlatList
-          data={courseResults}
-          keyExtractor={(item, index) => `${item.id}-${index}`}
-          style={styles.resultsList}
-          keyboardShouldPersistTaps="handled"
-          renderItem={({ item }) => {
-            const isPinned = pinnedCourseId === item.id;
-            
-            return (
-              <View style={styles.courseItemContainer}>
-                <TouchableOpacity 
-                  style={[
-                    styles.courseItem,
-                    selectedCourse?.id === item.id && styles.courseItemSelected
-                  ]} 
-                  onPress={() => handleSelectCourse(item)}
-                >
-                  <View style={styles.courseItemContent}>
-                    <Text style={styles.courseItemName}>{item.course_name}</Text>
-                    <Text style={styles.courseItemLocation}>
-                      {item.location.city}, {item.location.state}
-                    </Text>
-                  </View>
-                  {selectedCourse?.id === item.id && (
-                    <Ionicons name="checkmark-circle" size={20} color="#0D5C3A" />
-                  )}
-                </TouchableOpacity>
-                
-                {/* Pin Button */}
-                <TouchableOpacity
-                  style={[styles.pinButton, isPinned && styles.pinButtonActive]}
-                  onPress={() => {
-                    if (isPinned) {
-                      soundPlayer.play('click');
-                      Alert.alert(
-                        "Unpin Course",
-                        `Remove ${item.course_name} from your pinned leaderboard?`,
-                        [
-                          { 
-                            text: "Cancel", 
-                            style: "cancel",
-                            onPress: () => soundPlayer.play('click')
-                          },
-                          { 
-                            text: "Unpin", 
-                            style: "destructive", 
-                            onPress: handleUnpinCourse 
-                          },
-                        ]
-                      );
-                    } else {
-                      if (pinnedCourseId) {
-                        soundPlayer.play('click');
+          {selectedCourse && (
+            <View style={styles.selectedCourseCard}>
+              <View style={styles.selectedCourseInfo}>
+                <Text style={styles.selectedCourseName}>
+                  {selectedCourse.course_name}
+                </Text>
+                <Text style={styles.selectedCourseLocation}>
+                  {selectedCourse.location.city}, {selectedCourse.location.state}
+                </Text>
+              </View>
+              <Ionicons name="checkmark-circle" size={24} color="#FFD700" />
+            </View>
+          )}
+
+          <FlatList
+            data={courseResults}
+            keyExtractor={(item, index) => `${item.id}-${index}`}
+            style={styles.resultsList}
+            keyboardShouldPersistTaps="handled"
+            renderItem={({ item }) => {
+              const isPinned = pinnedCourseId === item.id;
+
+              return (
+                <View style={styles.courseItemContainer}>
+                  <TouchableOpacity
+                    style={[
+                      styles.courseItem,
+                      selectedCourse?.id === item.id && styles.courseItemSelected,
+                    ]}
+                    onPress={() => handleSelectCourse(item)}
+                  >
+                    <View style={styles.courseItemContent}>
+                      <Text style={styles.courseItemName}>
+                        {item.course_name}
+                      </Text>
+                      <Text style={styles.courseItemLocation}>
+                        {item.location?.city && item.location?.state
+                          ? `${item.location.city}, ${item.location.state}`
+                          : item.location?.city || item.location?.state || ""}
+                      </Text>
+                    </View>
+                    {selectedCourse?.id === item.id && (
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={20}
+                        color="#0D5C3A"
+                      />
+                    )}
+                  </TouchableOpacity>
+
+                  {/* Pin Button */}
+                  <TouchableOpacity
+                    style={[
+                      styles.pinButton,
+                      isPinned && styles.pinButtonActive,
+                    ]}
+                    onPress={() => {
+                      if (isPinned) {
+                        soundPlayer.play("click");
                         Alert.alert(
-                          "Replace Pinned Course",
-                          `You can only pin 1 course. Replace your current pin with ${item.course_name}?`,
+                          "Unpin Course",
+                          `Remove ${item.course_name} from your pinned leaderboard?`,
                           [
-                            { 
-                              text: "Cancel", 
+                            {
+                              text: "Cancel",
                               style: "cancel",
-                              onPress: () => soundPlayer.play('click')
+                              onPress: () => soundPlayer.play("click"),
                             },
-                            { 
-                              text: "Replace", 
-                              onPress: () => handlePinCourse(item) 
+                            {
+                              text: "Unpin",
+                              style: "destructive",
+                              onPress: handleUnpinCourse,
                             },
                           ]
                         );
                       } else {
-                        handlePinCourse(item);
+                        if (pinnedCourseId) {
+                          soundPlayer.play("click");
+                          Alert.alert(
+                            "Replace Pinned Course",
+                            `You can only pin 1 course. Replace your current pin with ${item.course_name}?`,
+                            [
+                              {
+                                text: "Cancel",
+                                style: "cancel",
+                                onPress: () => soundPlayer.play("click"),
+                              },
+                              {
+                                text: "Replace",
+                                onPress: () => handlePinCourse(item),
+                              },
+                            ]
+                          );
+                        } else {
+                          handlePinCourse(item);
+                        }
                       }
-                    }
-                  }}
-                >
-                  <Ionicons
-                    name={isPinned ? "pin" : "pin-outline"}
-                    size={20}
-                    color={isPinned ? "#FFD700" : "#666"}
-                  />
-                </TouchableOpacity>
-              </View>
-            );
-          }}
-          ListEmptyComponent={
-            courseSearch.length >= 2 && !loadingCourses ? (
-              <View style={styles.emptyState}>
-                <Ionicons name="search-outline" size={48} color="#CCC" />
-                <Text style={styles.emptyText}>
-                  {searchError ? "Search failed - try again" : "No courses found"}
-                </Text>
-                <Text style={styles.emptyHint}>
-                  Try searching with a different name
-                </Text>
-              </View>
-            ) : null
-          }
-        />
-      </View>
-
-      {selectedCourse && (
-        <View style={styles.actionButtons}>
-          <TouchableOpacity style={styles.applyButton} onPress={handleApply}>
-            <Text style={styles.applyButtonText}>View Leaderboard</Text>
-          </TouchableOpacity>
+                    }}
+                  >
+                    <Ionicons
+                      name={isPinned ? "pin" : "pin-outline"}
+                      size={20}
+                      color={isPinned ? "#FFD700" : "#666"}
+                    />
+                  </TouchableOpacity>
+                </View>
+              );
+            }}
+            ListEmptyComponent={
+              courseSearch.length >= 2 && !loadingCourses ? (
+                <View style={styles.emptyState}>
+                  <Ionicons name="search-outline" size={48} color="#CCC" />
+                  <Text style={styles.emptyText}>
+                    {searchError ? "Search failed - try again" : "No courses found"}
+                  </Text>
+                  <Text style={styles.emptyHint}>
+                    Try searching with a different name
+                  </Text>
+                </View>
+              ) : null
+            }
+          />
         </View>
-      )}
-    </View>
+
+        {selectedCourse && (
+          <View style={styles.actionButtons}>
+            <TouchableOpacity style={styles.applyButton} onPress={handleApply}>
+              <Text style={styles.applyButtonText}>View Leaderboard</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
     </View>
   );
 }

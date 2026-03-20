@@ -1,12 +1,16 @@
 /**
  * CourseSelector - Course search and selection component
+ *
+ * Searches courses in Firestore scoped to the user's regionKey.
+ * Resolves leaderboardId at selection time so rounds always write
+ * to the correct leaderboard without needing a course lookup later.
  */
 
 import { db } from "@/constants/firebaseConfig";
 import { soundPlayer } from "@/utils/soundPlayer";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { collection, getDocs } from "firebase/firestore";
+import { collection, getDocs, query, where } from "firebase/firestore";
 import React, { useState } from "react";
 import {
   ActivityIndicator,
@@ -21,13 +25,11 @@ import { haversine } from "./helpers";
 import { styles } from "./styles";
 import { CourseBasic } from "./types";
 
-const API_KEY = process.env.EXPO_PUBLIC_GOLFCOURSE_API_KEY;
-const API_BASE = "https://api.golfcourseapi.com/v1";
-
 interface CourseSelectorProps {
   availableCourses: CourseBasic[];
   isRestricted: boolean;
   userLocation: { latitude?: number; longitude?: number } | null;
+  userRegionKey: string | null;
   onSelectCourse: (course: CourseBasic) => void;
   onBack: () => void;
 }
@@ -36,6 +38,7 @@ export default function CourseSelector({
   availableCourses,
   isRestricted,
   userLocation,
+  userRegionKey,
   onSelectCourse,
   onBack,
 }: CourseSelectorProps) {
@@ -43,6 +46,7 @@ export default function CourseSelector({
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<CourseBasic[]>([]);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
 
   const handleCourseSearch = async () => {
     if (!searchQuery.trim()) {
@@ -50,19 +54,30 @@ export default function CourseSelector({
       return;
     }
 
+    if (!userRegionKey) {
+      setSearchError("Region not available — please try again");
+      return;
+    }
+
     try {
       setSearching(true);
+      setSearchError(null);
       soundPlayer.play("click");
 
       const searchLower = searchQuery.toLowerCase().trim();
 
-      // Step 1: Search Firestore first
-      const coursesSnap = await getDocs(collection(db, "courses"));
-      const firestoreCourses: CourseBasic[] = [];
+      // Query only courses in the user's region — avoids full collection scan
+      const q = query(
+        collection(db, "courses"),
+        where("regionKey", "==", userRegionKey)
+      );
+      const snap = await getDocs(q);
 
-      coursesSnap.docs.forEach((courseDoc) => {
+      const results: CourseBasic[] = [];
+
+      snap.forEach((courseDoc) => {
         const data = courseDoc.data();
-        const courseName = (data.courseName || data.course_name || "").toLowerCase();
+        const courseName = (data.course_name || data.courseName || "").toLowerCase();
         const city = (data.location?.city || "").toLowerCase();
         const state = (data.location?.state || "").toLowerCase();
 
@@ -86,79 +101,42 @@ export default function CourseSelector({
             );
           }
 
-          firestoreCourses.push({
-            id: data.id || data.courseId || courseDoc.id,
-            courseId: data.id || data.courseId,
+          const courseId = data.id || data.courseId;
+          const regionKey = data.regionKey || userRegionKey;
+
+          results.push({
+            id: courseId,
+            courseId: courseId,
             course_name: data.course_name || data.courseName,
             courseName: data.courseName || data.course_name,
             location: data.location,
             city: data.location?.city,
             state: data.location?.state,
             distance,
+            regionKey,
+            leaderboardId: data.leaderboardId || `${regionKey}_${courseId}`,
+            tees: data.tees || null,
           });
         }
       });
 
-      // Sort Firestore results by distance
-      firestoreCourses.sort((a, b) => (a.distance || 999) - (b.distance || 999));
-
-      // Step 2: If Firestore has enough results, use those
-      if (firestoreCourses.length >= 3) {
-        setSearchResults(firestoreCourses.slice(0, 10));
-        setSearching(false);
-        return;
-      }
-
-      // Step 3: Fallback to API if not enough Firestore results
-      const res = await fetch(
-        `${API_BASE}/search?search_query=${encodeURIComponent(searchQuery)}`,
-        { headers: { Authorization: `Key ${API_KEY}` } }
-      );
-      const data = await res.json();
-      const apiCourses: any[] = data.courses || [];
-
-      const apiMappedCourses: CourseBasic[] = apiCourses.map((c) => {
-        let distance: number | undefined;
-        if (
-          userLocation?.latitude &&
-          userLocation?.longitude &&
-          c.location?.latitude &&
-          c.location?.longitude
-        ) {
-          distance = haversine(
-            userLocation.latitude,
-            userLocation.longitude,
-            c.location.latitude,
-            c.location.longitude
-          );
+      // Sort by distance if available, otherwise alphabetically
+      results.sort((a, b) => {
+        if (a.distance !== undefined && b.distance !== undefined) {
+          return a.distance - b.distance;
         }
-        return {
-          id: c.id,
-          courseId: c.id,
-          course_name: c.course_name,
-          courseName: c.course_name,
-          location: c.location,
-          city: c.location?.city,
-          state: c.location?.state,
-          distance,
-        };
+        return (a.courseName || a.course_name || "").localeCompare(
+          b.courseName || b.course_name || ""
+        );
       });
 
-      // Merge and dedupe
-      const seenIds = new Set(firestoreCourses.map((c) => c.courseId || c.id));
-      const mergedCourses = [...firestoreCourses];
-
-      for (const apiCourse of apiMappedCourses) {
-        if (!seenIds.has(apiCourse.courseId)) {
-          mergedCourses.push(apiCourse);
-          seenIds.add(apiCourse.courseId);
-        }
-      }
-
-      mergedCourses.sort((a, b) => (a.distance || 999) - (b.distance || 999));
-      setSearchResults(mergedCourses.slice(0, 15));
+      console.log(
+        `✅ CourseSelector: Found ${results.length} courses in ${userRegionKey} for "${searchQuery}"`
+      );
+      setSearchResults(results.slice(0, 15));
     } catch (error) {
-      console.error("Search error:", error);
+      console.error("❌ CourseSelector search error:", error);
+      setSearchError("Search failed — please try again");
       setSearchResults([]);
     } finally {
       setSearching(false);
@@ -209,7 +187,10 @@ export default function CourseSelector({
               placeholder="Enter course name or city..."
               placeholderTextColor="#999"
               value={searchQuery}
-              onChangeText={setSearchQuery}
+              onChangeText={(text) => {
+                setSearchQuery(text);
+                setSearchError(null);
+              }}
               onSubmitEditing={handleCourseSearch}
               returnKeyType="search"
               autoFocus
@@ -227,6 +208,19 @@ export default function CourseSelector({
             </TouchableOpacity>
           </View>
 
+          {searchError && (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 }}>
+              <Ionicons name="warning-outline" size={14} color="#CC3333" />
+              <Text style={{ fontSize: 13, color: "#CC3333" }}>{searchError}</Text>
+            </View>
+          )}
+
+          {!searching && searchResults.length === 0 && searchQuery.trim().length > 0 && !searchError && (
+            <Text style={{ fontSize: 14, color: "#999", textAlign: "center", marginTop: 16 }}>
+              No courses found in your region — try a different name
+            </Text>
+          )}
+
           {searchResults.length > 0 && (
             <View style={styles.searchResultsContainer}>
               {searchResults.map((c, index) => renderCourseOption(c, index))}
@@ -240,6 +234,7 @@ export default function CourseSelector({
               setShowSearch(false);
               setSearchResults([]);
               setSearchQuery("");
+              setSearchError(null);
             }}
           >
             <Text style={styles.backToRecentText}>← Back to Recent Courses</Text>
