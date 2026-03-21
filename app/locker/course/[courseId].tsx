@@ -1,3 +1,7 @@
+import CourseActionButtons from "@/components/locker/course/CourseActionButtons";
+import CoursePlaque from "@/components/locker/course/CoursePlaque";
+import ShelfCard from "@/components/locker/course/ShelfCard";
+import ShelfTitle from "@/components/locker/course/ShelfTitle";
 import MembershipRequestModal from "@/components/modals/MembershipRequestModal";
 import BottomActionBar from "@/components/navigation/BottomActionBar";
 import SwingFooter from "@/components/navigation/SwingFooter";
@@ -6,7 +10,6 @@ import { auth, db } from "@/constants/firebaseConfig";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import { soundPlayer } from "@/utils/soundPlayer";
 
-import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { arrayRemove, arrayUnion, collection, doc, getDoc, getDocs, query, updateDoc, where } from "firebase/firestore";
@@ -14,14 +17,12 @@ import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Image,
   ImageBackground,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
-  View
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -54,7 +55,7 @@ export default function CourseLockerScreen() {
       const fetchCourseDataWithCache = async () => {
         try {
           const cached = await getCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""));
-          
+
           if (cached) {
             console.log("⚡ Course locker cache hit:", courseId);
             setCourseData(cached.courseData);
@@ -91,7 +92,6 @@ export default function CourseLockerScreen() {
     try {
       setLoading(true);
 
-      // Get course data from leaderboards
       const leaderboardsQuery = query(
         collection(db, "leaderboards"),
         where("courseId", "==", Number(courseId))
@@ -117,12 +117,11 @@ export default function CourseLockerScreen() {
         });
       }
 
-      // Get course details from courses collection
       const courseDocRef = doc(db, "courses", courseId);
       const courseSnap = await getDoc(courseDocRef);
-      
+
       let courseDetails: any = {};
-      
+
       if (courseSnap.exists()) {
         courseDetails = courseSnap.data();
         setIsClaimed(courseDetails.claimed || false);
@@ -139,7 +138,6 @@ export default function CourseLockerScreen() {
 
       setCourseData(courseDataObj);
 
-      // Check user membership status
       let userIsPlayer = false;
       let userIsMember = false;
       let userIsPending = false;
@@ -152,7 +150,7 @@ export default function CourseLockerScreen() {
           const playerCourses = userData.playerCourses || [];
           const memberCourses = userData.declaredMemberCourses || [];
           const pendingCourses = userData.pendingMembershipCourses || [];
-          
+
           userIsPlayer = playerCourses.includes(Number(courseId));
           userIsMember = memberCourses.includes(Number(courseId));
           userIsPending = pendingCourses.includes(Number(courseId));
@@ -179,12 +177,10 @@ export default function CourseLockerScreen() {
         }
       }
 
-      // Check if this course has an associated league
       let foundLeagueId: string | null = null;
       let foundLeagueName: string | null = null;
 
       try {
-        // Query leagues where this course is in restrictedCourses
         const leaguesQuery = query(
           collection(db, "leagues"),
           where("status", "in", ["upcoming", "active"])
@@ -205,7 +201,6 @@ export default function CourseLockerScreen() {
           }
         }
 
-        // Fallback: if course is claimed, check if the owner hosts a league
         if (!foundLeagueId && courseDetails.claimedByUserId) {
           const ownerLeaguesQuery = query(
             collection(db, "leagues"),
@@ -226,7 +221,6 @@ export default function CourseLockerScreen() {
       setCourseLeagueId(foundLeagueId);
       setCourseLeagueName(foundLeagueName);
 
-      // Process scores
       allScores.sort((a, b) => a.netScore - b.netScore);
       const top6 = allScores.slice(0, 6).map(score => ({
         ...score,
@@ -236,7 +230,6 @@ export default function CourseLockerScreen() {
 
       setLeaders(top6);
 
-      // Process hole-in-ones
       const hioWithUsers = holeinones.slice(0, 6).map((hio: any) => ({
         ...hio,
         userName: hio.displayName || "Player",
@@ -264,7 +257,7 @@ export default function CourseLockerScreen() {
       setLoading(false);
     } catch (error) {
       console.error("Error loading course data:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       setShowingCached(false);
       setLoading(false);
     }
@@ -281,10 +274,10 @@ export default function CourseLockerScreen() {
     if (!timestamp) return "";
     try {
       const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
-      return date.toLocaleDateString("en-US", { 
-        month: "short", 
-        day: "numeric", 
-        year: "numeric" 
+      return date.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
       });
     } catch {
       return "";
@@ -292,70 +285,49 @@ export default function CourseLockerScreen() {
   };
 
   const goToPlayer = (userId: string) => {
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/locker/${userId}`);
   };
 
   const handleBecomePlayer = async () => {
     if (!currentUserId) return;
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     try {
       const userRef = doc(db, "users", currentUserId);
 
       if (isPlayer) {
-        await updateDoc(userRef, {
-          playerCourses: arrayRemove(Number(courseId))
-        });
-        soundPlayer.play('postThought');
+        await updateDoc(userRef, { playerCourses: arrayRemove(Number(courseId)) });
+        soundPlayer.play("postThought");
         setIsPlayer(false);
-        
         const cached = await getCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""));
-        if (cached) {
-          await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), {
-            ...cached,
-            isPlayer: false,
-          });
-        }
-        
+        if (cached) await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), { ...cached, isPlayer: false });
         Alert.alert("Removed", `You're no longer a player of ${courseData?.courseName}`);
       } else {
-        await updateDoc(userRef, {
-          playerCourses: arrayUnion(Number(courseId))
-        });
-        soundPlayer.play('postThought');
+        await updateDoc(userRef, { playerCourses: arrayUnion(Number(courseId)) });
+        soundPlayer.play("postThought");
         setIsPlayer(true);
-        
         const cached = await getCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""));
-        if (cached) {
-          await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), {
-            ...cached,
-            isPlayer: true,
-          });
-        }
-        
+        if (cached) await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), { ...cached, isPlayer: true });
         Alert.alert("Player! ⛳", `You're now a player of ${courseData?.courseName}`);
       }
     } catch (error) {
       console.error("Error updating player status:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       Alert.alert("Error", "Failed to update player status");
     }
   };
 
   const handleDeclareMembership = async () => {
     if (!currentUserId) return;
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     if (membershipStatus === "pending") {
-      soundPlayer.play('error');
-      Alert.alert(
-        "Request Pending",
-        "Your membership request is currently being reviewed by our team. We'll notify you once it's been processed."
-      );
+      soundPlayer.play("error");
+      Alert.alert("Request Pending", "Your membership request is currently being reviewed.");
       return;
     }
 
@@ -365,13 +337,7 @@ export default function CourseLockerScreen() {
         "Your previous membership request was not approved. You can submit a new request with updated proof.",
         [
           { text: "Cancel", style: "cancel" },
-          { 
-            text: "Resubmit", 
-            onPress: () => {
-              soundPlayer.play('click');
-              setMembershipModalVisible(true);
-            }
-          }
+          { text: "Resubmit", onPress: () => { soundPlayer.play("click"); setMembershipModalVisible(true); } },
         ]
       );
       return;
@@ -389,9 +355,7 @@ export default function CourseLockerScreen() {
             onPress: async () => {
               try {
                 const userRef = doc(db, "users", currentUserId);
-                await updateDoc(userRef, {
-                  declaredMemberCourses: arrayRemove(Number(courseId))
-                });
+                await updateDoc(userRef, { declaredMemberCourses: arrayRemove(Number(courseId)) });
 
                 const membershipQuery = query(
                   collection(db, "course_memberships"),
@@ -399,35 +363,22 @@ export default function CourseLockerScreen() {
                   where("courseId", "==", Number(courseId))
                 );
                 const membershipSnap = await getDocs(membershipQuery);
-
                 if (!membershipSnap.empty) {
-                  const membershipDocRef = membershipSnap.docs[0].ref;
-                  await updateDoc(membershipDocRef, {
-                    status: "cancelled"
-                  });
+                  await updateDoc(membershipSnap.docs[0].ref, { status: "cancelled" });
                 }
 
-                soundPlayer.play('postThought');
+                soundPlayer.play("postThought");
                 setIsMember(false);
                 setMembershipStatus("none");
-                
                 const cached = await getCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""));
-                if (cached) {
-                  await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), {
-                    ...cached,
-                    isMember: false,
-                    membershipStatus: "none",
-                  });
-                }
-                
+                if (cached) await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), { ...cached, isMember: false, membershipStatus: "none" });
                 Alert.alert("Removed", `Membership removed from ${courseData?.courseName}`);
               } catch (error) {
-                console.error("Error removing membership:", error);
-                soundPlayer.play('error');
+                soundPlayer.play("error");
                 Alert.alert("Error", "Failed to remove membership");
               }
-            }
-          }
+            },
+          },
         ]
       );
       return;
@@ -438,29 +389,33 @@ export default function CourseLockerScreen() {
 
   const handleLockerNote = () => {
     if (!isClaimed) {
-      soundPlayer.play('error');
+      soundPlayer.play("error");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-      Alert.alert(
-        "Course Not Claimed",
-        "This course hasn't claimed their profile yet. Locker notes are only available for claimed courses."
-      );
+      Alert.alert("Course Not Claimed", "This course hasn't claimed their profile yet.");
       return;
     }
-
     if (!claimedByUserId) {
-      soundPlayer.play('error');
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      soundPlayer.play("error");
       Alert.alert("Error", "Unable to send locker note at this time");
       return;
     }
-
-    soundPlayer.play('click');
+    soundPlayer.play("click");
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     router.push(`/messages/${claimedByUserId}`);
   };
 
+  const handleLeague = () => {
+    soundPlayer.play("click");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (courseLeagueId) {
+      router.push(`/leagues/home?leagueId=${courseLeagueId}`);
+    } else {
+      Alert.alert("No League Yet", `${courseData?.courseName || "This course"} hasn't created a league yet.`);
+    }
+  };
+
   const handleMembershipSuccess = async () => {
-    soundPlayer.play('postThought');
+    soundPlayer.play("postThought");
     if (!currentUserId) return;
 
     try {
@@ -468,8 +423,7 @@ export default function CourseLockerScreen() {
       if (userDoc.exists()) {
         const userData = userDoc.data();
         const pendingCourses = userData.pendingMembershipCourses || [];
-        const isPending = pendingCourses.includes(Number(courseId));
-        setIsPendingMembership(isPending);
+        setIsPendingMembership(pendingCourses.includes(Number(courseId)));
       }
 
       const membershipQuery = query(
@@ -480,24 +434,19 @@ export default function CourseLockerScreen() {
       const membershipSnap = await getDocs(membershipQuery);
 
       if (!membershipSnap.empty) {
-        const membershipDoc = membershipSnap.docs[0];
-        const status = membershipDoc.data().status as "pending" | "approved" | "rejected";
+        const status = membershipSnap.docs[0].data().status as "pending" | "approved" | "rejected";
         setMembershipStatus(status);
-        
         const cached = await getCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""));
-        if (cached) {
-          await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), {
-            ...cached,
-            membershipStatus: status,
-            isPendingMembership: status === "pending",
-          });
-        }
+        if (cached) await setCache(CACHE_KEYS.COURSE_LEADERBOARD(courseId, ""), { ...cached, membershipStatus: status, isPendingMembership: status === "pending" });
       }
     } catch (error) {
-      console.error("Error refreshing membership status:", error);
-      soundPlayer.play('error');
+      soundPlayer.play("error");
     }
   };
+
+  // ============================================================================
+  // LOADING
+  // ============================================================================
 
   if (loading && !showingCached) {
     return (
@@ -509,6 +458,10 @@ export default function CourseLockerScreen() {
       </View>
     );
   }
+
+  // ============================================================================
+  // RENDER
+  // ============================================================================
 
   return (
     <View style={styles.container}>
@@ -522,6 +475,7 @@ export default function CourseLockerScreen() {
           resizeMode="cover"
           style={styles.background}
         >
+          {/* Cache updating indicator */}
           {showingCached && !loading && (
             <View style={styles.cacheIndicator}>
               <ActivityIndicator size="small" color="#0D5C3A" />
@@ -529,139 +483,54 @@ export default function CourseLockerScreen() {
             </View>
           )}
 
-          {/* HEADER - Absolute positioned */}
+          {/* ---------------------------------------------------------------- */}
+          {/* HEADER — CoursePlaque + action buttons                           */}
+          {/* ---------------------------------------------------------------- */}
           <View style={styles.headerArea}>
-            <View style={styles.brassPlaque}>
-              <Text style={styles.courseName}>
-                {courseData?.courseName?.toUpperCase() || "COURSE"}
-              </Text>
-              <Text style={styles.courseDetails}>
-                {courseData?.location?.city && courseData?.location?.state
-                  ? `${courseData.location.city}, ${courseData.location.state}`
-                  : "Location"}{" "}
-                • Par {courseData?.par || 72}
-                {courseData?.slope ? ` • Slope ${courseData.slope}` : ""}
-              </Text>
-            </View>
+            <CoursePlaque
+              courseName={courseData?.courseName || "Course"}
+              city={courseData?.location?.city}
+              state={courseData?.location?.state}
+              par={courseData?.par || 72}
+              slope={courseData?.slope}
+            />
 
             {currentUserId && (
-              <View style={styles.actionRow}>
-                <TouchableOpacity
-                  onPress={handleBecomePlayer}
-                  style={[
-                    styles.actionButton,
-                    isPlayer && styles.activeButton,
-                  ]}
-                >
-                  <Ionicons
-                    name={isPlayer ? "checkmark-circle" : "golf"}
-                    size={14}
-                    color="#fff"
-                  />
-                  <Text style={styles.actionText}>
-                    {isPlayer ? "Player ✓" : "Become a Player"}
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={handleDeclareMembership}
-                  style={[
-                    styles.actionButton,
-                    membershipStatus === "approved" && styles.activeButton,
-                    membershipStatus === "pending" && styles.pendingButton,
-                  ]}
-                >
-                  <Ionicons
-                    name={
-                      membershipStatus === "approved"
-                        ? "checkmark-circle"
-                        : membershipStatus === "pending"
-                        ? "time-outline"
-                        : membershipStatus === "rejected"
-                        ? "alert-circle-outline"
-                        : "ribbon"
-                    }
-                    size={14}
-                    color="#fff"
-                  />
-                  <Text style={styles.actionText}>
-                    {membershipStatus === "approved"
-                      ? "Member ✓"
-                      : membershipStatus === "pending"
-                      ? "Pending ⏳"
-                      : membershipStatus === "rejected"
-                      ? "Resubmit"
-                      : "Declare Membership"}
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={handleLockerNote}
-                  style={[
-                    styles.actionButton,
-                    !isClaimed && styles.lockerNoteLocked,
-                  ]}
-                >
-                  <Ionicons name="mail" size={14} color="#fff" />
-                  <Text style={styles.actionText}>Locker{"\n"}Note</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={() => {
-                    soundPlayer.play('click');
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    if (courseLeagueId) {
-                      router.push(`/leagues/home?leagueId=${courseLeagueId}`);
-                    } else {
-                      Alert.alert(
-                        "No League Yet",
-                        `${courseData?.courseName || "This course"} hasn't created a league yet. Check back soon!`
-                      );
-                    }
-                  }}
-                  style={[
-                    styles.leagueButton,
-                    !courseLeagueId && styles.lockerNoteLocked,
-                  ]}
-                >
-                  <Ionicons name="trophy" size={14} color="#fff" />
-                  <Text style={styles.actionText}>League</Text>
-                </TouchableOpacity>
-              </View>
+              <CourseActionButtons
+                isPlayer={isPlayer}
+                membershipStatus={membershipStatus}
+                isClaimed={isClaimed}
+                courseLeagueId={courseLeagueId}
+                onBecomePlayer={handleBecomePlayer}
+                onDeclareMembership={handleDeclareMembership}
+                onLockerNote={handleLockerNote}
+                onLeague={handleLeague}
+              />
             )}
           </View>
 
-          {/* SHELF 1 - Absolute positioned SIBLING to ScrollView */}
+          {/* ---------------------------------------------------------------- */}
+          {/* SHELF 1 — Current Low Leaders                                   */}
+          {/* ---------------------------------------------------------------- */}
           <View style={styles.shelf1}>
-            <Text style={styles.shelfTitle}>CURRENT LOW LEADERS</Text>
-            
+            <ShelfTitle title="Current Low Leaders" />
+
             {leaders.length > 0 ? (
-              <ScrollView 
-                horizontal 
+              <ScrollView
+                horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.cardRow}
+                removeClippedSubviews={false}
               >
                 {leaders.map((leader, index) => (
-                  <TouchableOpacity
+                  <ShelfCard
                     key={leader.scoreId || index}
-                    style={styles.smallCard}
+                    avatarUri={leader.userAvatar}
+                    name={leader.userName}
+                    stat={`Net: ${leader.netScore}`}
+                    date={formatDate(leader.createdAt)}
                     onPress={() => goToPlayer(leader.userId)}
-                  >
-                    {leader.userAvatar ? (
-                      <Image source={{ uri: leader.userAvatar }} style={styles.smallAvatar} />
-                    ) : (
-                      <View style={styles.smallAvatarFallback}>
-                        <Ionicons name="person" size={14} color="#8B6914" />
-                      </View>
-                    )}
-                    <Text style={styles.smallName} numberOfLines={1}>
-                      {leader.userName}
-                    </Text>
-                    <Text style={styles.smallScore}>Net: {leader.netScore}</Text>
-                    <Text style={styles.smallDate}>
-                      {formatDate(leader.createdAt)}
-                    </Text>
-                  </TouchableOpacity>
+                  />
                 ))}
               </ScrollView>
             ) : (
@@ -673,70 +542,62 @@ export default function CourseLockerScreen() {
             )}
           </View>
 
-          {/* SHELF 2 - Absolute positioned SIBLING to ScrollView */}
+          {/* ---------------------------------------------------------------- */}
+          {/* SHELF 2 — Hole-in-Ones                                          */}
+          {/* ---------------------------------------------------------------- */}
           <View style={styles.shelf2}>
-            <Text style={styles.shelfTitle}>HOLE-IN-ONES</Text>
-            
+            <ShelfTitle title="Hole-in-Ones" />
+
             {holeInOnes.length > 0 ? (
-              <ScrollView 
-                horizontal 
+              <ScrollView
+                horizontal
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={styles.cardRow}
+                removeClippedSubviews={false}
               >
                 {holeInOnes.map((ace, index) => (
-                  <TouchableOpacity
+                  <ShelfCard
                     key={index}
-                    style={styles.smallCard}
+                    avatarUri={ace.userAvatar}
+                    name={ace.userName || ace.displayName}
+                    stat={`Hole ${ace.hole || "?"}`}
+                    date={formatDate(ace.achievedAt)}
                     onPress={() => goToPlayer(ace.userId)}
-                  >
-                    {ace.userAvatar ? (
-                      <Image source={{ uri: ace.userAvatar }} style={styles.smallAvatar} />
-                    ) : (
-                      <View style={styles.smallAvatarFallback}>
-                        <Ionicons name="person" size={14} color="#8B6914" />
-                      </View>
-                    )}
-                    <Text style={styles.smallName} numberOfLines={1}>
-                      {ace.userName || ace.displayName}
-                    </Text>
-                    <Text style={styles.smallScore}>
-                      Hole {ace.hole || "?"}
-                    </Text>
-                    <Text style={styles.smallDate}>
-                      {formatDate(ace.achievedAt)}
-                    </Text>
-                  </TouchableOpacity>
+                  />
                 ))}
               </ScrollView>
             ) : (
               <View style={styles.emptyPlaque}>
                 <Text style={styles.emptyPlaqueText}>
-                  Be the first to achieve a hole in 1 commemoration
+                  Be the first to achieve a hole-in-one commemoration
                 </Text>
               </View>
             )}
           </View>
 
-          {/* SHELF 3 - Absolute positioned SIBLING to ScrollView */}
+          {/* ---------------------------------------------------------------- */}
+          {/* SHELF 3 — Tour Champions                                        */}
+          {/* ---------------------------------------------------------------- */}
           <View style={styles.shelf3}>
-            <Text style={styles.shelfTitle}>COMING SOON</Text>
-            
-            <View style={styles.comingSoonPlaque}>
-              <Text style={styles.comingSoonText}>
-                More course statistics and records
+            <ShelfTitle title="Tour Champions" />
+
+            {/* Placeholder — data to be wired in a future build */}
+            <View style={styles.emptyPlaque}>
+              <Text style={styles.emptyPlaqueText}>
+                Tour champions will be commemorated here
               </Text>
             </View>
           </View>
 
-          {/* Invisible ScrollView for pull-to-refresh */}
+          {/* Invisible pull-to-refresh scroll view */}
           <ScrollView
             style={styles.refreshScrollView}
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
                 onRefresh={onRefresh}
-                tintColor="#8B6914"
-                colors={["#8B6914"]}
+                tintColor="#C8A53C"
+                colors={["#C8A53C"]}
               />
             }
           />
@@ -745,7 +606,7 @@ export default function CourseLockerScreen() {
         <MembershipRequestModal
           visible={membershipModalVisible}
           onClose={() => {
-            soundPlayer.play('click');
+            soundPlayer.play("click");
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             setMembershipModalVisible(false);
           }}
@@ -761,14 +622,18 @@ export default function CourseLockerScreen() {
   );
 }
 
+// ============================================================================
+// STYLES
+// ============================================================================
+
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: "#F4EED8" 
+  container: {
+    flex: 1,
+    backgroundColor: "#F4EED8",
   },
-  
-  safeTop: { 
-    backgroundColor: "#0D5C3A" 
+
+  safeTop: {
+    backgroundColor: "#0D5C3A",
   },
 
   loadingContainer: {
@@ -792,24 +657,24 @@ const styles = StyleSheet.create({
     borderBottomColor: "rgba(255, 236, 181, 0.95)",
     zIndex: 100,
   },
-  
+
   cacheText: {
     fontSize: 12,
     color: "#664D03",
     fontWeight: "600",
   },
-  
+
   lockerContainer: {
     flex: 1,
     backgroundColor: "#F4EED8",
   },
 
-  background: { 
+  background: {
     flex: 1,
   },
 
   refreshScrollView: {
-    position: 'absolute',
+    position: "absolute",
     top: 0,
     left: 0,
     right: 0,
@@ -818,266 +683,67 @@ const styles = StyleSheet.create({
   },
 
   headerArea: {
-    position: 'absolute',
-    top: '0.5%',
+    position: "absolute",
+    top: "0.5%",
     left: 0,
     right: 0,
-    justifyContent: 'center',
-    alignItems: "center",
-    paddingHorizontal: 16,
-    gap: 4,
     zIndex: 10,
   },
 
-  brassPlaque: {
-    backgroundColor: "#D4AF37",
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: "#8B6914",
-    paddingVertical: 4,
-    paddingHorizontal: 12,
-    alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.8,
-    shadowRadius: 12,
-    elevation: 16,
-    maxWidth: "80%",
-  },
-
-  courseName: {
-    fontSize: 13,
-    fontWeight: "900",
-    color: "#2C1810",
-    textAlign: "center",
-    marginBottom: 2,
-    letterSpacing: 0.5,
-  },
-
-  courseDetails: {
-    fontSize: 8,
-    fontWeight: "600",
-    color: "#4A3728",
-    textAlign: "center",
-    letterSpacing: 0.2,
-  },
-
-  actionRow: {
-    flexDirection: "row",
-    gap: 3,
-    justifyContent: "space-between",
-    paddingHorizontal: 8,
-    marginBottom: 0,
-  },
-
-  actionButton: {
-    flex: 1,
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 1,
-    backgroundColor: "#0D5C3A",
-    paddingVertical: 4,
-    paddingHorizontal: 2,
-    borderRadius: 7,
-    borderWidth: 1.5,
-    borderColor: "#8B6914",
-    minHeight: 36,
-  },
-
-  activeButton: {
-    backgroundColor: "#B8860B",
-    borderColor: "#8B6914",
-  },
-
-  leagueButton: {
-    flex: 1,
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 1,
-    backgroundColor: "#2E8B57",
-    paddingVertical: 4,
-    paddingHorizontal: 2,
-    borderRadius: 7,
-    borderWidth: 1.5,
-    borderColor: "#8B6914",
-    minHeight: 36,
-  },
-
-  pendingButton: {
-    backgroundColor: "#888",
-    borderColor: "#666",
-  },
-
-  lockerNoteLocked: {
-    backgroundColor: "#999",
-    borderColor: "#666",
-  },
-
-  actionText: {
-    color: "#fff",
-    fontSize: 8,
-    fontWeight: "700",
-    textAlign: "center",
-    lineHeight: 10,
-    maxWidth: "100%",
-  },
-
   shelf1: {
-    position: 'absolute',
-    top: '15%',
+    position: "absolute",
+    top: "15%",
     left: 0,
     right: 0,
-    height: '25.2%',
+    height: "25.2%",
     paddingHorizontal: 20,
-    justifyContent: 'flex-start',
+    justifyContent: "flex-start",
     paddingTop: 8,
   },
 
   shelf2: {
-    position: 'absolute',
-    top: '42%',
+    position: "absolute",
+    top: "42%",
     left: 0,
     right: 0,
-    height: '24.5%',
+    height: "24.5%",
     paddingHorizontal: 20,
-    justifyContent: 'flex-start',
+    justifyContent: "flex-start",
     paddingTop: 8,
   },
 
   shelf3: {
-    position: 'absolute',
-    top: '68%',
+    position: "absolute",
+    top: "70%",
     left: 0,
     right: 0,
-    height: '29.5%',
+    height: "29.5%",
     paddingHorizontal: 20,
-    justifyContent: 'flex-start',
+    justifyContent: "flex-start",
     paddingTop: 8,
-  },
-
-  shelfTitle: {
-    fontSize: 9,
-    fontWeight: "900",
-    color: "#2C1810",
-    textAlign: "center",
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-    backgroundColor: "#E8D7B8",
-    borderRadius: 4,
-    borderWidth: 1.5,
-    borderColor: "#8B6914",
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    alignSelf: 'center',
-    marginBottom: 8,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.75,
-    shadowRadius: 10,
-    elevation: 14,
   },
 
   cardRow: {
     flexDirection: "row",
     paddingHorizontal: 4,
-    gap: 6,
-  },
-
-  smallCard: {
-    width: 95,
-    height: 95,
-    backgroundColor: "#E8D7B8",
-    borderRadius: 5,
-    borderWidth: 1.5,
-    borderColor: "#8B6914",
-    paddingVertical: 6,
-    paddingHorizontal: 5,
-    alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.15,
-    shadowRadius: 2,
-    elevation: 3,
-  },
-
-  smallAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    marginBottom: 4,
-  },
-
-  smallAvatarFallback: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "#D4AF37",
-    borderWidth: 1,
-    borderColor: "#8B6914",
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 4,
-  },
-
-  smallName: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#2C1810",
-    textAlign: "center",
-    lineHeight: 12,
-    marginBottom: 2,
-  },
-
-  smallScore: {
-    fontSize: 9,
-    fontWeight: "600",
-    color: "#8B6914",
-    lineHeight: 11,
-    marginBottom: 1,
-  },
-
-  smallDate: {
-    fontSize: 8,
-    fontWeight: "500",
-    color: "#6B5D4F",
-    lineHeight: 10,
+    gap: 8,
   },
 
   emptyPlaque: {
-    backgroundColor: "#E8D7B8",
+    backgroundColor: "rgba(232, 200, 74, 0.15)",
     borderRadius: 8,
-    borderWidth: 2,
-    borderColor: "#8B6914",
+    borderWidth: 1.5,
+    borderColor: "#6A4C08",
     padding: 16,
     alignItems: "center",
   },
 
   emptyPlaqueText: {
+    fontFamily: "Georgia",
     fontSize: 12,
-    fontWeight: "600",
     fontStyle: "italic",
-    color: "#6B5D4F",
+    color: "#3A2000",
     textAlign: "center",
-  },
-
-  comingSoonPlaque: {
-    backgroundColor: "#D4C4A8",
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: "#9B8B6B",
-    padding: 14,
-    alignItems: "center",
-    opacity: 0.7,
-  },
-
-  comingSoonText: {
-    fontSize: 11,
-    fontWeight: "600",
-    fontStyle: "italic",
-    color: "#6B5D4F",
-    textAlign: "center",
+    opacity: 0.75,
   },
 });

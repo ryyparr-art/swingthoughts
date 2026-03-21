@@ -325,11 +325,10 @@ export async function generateAlgorithmicFeed(
   const context = await buildUserContext(userId, regionKey);
 
   // Step 2: Fetch all content in parallel
-  const [localPosts, expandedPosts, globalPosts, coursePosts] = await Promise.all([
+  const [localPosts, expandedPosts, globalPosts] = await Promise.all([
     fetchLocalPosts(context),
     fetchExpandedPosts(context),
     fetchGlobalPosts(context),
-    fetchCoursePosts(context),
   ]);
 
   // Step 3: Process and deduplicate all items
@@ -365,31 +364,6 @@ export async function generateAlgorithmicFeed(
   localPosts.forEach(post => processPost(post, "local"));
   expandedPosts.forEach(post => processPost(post, "expanded"));
   globalPosts.forEach(post => processPost(post, "global"));
-
-  // Process course scores
-  for (const score of coursePosts) {
-    if (seenIds.has(score.id)) continue;
-    seenIds.add(score.id);
-    
-    const isPartner = context.partnerIds.includes(score.userId);
-    const isSelfPost = score.userId === context.userId;
-    const timeBracket = getTimeBracket(score.createdAt);
-    const displayBracket = timeBracket;
-    const withinBracketScore = calculateWithinBracketScore(
-      "local", 
-      isPartner, 
-      isSelfPost,
-      score.createdAt.toMillis()
-    );
-    
-    allItems.push({
-      ...score,
-      timeBracket,
-      displayBracket,
-      withinBracketScore,
-      relevanceReason: isSelfPost ? "Your score" : (score.isLowman ? "🏆 Lowman" : ""),
-    });
-  }
 
   // Step 4: Sort by display bracket (primary), then within-bracket score (secondary)
   const sorted = allItems.sort((a, b) => {

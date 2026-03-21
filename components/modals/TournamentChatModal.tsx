@@ -405,6 +405,8 @@ export default function TournamentChatModal({
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.messagesList}
             keyboardShouldPersistTaps="handled"
+            // ✅ Prevents recursive clipping traversal that causes 0x8BADF00D watchdog kills
+            removeClippedSubviews={false}
             onContentSizeChange={() => {
               flatListRef.current?.scrollToEnd({ animated: false });
             }}

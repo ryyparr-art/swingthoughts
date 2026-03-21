@@ -16,8 +16,8 @@
 
 import type { Thought } from "@/utils/feedHelpers";
 import {
-    cleanupDismissKeys,
-    fetchFeedInserts,
+  cleanupDismissKeys,
+  fetchFeedInserts,
 } from "@/utils/feedInsertProvider";
 import type { FeedInsert } from "@/utils/feedInsertTypes";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -125,6 +125,7 @@ export function useFeedInserts({
         activeChallenges: userData.activeChallenges || [],
         earnedChallengeBadges: userData.earnedChallengeBadges || [],
         leagueIds,
+        playerCourses: userData.playerCourses || [],
       });
 
       console.log(`📌 Feed inserts loaded: ${result.length} items`);

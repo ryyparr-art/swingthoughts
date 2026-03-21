@@ -14,6 +14,8 @@
 import { LeaderboardPlayer } from "@/hooks/useLeaderboard";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AppState,
+  AppStateStatus,
   FlatList,
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -71,7 +73,27 @@ export default function LeaderboardCarousel({
   const isUserScrolling = useRef(false);
   const userScrollTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const animationRef = useRef<number | null>(null);
+  const isAppActive = useRef(true);
   const [isPaused, setIsPaused] = useState(false);
+
+  // ✅ Pause the rAF loop when the app goes to background to avoid
+  // keeping the JS thread busy during scene-update watchdog windows.
+  useEffect(() => {
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === "active") {
+        isAppActive.current = true;
+      } else {
+        isAppActive.current = false;
+        if (animationRef.current) {
+          cancelAnimationFrame(animationRef.current);
+          animationRef.current = null;
+        }
+      }
+    };
+
+    const subscription = AppState.addEventListener("change", handleAppStateChange);
+    return () => subscription.remove();
+  }, []);
 
   // Get current scroll speed based on position
   const getCurrentSpeed = useCallback((offset: number): number => {
@@ -89,7 +111,8 @@ export default function LeaderboardCarousel({
     const maxScroll = players.length * CARD_TOTAL_WIDTH - 300; // Approximate visible width
 
     const animate = () => {
-      if (isUserScrolling.current || isPaused) {
+      // ✅ Stop the loop if app is backgrounded or user is interacting
+      if (!isAppActive.current || isUserScrolling.current || isPaused) {
         animationRef.current = requestAnimationFrame(animate);
         return;
       }
@@ -258,6 +281,8 @@ export default function LeaderboardCarousel({
         decelerationRate="fast"
         snapToInterval={CARD_TOTAL_WIDTH}
         snapToAlignment="start"
+        // ✅ Prevents recursive clipping traversal that causes 0x8BADF00D watchdog kills
+        removeClippedSubviews={false}
       />
     </View>
   );

@@ -14,7 +14,7 @@
 // ============================================================================
 
 export interface DiscoveryChallengeItem {
-  id: string; // challenge ID (par3, fir, gir, etc.)
+  id: string;
   name: string;
   earnedCount: number;
 }
@@ -33,7 +33,7 @@ export interface DiscoveryCourseItem {
   courseId: number | string;
   name: string;
   avatar?: string | null;
-  distance?: string; // "3.2 mi"
+  distance?: string;
   roundsPosted: number;
 }
 
@@ -41,7 +41,7 @@ export interface DiscoveryPartnerItem {
   userId: string;
   displayName: string;
   avatar?: string | null;
-  context: string; // "Partner of Mike T." or "Plays at Salem Glen"
+  context: string;
 }
 
 export interface DiscoveryDTPItem {
@@ -63,9 +63,18 @@ export interface DiscoveryRivalryNudgeItem {
   emoji: string;
 }
 
+/** A golfer who recently scored at one of the user's player courses. */
+export interface DiscoveryCoursePlayerItem {
+  userId: string;
+  displayName: string;
+  avatar?: string | null;
+  courseName: string;   // which of the user's courses they scored at
+  netScore: number;
+  grossScore: number;
+}
+
 /**
  * A single discovery carousel insert in the feed.
- * Contains a title, type, and array of items to scroll through.
  */
 export interface DiscoveryInsert {
   type: "discovery";
@@ -75,7 +84,8 @@ export interface DiscoveryInsert {
     | "courses"
     | "partners"
     | "dtp_pins"
-    | "rivalry_nudges";
+    | "rivalry_nudges"
+    | "course_players";
   title: string;
   items:
     | DiscoveryChallengeItem[]
@@ -83,8 +93,9 @@ export interface DiscoveryInsert {
     | DiscoveryCourseItem[]
     | DiscoveryPartnerItem[]
     | DiscoveryDTPItem[]
-    | DiscoveryRivalryNudgeItem[];
-  dismissKey: string; // AsyncStorage key for dismiss state
+    | DiscoveryRivalryNudgeItem[]
+    | DiscoveryCoursePlayerItem[];
+  dismissKey: string;
 }
 
 // ============================================================================
@@ -92,8 +103,8 @@ export interface DiscoveryInsert {
 // ============================================================================
 
 interface BaseActivity {
-  id: string; // unique ID for this activity
-  timestamp: number; // epoch ms for sorting
+  id: string;
+  timestamp: number;
 }
 
 export interface ActivityBadgeEarned extends BaseActivity {
@@ -129,8 +140,8 @@ export interface ActivityChallengeProgress extends BaseActivity {
   activityType: "challenge_progress";
   badgeId: string;
   badgeName: string;
-  progressPct: number; // 0-1
-  progressLabel: string; // "7/10 qualifying rounds"
+  progressPct: number;
+  progressLabel: string;
 }
 
 export interface ActivityDTPAvailable extends BaseActivity {
@@ -163,7 +174,7 @@ export interface ActivityScratchEarned extends BaseActivity {
   userId: string;
   displayName: string;
   avatar?: string | null;
-  courseNames: string[]; // exactly 2
+  courseNames: string[];
 }
 
 export interface ActivityAceTierEarned extends BaseActivity {
@@ -171,7 +182,7 @@ export interface ActivityAceTierEarned extends BaseActivity {
   userId: string;
   displayName: string;
   avatar?: string | null;
-  courseNames: string[]; // exactly 3
+  courseNames: string[];
 }
 
 export interface ActivityLeagueResult extends BaseActivity {
@@ -287,13 +298,9 @@ export type ActivityItem =
   | ActivityRivalryUpdate
   | ActivityOutingComplete;
 
-/**
- * The "From the Field" activity carousel.
- * Contains an array of activity cards to swipe through.
- */
 export interface ActivityInsert {
   type: "activity";
-  title: string; // "From the Field"
+  title: string;
   items: ActivityItem[];
   dismissKey: string;
 }
@@ -309,7 +316,7 @@ export interface HoleInOneInsert {
   avatar?: string | null;
   courseName: string;
   hole: number;
-  verifiedBy: string; // verifier display name
+  verifiedBy: string;
   timestamp: number;
   dismissKey: string;
 }
@@ -324,19 +331,15 @@ export type FeedInsert = DiscoveryInsert | ActivityInsert | HoleInOneInsert;
 // HELPERS
 // ============================================================================
 
-/** Generate a stable dismiss key for a discovery carousel */
 export function discoveryDismissKey(subtype: string): string {
   return `feed_dismiss_discovery_${subtype}`;
 }
 
-/** Generate a stable dismiss key for the activity carousel */
 export function activityDismissKey(): string {
-  // Rotate daily so dismissed carousels come back the next day
   const today = new Date().toISOString().split("T")[0];
   return `feed_dismiss_activity_${today}`;
 }
 
-/** Generate a dismiss key for a hole-in-one */
 export function hioDismissKey(userId: string, timestamp: number): string {
   return `feed_dismiss_hio_${userId}_${timestamp}`;
 }
