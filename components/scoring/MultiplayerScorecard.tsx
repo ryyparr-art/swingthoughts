@@ -20,6 +20,8 @@
  *   - Green header, cream background, serif fonts
  *   - Score cell color coding: birdie (red circle), eagle (gold), bogey/double (square)
  *   - Handwritten Caveat font on score cells for natural feel
+ *   - playingOrder prop: supports non-1 starting holes (e.g. back-9 start wrapping to front)
+ *   - onPause: back-arrow pauses the round instead of abandoning it
  *
  * File: components/scoring/MultiplayerScorecard.tsx
  */
@@ -63,6 +65,12 @@ interface MultiplayerScorecardProps {
   formatId: string;
   players: PlayerSlot[];
   holeCount: 9 | 18;
+  /**
+   * Hole data in NATURAL order (holes 1–N indexed from 0).
+   * For a front-9 round: holes 1–9. For a back-9 round: holes 10–18.
+   * The grid always renders hNum = startIdx + idx + 1, so par/yardage/SI
+   * must be in natural order for the display to be correct.
+   */
   holes: HoleInfo[];
   holeData: Record<string, Record<string, HolePlayerData>>;
   onScoreChange?: (holeNum: number, playerId: string, strokes: number | null) => void;
@@ -70,7 +78,24 @@ interface MultiplayerScorecardProps {
   statsSheetSuppressed?: boolean;
   onEnableStatsSheet?: () => void;
   dtpEligiblePlayers?: Set<string>;
+  /**
+   * The real hole number the player starts on (e.g. 10 for back-9 start).
+   * Used to set the correct initial tab and active hole.
+   */
   initialHole?: number;
+  /**
+   * Real hole numbers in the order they are played.
+   * e.g. [10,11,12,13,14,15,16,17,18,1,2,3,4,5,6,7,8,9] for back-9 start.
+   * When provided, advanceToNextHole follows this sequence so wrap-around
+   * works correctly. Falls back to linear 1→holeCount if omitted.
+   */
+  playingOrder?: number[];
+  /**
+   * Called when the user taps the back arrow during an active round.
+   * Shows a pause sheet so they can navigate away without abandoning.
+   * If not provided, the back button is simply disabled in edit mode.
+   */
+  onPause?: () => void;
   onStatsSheetShow?: () => void;
   onStatsSheetHide?: () => void;
 }
@@ -109,6 +134,8 @@ export default function MultiplayerScorecard({
   onEnableStatsSheet,
   dtpEligiblePlayers,
   initialHole,
+  playingOrder,
+  onPause,
   onStatsSheetShow,
   onStatsSheetHide,
 }: MultiplayerScorecardProps) {
@@ -117,10 +144,17 @@ export default function MultiplayerScorecard({
   const is18 = holeCount === 18;
 
   // ── State ──────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<"front" | "back">(
-    is18 && (initialHole ?? 1) > 9 ? "back" : "front"
-  );
+  const [activeTab, setActiveTab] = useState<"front" | "back">(() => {
+    if (!is18) return "front";
+    // Use the first hole in the playing order (or initialHole) to pick the
+    // correct starting tab — critical for back-9 starts.
+    const firstHole = playingOrder?.[0] ?? (initialHole ?? 1);
+    return firstHole > 9 ? "back" : "front";
+  });
+
+  // activeHole is always a real hole number (1–18).
   const [activeHole, setActiveHole] = useState(initialHole ?? 1);
+
   const [showStatsSheet, setShowStatsSheet] = useState(false);
   const [pendingStatsHole, setPendingStatsHole] = useState<number | null>(null);
   const [consecutiveSkips, setConsecutiveSkips] = useState(0);
@@ -128,9 +162,11 @@ export default function MultiplayerScorecard({
     Record<string, { fir: boolean | null; gir: boolean | null; dtp: string | null }>
   >({});
   const [infoModal, setInfoModal] = useState<string | null>(null);
-  // Track which holes have already triggered stats so we don't re-trigger
+  const [showPauseSheet, setShowPauseSheet] = useState(false);
+
+  // Track which holes have already triggered the stats sheet so we don't re-trigger.
   const completedStatsHoles = useRef<Set<number>>(new Set());
-  // Track whether round is fully complete (all holes scored)
+  // Track whether round is fully complete (all holes scored).
   const [roundComplete, setRoundComplete] = useState(false);
 
   const inputRefs = useRef<Record<string, TextInput | null>>({});
@@ -230,6 +266,7 @@ export default function MultiplayerScorecard({
   );
 
   // ── Pre-populate completed holes on mount (resume support) ──
+  // Uses real hole numbers, same as holeData keys.
   const hasInitialized = useRef(false);
   useEffect(() => {
     if (hasInitialized.current) return;
@@ -245,6 +282,22 @@ export default function MultiplayerScorecard({
       }
     }
   }, [players, holeCount, holeData]);
+
+  // ── Resolve the next real hole number from the playing order ──
+  // Returns null when the round is complete (no more holes to play).
+  const getNextHole = useCallback(
+    (currentRealHole: number): number | null => {
+      if (playingOrder && playingOrder.length > 0) {
+        const idx = playingOrder.indexOf(currentRealHole);
+        if (idx === -1 || idx + 1 >= playingOrder.length) return null;
+        return playingOrder[idx + 1];
+      }
+      // Fallback: linear advance assuming 1-based natural order.
+      const next = currentRealHole + 1;
+      return next > holeCount ? null : next;
+    },
+    [playingOrder, holeCount]
+  );
 
   // ── Auto-advance logic ────────────────────────────────────
   useEffect(() => {
@@ -268,18 +321,30 @@ export default function MultiplayerScorecard({
     }
   }, [holeData, activeHole, isEdit, showStatsSheet, roundComplete]);
 
-  // ── Auto-flip to back 9 ──────────────────────────────────
+  // ── Auto-flip to back 9 when all front holes are done ────
+  // Also handles the reverse: flip to front when playing from back → front.
   useEffect(() => {
-    if (!is18 || hasAutoFlipped.current || activeTab !== "front") return;
-    if (showStatsSheet) return;
+    if (!is18 || showStatsSheet) return;
 
-    const allFrontComplete = Array.from({ length: 9 }, (_, i) => i + 1).every((h) =>
-      isHoleComplete(h)
-    );
+    if (!hasAutoFlipped.current && activeTab === "front") {
+      const allFrontComplete = Array.from({ length: 9 }, (_, i) => i + 1).every((h) =>
+        isHoleComplete(h)
+      );
+      if (allFrontComplete) {
+        hasAutoFlipped.current = true;
+        setTimeout(() => setActiveTab("back"), 400);
+      }
+    }
 
-    if (allFrontComplete) {
-      hasAutoFlipped.current = true;
-      setTimeout(() => setActiveTab("back"), 400);
+    // For back-9 starts: once all back holes are done, flip to front automatically.
+    if (!hasAutoFlipped.current && activeTab === "back") {
+      const allBackComplete = Array.from({ length: 9 }, (_, i) => i + 10).every((h) =>
+        isHoleComplete(h)
+      );
+      if (allBackComplete) {
+        hasAutoFlipped.current = true;
+        setTimeout(() => setActiveTab("front"), 400);
+      }
     }
   }, [holeData, is18, activeTab, showStatsSheet]);
 
@@ -293,19 +358,27 @@ export default function MultiplayerScorecard({
   };
 
   // ── Advance to next hole ──────────────────────────────────
+  // completedHole is a real hole number. We look up the next real hole
+  // via getNextHole() so wrap-around (back→front) works correctly.
   const advanceToNextHole = (completedHole: number) => {
-    const next = completedHole + 1;
+    const next = getNextHole(completedHole);
 
-    if (next > holeCount) {
+    if (next === null) {
       setRoundComplete(true);
       return;
     }
 
     setActiveHole(next);
 
-    if (is18 && next > 9 && activeTab === "front" && !showStatsSheet) {
-      hasAutoFlipped.current = true;
-      setTimeout(() => setActiveTab("back"), 300);
+    // Auto-flip the tab to match the next hole.
+    if (is18) {
+      if (next > 9 && activeTab === "front" && !showStatsSheet) {
+        hasAutoFlipped.current = true;
+        setTimeout(() => setActiveTab("back"), 300);
+      } else if (next <= 9 && activeTab === "back" && !showStatsSheet) {
+        hasAutoFlipped.current = true;
+        setTimeout(() => setActiveTab("front"), 300);
+      }
     }
 
     setTimeout(() => {
@@ -385,6 +458,13 @@ export default function MultiplayerScorecard({
     },
     [isEdit]
   );
+
+  // ── Pause sheet: back arrow in edit mode ──────────────────
+  const handleBackPress = useCallback(() => {
+    if (!isEdit || !onPause) return;
+    soundPlayer.play("click");
+    setShowPauseSheet(true);
+  }, [isEdit, onPause]);
 
   // ============================================================================
   // RENDER HELPERS
@@ -670,6 +750,7 @@ export default function MultiplayerScorecard({
         <PostHoleStatsSheet
           visible={showStatsSheet}
           holeNumber={pendingStatsHole}
+          // holes is in natural order; pendingStatsHole is a real hole number (1-based).
           holeInfo={holes[pendingStatsHole - 1]}
           players={players}
           playerStats={holeStats}
@@ -680,6 +761,54 @@ export default function MultiplayerScorecard({
           onSkip={handleStatsSkip}
         />
       )}
+
+      {/* Pause Sheet — shown when back arrow is tapped during an active round */}
+      <Modal visible={showPauseSheet} transparent animationType="slide">
+        <View style={cs.pauseOverlay}>
+          <TouchableOpacity
+            style={cs.pauseBackdrop}
+            activeOpacity={1}
+            onPress={() => setShowPauseSheet(false)}
+          />
+          <View style={cs.pauseSheet}>
+            <View style={cs.pauseHandle} />
+            <View style={cs.pauseIconRow}>
+              <View style={cs.pauseIconCircle}>
+                <Ionicons name="pause-circle-outline" size={36} color={HEADER_GREEN} />
+              </View>
+            </View>
+            <Text style={cs.pauseTitle}>Pause Round</Text>
+            <Text style={cs.pauseBody}>
+              Your round is still live. Scores are saved — you can pick up right where you left off.
+            </Text>
+
+            <TouchableOpacity
+              style={cs.pauseLeaveBtn}
+              onPress={() => {
+                soundPlayer.play("click");
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                setShowPauseSheet(false);
+                onPause?.();
+              }}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="home-outline" size={18} color="#FFF" style={{ marginRight: 8 }} />
+              <Text style={cs.pauseLeaveBtnText}>Go to Home</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={cs.pauseStayBtn}
+              onPress={() => {
+                soundPlayer.play("click");
+                setShowPauseSheet(false);
+              }}
+              activeOpacity={0.85}
+            >
+              <Text style={cs.pauseStayBtnText}>Keep Scoring</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* S.I. Info Modal */}
       <Modal visible={infoModal === "SI"} transparent animationType="fade">
@@ -990,6 +1119,86 @@ const cs = StyleSheet.create({
     fontWeight: "800",
     color: HEADER_GREEN,
     fontFamily: Platform.OS === "ios" ? "Georgia" : "serif",
+  },
+
+  // ── Pause Sheet ─────────────────────────────────────────────
+  pauseOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  pauseBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.45)",
+  },
+  pauseSheet: {
+    backgroundColor: CREAM,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === "ios" ? 40 : 24,
+    alignItems: "center",
+  },
+  pauseHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#D5D0C5",
+    marginBottom: 20,
+  },
+  pauseIconRow: {
+    marginBottom: 12,
+  },
+  pauseIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "rgba(20,122,82,0.08)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  pauseTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: WALNUT,
+    fontFamily: Platform.OS === "ios" ? "Georgia" : "serif",
+    marginBottom: 10,
+    textAlign: "center",
+  },
+  pauseBody: {
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
+    lineHeight: 21,
+    marginBottom: 28,
+    paddingHorizontal: 8,
+  },
+  pauseLeaveBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: HEADER_GREEN,
+    paddingVertical: 14,
+    borderRadius: 12,
+    width: "100%",
+    marginBottom: 10,
+  },
+  pauseLeaveBtnText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#FFF",
+  },
+  pauseStayBtn: {
+    paddingVertical: 14,
+    borderRadius: 12,
+    width: "100%",
+    alignItems: "center",
+    backgroundColor: "transparent",
+  },
+  pauseStayBtnText: {
+    fontSize: 15,
+    fontWeight: "600",
+    color: HEADER_GREEN,
   },
 
   // ── Info Modal ──────────────────────────────────────────────

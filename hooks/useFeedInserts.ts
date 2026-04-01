@@ -19,7 +19,7 @@ import {
   cleanupDismissKeys,
   fetchFeedInserts,
 } from "@/utils/feedInsertProvider";
-import type { FeedInsert } from "@/utils/feedInsertTypes";
+import type { FeedInsert, LiveOnCourseInsert } from "@/utils/feedInsertTypes";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /* ================================================================ */
@@ -145,6 +145,7 @@ export function useFeedInserts({
   // ----------------------------------------------------------------
 
   const handleDismissInsert = useCallback((dismissKey: string) => {
+    if (!dismissKey) return; // live_on_course has no dismissKey
     setDismissedKeys((prev) => {
       const next = new Set(prev);
       next.add(dismissKey);
@@ -157,29 +158,37 @@ export function useFeedInserts({
   // ----------------------------------------------------------------
 
   const feedWithInserts: FeedListItem[] = (() => {
-    // If filtered, loading, or no inserts, just return posts
-    if (hasActiveFilters || inserts.length === 0 || thoughts.length === 0) {
+    // If filtered, loading, or no posts, just return posts tagged as posts
+    if (hasActiveFilters || thoughts.length === 0) {
       return thoughts.map((t) => ({ ...t, _feedItemType: "post" as const }));
     }
 
-    // Filter out dismissed inserts
-    const activeInserts = inserts.filter(
-      (ins) => !dismissedKeys.has(ins.dismissKey)
+    // ── Separate insert types ────────────────────────────────────────
+    const liveInsert = inserts.find(
+      (ins): ins is LiveOnCourseInsert => ins.type === "live_on_course"
     );
 
-    if (activeInserts.length === 0) {
-      return thoughts.map((t) => ({ ...t, _feedItemType: "post" as const }));
-    }
+    // Filter dismissed for everything except live (live is never dismissable)
+    const activeInserts = inserts.filter((ins) => {
+      if (ins.type === "live_on_course") return false; // handled separately above
+      return !dismissedKeys.has((ins as any).dismissKey);
+    });
 
-    // Separate insert types
     const hio = activeInserts.find((ins) => ins.type === "hole_in_one");
     const activity = activeInserts.find((ins) => ins.type === "activity");
-    const discoveries = activeInserts.filter((ins) => ins.type === "discovery");
 
-    // Build the merged array
+    // Discovery inserts cycle — each subtype returned once by provider,
+    // but we draw from the queue repeatedly to fill every discovery slot.
+    const discoveries = activeInserts.filter((ins) => ins.type === "discovery");
+    let discoveryIndex = 0;
+    const nextDiscovery = () => {
+      if (discoveries.length === 0) return null;
+      return discoveries[discoveryIndex++ % discoveries.length];
+    };
+
+    // ── Helper to push a tagged insert ──────────────────────────────
     const result: FeedListItem[] = [];
     let postIndex = 0;
-    let discoveryIndex = 0;
     let activityInserted = false;
     let hioInserted = false;
 
@@ -195,39 +204,48 @@ export function useFeedInserts({
       result.push({
         ...insert,
         _feedItemType: "insert" as const,
-        _insertId: `insert_${insert.type}_${insert.dismissKey}`,
+        _insertId: `insert_${insert.type}_${(insert as any).dismissKey ?? "live"}`,
       } as FeedListItem);
     };
 
-    // Slot 1: First posts, then first discovery
-    addPosts(FIRST_SLOT);
-    if (discoveries[discoveryIndex]) {
-      addInsert(discoveries[discoveryIndex]);
-      discoveryIndex++;
+    // ── Slot 0: Live on Course (prepended before any posts) ──────────
+    if (liveInsert) {
+      addInsert(liveInsert);
     }
 
-    // Slot 2: Next posts, then HIO (if available) or second discovery
+    // If no other inserts, just return posts after the live insert
+    if (activeInserts.length === 0) {
+      addPosts(thoughts.length);
+      return result;
+    }
+
+    // ── Slot 1: 3 posts → first discovery ───────────────────────────
+    addPosts(FIRST_SLOT);
+    const d1 = nextDiscovery();
+    if (d1) addInsert(d1);
+
+    // ── Slot 2: 4 posts → HIO or next discovery ──────────────────────
     addPosts(SECOND_SLOT);
     if (hio && !hioInserted) {
       addInsert(hio);
       hioInserted = true;
-    } else if (discoveries[discoveryIndex]) {
-      addInsert(discoveries[discoveryIndex]);
-      discoveryIndex++;
+    } else {
+      const d2 = nextDiscovery();
+      if (d2) addInsert(d2);
     }
 
-    // Slot 3: Next posts, then activity carousel (if available) or next discovery
+    // ── Slot 3: 4 posts → activity or next discovery ─────────────────
     addPosts(THIRD_SLOT);
     if (activity && !activityInserted) {
       addInsert(activity);
       activityInserted = true;
-    } else if (discoveries[discoveryIndex]) {
-      addInsert(discoveries[discoveryIndex]);
-      discoveryIndex++;
+    } else {
+      const d3 = nextDiscovery();
+      if (d3) addInsert(d3);
     }
 
-    // Remaining: alternate discoveries every SUBSEQUENT_GAP posts
-    // Also insert activity/HIO here if they haven't been placed yet
+    // ── Remaining: every SUBSEQUENT_GAP posts → cycling discovery ────
+    // Activity / HIO also land here if not yet placed.
     while (postIndex < thoughts.length) {
       addPosts(SUBSEQUENT_GAP);
 
@@ -237,9 +255,9 @@ export function useFeedInserts({
       } else if (hio && !hioInserted) {
         addInsert(hio);
         hioInserted = true;
-      } else if (discoveryIndex < discoveries.length) {
-        addInsert(discoveries[discoveryIndex]);
-        discoveryIndex++;
+      } else {
+        const dn = nextDiscovery();
+        if (dn) addInsert(dn);
       }
     }
 

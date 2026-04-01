@@ -351,12 +351,13 @@ export default function LowmanCarousel({
         router.push("/clubhouse");
       }
     } else {
-      console.log("🚀 Tapped lowman, navigating to leaderboard");
+      console.log("🚀 Tapped lowman, navigating to leaderboard for course:", item.courseId);
       router.push({
         pathname: "/leaderboard",
         params: {
           courseId: item.courseId,
           playerId: item.userId,
+          filterType: "course",
         },
       });
     }

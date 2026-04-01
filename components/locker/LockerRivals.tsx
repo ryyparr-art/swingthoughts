@@ -39,7 +39,7 @@ export default function LockerRivals({ userId }: Props) {
           <PushPin color="gold" size={22} />
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>No rivals yet</Text>
-            <Text style={styles.emptySub}>Play 3+ rounds{"\n"}with someone</Text>
+            <Text style={styles.emptySub}>Play rounds{"\n"}together to start one</Text>
           </View>
         </View>
 

@@ -481,15 +481,19 @@ export default function ScoringScreen() {
           courseRating: p.courseRating, teamId: p.teamId || null,
           contactInfo: p.contactInfo || null, contactType: p.contactType || null,
         })),
-        teams: teams || null, currentHole: 1, holeData: {}, liveScores: {}, holePars, holeDetails, playingOrder,
+        teams: teams || null, currentHole: startingHole, holeData: {}, liveScores: {}, holePars, holeDetails, playingOrder,
         startingHole, leagueId: null, leagueWeek: null, regionKey: userRegionKey,
         leaderboardId: leaderboardId || null,  // ← baked in at round creation
         location: fullCourseData.location || null, startedAt: serverTimestamp(),
         roundType, isSimulator: roundType === "simulator", privacy: roundPrivacy,
+        // partnerIds: top-level array of the marker's accepted partner IDs.
+        // Used by the Live on Course feed insert to surface partners-only
+        // rounds to the right viewers without a secondary query.
+        partnerIds: userData?.partners || [],
         markerTransferRequest: null,
       };
       const docRef = await addDoc(collection(db, "rounds"), roundDoc);
-      setRoundId(docRef.id); setPlayers(playersWithTeams);
+      setRoundId(docRef.id); setPlayers(playersWithTeams); setCurrentHole(startingHole);
       console.log("✅ Round created:", docRef.id, "| leaderboardId:", leaderboardId);
     } catch (err) { console.error("Error creating round:", err); Alert.alert("Error", "Failed to start round."); return; }
     finally { setSubmitting(false); }
@@ -558,7 +562,7 @@ export default function ScoringScreen() {
           setHoleData(roundData.holeData || {});
           setOutingId(roundData.outingId || null);
           setStartingHole(roundData.startingHole || 1);
-          setCurrentHole(1);
+          setCurrentHole(roundData.startingHole || 1);
           setCurrentScreen("scorecard");
         }
       } else {
@@ -645,13 +649,9 @@ export default function ScoringScreen() {
       case "format": setSelectedTee(null); setFullCourseData(null); setAvailableTees([]); setLeaderboardId(null); setCurrentScreen("course"); break;
       case "group": setCurrentScreen("format"); break;
       case "scorecard":
-        Alert.alert("Abandon Round?", "Going back will abandon this round. Scores will not be saved.", [
-          { text: "Stay", style: "cancel" },
-          { text: "Abandon", style: "destructive", onPress: async () => {
-            if (roundId) { try { await updateDoc(doc(db, "rounds", roundId), { status: "abandoned" }); } catch (err) { console.error(err); } }
-            router.back();
-          }},
-        ]); return;
+        // Pause/abandon is handled inside MultiplayerScorecard via onPause.
+        // This branch is only hit by the OS hardware back gesture.
+        router.back(); return;
       case "summary": setCurrentScreen("scorecard"); return;
       default: router.back(); return;
     }
@@ -923,16 +923,11 @@ export default function ScoringScreen() {
         <View style={{ flex: 1 }}>
           <View style={{ backgroundColor: HEADER_GREEN, paddingTop: insets.top }}>
             <View style={st.header}>
-              <TouchableOpacity onPress={handleBack} style={st.headerBackBtn}>
-                <Ionicons name="chevron-back" size={24} color="#FFF" />
-              </TouchableOpacity>
+              {/* Pause lives inside MultiplayerScorecard via onPause — no back btn here */}
+              <View style={{ width: 32 }} />
               <View style={{ flex: 1, alignItems: "center", justifyContent: "center", minHeight: 36 }}>
                 <Text style={st.headerTitle} numberOfLines={1}>{fullCourseData?.courseName || fullCourseData?.course_name || "Round"}</Text>
-                <Text style={st.headerSubtitle}>Hole {(() => {
-                  const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
-                  const order = buildPlayingOrder(startingHole, holeCount, baseHole);
-                  return order[currentHole - 1] || currentHole;
-                })()} of {holeCount}</Text>
+                <Text style={st.headerSubtitle}>Hole {currentHole} of {holeCount}</Text>
               </View>
               <View style={st.headerActions}>
                 <TouchableOpacity onPress={() => { soundPlayer.play("click"); setShowChatSheet(true); }} style={st.headerIconBtn}>
@@ -952,13 +947,19 @@ export default function ScoringScreen() {
             holes={(() => {
               const allHoles = selectedTee.holes || [];
               const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
-              const order = buildPlayingOrder(startingHole, holeCount, baseHole);
-              return order.map((h) => allHoles[h - 1] || { par: 4, yardage: 0 });
+              // Natural order so the grid renders correct hole numbers / par / yardage.
+              // playingOrder below tells the scorecard which hole to play first.
+              return allHoles.slice(baseHole - 1, baseHole - 1 + holeCount);
+            })()}
+            playingOrder={(() => {
+              const baseHole = holeCount === 9 && nineHoleSide === "back" ? 10 : 1;
+              return buildPlayingOrder(startingHole, holeCount, baseHole);
             })()}
             holeData={holeData} onScoreChange={handleScoreChange} onHoleComplete={handleHoleComplete}
             statsSheetSuppressed={statsSheetSuppressed} onEnableStatsSheet={() => setStatsSheetSuppressed(false)} formatId={formatId} players={players} holeCount={holeCount}
             onStatsSheetShow={() => setStatsSheetVisible(true)}
-            onStatsSheetHide={() => setStatsSheetVisible(false)} />
+            onStatsSheetHide={() => setStatsSheetVisible(false)}
+            onPause={() => router.back()} />
 
           {/* Chat Sheet */}
           <Modal visible={showChatSheet} transparent animationType="slide">

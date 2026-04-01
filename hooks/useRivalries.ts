@@ -3,11 +3,16 @@
  *
  * Fetches a user's rivalry docs from Firestore and computes three roles:
  *
- *   Nemesis  — closest competitive match (40-60% win rate, most matches)
+ *   Nemesis  — closest competitive match (30-70% win rate, most matches)
  *   Threat   — someone within 2 wins of overtaking you
  *   Target   — someone you're trailing by ≤3 wins
+ *   Rival    — fallback when rivalry exists but doesn't fit above roles
  *
  * Also generates engagement nudge items for the feed discovery carousel.
+ *
+ * Only rivalries with totalMatches >= RIVALRY_DISPLAY_THRESHOLD are shown.
+ * This matches the server-side RIVALRY_THRESHOLD (3) so the locker only
+ * surfaces rivalries that have been announced to the user.
  *
  * Usage:
  *   const { roles, nudges, loading } = useRivalries(userId);
@@ -16,6 +21,9 @@
 import { db } from "@/constants/firebaseConfig";
 import { collection, getDocs, query, where } from "firebase/firestore";
 import { useEffect, useState } from "react";
+
+/** Must match RIVALRY_THRESHOLD in rivalryEngine.ts */
+const RIVALRY_DISPLAY_THRESHOLD = 3;
 
 // ============================================================================
 // TYPES
@@ -83,13 +91,11 @@ export function useRivalries(userId?: string): UseRivalriesReturn {
       setLoading(false);
       return;
     }
-
     fetchRivalries(userId);
   }, [userId]);
 
   const fetchRivalries = async (uid: string) => {
     try {
-      // Query all rivalries where this user is a participant
       const rivalriesQuery = query(
         collection(db, "rivalries"),
         where("playerIds", "array-contains", uid)
@@ -103,14 +109,8 @@ export function useRivalries(userId?: string): UseRivalriesReturn {
       });
 
       setRivalries(docs);
-
-      // Compute roles
-      const computedRoles = computeRoles(docs, uid);
-      setRoles(computedRoles);
-
-      // Generate nudges
-      const computedNudges = generateNudges(docs, uid);
-      setNudges(computedNudges);
+      setRoles(computeRoles(docs, uid));
+      setNudges(generateNudges(docs, uid));
     } catch (err) {
       console.error("Failed to fetch rivalries:", err);
     } finally {
@@ -130,38 +130,41 @@ function computeRoles(rivalries: RivalryDoc[], userId: string): RivalRole[] {
 
   const roles: RivalRole[] = [];
 
-  // Normalize all rivalries to user's perspective
-  const perspectives = rivalries.map((r) => {
-    const isPlayerA = r.playerA.userId === userId;
-    const me = isPlayerA ? r.playerA : r.playerB;
-    const rival = isPlayerA ? r.playerB : r.playerA;
-    const myWins = isPlayerA ? r.record.wins : r.record.losses;
-    const theirWins = isPlayerA ? r.record.losses : r.record.wins;
-    const ties = r.record.ties;
-    const total = r.totalMatches;
-    const winRate = total > 0 ? myWins / total : 0.5;
+  // Normalize all rivalries to the viewing user's perspective.
+  // Filter to announced rivalries only (totalMatches >= RIVALRY_DISPLAY_THRESHOLD).
+  const perspectives = rivalries
+    .filter((r) => r.totalMatches >= RIVALRY_DISPLAY_THRESHOLD)
+    .map((r) => {
+      const isPlayerA = r.playerA.userId === userId;
+      const rival = isPlayerA ? r.playerB : r.playerA;
+      const myWins = isPlayerA ? r.record.wins : r.record.losses;
+      const theirWins = isPlayerA ? r.record.losses : r.record.wins;
+      const ties = r.record.ties;
+      const total = r.totalMatches;
+      const winRate = total > 0 ? myWins / total : 0.5;
 
-    return {
-      doc: r,
-      rival,
-      myWins,
-      theirWins,
-      ties,
-      total,
-      winRate,
-      margin: myWins - theirWins,
-    };
-  });
+      return {
+        doc: r,
+        rival,
+        myWins,
+        theirWins,
+        ties,
+        total,
+        winRate,
+        margin: myWins - theirWins,
+      };
+    });
 
-  // ── Nemesis: closest competitive match (40-60% win rate, most matches) ──
+  if (perspectives.length === 0) return [];
+
+  // ── Nemesis: closest competitive match (30-70% win rate, most matches) ──
   const nemesisCandidates = perspectives
-    .filter((p) => p.total >= 3 && p.winRate >= 0.3 && p.winRate <= 0.7)
+    .filter((p) => p.winRate >= 0.3 && p.winRate <= 0.7)
     .sort((a, b) => {
-      // Closest to 50% win rate first, then most matches
       const aCloseness = Math.abs(a.winRate - 0.5);
       const bCloseness = Math.abs(b.winRate - 0.5);
       if (Math.abs(aCloseness - bCloseness) < 0.05) {
-        return b.total - a.total; // More matches = better nemesis
+        return b.total - a.total;
       }
       return aCloseness - bCloseness;
     });
@@ -181,17 +184,16 @@ function computeRoles(rivalries: RivalryDoc[], userId: string): RivalRole[] {
     });
   }
 
-  // ── Threat: someone within 2 wins of overtaking you (you lead, they're close) ──
+  // ── Threat: you lead, but they're within 2 wins of catching you ──
   const usedIds = new Set(roles.map((r) => r.rival.userId));
   const threatCandidates = perspectives
     .filter(
       (p) =>
         !usedIds.has(p.rival.userId) &&
-        p.total >= 3 &&
-        p.margin > 0 && // I'm leading
-        p.margin <= 2 // But only by 1-2
+        p.margin > 0 &&
+        p.margin <= 2
     )
-    .sort((a, b) => a.margin - b.margin); // Closest margin first
+    .sort((a, b) => a.margin - b.margin);
 
   if (threatCandidates.length > 0) {
     const t = threatCandidates[0];
@@ -208,16 +210,15 @@ function computeRoles(rivalries: RivalryDoc[], userId: string): RivalRole[] {
     usedIds.add(t.rival.userId);
   }
 
-  // ── Target: someone you're trailing by ≤3 ──
+  // ── Target: you're trailing by ≤3 wins ──
   const targetCandidates = perspectives
     .filter(
       (p) =>
         !usedIds.has(p.rival.userId) &&
-        p.total >= 3 &&
-        p.margin < 0 && // I'm trailing
-        p.margin >= -3 // By at most 3
+        p.margin < 0 &&
+        p.margin >= -3
     )
-    .sort((a, b) => b.margin - a.margin); // Closest to catching up first
+    .sort((a, b) => b.margin - a.margin);
 
   if (targetCandidates.length > 0) {
     const t = targetCandidates[0];
@@ -230,6 +231,25 @@ function computeRoles(rivalries: RivalryDoc[], userId: string): RivalRole[] {
       totalMatches: t.total,
       detail: `${Math.abs(t.margin)} back`,
       rivalryDoc: t.doc,
+    });
+    usedIds.add(t.rival.userId);
+  }
+
+  // ── Fallback: rivalry exists but record is too lopsided for any named role ──
+  // e.g. 0-3, 0-4, 4-0 — show it anyway so no real rivalry is silently hidden.
+  // Uses the rivalry with the most matches. Label as "Rival" with target card style.
+  if (roles.length === 0 && perspectives.length > 0) {
+    const best = [...perspectives].sort((a, b) => b.total - a.total)[0];
+    const streakDetail = getStreakDetail(best.doc, userId);
+    roles.push({
+      type: "target",
+      label: "Rival",
+      emoji: "⚔️",
+      rival: best.rival,
+      record: { myWins: best.myWins, theirWins: best.theirWins, ties: best.ties },
+      totalMatches: best.total,
+      detail: streakDetail || `${best.myWins}-${best.theirWins} in ${best.total} matches`,
+      rivalryDoc: best.doc,
     });
   }
 
@@ -250,7 +270,7 @@ function generateNudges(rivalries: RivalryDoc[], userId: string): RivalryNudge[]
     const theirWins = isPlayerA ? r.record.losses : r.record.wins;
     const margin = myWins - theirWins;
 
-    // Nudge: They can tie you (I lead by 1)
+    // They can tie you (I lead by 1)
     if (margin === 1) {
       nudges.push({
         id: `nudge_tie_${r.id}`,
@@ -264,7 +284,7 @@ function generateNudges(rivalries: RivalryDoc[], userId: string): RivalryNudge[]
       });
     }
 
-    // Nudge: You can tie them (I trail by 1)
+    // You can tie them (I trail by 1)
     if (margin === -1) {
       nudges.push({
         id: `nudge_catch_${r.id}`,
@@ -278,7 +298,7 @@ function generateNudges(rivalries: RivalryDoc[], userId: string): RivalryNudge[]
       });
     }
 
-    // Nudge: Losing streak against them (3+)
+    // Losing streak against them (3+)
     if (
       r.currentStreak &&
       r.currentStreak.playerId !== userId &&
@@ -296,7 +316,7 @@ function generateNudges(rivalries: RivalryDoc[], userId: string): RivalryNudge[]
       });
     }
 
-    // Nudge: You hold the belt
+    // You hold the belt
     if (r.beltHolder === userId) {
       nudges.push({
         id: `nudge_belt_${r.id}`,
@@ -310,7 +330,7 @@ function generateNudges(rivalries: RivalryDoc[], userId: string): RivalryNudge[]
       });
     }
 
-    // Nudge: They hold the belt
+    // They hold the belt
     if (r.beltHolder && r.beltHolder !== userId && r.beltHolder === rival.userId) {
       nudges.push({
         id: `nudge_belt_take_${r.id}`,
@@ -324,7 +344,7 @@ function generateNudges(rivalries: RivalryDoc[], userId: string): RivalryNudge[]
       });
     }
 
-    // Nudge: Upcoming milestone
+    // Upcoming milestone
     const nextMilestone = Math.ceil(r.totalMatches / 10) * 10;
     if (nextMilestone - r.totalMatches <= 2 && r.totalMatches >= 8) {
       nudges.push({
@@ -340,9 +360,7 @@ function generateNudges(rivalries: RivalryDoc[], userId: string): RivalryNudge[]
     }
   }
 
-  // Sort by priority (lower = more urgent)
   nudges.sort((a, b) => a.priority - b.priority);
-
   return nudges;
 }
 
@@ -352,12 +370,7 @@ function generateNudges(rivalries: RivalryDoc[], userId: string): RivalryNudge[]
 
 function getStreakDetail(rivalry: RivalryDoc, userId: string): string | null {
   if (!rivalry.currentStreak || rivalry.currentStreak.count < 2) return null;
-
   const isMyStreak = rivalry.currentStreak.playerId === userId;
   const count = rivalry.currentStreak.count;
-
-  if (isMyStreak) {
-    return `${count} win streak`;
-  }
-  return `${count} match losing streak`;
+  return isMyStreak ? `${count} win streak` : `${count} match losing streak`;
 }

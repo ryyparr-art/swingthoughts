@@ -6,15 +6,20 @@
  * that the clubhouse interleaves between regular posts.
  *
  * Data sources:
- *   - challenges collection (discovery + activity)
- *   - leagues collection (discovery)
- *   - users/{id}/courses (discovery)
- *   - feedActivity collection (activity cards — written by Cloud Functions)
- *   - holeInOnes collection (standalone HIO card)
- *   - scores collection (course player discovery — "Playing Your Courses")
+ * - rounds collection (live on course insert — slot 0)
+ * - challenges collection (discovery + activity)
+ * - leagues collection (discovery)
+ * - users/{id}/courses (discovery)
+ * - feedActivity collection (activity cards — written by Cloud Functions)
+ * - holeInOnes collection (standalone HIO card)
+ * - scores collection (course player discovery — "Playing Your Courses")
  *
- * Dismiss state stored in AsyncStorage. Dismissed carousels hidden for the session
- * (discovery) or day (activity).
+ * Dismiss state stored in AsyncStorage. Dismissed carousels hidden for
+ * the session (discovery) or day (activity).
+ *
+ * Live on Course is never user-dismissable and always occupies index 0
+ * when present. When no qualifying rounds are live it is omitted
+ * entirely — the feed starts at index 0 with the first regular post.
  */
 
 import { CHALLENGES } from "@/constants/challengeTypes";
@@ -45,7 +50,9 @@ import {
   DiscoveryRivalryNudgeItem,
   FeedInsert,
   hioDismissKey,
-  HoleInOneInsert
+  HoleInOneInsert,
+  LiveOnCourseInsert,
+  LiveOnCoursePlayer,
 } from "./feedInsertTypes";
 
 // ============================================================================
@@ -58,8 +65,8 @@ interface ProviderContext {
   partnerIds: string[];
   activeChallenges: string[];
   earnedChallengeBadges: string[];
-  leagueIds: string[];       // populated from user doc (synced by Cloud Function)
-  playerCourses: number[];   // courses the user has marked as a player of
+  leagueIds: string[]; // populated from user doc (synced by Cloud Function)
+  playerCourses: number[]; // courses the user has marked as a player of
 }
 
 export async function fetchFeedInserts(
@@ -69,6 +76,7 @@ export async function fetchFeedInserts(
 
   try {
     const [
+      liveOnCourse,
       challengeDiscovery,
       leagueDiscovery,
       courseDiscovery,
@@ -79,6 +87,7 @@ export async function fetchFeedInserts(
       activityItems,
       hioInsert,
     ] = await Promise.all([
+      fetchLiveOnCourse(ctx),
       fetchChallengeDiscovery(ctx),
       fetchLeagueDiscovery(ctx),
       fetchCourseDiscovery(ctx),
@@ -89,6 +98,11 @@ export async function fetchFeedInserts(
       fetchActivityItems(ctx),
       fetchHoleInOne(ctx),
     ]);
+
+    // ── Slot 0: Live on Course (never dismissed, omitted if empty) ──────────
+    if (liveOnCourse) {
+      inserts.push(liveOnCourse);
+    }
 
     const dismissedKeys = await getDismissedKeys();
 
@@ -132,6 +146,94 @@ export async function fetchFeedInserts(
 }
 
 // ============================================================================
+// LIVE ON COURSE
+// ============================================================================
+
+/**
+ * Fetches active on-premise rounds visible to this user.
+ *
+ * Firestore query: public + partners rounds in the user's region,
+ * ordered by most recently started, limit 20.
+ *
+ * Client-side filter: keep public rounds freely; keep partners rounds
+ * only if ctx.partnerIds includes the round's markerId. Take the first
+ * 3 after filtering.
+ *
+ * Returns null (insert omitted) when 0 qualifying rounds remain.
+ *
+ * Note: the regionKey filter only covers public rounds reliably.
+ * Partners-only rounds from outside the region are handled via the
+ * partnerIds[] array written onto the round doc at creation — the
+ * client-side filter above catches them regardless of regionKey.
+ */
+async function fetchLiveOnCourse(
+  ctx: ProviderContext
+): Promise<LiveOnCourseInsert | null> {
+  try {
+    if (!ctx.regionKey) return null;
+
+    const snap = await getDocs(
+      query(
+        collection(db, "rounds"),
+        where("status", "==", "live"),
+        where("roundType", "==", "on_premise"),
+        where("privacy", "in", ["public", "partners"]),
+        where("regionKey", "==", ctx.regionKey),
+        orderBy("startedAt", "desc"),
+        limit(20)
+      )
+    );
+
+    if (snap.empty) return null;
+
+    const players: LiveOnCoursePlayer[] = [];
+
+    snap.forEach((d) => {
+      if (players.length >= 3) return;
+
+      const data = d.data();
+
+      // Skip the user's own active round — they're in it, not watching it
+      if (data.markerId === ctx.userId) return;
+
+      // Privacy gate: partners-only rounds only visible to the marker's partners
+      if (data.privacy === "partners" && !ctx.partnerIds.includes(data.markerId)) {
+        return;
+      }
+
+      // Find the marker entry in the players array
+      const markerEntry = (data.players as any[])?.find(
+        (p) => p.isMarker === true || p.playerId === data.markerId
+      );
+      if (!markerEntry) return;
+
+      const scoreToPar =
+        data.liveScores?.[data.markerId]?.scoreToPar ?? 0;
+
+      players.push({
+        userId: data.markerId,
+        displayName: markerEntry.displayName || "Unknown",
+        avatar: markerEntry.avatar || null,
+        courseName: data.courseName || "Unknown Course",
+        currentHole: data.currentHole || 1,
+        scoreToPar,
+        roundId: d.id,
+      });
+    });
+
+    if (players.length === 0) return null;
+
+    return {
+      type: "live_on_course",
+      players,
+    };
+  } catch (err) {
+    console.error("Live on course fetch failed:", err);
+    return null;
+  }
+}
+
+// ============================================================================
 // DISCOVERY: CHALLENGES FOR YOU
 // ============================================================================
 
@@ -152,11 +254,13 @@ async function fetchChallengeDiscovery(
       earnedCounts[d.id] = d.data().earnedCount ?? 0;
     });
 
-    const items: DiscoveryChallengeItem[] = unregistered.map((c) => ({
-      id: c.id,
-      name: c.name,
-      earnedCount: earnedCounts[c.id] ?? 0,
-    }));
+    const items: DiscoveryChallengeItem[] = unregistered
+      .map((c) => ({
+        id: c.id,
+        name: c.name,
+        earnedCount: earnedCounts[c.id] ?? 0,
+      }))
+      .slice(0, 3); // ← capped at 3
 
     return {
       type: "discovery",
@@ -179,12 +283,14 @@ async function fetchLeagueDiscovery(
   ctx: ProviderContext
 ): Promise<DiscoveryInsert | null> {
   try {
-    const snap = await getDocs(query(
-      collection(db, "leagues"),
-      where("regionKey", "==", ctx.regionKey),
-      where("status", "==", "active"),
-      limit(6)
-    ));
+    const snap = await getDocs(
+      query(
+        collection(db, "leagues"),
+        where("regionKey", "==", ctx.regionKey),
+        where("status", "==", "active"),
+        limit(6)
+      )
+    );
     if (snap.empty) return null;
 
     const items: DiscoveryLeagueItem[] = [];
@@ -207,7 +313,7 @@ async function fetchLeagueDiscovery(
       type: "discovery",
       subtype: "leagues",
       title: "Open Leagues Near You",
-      items,
+      items: items.slice(0, 3), // ← capped at 3
       dismissKey: discoveryDismissKey("leagues"),
     };
   } catch (err) {
@@ -224,10 +330,9 @@ async function fetchDTPDiscovery(
   ctx: ProviderContext
 ): Promise<DiscoveryInsert | null> {
   try {
-    const snap = await getDocs(query(
-      collection(db, "challenges", "dtp", "courses"),
-      limit(10)
-    ));
+    const snap = await getDocs(
+      query(collection(db, "challenges", "dtp", "courses"), limit(10))
+    );
     if (snap.empty) return null;
 
     const items: DiscoveryDTPItem[] = [];
@@ -249,7 +354,7 @@ async function fetchDTPDiscovery(
       type: "discovery",
       subtype: "dtp_pins",
       title: "Pins Up for Grabs",
-      items,
+      items: items.slice(0, 3), // ← capped at 3
       dismissKey: discoveryDismissKey("dtp_pins"),
     };
   } catch (err) {
@@ -268,22 +373,26 @@ async function fetchCourseDiscovery(
   try {
     if (!ctx.regionKey) return null;
 
-    const playedSnap = await getDocs(query(
-      collection(db, "leaderboards"),
-      where("regionKey", "==", ctx.regionKey),
-      where("userId", "==", ctx.userId)
-    ));
+    const playedSnap = await getDocs(
+      query(
+        collection(db, "leaderboards"),
+        where("regionKey", "==", ctx.regionKey),
+        where("userId", "==", ctx.userId)
+      )
+    );
     const playedCourseIds = new Set<string>();
     playedSnap.forEach((d) => {
       const courseId = d.data().courseId;
       if (courseId) playedCourseIds.add(String(courseId));
     });
 
-    const regionalSnap = await getDocs(query(
-      collection(db, "leaderboards"),
-      where("regionKey", "==", ctx.regionKey),
-      limit(50)
-    ));
+    const regionalSnap = await getDocs(
+      query(
+        collection(db, "leaderboards"),
+        where("regionKey", "==", ctx.regionKey),
+        limit(50)
+      )
+    );
 
     const courseMap = new Map<string, { name: string; roundCount: number }>();
     regionalSnap.forEach((d) => {
@@ -294,7 +403,10 @@ async function fetchCourseDiscovery(
       if (existing) {
         existing.roundCount++;
       } else {
-        courseMap.set(courseId, { name: data.courseName || "Unknown Course", roundCount: 1 });
+        courseMap.set(courseId, {
+          name: data.courseName || "Unknown Course",
+          roundCount: 1,
+        });
       }
     });
 
@@ -302,7 +414,7 @@ async function fetchCourseDiscovery(
 
     const items: DiscoveryCourseItem[] = Array.from(courseMap.entries())
       .sort((a, b) => b[1].roundCount - a[1].roundCount)
-      .slice(0, 6)
+      .slice(0, 3) // ← capped at 3
       .map(([courseId, info]) => ({
         courseId,
         name: info.name,
@@ -335,11 +447,13 @@ async function fetchPartnerDiscovery(
     const excludeIds = new Set([ctx.userId, ...ctx.partnerIds]);
     const candidates = new Map<string, DiscoveryPartnerItem>();
 
-    const regionalSnap = await getDocs(query(
-      collection(db, "users"),
-      where("regionKey", "==", ctx.regionKey),
-      limit(30)
-    ));
+    const regionalSnap = await getDocs(
+      query(
+        collection(db, "users"),
+        where("regionKey", "==", ctx.regionKey),
+        limit(30)
+      )
+    );
     regionalSnap.forEach((d) => {
       if (excludeIds.has(d.id)) return;
       const data = d.data();
@@ -352,11 +466,13 @@ async function fetchPartnerDiscovery(
       });
     });
 
-    const playedSnap = await getDocs(query(
-      collection(db, "leaderboards"),
-      where("userId", "==", ctx.userId),
-      limit(10)
-    ));
+    const playedSnap = await getDocs(
+      query(
+        collection(db, "leaderboards"),
+        where("userId", "==", ctx.userId),
+        limit(10)
+      )
+    );
     const playedCourseIds: string[] = [];
     const courseNameMap = new Map<string, string>();
     playedSnap.forEach((d) => {
@@ -369,11 +485,13 @@ async function fetchPartnerDiscovery(
     });
 
     for (const courseId of playedCourseIds.slice(0, 3)) {
-      const courseSnap = await getDocs(query(
-        collection(db, "leaderboards"),
-        where("courseId", "==", Number(courseId)),
-        limit(10)
-      ));
+      const courseSnap = await getDocs(
+        query(
+          collection(db, "leaderboards"),
+          where("courseId", "==", Number(courseId)),
+          limit(10)
+        )
+      );
       courseSnap.forEach((d) => {
         const data = d.data();
         const uid = data.userId;
@@ -390,8 +508,12 @@ async function fetchPartnerDiscovery(
     if (candidates.size === 0) return null;
 
     const items = Array.from(candidates.values())
-      .sort((a, b) => (a.context.startsWith("Plays at") ? 0 : 1) - (b.context.startsWith("Plays at") ? 0 : 1))
-      .slice(0, 6);
+      .sort(
+        (a, b) =>
+          (a.context.startsWith("Plays at") ? 0 : 1) -
+          (b.context.startsWith("Plays at") ? 0 : 1)
+      )
+      .slice(0, 3); // ← capped at 3
 
     return {
       type: "discovery",
@@ -414,10 +536,12 @@ async function fetchRivalryNudges(
   ctx: ProviderContext
 ): Promise<DiscoveryInsert | null> {
   try {
-    const snap = await getDocs(query(
-      collection(db, "rivalries"),
-      where("playerIds", "array-contains", ctx.userId)
-    ));
+    const snap = await getDocs(
+      query(
+        collection(db, "rivalries"),
+        where("playerIds", "array-contains", ctx.userId)
+      )
+    );
     if (snap.empty) return null;
 
     const nudges: DiscoveryRivalryNudgeItem[] = [];
@@ -426,8 +550,12 @@ async function fetchRivalryNudges(
       const data = d.data();
       const isPlayerA = data.playerA?.userId === ctx.userId;
       const rival = isPlayerA ? data.playerB : data.playerA;
-      const myWins = isPlayerA ? data.record?.wins || 0 : data.record?.losses || 0;
-      const theirWins = isPlayerA ? data.record?.losses || 0 : data.record?.wins || 0;
+      const myWins = isPlayerA
+        ? data.record?.wins || 0
+        : data.record?.losses || 0;
+      const theirWins = isPlayerA
+        ? data.record?.losses || 0
+        : data.record?.wins || 0;
       const margin = myWins - theirWins;
 
       if (margin === 1)
@@ -447,7 +575,7 @@ async function fetchRivalryNudges(
       type: "discovery",
       subtype: "rivalry_nudges",
       title: "Rivalry Watch",
-      items: nudges.slice(0, 6),
+      items: nudges.slice(0, 3), // ← capped at 3
       dismissKey: discoveryDismissKey("rivalry_nudges"),
     };
   } catch (err) {
@@ -511,7 +639,7 @@ async function fetchCoursePlayerDiscovery(
       type: "discovery",
       subtype: "course_players",
       title: "Playing Your Courses",
-      items: Array.from(seen.values()).slice(0, 8),
+      items: Array.from(seen.values()).slice(0, 3), // ← capped at 3
       dismissKey: discoveryDismissKey("course_players"),
     };
   } catch (err) {
@@ -530,13 +658,15 @@ async function fetchActivityItems(ctx: ProviderContext): Promise<ActivityItem[]>
   try {
     const sevenDaysAgo = Timestamp.fromMillis(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-    const snap = await getDocs(query(
-      collection(db, "feedActivity"),
-      where("regionKey", "==", ctx.regionKey),
-      where("createdAt", ">=", sevenDaysAgo),
-      orderBy("createdAt", "desc"),
-      limit(20)
-    ));
+    const snap = await getDocs(
+      query(
+        collection(db, "feedActivity"),
+        where("regionKey", "==", ctx.regionKey),
+        where("createdAt", ">=", sevenDaysAgo),
+        orderBy("createdAt", "desc"),
+        limit(20)
+      )
+    );
 
     snap.forEach((d) => {
       const data = d.data();
@@ -587,6 +717,7 @@ async function fetchActivityItems(ctx: ProviderContext): Promise<ActivityItem[]>
     await addChallengeProgress(ctx, items);
     items.sort((a, b) => b.timestamp - a.timestamp);
     return items.slice(0, 10);
+
   } catch (err) {
     console.error("Activity items fetch failed:", err);
     return items;
@@ -620,7 +751,9 @@ function shouldShowActivity(data: any, ctx: ProviderContext): boolean {
       if (data.privacy === "partners") return isPartner;
       return isPartner || isRegional;
     case "rivalry_update": {
-      const isInRivalry = data.playerA?.userId === ctx.userId || data.playerB?.userId === ctx.userId;
+      const isInRivalry =
+        data.playerA?.userId === ctx.userId ||
+        data.playerB?.userId === ctx.userId;
       if (isInRivalry) return true;
       if (isSelf) return false;
       return isPartner || isRegional;
@@ -633,12 +766,17 @@ function shouldShowActivity(data: any, ctx: ProviderContext): boolean {
   }
 }
 
-async function addChallengeProgress(ctx: ProviderContext, items: ActivityItem[]): Promise<void> {
+async function addChallengeProgress(
+  ctx: ProviderContext,
+  items: ActivityItem[]
+): Promise<void> {
   try {
     for (const challengeId of ctx.activeChallenges) {
       if (ctx.earnedChallengeBadges.includes(challengeId)) continue;
 
-      const participantDoc = await getDoc(doc(db, "challenges", challengeId, "participants", ctx.userId));
+      const participantDoc = await getDoc(
+        doc(db, "challenges", challengeId, "participants", ctx.userId)
+      );
       if (!participantDoc.exists()) continue;
 
       const data = participantDoc.data();
@@ -650,17 +788,47 @@ async function addChallengeProgress(ctx: ProviderContext, items: ActivityItem[])
       if (!challengeDef) continue;
 
       switch (challengeDef.type) {
-        case "par3": { const holes = data.totalPar3Holes ?? 0; progressPct = Math.min(holes / 50, 1); progressLabel = `${holes}/50 par 3 holes`; break; }
+        case "par3": {
+          const holes = data.totalPar3Holes ?? 0;
+          progressPct = Math.min(holes / 50, 1);
+          progressLabel = `${holes}/50 par 3 holes`;
+          break;
+        }
         case "fir":
-        case "gir": { const rounds = data.qualifyingRounds ?? 0; progressPct = Math.min(rounds / 10, 1); progressLabel = `${rounds}/10 qualifying rounds`; break; }
-        case "iron_player": { const count = data.consecutiveCount ?? 0; progressPct = Math.min(count / 5, 1); progressLabel = `${count}/5 consecutive rounds`; break; }
-        case "birdie_streak": { const best = data.bestStreak ?? 0; const target = data.targetThreshold ?? 3; progressPct = Math.min(best / target, 1); progressLabel = `Best streak: ${best}/${target}`; break; }
-        default: continue;
+        case "gir": {
+          const rounds = data.qualifyingRounds ?? 0;
+          progressPct = Math.min(rounds / 10, 1);
+          progressLabel = `${rounds}/10 qualifying rounds`;
+          break;
+        }
+        case "iron_player": {
+          const count = data.consecutiveCount ?? 0;
+          progressPct = Math.min(count / 5, 1);
+          progressLabel = `${count}/5 consecutive rounds`;
+          break;
+        }
+        case "birdie_streak": {
+          const best = data.bestStreak ?? 0;
+          const target = data.targetThreshold ?? 3;
+          progressPct = Math.min(best / target, 1);
+          progressLabel = `Best streak: ${best}/${target}`;
+          break;
+        }
+        default:
+          continue;
       }
 
       if (progressPct < 0.25) continue;
 
-      items.push({ id: `progress_${challengeId}`, timestamp: Date.now(), activityType: "challenge_progress", badgeId: challengeId, badgeName: challengeDef.name, progressPct, progressLabel });
+      items.push({
+        id: `progress_${challengeId}`,
+        timestamp: Date.now(),
+        activityType: "challenge_progress",
+        badgeId: challengeId,
+        badgeName: challengeDef.name,
+        progressPct,
+        progressLabel,
+      });
     }
   } catch (err) {
     console.error("Challenge progress fetch failed:", err);
@@ -673,14 +841,18 @@ async function addChallengeProgress(ctx: ProviderContext, items: ActivityItem[])
 
 async function fetchHoleInOne(ctx: ProviderContext): Promise<HoleInOneInsert | null> {
   try {
-    const thirtyDaysAgo = Timestamp.fromMillis(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const snap = await getDocs(query(
-      collection(db, "hole_in_ones"),
-      where("verified", "==", true),
-      where("verifiedAt", ">=", thirtyDaysAgo),
-      orderBy("verifiedAt", "desc"),
-      limit(1)
-    ));
+    const thirtyDaysAgo = Timestamp.fromMillis(
+      Date.now() - 30 * 24 * 60 * 60 * 1000
+    );
+    const snap = await getDocs(
+      query(
+        collection(db, "hole_in_ones"),
+        where("verified", "==", true),
+        where("verifiedAt", ">=", thirtyDaysAgo),
+        orderBy("verifiedAt", "desc"),
+        limit(1)
+      )
+    );
     if (snap.empty) return null;
 
     const data = snap.docs[0].data();
@@ -738,7 +910,10 @@ export async function cleanupDismissKeys(): Promise<void> {
     const allKeys = await AsyncStorage.getAllKeys();
     const dismissKeys = allKeys.filter((k) => k.startsWith(DISMISS_PREFIX));
     const today = new Date().toISOString().split("T")[0];
-    const toRemove = dismissKeys.filter((k) => k.startsWith("feed_dismiss_activity_") && !k.includes(today));
+    const toRemove = dismissKeys.filter(
+      (k) =>
+        k.startsWith("feed_dismiss_activity_") && !k.includes(today)
+    );
     if (toRemove.length > 0) await AsyncStorage.multiRemove(toRemove);
   } catch {
     // Silent fail

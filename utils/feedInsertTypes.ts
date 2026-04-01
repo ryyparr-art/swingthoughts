@@ -5,9 +5,36 @@
  *   - Discovery carousels (horizontal scroll, multi-item)
  *   - Activity carousel ("From the Field" — swipeable cards)
  *   - Hole-in-One standalone card
+ *   - Live on Course insert (slot 0, active rounds nearby)
  *
  * These get slotted between regular FeedPost items in the clubhouse.
  */
+
+// ============================================================================
+// LIVE ON COURSE
+// ============================================================================
+
+/** A single player card in the Live on Course insert. */
+export interface LiveOnCoursePlayer {
+  userId: string;
+  displayName: string;
+  avatar?: string | null;
+  courseName: string;
+  currentHole: number;
+  /** scoreToPar from liveScores[markerId]. Positive = over, negative = under. */
+  scoreToPar: number;
+  roundId: string;
+}
+
+/**
+ * Live on Course insert — occupies slot 0 in the feed.
+ * Omitted entirely (not inserted) when players array is empty.
+ * Never user-dismissable — no dismissKey.
+ */
+export interface LiveOnCourseInsert {
+  type: "live_on_course";
+  players: LiveOnCoursePlayer[];
+}
 
 // ============================================================================
 // DISCOVERY CAROUSEL TYPES
@@ -325,7 +352,11 @@ export interface HoleInOneInsert {
 // UNION TYPE
 // ============================================================================
 
-export type FeedInsert = DiscoveryInsert | ActivityInsert | HoleInOneInsert;
+export type FeedInsert =
+  | LiveOnCourseInsert
+  | DiscoveryInsert
+  | ActivityInsert
+  | HoleInOneInsert;
 
 // ============================================================================
 // HELPERS

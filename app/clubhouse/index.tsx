@@ -23,6 +23,11 @@
  * - Memoized render callbacks
  */
 
+import { ImageZoom } from "@likashefqet/react-native-image-zoom";
+import * as Haptics from "expo-haptics";
+import * as Location from "expo-location";
+import { useLocalSearchParams } from "expo-router";
+import { doc, getDoc } from "firebase/firestore";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -38,40 +43,36 @@ import {
   View,
 } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { ImageZoom } from "@likashefqet/react-native-image-zoom";
-import { useLocalSearchParams } from "expo-router";
-import * as Haptics from "expo-haptics";
-import * as Location from "expo-location";
-import { doc, getDoc } from "firebase/firestore";
 
 import { auth, db } from "@/constants/firebaseConfig";
-import { soundPlayer } from "@/utils/soundPlayer";
-import { calculateDistanceMiles, Thought } from "@/utils/feedHelpers";
 import type { ActiveTournament } from "@/hooks/useTournamentStatus";
+import { calculateDistanceMiles } from "@/utils/feedHelpers";
+import { soundPlayer } from "@/utils/soundPlayer";
 
 // Hooks
+import { useBackgroundPreload } from "@/hooks/useBackgroundPreload";
 import { useFeed } from "@/hooks/useFeed";
+import { FeedListItem, useFeedInserts } from "@/hooks/useFeedInserts";
 import { useFeedInteractions } from "@/hooks/useFeedInteractions";
 import { usePendingPosts } from "@/hooks/usePendingPosts";
-import { useBackgroundPreload } from "@/hooks/useBackgroundPreload";
-import { useFeedInserts, FeedListItem } from "@/hooks/useFeedInserts";
 
 // Components
-import FeedHeader from "@/components/clubhouse/FeedHeader";
-import FeedPost from "@/components/clubhouse/FeedPost";
-import FeedDiscoveryCarousel from "@/components/clubhouse/FeedDiscoveryCarousel";
 import FeedActivityCarousel from "@/components/clubhouse/FeedActivityCarousel";
+import FeedDiscoveryCarousel from "@/components/clubhouse/FeedDiscoveryCarousel";
+import FeedHeader from "@/components/clubhouse/FeedHeader";
 import FeedHoleInOneCard from "@/components/clubhouse/FeedHoleInOneCard";
-import { FullscreenVideoPlayer } from "@/components/video/VideoComponents";
-import AdminPanelButton from "@/components/navigation/AdminPanelButton";
-import BottomActionBar from "@/components/navigation/BottomActionBar";
-import SwingFooter from "@/components/navigation/SwingFooter";
+import FeedPost from "@/components/clubhouse/FeedPost";
+import LiveOnCourseInsert from "@/components/feed/LiveOnCourseInsert";
 import CommentsModal from "@/components/modals/CommentsModal";
 import ReportModal from "@/components/modals/ReportModal";
 import TournamentChatModal from "@/components/modals/TournamentChatModal";
+import AdminPanelButton from "@/components/navigation/AdminPanelButton";
+import BottomActionBar from "@/components/navigation/BottomActionBar";
+import SwingFooter from "@/components/navigation/SwingFooter";
+import LiveRoundFAB from "@/components/scoring/LiveRoundFAB";
 import FilterBottomSheet from "@/components/ui/FilterBottomSheet";
 import FilterFAB from "@/components/ui/FilterFAB";
-import LiveRoundFAB from "@/components/scoring/LiveRoundFAB";
+import { FullscreenVideoPlayer } from "@/components/video/VideoComponents";
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const SCREEN_HEIGHT = Dimensions.get('window').height;
@@ -454,6 +455,10 @@ export default function ClubhouseScreen() {
     // Feed insert card
     if (item._feedItemType === "insert") {
       switch (item.type) {
+        case "live_on_course":
+          return (
+            <LiveOnCourseInsert insert={item as any} />
+          );
         case "discovery":
           return (
             <FeedDiscoveryCarousel

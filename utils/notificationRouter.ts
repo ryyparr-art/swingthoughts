@@ -69,6 +69,14 @@ export function navigateForNotification(notification: Notification, router: Rout
       }
       return false;
 
+    // ── Partner teed off — open live round viewer directly ──────────
+    case "round_live":
+      if (notification.roundId) {
+        router.push(`/round/${notification.roundId}` as any);
+        return true;
+      }
+      return false;
+
     case "marker_transfer":
     case "marker_transfer_request":
       if (notification.roundId) {

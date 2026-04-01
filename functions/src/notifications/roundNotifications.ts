@@ -5,6 +5,7 @@
  *   - round_invite:   "Ry Par started a round at Maple Hill" → open round viewer
  *   - round_complete: "Your round at Maple Hill with John is complete — you shot 84" → open profile/rounds
  *   - round_notable:  "Ry Par's group is on Hole 7 at Maple Hill" (throttled)
+ *   - round_live:     "Ry Par just teed off at Maple Hill · Tap to follow along" → open round viewer
  *   - outing_complete: "You finished 3rd at Maple Hill — Net 72" → open round
  *   - rivalry_update: "Matt takes the lead over Ryan (9-8)" → open rival profile
  *
@@ -32,6 +33,7 @@ export type RoundNotificationType =
   | "round_invite"
   | "round_complete"
   | "round_notable"
+  | "round_live"
   | "marker_transfer"
   | "marker_transfer_request"
   | "outing_complete"
@@ -134,6 +136,58 @@ export async function sendRoundInviteNotifications(
       markerAvatar,
     });
   }
+}
+
+// ============================================================================
+// ROUND LIVE — Notify partners when an on-premise round goes live
+//
+// Fires once at round creation for public + partners rounds.
+// Never fires for simulator rounds or private rounds.
+// Recipients: the marker's accepted partners (from partnerIds[] on round doc).
+// Excludes other players already in the round — they know it's live.
+// ============================================================================
+
+export async function sendRoundLiveNotifications(
+  roundId: string,
+  courseName: string,
+  markerName: string,
+  markerId: string,
+  markerAvatar: string | undefined,
+  /** partnerIds[] from the round doc — the marker's accepted partners */
+  partnerIds: string[],
+  /** playerIds already in the round — exclude them, they don't need a nudge */
+  roundPlayerIds: string[]
+): Promise<void> {
+  if (partnerIds.length === 0) return;
+
+  const roundPlayerSet = new Set(roundPlayerIds);
+  const message = `${markerName} just teed off at ${courseName} · Tap to follow along`;
+
+  for (const partnerId of partnerIds) {
+    // Don't notify players who are already in the round
+    if (roundPlayerSet.has(partnerId)) continue;
+
+    try {
+      await sendRoundNotification({
+        type: "round_live",
+        recipientUserId: partnerId,
+        roundId,
+        courseName,
+        markerName,
+        markerId,
+        markerAvatar,
+        message,
+        // Tapping opens the live round viewer directly
+        navigationTarget: "round",
+      });
+    } catch (err) {
+      logger.error(`round_live notification failed for partner ${partnerId}:`, err);
+    }
+  }
+
+  logger.info(
+    `✅ round_live notifications sent: ${markerName} at ${courseName} → ${partnerIds.length} partners`
+  );
 }
 
 // ============================================================================

@@ -132,20 +132,18 @@ export default function LeaderboardScreen() {
   // Carousel navigation params
   const targetCourseId = useMemo(() => {
     if (highlightCourseId) return highlightCourseId;
-    if (filterType === "course" && filterCourseId) return null;
     let raw = params?.courseId;
     if (Array.isArray(raw)) raw = raw[0];
     const n = Number(raw);
     return Number.isFinite(n) ? n : null;
-  }, [params?.courseId, filterType, filterCourseId, highlightCourseId]);
+  }, [params?.courseId, highlightCourseId]);
 
   const targetPlayerId = useMemo(() => {
     if (highlightUserId) return highlightUserId;
     let playerId = params?.playerId;
     if (Array.isArray(playerId)) playerId = playerId[0];
-    if (filterType === "player" && filterPlayerId === playerId) return null;
     return (playerId as string) || null;
-  }, [params?.playerId, filterType, filterPlayerId, highlightUserId]);
+  }, [params?.playerId, highlightUserId]);
 
   const shouldHighlight =
     !!(targetCourseId && targetPlayerId) || !!(highlightCourseId && highlightScoreId);

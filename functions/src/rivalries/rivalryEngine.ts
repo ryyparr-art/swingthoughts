@@ -7,9 +7,14 @@
  *
  * For every pair of on-platform players:
  *   1. Increment sharedRoundCounts on both user docs
- *   2. If count reaches RIVALRY_THRESHOLD → create rivalry doc
+ *   2. Create rivalry doc on first shared round (always — no threshold gate)
  *   3. If rivalry exists → compute round winner → update record
  *   4. Detect status changes → return RivalryChange[] for feed cards
+ *
+ * Rivalry announcement (rivalry_formed feed card + notification) is suppressed
+ * until sharedCount reaches RIVALRY_THRESHOLD. This ensures all matches are
+ * recorded from day one, while the user-facing rivalry only surfaces once the
+ * relationship is meaningful.
  *
  * Rivalry ID is deterministic: sorted userId pair → "abc_xyz"
  *
@@ -21,7 +26,10 @@ import { logger } from "firebase-functions/v2";
 
 const db = admin.firestore();
 
-/** Number of shared rounds before a rivalry is created */
+/**
+ * Number of shared rounds before the rivalry is ANNOUNCED
+ * (feed card + notification). The doc is created on round 1.
+ */
 const RIVALRY_THRESHOLD = 3;
 
 /** Max recent results stored on rivalry doc */
@@ -164,27 +172,38 @@ async function processPlayerPair(
   // Use the max (they should be in sync, but just in case)
   const sharedCount = Math.max(newCountA, newCountB);
 
-  // ── 2. Check if rivalry exists ──
+  // ── 2. Determine round winner ──
+  const winnerId = determineWinner(playerA, playerB);
+
+  // ── 3. Check if rivalry doc exists ──
   const rivalryRef = db.collection("rivalries").doc(rivalryId);
   const rivalrySnap = await rivalryRef.get();
   const rivalryExists = rivalrySnap.exists;
 
-  // If not enough shared rounds and no rivalry yet, skip
-  if (!rivalryExists && sharedCount < RIVALRY_THRESHOLD) {
-    return [];
-  }
-
-  // ── 3. Determine round winner ──
-  const winnerId = determineWinner(playerA, playerB);
-
   // ── 4. Create or update rivalry doc ──
+  // Always create from round 1 — no threshold gate here.
+  // The RIVALRY_THRESHOLD only controls when rivalry_formed is announced.
   if (!rivalryExists) {
-    // Create new rivalry
-    return await createRivalry(rivalryId, playerA, playerB, winnerId, context, sharedCount);
+    return await createRivalry(
+      rivalryId,
+      playerA,
+      playerB,
+      winnerId,
+      context,
+      sharedCount
+    );
   } else {
-    // Update existing rivalry
     const before = rivalrySnap.data() as RivalryDoc;
-    return await updateRivalry(rivalryId, rivalryRef, before, playerA, playerB, winnerId, context);
+    return await updateRivalry(
+      rivalryId,
+      rivalryRef,
+      before,
+      playerA,
+      playerB,
+      winnerId,
+      context,
+      sharedCount
+    );
   }
 }
 
@@ -235,7 +254,7 @@ function determineWinner(
 }
 
 // ============================================================================
-// Create new rivalry doc
+// Create new rivalry doc (called on first shared round)
 // ============================================================================
 
 async function createRivalry(
@@ -295,14 +314,33 @@ async function createRivalry(
   };
 
   await db.collection("rivalries").doc(rivalryId).set(rivalryDoc);
-  logger.info(`🆕 Rivalry created: ${playerA.displayName} vs ${playerB.displayName} (${sharedCount} shared rounds)`);
+  logger.info(
+    `🆕 Rivalry doc created: ${playerA.displayName} vs ${playerB.displayName} ` +
+    `(shared rounds: ${sharedCount}, announcing: ${sharedCount >= RIVALRY_THRESHOLD})`
+  );
+
+  // Only announce the rivalry once the threshold is reached.
+  // If this is round 1 or 2, the doc is silently created with no feed card
+  // or notification — the rivalry will surface in the locker once it has
+  // enough matches to be meaningful.
+  if (sharedCount < RIVALRY_THRESHOLD) {
+    return [];
+  }
 
   return [
     {
       type: "rivalry_formed",
       rivalryId,
-      playerA: { userId: playerA.userId, displayName: playerA.displayName, avatar: playerA.avatar },
-      playerB: { userId: playerB.userId, displayName: playerB.displayName, avatar: playerB.avatar },
+      playerA: {
+        userId: playerA.userId,
+        displayName: playerA.displayName,
+        avatar: playerA.avatar,
+      },
+      playerB: {
+        userId: playerB.userId,
+        displayName: playerB.displayName,
+        avatar: playerB.avatar,
+      },
       triggeredBy: winnerId !== "tie" ? winnerId : playerA.userId,
       message: `New rivalry: ${playerA.displayName} vs ${playerB.displayName} (${sharedCount} rounds together)`,
       record,
@@ -322,7 +360,8 @@ async function updateRivalry(
   playerA: PlayerResult,
   playerB: PlayerResult,
   winnerId: string | "tie",
-  context: RivalryContext
+  context: RivalryContext,
+  sharedCount: number
 ): Promise<RivalryChange[]> {
   const now = admin.firestore.Timestamp.now();
   const changes: RivalryChange[] = [];
@@ -351,17 +390,17 @@ async function updateRivalry(
   // ── Streak tracking ──
   let newStreak = { ...before.currentStreak };
   if (winnerId === "tie") {
-    // Tie doesn't break or extend
+    // Tie doesn't break or extend streak
   } else if (winnerId === before.currentStreak.playerId) {
-    // Extends streak
     newStreak.count++;
   } else {
-    // New streak or broken
     newStreak = { playerId: winnerId, count: 1 };
   }
 
   const newLongest =
-    newStreak.count > before.longestStreak.count ? { ...newStreak } : before.longestStreak;
+    newStreak.count > before.longestStreak.count
+      ? { ...newStreak }
+      : before.longestStreak;
 
   // ── Belt holder (best record in last 5 matches) ──
   const last5 = newRecent.slice(0, 5);
@@ -397,17 +436,45 @@ async function updateRivalry(
     "playerB.avatar": playerB.avatar || null,
   });
 
+  // ── Status changes only surface once the rivalry is announced ──
+  // Before the threshold, we track silently but generate no feed cards.
+  if (sharedCount < RIVALRY_THRESHOLD) {
+    logger.info(
+      `📊 Silent rivalry update: ${playerA.displayName} vs ${playerB.displayName} ` +
+      `(shared: ${sharedCount}/${RIVALRY_THRESHOLD}, totalMatches: ${totalMatches})`
+    );
+    return [];
+  }
+
   // ══════════════════════════════════════════════════════════════
-  // STATUS CHANGE DETECTION
+  // STATUS CHANGE DETECTION (only after rivalry is announced)
   // ══════════════════════════════════════════════════════════════
 
   const oldRecord = before.record;
   const pA = before.playerA;
   const pB = before.playerB;
 
-  // Helper: who led before/after (from playerA perspective)
   const beforeLead = getLeader(oldRecord);
   const afterLead = getLeader(newRecord);
+
+  // ── rivalry_formed: fires exactly once when threshold is crossed ──
+  // This handles the case where the doc was created silently on round 1
+  // and sharedCount hits RIVALRY_THRESHOLD on a later updateRivalry call.
+  if (sharedCount === RIVALRY_THRESHOLD) {
+    changes.push({
+      type: "rivalry_formed",
+      rivalryId,
+      playerA: pA,
+      playerB: pB,
+      triggeredBy: winnerId !== "tie" ? winnerId : pA.userId,
+      message: `New rivalry: ${pA.displayName} vs ${pB.displayName} (${sharedCount} rounds together)`,
+      record: newRecord,
+      priority: 4,
+    });
+    // Return early — don't stack rivalry_formed with other change cards
+    // on the same round. The other changes will appear next round.
+    return changes;
+  }
 
   // ── Lead change ──
   if (beforeLead !== afterLead && afterLead !== "tied") {
@@ -430,7 +497,7 @@ async function updateRivalry(
 
   // ── Tied up ──
   if (beforeLead !== "tied" && afterLead === "tied") {
-    const tiedBy = winnerId !== "tie" ? winnerId : playerA.userId;
+    const tiedBy = winnerId !== "tie" ? winnerId : pA.userId;
     const tiedName = tiedBy === pA.userId ? pA.displayName : pB.displayName;
     const otherName = tiedBy === pA.userId ? pB.displayName : pA.displayName;
 
@@ -512,7 +579,7 @@ async function updateRivalry(
       rivalryId,
       playerA: pA,
       playerB: pB,
-      triggeredBy: winnerId !== "tie" ? winnerId : playerA.userId,
+      triggeredBy: winnerId !== "tie" ? winnerId : pA.userId,
       message: `${pA.displayName} vs ${pB.displayName} reaches ${totalMatches} matches!`,
       record: newRecord,
       priority: 6,
@@ -547,14 +614,12 @@ export async function writeRivalryFeedCards(
   const cardsPerUser: Record<string, number> = {};
 
   for (const change of sorted) {
-    // Write one card for playerA
     if (!shouldSkipCard(change.playerA.userId, cardsPerUser)) {
       const ref = db.collection("feedActivity").doc();
       batch.set(ref, buildRivalryFeedCard(change, change.playerA.userId, context, now));
       cardsPerUser[change.playerA.userId] = (cardsPerUser[change.playerA.userId] || 0) + 1;
     }
 
-    // Write one card for playerB
     if (!shouldSkipCard(change.playerB.userId, cardsPerUser)) {
       const ref = db.collection("feedActivity").doc();
       batch.set(ref, buildRivalryFeedCard(change, change.playerB.userId, context, now));
@@ -592,25 +657,21 @@ function buildRivalryFeedCard(
         ? change.playerA.avatar || null
         : change.playerB.avatar || null,
 
-    // Rivalry context
     rivalryId: change.rivalryId,
     changeType: change.type,
     message: change.message,
 
-    // Players involved
     playerA: change.playerA,
     playerB: change.playerB,
 
-    // Record (always from playerA's perspective — client adjusts)
+    // Record always from playerA perspective — client adjusts for viewer
     record: change.record,
 
-    // Round/outing that triggered this
     roundId: context.roundId || null,
     outingId: context.outingId || null,
     courseId: context.courseId,
     courseName: context.courseName,
 
-    // Feed metadata
     regionKey: context.regionKey || null,
     location: context.location || null,
     privacy: "public",
@@ -642,7 +703,6 @@ export async function sendRivalryNotifications(
   for (const change of changes) {
     if (!NOTIFIABLE_TYPES.has(change.type)) continue;
 
-    // Notify both players
     for (const player of [change.playerA, change.playerB]) {
       try {
         await sendNotification({
