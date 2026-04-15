@@ -260,22 +260,10 @@ export default function ExploreLeagues() {
     if (!currentUserId) return;
 
     try {
-      // Get all leagues user is a member of
-      const leaguesSnap = await getDocs(collection(db, "leagues"));
-      const memberIds: string[] = [];
-
-      for (const leagueDoc of leaguesSnap.docs) {
-        const memberRef = collection(db, "leagues", leagueDoc.id, "members");
-        const memberSnap = await getDocs(
-          query(memberRef, where("userId", "==", currentUserId))
-        );
-        
-        if (!memberSnap.empty) {
-          memberIds.push(leagueDoc.id);
-        }
-      }
-
-      setMyLeagueIds(memberIds);
+      // Read leagueIds[] directly from user doc — no full collection scan
+      const userSnap = await getDoc(doc(db, "users", currentUserId));
+      const leagueIds: string[] = userSnap.data()?.leagueIds || [];
+      setMyLeagueIds(leagueIds);
     } catch (error) {
       console.error("Error loading my leagues:", error);
     }

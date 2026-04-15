@@ -125,8 +125,8 @@ export async function sendRoundInviteNotifications(
   markerAvatar: string | undefined,
   playerIds: string[]
 ): Promise<void> {
-  for (const playerId of playerIds) {
-    await sendRoundNotification({
+  await Promise.all(playerIds.map((playerId) =>
+    sendRoundNotification({
       type: "round_invite",
       recipientUserId: playerId,
       roundId,
@@ -134,8 +134,8 @@ export async function sendRoundInviteNotifications(
       markerName,
       markerId,
       markerAvatar,
-    });
-  }
+    })
+  ));
 }
 
 // ============================================================================
@@ -163,10 +163,10 @@ export async function sendRoundLiveNotifications(
   const roundPlayerSet = new Set(roundPlayerIds);
   const message = `${markerName} just teed off at ${courseName} · Tap to follow along`;
 
-  for (const partnerId of partnerIds) {
-    // Don't notify players who are already in the round
-    if (roundPlayerSet.has(partnerId)) continue;
+  const eligiblePartnerIds = partnerIds.filter((id) => !roundPlayerSet.has(id));
+  if (eligiblePartnerIds.length === 0) return;
 
+  await Promise.all(eligiblePartnerIds.map(async (partnerId) => {
     try {
       await sendRoundNotification({
         type: "round_live",
@@ -177,13 +177,12 @@ export async function sendRoundLiveNotifications(
         markerId,
         markerAvatar,
         message,
-        // Tapping opens the live round viewer directly
         navigationTarget: "round",
       });
     } catch (err) {
       logger.error(`round_live notification failed for partner ${partnerId}:`, err);
     }
-  }
+  }));
 
   logger.info(
     `✅ round_live notifications sent: ${markerName} at ${courseName} → ${partnerIds.length} partners`

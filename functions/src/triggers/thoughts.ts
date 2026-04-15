@@ -38,30 +38,32 @@ export const onThoughtCreated = onDocumentCreated(
       // Partner notifications
       const partners = userData.partners || [];
       if (Array.isArray(partners) && partners.length > 0) {
-        for (const partnerId of partners) {
-          await createNotificationDocument({
+        await Promise.all(partners.map((partnerId: string) =>
+          createNotificationDocument({
             userId: partnerId, type: "partner_posted",
             actorId: userId, actorName, actorAvatar,
             postId: thoughtId,
             message: `${actorName} has a new Swing Thought`,
-          });
-        }
+          })
+        ));
         console.log("✅ Sent partner_posted to", partners.length, "partners");
       }
 
       // Mention notifications
       if (taggedPartners && Array.isArray(taggedPartners) && taggedPartners.length > 0) {
-        for (const tagged of taggedPartners) {
-          const taggedUserId = typeof tagged === 'string' ? tagged : tagged.userId;
-          if (!taggedUserId || partners.includes(taggedUserId)) continue;
+        const partnerSet = new Set(partners);
+        const mentionTargets = taggedPartners
+          .map((tagged: any) => typeof tagged === "string" ? tagged : tagged.userId)
+          .filter((taggedUserId: string) => taggedUserId && !partnerSet.has(taggedUserId));
 
-          await createNotificationDocument({
+        await Promise.all(mentionTargets.map((taggedUserId: string) =>
+          createNotificationDocument({
             userId: taggedUserId, type: "mention_post",
             actorId: userId, actorName, actorAvatar,
             postId: thoughtId,
             message: `${actorName} tagged you in a Swing Thought`,
-          });
-        }
+          })
+        ));
         console.log("✅ Sent mention_post notifications");
       }
 

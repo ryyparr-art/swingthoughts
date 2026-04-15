@@ -201,26 +201,33 @@ export default function LeagueStandings() {
     try {
       setLoading(true);
 
-      const leaguesSnap = await getDocs(collection(db, "leagues"));
-      const userLeagues: LeagueCard[] = [];
+      // Read leagueIds[] from user doc — no full collection scan
+      const userSnap = await getDoc(doc(db, "users", currentUserId));
+      const leagueIds: string[] = userSnap.data()?.leagueIds || [];
 
-      for (const leagueDoc of leaguesSnap.docs) {
-        const memberDoc = await getDoc(
-          doc(db, "leagues", leagueDoc.id, "members", currentUserId)
-        );
+      if (leagueIds.length === 0) {
+        setMyLeagues([]);
+        return;
+      }
 
-        if (memberDoc.exists()) {
+      // Fetch only the leagues this user belongs to, in parallel
+      const results = await Promise.all(
+        leagueIds.map(async (leagueId) => {
+          const leagueDoc = await getDoc(doc(db, "leagues", leagueId));
+          if (!leagueDoc.exists()) return null;
+
           const leagueData = leagueDoc.data();
-          userLeagues.push({
+          return {
             id: leagueDoc.id,
             name: leagueData.name,
             avatar: leagueData.avatar,
             currentWeek: leagueData.currentWeek || 0,
             totalWeeks: leagueData.totalWeeks || 0,
-          });
-        }
-      }
+          } as LeagueCard;
+        })
+      );
 
+      const userLeagues = results.filter((l): l is LeagueCard => l !== null);
       setMyLeagues(userLeagues);
 
       if (userLeagues.length > 0 && !selectedLeagueId) {

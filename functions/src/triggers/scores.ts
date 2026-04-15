@@ -85,6 +85,8 @@ export const onScoreCreated = onDocumentCreated(
 
       // ── LEADERBOARD UPDATE ────────────────────────────────────
       let isNewLowman = false;
+      // userId of the player displaced from lowman — used to update their lowmanCourses[]
+      let displacedLowmanId: string | null = null;
 
       if ((holeCount === 18 || holeCount === 9) && isLeaderboardEligible && !isSimulator) {
 
@@ -153,6 +155,11 @@ export const onScoreCreated = onDocumentCreated(
               const topScores = [...(leaderboardData[scoresKey] || [])];
               const previousLowNet = leaderboardData[lowNetKey] ?? 999;
 
+              // Capture previous lowman before sorting so we can update their
+              // lowmanCourses[] if they get displaced
+              const previousLowmanUserId: string | null =
+                topScores.length > 0 ? (topScores[0].userId ?? null) : null;
+
               topScores.push(newScoreEntry);
               topScores.sort((a: any, b: any) => {
                 if (a.netScore !== b.netScore) return a.netScore - b.netScore;
@@ -166,6 +173,10 @@ export const onScoreCreated = onDocumentCreated(
               if (is18 && updatedTopScores[0].userId === userId && newLowNet < previousLowNet) {
                 isNewLowman = true;
                 console.log("🏆 NEW LOWMAN! User:", userId);
+                // Record who was displaced (only if it's a different user)
+                if (previousLowmanUserId && previousLowmanUserId !== userId) {
+                  displacedLowmanId = previousLowmanUserId;
+                }
               }
 
               tx.update(leaderboardRef, {
@@ -208,13 +219,45 @@ export const onScoreCreated = onDocumentCreated(
           if (isNewLowman && is18) {
             console.log("🏆 Awarding badges...");
 
+            const courseKey = String(courseId);
+
             const lowmanBadge = {
               type: "lowman", courseId, courseName,
               achievedAt: Timestamp.now(), score: grossScore, displayName: "Lowman",
             };
             const currentBadges = userData?.Badges || [];
-            await userRef.update({ Badges: [...currentBadges, lowmanBadge] });
+
+            // Add this course to lowmanCourses — single field read, no collection scan.
+            // lowmanCourses[] is maintained as a denormalized list of courseIds where
+            // this user currently holds the lowman position. Backfilled via
+            // src/backfills/backfillLowmanCourses.ts before this code was deployed.
+            const existingLowmanCourses: string[] = userData?.lowmanCourses || [];
+            const updatedLowmanCourses = existingLowmanCourses.includes(courseKey)
+              ? existingLowmanCourses
+              : [...existingLowmanCourses, courseKey];
+
+            await userRef.update({
+              Badges: [...currentBadges, lowmanBadge],
+              lowmanCourses: updatedLowmanCourses,
+            });
             console.log("✅ Lowman badge awarded");
+
+            // Remove this course from the displaced lowman's lowmanCourses
+            if (displacedLowmanId) {
+              try {
+                const displacedRef = db.collection("users").doc(displacedLowmanId);
+                const displacedSnap = await displacedRef.get();
+                if (displacedSnap.exists) {
+                  const displacedCourses: string[] = displacedSnap.data()?.lowmanCourses || [];
+                  await displacedRef.update({
+                    lowmanCourses: displacedCourses.filter((c) => c !== courseKey),
+                  });
+                  console.log(`✅ Removed ${courseKey} from displaced lowman ${displacedLowmanId}`);
+                }
+              } catch (err) {
+                console.error("⚠️ Failed to update displaced lowman courses (non-critical):", err);
+              }
+            }
 
             await writeLowLeaderChangeActivity(
               userId,
@@ -225,61 +268,75 @@ export const onScoreCreated = onDocumentCreated(
               courseRegionKey
             );
 
-            const leaderboardsSnap = await db
-              .collection("leaderboards")
-              .where("regionKey", "==", courseRegionKey)
-              .get();
-
-            let lowmanCount = 0;
-            leaderboardsSnap.forEach((doc) => {
-              const data = doc.data();
-              const topScores = data.topScores18 || [];
-              if (topScores.length > 0 && topScores[0].userId === userId) lowmanCount++;
-            });
+            // ── BADGE TIER CHECK ────────────────────────────────────
+            // Read lowmanCourses.length directly — O(1), replaces the full
+            // leaderboard collection scan that previously fired here.
+            const lowmanCount = updatedLowmanCourses.length;
+            console.log(`🏆 Lowman course count: ${lowmanCount}`);
 
             const existingBadges = userData?.Badges || [];
-            const filteredBadges = existingBadges.filter((b: any) => b.type !== "scratch" && b.type !== "ace");
+            const filteredBadges = existingBadges.filter(
+              (b: any) => b.type !== "scratch" && b.type !== "ace"
+            );
 
             if (lowmanCount >= 3) {
               await userRef.update({
-                Badges: [...filteredBadges, { type: "ace", courseId: 0, courseName: "Multiple Courses", achievedAt: Timestamp.now(), displayName: "Ace" }],
+                Badges: [...filteredBadges, {
+                  type: "ace", courseId: 0, courseName: "Multiple Courses",
+                  achievedAt: Timestamp.now(), displayName: "Ace",
+                }],
               });
               console.log("🏆 Upgraded to Ace badge!");
 
+              // Fetch only the specific leaderboard docs we know this user leads —
+              // 2-3 targeted reads instead of a full collection scan
               const aceCourseNames: string[] = [];
-              leaderboardsSnap.forEach((lbDoc) => {
-                const lbData = lbDoc.data();
-                const top = lbData.topScores18 || [];
-                if (top.length > 0 && top[0].userId === userId) {
-                  aceCourseNames.push(lbData.courseName || "Unknown");
+              for (const cId of updatedLowmanCourses.slice(0, 3)) {
+                try {
+                  const lbId = `${courseRegionKey}_${cId}`;
+                  const lbSnap = await db.collection("leaderboards").doc(lbId).get();
+                  if (lbSnap.exists) {
+                    aceCourseNames.push(lbSnap.data()?.courseName || cId);
+                  }
+                } catch (err) {
+                  console.error(`⚠️ Could not fetch leaderboard name for ${cId}:`, err);
                 }
-              });
+              }
+
               await writeAceTierEarnedActivity(
                 userId,
                 userData?.displayName || "Unknown",
                 userData?.avatar || null,
-                aceCourseNames.slice(0, 3),
+                aceCourseNames,
                 courseRegionKey
               );
             } else if (lowmanCount >= 2) {
               await userRef.update({
-                Badges: [...filteredBadges, { type: "scratch", courseId: 0, courseName: "Multiple Courses", achievedAt: Timestamp.now(), displayName: "Scratch" }],
+                Badges: [...filteredBadges, {
+                  type: "scratch", courseId: 0, courseName: "Multiple Courses",
+                  achievedAt: Timestamp.now(), displayName: "Scratch",
+                }],
               });
               console.log("🏆 Upgraded to Scratch badge!");
 
               const scratchCourseNames: string[] = [];
-              leaderboardsSnap.forEach((lbDoc) => {
-                const lbData = lbDoc.data();
-                const top = lbData.topScores18 || [];
-                if (top.length > 0 && top[0].userId === userId) {
-                  scratchCourseNames.push(lbData.courseName || "Unknown");
+              for (const cId of updatedLowmanCourses.slice(0, 2)) {
+                try {
+                  const lbId = `${courseRegionKey}_${cId}`;
+                  const lbSnap = await db.collection("leaderboards").doc(lbId).get();
+                  if (lbSnap.exists) {
+                    scratchCourseNames.push(lbSnap.data()?.courseName || cId);
+                  }
+                } catch (err) {
+                  console.error(`⚠️ Could not fetch leaderboard name for ${cId}:`, err);
                 }
-              });
+              }
+
               await writeScratchEarnedActivity(
                 userId,
                 userData?.displayName || "Unknown",
                 userData?.avatar || null,
-                scratchCourseNames.slice(0, 2),
+                scratchCourseNames,
                 courseRegionKey
               );
             }

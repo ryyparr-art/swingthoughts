@@ -49,15 +49,11 @@ export const sendPushNotification = onDocumentCreated(
         return;
       }
 
-      // Count actual unread notifications for accurate badge
-      const unreadSnapshot = await db
-        .collection("notifications")
-        .where("userId", "==", userId)
-        .where("read", "==", false)
-        .count()
-        .get();
-      
-      const unreadCount = unreadSnapshot.data().count;
+      // Read unreadCount from user doc — O(1) field read instead of a
+      // count() aggregate query on the notifications collection per push.
+      // unreadCount is maintained by createNotificationDocument (increment)
+      // and the client mark-as-read flow (decrement).
+      const unreadCount: number = userData?.unreadCount ?? 0;
       console.log(`📊 Unread count for ${userId}: ${unreadCount}`);
 
       const pushMessage: ExpoPushMessage = {

@@ -194,25 +194,34 @@ async function syncLeagueMembers(
   challengeBadges: string[] | null
 ): Promise<void> {
   try {
-    const membersSnap = await db
-      .collectionGroup("members")
-      .where("userId", "==", userId)
-      .get();
+    // Read leagueIds[] from user doc — avoids collection group query across
+    // all league member subcollections which is expensive at scale.
+    const userSnap = await db.collection("users").doc(userId).get();
+    const leagueIds: string[] = userSnap.data()?.leagueIds || [];
 
-    if (membersSnap.empty) return;
+    if (leagueIds.length === 0) return;
 
     const batch = db.batch();
     let count = 0;
 
-    for (const memberDoc of membersSnap.docs) {
+    await Promise.all(leagueIds.map(async (leagueId) => {
+      const memberRef = db
+        .collection("leagues")
+        .doc(leagueId)
+        .collection("members")
+        .doc(userId);
+
+      const memberSnap = await memberRef.get();
+      if (!memberSnap.exists) return;
+
       const updates: Record<string, any> = {};
       if (displayName !== null) updates.displayName = displayName;
       if (challengeBadges !== null) updates.challengeBadges = challengeBadges;
-      batch.update(memberDoc.ref, updates);
+      batch.update(memberRef, updates);
       count++;
-    }
+    }));
 
-    await batch.commit();
+    if (count > 0) await batch.commit();
     console.log(`  🏌️ Updated ${count} league member docs`);
   } catch (error) {
     console.error("Error syncing league members:", error);
@@ -234,15 +243,26 @@ async function syncLeaderboards(
   challengeBadges: string[] | null
 ): Promise<void> {
   try {
-    const leaderboardsSnap = await db.collection("leaderboards").get();
+    // Read lowmanCourses[] from user doc — only fetch leaderboards this user
+    // appears in as a top scorer, instead of scanning the entire collection.
+    const userSnap = await db.collection("users").doc(userId).get();
+    const lowmanCourses: string[] = userSnap.data()?.lowmanCourses || [];
+    const regionKey: string | null = userSnap.data()?.regionKey || null;
 
-    if (leaderboardsSnap.empty) return;
+    if (lowmanCourses.length === 0 || !regionKey) return;
+
+    // Fetch only the specific leaderboard docs this user leads
+    const leaderboardIds = lowmanCourses.map((cId) => `${regionKey}_${cId}`);
+    const leaderboardSnaps = await Promise.all(
+      leaderboardIds.map((lbId) => db.collection("leaderboards").doc(lbId).get())
+    );
 
     const batch = db.batch();
     let count = 0;
 
-    for (const lbDoc of leaderboardsSnap.docs) {
-      const data = lbDoc.data();
+    for (const lbDoc of leaderboardSnaps) {
+      if (!lbDoc.exists) continue;
+      const data = lbDoc.data()!;
       let changed = false;
 
       const updateScoreArray = (scores: any[]): any[] => {
@@ -259,33 +279,17 @@ async function syncLeaderboards(
       };
 
       const updates: Record<string, any> = {};
-
-      if (data.topScores?.length) {
-        updates.topScores = updateScoreArray(data.topScores);
-      }
-      if (data.topScores18?.length) {
-        updates.topScores18 = updateScoreArray(data.topScores18);
-      }
-      if (data.topScores9?.length) {
-        updates.topScores9 = updateScoreArray(data.topScores9);
-      }
+      if (data.topScores?.length) updates.topScores = updateScoreArray(data.topScores);
+      if (data.topScores18?.length) updates.topScores18 = updateScoreArray(data.topScores18);
+      if (data.topScores9?.length) updates.topScores9 = updateScoreArray(data.topScores9);
 
       if (changed) {
         batch.update(lbDoc.ref, updates);
         count++;
       }
-
-      // Firestore batch limit is 500, commit early if needed
-      if (count > 0 && count % 450 === 0) {
-        await batch.commit();
-        console.log(`  🏆 Committed ${count} leaderboard updates`);
-      }
     }
 
-    if (count > 0) {
-      await batch.commit();
-    }
-
+    if (count > 0) await batch.commit();
     console.log(`  🏆 Updated ${count} leaderboard docs`);
   } catch (error) {
     console.error("Error syncing leaderboards:", error);

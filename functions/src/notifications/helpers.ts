@@ -5,7 +5,7 @@
  * and fetching user data. Used by all trigger files and leagueProcessor.
  */
 
-import { getFirestore, Timestamp } from "firebase-admin/firestore";
+import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import {
   CreateNotificationParams,
   GROUPABLE_TYPES,
@@ -400,6 +400,11 @@ export async function createNotificationDocument(params: CreateNotificationParam
     if (params.navigationTab) notificationData.navigationTab = params.navigationTab;
 
     await db.collection("notifications").add(notificationData);
+    // Increment cached unread count on user doc — read by pushNotifications.ts
+    // for badge count without a separate count() query per push
+    await db.collection("users").doc(userId).update({
+      unreadCount: FieldValue.increment(1),
+    });
     console.log("✅ Created new grouped notification");
     return;
   }
@@ -439,5 +444,9 @@ export async function createNotificationDocument(params: CreateNotificationParam
   if (params.navigationTab) notificationData.navigationTab = params.navigationTab;
 
   await db.collection("notifications").add(notificationData);
+  // Increment cached unread count on user doc
+  await db.collection("users").doc(userId).update({
+    unreadCount: FieldValue.increment(1),
+  });
   console.log("✅ Created notification");
 }

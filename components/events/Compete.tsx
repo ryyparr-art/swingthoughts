@@ -114,6 +114,9 @@ export default function Compete({ userId }: CompeteProps) {
           const rosterEntry = roster.find((r: any) => r.userId === userId);
 
           if (isHost || rosterEntry) {
+            const status = data.status || "draft";
+            if (status === "cancelled") continue;
+
             invitationals.push({
               id: invDoc.id,
               name: data.name || "Unnamed Invitational",
@@ -121,7 +124,7 @@ export default function Compete({ userId }: CompeteProps) {
               hostName: data.hostName || "Unknown",
               courseName: data.courseName || "",
               date: data.date?.toDate?.() || new Date(),
-              status: data.status || "draft",
+              status: status,
               format: data.format || "stroke",
               playerCount: data.playerCount || roster.length,
               maxPlayers: data.maxPlayers || 24,

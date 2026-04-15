@@ -176,34 +176,58 @@ export const onUserUpdated = onDocumentUpdated(
       // ----------------------------------------------------------------
       // 5. LEAGUES - members subcollection
       // ----------------------------------------------------------------
-      const leaguesSnap = await db.collection("leagues").get();
-
+      // Read leagueIds[] from user doc — targeted reads only, no full scan.
+      // leagueIds[] is populated when a user joins a league (memberships.ts).
+      // Falls back to collection group query if leagueIds is missing (legacy).
+      const leagueIds: string[] = after.leagueIds || [];
       let leagueMemberCount = 0;
       let leagueScoreCount = 0;
 
-      for (const leagueDoc of leaguesSnap.docs) {
-        // Update member doc
-        const memberRef = leagueDoc.ref.collection("members").doc(userId);
-        const memberSnap = await memberRef.get();
+      if (leagueIds.length > 0) {
+        // Fast path: only fetch leagues this user belongs to
+        await Promise.all(leagueIds.map(async (leagueId) => {
+          const leagueRef = db.collection("leagues").doc(leagueId);
 
-        if (memberSnap.exists) {
-          await memberRef.update({ avatar: newAvatar });
-          leagueMemberCount++;
-        }
+          const memberRef = leagueRef.collection("members").doc(userId);
+          const memberSnap = await memberRef.get();
+          if (memberSnap.exists) {
+            await memberRef.update({ avatar: newAvatar });
+            leagueMemberCount++;
+          }
 
-        // Update scores by this user
-        const scoresSnap = await leagueDoc.ref
-          .collection("scores")
-          .where("userId", "==", userId)
-          .get();
+          const scoresSnap = await leagueRef
+            .collection("scores")
+            .where("userId", "==", userId)
+            .get();
 
-        if (!scoresSnap.empty) {
-          const scoreBatch = db.batch();
-          scoresSnap.docs.forEach((d) =>
-            scoreBatch.update(d.ref, { avatar: newAvatar })
-          );
-          await scoreBatch.commit();
-          leagueScoreCount += scoresSnap.size;
+          if (!scoresSnap.empty) {
+            const scoreBatch = db.batch();
+            scoresSnap.docs.forEach((d) => scoreBatch.update(d.ref, { avatar: newAvatar }));
+            await scoreBatch.commit();
+            leagueScoreCount += scoresSnap.size;
+          }
+        }));
+      } else {
+        // Legacy fallback: full scan (only for users without leagueIds yet)
+        console.log(`   ⚠️ No leagueIds on user doc — falling back to full scan`);
+        const leaguesSnap = await db.collection("leagues").get();
+        for (const leagueDoc of leaguesSnap.docs) {
+          const memberRef = leagueDoc.ref.collection("members").doc(userId);
+          const memberSnap = await memberRef.get();
+          if (memberSnap.exists) {
+            await memberRef.update({ avatar: newAvatar });
+            leagueMemberCount++;
+          }
+          const scoresSnap = await leagueDoc.ref
+            .collection("scores")
+            .where("userId", "==", userId)
+            .get();
+          if (!scoresSnap.empty) {
+            const scoreBatch = db.batch();
+            scoresSnap.docs.forEach((d) => scoreBatch.update(d.ref, { avatar: newAvatar }));
+            await scoreBatch.commit();
+            leagueScoreCount += scoresSnap.size;
+          }
         }
       }
 
@@ -219,25 +243,43 @@ export const onUserUpdated = onDocumentUpdated(
       // ----------------------------------------------------------------
       // 6. TOURNAMENT CHAT MESSAGES
       // ----------------------------------------------------------------
-      const tournamentsSnap = await db.collection("tournaments").get();
-
+      // Read tournamentIds[] from user doc — targeted reads only, no full scan.
+      // tournamentIds[] is populated when a user participates in a tournament.
+      // Falls back to full scan if tournamentIds is missing (legacy).
+      const tournamentIds: string[] = after.tournamentIds || [];
       let tournamentMsgCount = 0;
 
-      for (const tournDoc of tournamentsSnap.docs) {
-        // Check both "live" and "onpremise" chat subcollections
-        for (const chatType of ["live", "onpremise"]) {
-          const chatRef = tournDoc.ref.collection(chatType);
-          const msgsSnap = await chatRef
-            .where("userId", "==", userId)
-            .get();
-
-          if (!msgsSnap.empty) {
-            const msgBatch = db.batch();
-            msgsSnap.docs.forEach((d) =>
-              msgBatch.update(d.ref, { avatar: newAvatar })
-            );
-            await msgBatch.commit();
-            tournamentMsgCount += msgsSnap.size;
+      if (tournamentIds.length > 0) {
+        await Promise.all(tournamentIds.map(async (tournId) => {
+          const tournRef = db.collection("tournaments").doc(tournId);
+          for (const chatType of ["live", "onpremise"]) {
+            const msgsSnap = await tournRef
+              .collection(chatType)
+              .where("userId", "==", userId)
+              .get();
+            if (!msgsSnap.empty) {
+              const msgBatch = db.batch();
+              msgsSnap.docs.forEach((d) => msgBatch.update(d.ref, { avatar: newAvatar }));
+              await msgBatch.commit();
+              tournamentMsgCount += msgsSnap.size;
+            }
+          }
+        }));
+      } else {
+        // Legacy fallback: full scan (only for users without tournamentIds yet)
+        const tournamentsSnap = await db.collection("tournaments").get();
+        for (const tournDoc of tournamentsSnap.docs) {
+          for (const chatType of ["live", "onpremise"]) {
+            const msgsSnap = await tournDoc.ref
+              .collection(chatType)
+              .where("userId", "==", userId)
+              .get();
+            if (!msgsSnap.empty) {
+              const msgBatch = db.batch();
+              msgsSnap.docs.forEach((d) => msgBatch.update(d.ref, { avatar: newAvatar }));
+              await msgBatch.commit();
+              tournamentMsgCount += msgsSnap.size;
+            }
           }
         }
       }

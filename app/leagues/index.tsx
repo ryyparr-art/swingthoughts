@@ -5,18 +5,12 @@
  * - Has leagues → /leagues/home
  * - No leagues → /leagues/explore
  *
- * Uses collection group query for efficient membership check
+ * Reads leagueIds[] from user doc — single read, no collection group query.
  */
 
 import { auth, db } from "@/constants/firebaseConfig";
 import { Redirect } from "expo-router";
-import {
-  collectionGroup,
-  getDocs,
-  limit,
-  query,
-  where,
-} from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 
@@ -36,20 +30,11 @@ export default function LeagueHubRouter() {
     }
 
     try {
-      // Collection group query - finds user in ANY league's members subcollection
-      // Much more efficient than querying each league individually
-      // NOTE: Requires Firestore rule: match /{path=**}/members/{memberId} { allow read, list: if isSignedIn(); }
-      const membersQuery = query(
-        collectionGroup(db, "members"),
-        where("userId", "==", currentUserId),
-        limit(1)
-      );
-
-      const snap = await getDocs(membersQuery);
-      setHasLeagues(!snap.empty);
+      const userSnap = await getDoc(doc(db, "users", currentUserId));
+      const leagueIds: string[] = userSnap.data()?.leagueIds || [];
+      setHasLeagues(leagueIds.length > 0);
     } catch (error) {
       console.error("Error checking leagues:", error);
-      // On error, default to explore page
       setHasLeagues(false);
     } finally {
       setLoading(false);
@@ -64,7 +49,6 @@ export default function LeagueHubRouter() {
     );
   }
 
-  // Redirect based on whether user has leagues
   if (hasLeagues) {
     return <Redirect href="/leagues/home" />;
   } else {

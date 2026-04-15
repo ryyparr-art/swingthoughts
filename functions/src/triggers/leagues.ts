@@ -21,14 +21,14 @@
 import { FieldValue, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { onDocumentCreated, onDocumentDeleted, onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { createNotificationDocument, generateGroupedMessage, getUserData } from "../notifications/helpers";
-import { writeJoinedLeagueActivity, writeLeagueResultActivity } from "./feedActivity";
-import { updateUserCareerStats } from "./userStats";
 import {
   calculateFieldStrength,
   calculatePlayerRanking,
   calculateRoundPoints,
   normaliseGameFormatId,
 } from "../utils/rankingEngine";
+import { writeJoinedLeagueActivity, writeLeagueResultActivity } from "./feedActivity";
+import { updateUserCareerStats } from "./userStats";
 
 const db = getFirestore();
 
@@ -391,6 +391,11 @@ export const onLeagueMemberCreated = onDocumentCreated(
           message: generateGroupedMessage("league_join_approved", "", 1, { leagueName: leagueInfo.name }),
         });
 
+        // Track league membership on user doc for efficient avatar/profile sync
+        await db.collection("users").doc(memberId).update({
+          leagueIds: FieldValue.arrayUnion(leagueId),
+        });
+
         // Feed activity: joined league
         const memberUserSnap = await db.collection("users").doc(memberId).get();
         const memberRegionKey = memberUserSnap.exists ? memberUserSnap.data()?.regionKey || "" : "";
@@ -428,6 +433,11 @@ export const onLeagueMemberUpdated = onDocumentUpdated(
           actorAvatar: leagueInfo.avatar,
           leagueId, leagueName: leagueInfo.name,
           message: generateGroupedMessage("league_join_approved", "", 1, { leagueName: leagueInfo.name }),
+        });
+
+        // Track league membership on user doc for efficient avatar/profile sync
+        await db.collection("users").doc(memberId).update({
+          leagueIds: FieldValue.arrayUnion(leagueId),
         });
 
         // Feed activity: joined league
@@ -502,6 +512,11 @@ export const onLeagueMemberDeleted = onDocumentDeleted(
 
       const leagueInfo = await getLeagueInfo(leagueId);
       if (!leagueInfo) return;
+
+      // Remove league from user doc
+      await db.collection("users").doc(memberId).update({
+        leagueIds: FieldValue.arrayRemove(leagueId),
+      });
 
       await createNotificationDocument({
         userId: memberId, type: "league_removed",
@@ -950,6 +965,11 @@ export const onLeagueInviteUpdatedRoot = onDocumentUpdated(
 
         await db.collection("leagues").doc(leagueId).update({
           memberCount: FieldValue.increment(1), updatedAt: Timestamp.now(),
+        });
+
+        // Track league membership on user doc for efficient avatar/profile sync
+        await db.collection("users").doc(invitedUserId).update({
+          leagueIds: FieldValue.arrayUnion(leagueId),
         });
 
         await createNotificationDocument({

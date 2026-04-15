@@ -22,6 +22,7 @@
  */
 
 import * as admin from "firebase-admin";
+import { FieldValue } from "firebase-admin/firestore";
 import { logger } from "firebase-functions/v2";
 
 const db = admin.firestore();
@@ -134,9 +135,54 @@ export async function processRivalries(
   // Cap at 200 pairs for safety (20-player outing = 190 pairs)
   const cappedPairs = pairs.slice(0, 200);
 
+  // ── Batch all sharedRoundCounts increments upfront ──────────────────────
+  // Previously: 2 transactions per pair = 380 transactions for a 20-player outing.
+  // Now: 1 write per user doc regardless of how many pairs they appear in.
+  // Build a map of userId → { otherUserId → incrementBy } then apply in one
+  // update per user using FieldValue.increment (no read required).
+  const incrementMap = new Map<string, Record<string, number>>();
+  for (const [p1, p2] of cappedPairs) {
+    const [playerA, playerB] = p1.userId < p2.userId ? [p1, p2] : [p2, p1];
+    if (!incrementMap.has(playerA.userId)) incrementMap.set(playerA.userId, {});
+    if (!incrementMap.has(playerB.userId)) incrementMap.set(playerB.userId, {});
+    incrementMap.get(playerA.userId)![playerB.userId] =
+      (incrementMap.get(playerA.userId)![playerB.userId] || 0) + 1;
+    incrementMap.get(playerB.userId)![playerA.userId] =
+      (incrementMap.get(playerB.userId)![playerA.userId] || 0) + 1;
+  }
+
+  // Apply all increments — one write per user, no transactions needed
+  const incrementTasks = Array.from(incrementMap.entries()).map(async ([userId, increments]) => {
+    const updates: Record<string, any> = {};
+    for (const [otherId, count] of Object.entries(increments)) {
+      updates[`sharedRoundCounts.${otherId}`] = FieldValue.increment(count);
+    }
+    try {
+      await db.collection("users").doc(userId).update(updates);
+    } catch (err) {
+      logger.warn(`sharedRoundCounts batch update failed for ${userId}:`, err);
+    }
+  });
+  await Promise.all(incrementTasks);
+  logger.info(`✅ sharedRoundCounts updated for ${incrementMap.size} users`);
+
+  // ── Now read current sharedRoundCounts to determine rivalry thresholds ──
+  // Read all affected user docs in parallel (one read per user, not per pair)
+  const userIds = Array.from(incrementMap.keys());
+  const userDocs = await Promise.all(
+    userIds.map((uid) => db.collection("users").doc(uid).get())
+  );
+  const sharedCountCache = new Map<string, Record<string, number>>();
+  userDocs.forEach((snap) => {
+    if (snap.exists) {
+      sharedCountCache.set(snap.id, snap.data()?.sharedRoundCounts || {});
+    }
+  });
+
+  // ── Process each pair using cached counts (no more per-pair transactions) ──
   for (const [p1, p2] of cappedPairs) {
     try {
-      const changes = await processPlayerPair(p1, p2, context);
+      const changes = await processPlayerPair(p1, p2, context, sharedCountCache);
       allChanges.push(...changes);
     } catch (err) {
       logger.error(
@@ -157,7 +203,8 @@ export async function processRivalries(
 async function processPlayerPair(
   p1: PlayerResult,
   p2: PlayerResult,
-  context: RivalryContext
+  context: RivalryContext,
+  sharedCountCache: Map<string, Record<string, number>>
 ): Promise<RivalryChange[]> {
   // Deterministic rivalry ID: sorted by userId
   const [playerA, playerB] =
@@ -165,12 +212,13 @@ async function processPlayerPair(
 
   const rivalryId = `${playerA.userId}_${playerB.userId}`;
 
-  // ── 1. Increment sharedRoundCounts on both user docs ──
-  const newCountA = await incrementSharedRoundCount(playerA.userId, playerB.userId);
-  const newCountB = await incrementSharedRoundCount(playerB.userId, playerA.userId);
-
-  // Use the max (they should be in sync, but just in case)
-  const sharedCount = Math.max(newCountA, newCountB);
+  // ── 1. Read sharedCount from cache (already incremented by caller) ──
+  const countsA = sharedCountCache.get(playerA.userId) || {};
+  const countsB = sharedCountCache.get(playerB.userId) || {};
+  const sharedCount = Math.max(
+    countsA[playerB.userId] || 0,
+    countsB[playerA.userId] || 0
+  );
 
   // ── 2. Determine round winner ──
   const winnerId = determineWinner(playerA, playerB);
@@ -204,36 +252,6 @@ async function processPlayerPair(
       context,
       sharedCount
     );
-  }
-}
-
-// ============================================================================
-// Increment shared round count on user doc
-// ============================================================================
-
-async function incrementSharedRoundCount(
-  userId: string,
-  otherUserId: string
-): Promise<number> {
-  const userRef = db.collection("users").doc(userId);
-
-  try {
-    const result = await db.runTransaction(async (txn) => {
-      const userDoc = await txn.get(userRef);
-      const counts: Record<string, number> = userDoc.data()?.sharedRoundCounts || {};
-      const newCount = (counts[otherUserId] || 0) + 1;
-
-      txn.update(userRef, {
-        [`sharedRoundCounts.${otherUserId}`]: newCount,
-      });
-
-      return newCount;
-    });
-
-    return result;
-  } catch (err) {
-    logger.warn(`sharedRoundCounts update failed for ${userId}:`, err);
-    return 0;
   }
 }
 
