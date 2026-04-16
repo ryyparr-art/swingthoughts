@@ -13,11 +13,11 @@
  * - App resume deferral (prevents watchdog kills from CPU pressure)
  */
 
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, where } from "firebase/firestore";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, AppState, AppStateStatus } from "react-native";
-import { collection, doc, getDoc, getDocs, orderBy, query, where } from "firebase/firestore";
+import { AppState, AppStateStatus } from "react-native";
 
-import { auth, db } from "@/constants/firebaseConfig";
+import { db } from "@/constants/firebaseConfig";
 import { CACHE_KEYS, useCache } from "@/contexts/CacheContext";
 import {
   coldStartShuffle,
@@ -25,14 +25,13 @@ import {
   generateAlgorithmicFeed,
   warmStartShuffle,
 } from "@/utils/feedAlgorithm";
-import { getUserProfile } from "@/utils/userProfileHelpers";
-import { soundPlayer } from "@/utils/soundPlayer";
 import {
   convertCachedFeedToThoughts,
-  convertFeedToThoughts,
   convertPostDataToThought,
-  Thought,
+  Thought
 } from "@/utils/feedHelpers";
+import { soundPlayer } from "@/utils/soundPlayer";
+import { getUserProfile } from "@/utils/userProfileHelpers";
 
 /* ================================================================ */
 /* TYPES                                                            */
@@ -401,7 +400,7 @@ export function useFeed({
       if (filters.user) conditions.push(where("displayName", "==", filters.user));
 
       if (conditions.length > 0) q = query(q, ...conditions);
-      q = query(q, orderBy("createdAt", "desc"));
+      q = query(q, orderBy("createdAt", "desc"), limit(100));
 
       const snapshot = await getDocs(q);
       const list: Thought[] = [];

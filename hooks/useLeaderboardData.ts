@@ -21,7 +21,7 @@
  *    distance ordering) so users see populated leaderboards first.
  */
 
-import { collection, doc, getDoc, getDocs, query, where } from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, limit, query, where } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { auth, db } from "@/constants/firebaseConfig";
@@ -429,7 +429,7 @@ export function useLeaderboardData({
           console.log("🔍 Filter: Specific Course -", filterCourseName);
 
           const snap = await getDocs(
-            query(collection(db, "leaderboards"), where("courseId", "==", filterCourseId))
+            query(collection(db, "leaderboards"), where("courseId", "==", filterCourseId), limit(1))
           );
 
           if (!snap.empty) {

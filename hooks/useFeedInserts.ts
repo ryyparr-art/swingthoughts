@@ -99,24 +99,9 @@ export function useFeedInserts({
       const userData = currentUserData;
       if (!userData) return;
 
-      // Fetch user's league memberships (not stored on user doc)
-      let leagueIds: string[] = [];
-      try {
-        const { collectionGroup, getDocs, query, where } = await import("firebase/firestore");
-        const { db } = await import("@/constants/firebaseConfig");
-        const memberSnap = await getDocs(
-          query(
-            collectionGroup(db, "members"),
-            where("userId", "==", currentUserId),
-            where("status", "==", "active")
-          )
-        );
-        leagueIds = memberSnap.docs
-          .map((d) => d.ref.parent.parent?.id)
-          .filter((id): id is string => !!id);
-      } catch (err) {
-        console.warn("⚠️ Could not fetch league memberships:", err);
-      }
+      // Read leagueIds[] directly from user data — already loaded by parent.
+      // Previously used a collectionGroup query across all league member subcollections.
+      const leagueIds: string[] = userData.leagueIds || [];
 
       const result = await fetchFeedInserts({
         userId: currentUserId,
