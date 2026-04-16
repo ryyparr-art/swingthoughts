@@ -1,5 +1,5 @@
 import { auth, db } from "@/constants/firebaseConfig";
-import { collection, doc, getDoc, onSnapshot, query, where } from "firebase/firestore";
+import { collection, doc, getDoc, limit, onSnapshot, query, where } from "firebase/firestore";
 
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
@@ -136,7 +136,8 @@ export default function LowmanCarousel({
 
     const q = query(
       collection(db, "leaderboards"),
-      where("regionKey", "==", userRegionKey)
+      where("regionKey", "==", userRegionKey),
+      limit(50)
     );
 
     const unsub = onSnapshot(q, (snap) => {
