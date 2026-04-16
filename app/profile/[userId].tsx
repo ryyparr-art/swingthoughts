@@ -19,6 +19,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   orderBy,
   query,
   where,
@@ -249,7 +250,9 @@ export default function ProfileScreen() {
 
       const postsQuery = query(
         collection(db, "thoughts"),
-        where("userId", "==", targetUserId)
+        where("userId", "==", targetUserId),
+        orderBy("createdAt", "desc"),
+        limit(20)
       );
       const postsSnap = await getDocs(postsQuery);
       const postsData: Post[] = [];
@@ -285,23 +288,16 @@ export default function ProfileScreen() {
         });
       });
 
-      postsData.sort((a, b) => {
-        const aTime = a.createdAt?.toMillis?.() || 0;
-        const bTime = b.createdAt?.toMillis?.() || 0;
-        return bTime - aTime;
-      });
-
+      // No client-side sort needed — Firestore returns ordered by createdAt desc
       setPosts(postsData);
 
-      const scoresQuery = query(
-        collection(db, "scores"),
-        where("userId", "==", targetUserId)
-      );
-      const scoresSnap = await getDocs(scoresQuery);
-
+      // Use totalRounds from user doc — already fetched above.
+      // Previously fetched all score docs just to count them (.size),
+      // which downloads every score document unnecessarily.
+      const userData = userDoc.data();
       const statsData: Stats = {
         swingThoughts: postsData.length,
-        leaderboardScores: scoresSnap.size,
+        leaderboardScores: userData?.totalRounds ?? 0,
         roundCount: 0, // Updated when rounds load
       };
 
@@ -344,7 +340,8 @@ export default function ProfileScreen() {
         collection(db, "feedActivity"),
         where("userId", "==", targetUserId),
         where("activityType", "==", "round_complete"),
-        orderBy("createdAt", "desc")
+        orderBy("createdAt", "desc"),
+        limit(50)
       );
 
       const snap = await getDocs(roundsQuery);

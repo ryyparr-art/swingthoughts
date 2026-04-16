@@ -17,6 +17,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   orderBy,
   query,
   serverTimestamp,
@@ -296,7 +297,8 @@ export default function MessagesScreen() {
       const q = query(
         collection(db, "threads"),
         where("participants", "array-contains", userId),
-        orderBy("lastMessageAt", "desc")
+        orderBy("lastMessageAt", "desc"),
+        limit(30)
       );
 
       const snap = await getDocs(q);
