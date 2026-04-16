@@ -34,17 +34,34 @@ import { calculateWeeklyPoints } from "./pointsDistribution";
  * Only excludes members explicitly marked as inactive/removed/banned.
  */
 async function getActiveMembers(leagueId: string): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
-  const membersSnap = await db
+  // Query active members directly — avoids downloading all members and filtering client-side.
+  // Legacy members without a status field are handled by the fallback query below.
+  const activeSnap = await db
     .collection("leagues")
     .doc(leagueId)
     .collection("members")
+    .where("status", "==", "active")
     .get();
 
-  return membersSnap.docs.filter((doc) => {
-    const status = doc.data().status;
-    // Include if no status field OR status is "active"
-    return !status || status === "active";
-  });
+  // Fallback: also include legacy docs with no status field (created before status was added)
+  const noStatusSnap = await db
+    .collection("leagues")
+    .doc(leagueId)
+    .collection("members")
+    .where("status", "==", null)
+    .get();
+
+  const seen = new Set<string>();
+  const results: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+
+  for (const doc of [...activeSnap.docs, ...noStatusSnap.docs]) {
+    if (!seen.has(doc.id)) {
+      seen.add(doc.id);
+      results.push(doc);
+    }
+  }
+
+  return results;
 }
 
 // ============================================================================
@@ -242,6 +259,7 @@ async function processSeasonStartingTomorrow(tomorrow: Date, todayStr: string): 
   const leaguesSnap = await db
     .collection("leagues")
     .where("status", "==", "upcoming")
+    .limit(100)
     .get();
 
   for (const leagueDoc of leaguesSnap.docs) {
@@ -263,16 +281,16 @@ async function processSeasonStartingTomorrow(tomorrow: Date, todayStr: string): 
 
     const activeMembers = await getActiveMembers(leagueId);
 
-    for (const memberDoc of activeMembers) {
-      await createNotificationDocument({
+    await Promise.all(activeMembers.map((memberDoc) =>
+      createNotificationDocument({
         userId: memberDoc.id,
         type: "league_season_starting",
         actorAvatar: leagueAvatar,
         leagueId,
         leagueName,
         message: generateLeagueMessage("league_season_starting", { leagueName }),
-      });
-    }
+      })
+    ));
 
     // Mark as notified to prevent duplicates
     await db.collection("leagues").doc(leagueId).update({
@@ -290,6 +308,7 @@ async function processSeasonStartingToday(today: Date, todayStr: string): Promis
   const leaguesSnap = await db
     .collection("leagues")
     .where("status", "==", "upcoming")
+    .limit(100)
     .get();
 
   for (const leagueDoc of leaguesSnap.docs) {
@@ -313,8 +332,8 @@ async function processSeasonStartingToday(today: Date, todayStr: string): Promis
 
     const activeMembers = await getActiveMembers(leagueId);
 
-    for (const memberDoc of activeMembers) {
-      await createNotificationDocument({
+    await Promise.all(activeMembers.map((memberDoc) =>
+      createNotificationDocument({
         userId: memberDoc.id,
         type: "league_season_started",
         actorAvatar: leagueAvatar,
@@ -322,8 +341,8 @@ async function processSeasonStartingToday(today: Date, todayStr: string): Promis
         leagueName,
         weekNumber: 1,
         message: generateLeagueMessage("league_season_started", { leagueName }),
-      });
-    }
+      })
+    ));
 
     console.log(`✅ League activated: ${leagueName}, notified ${activeMembers.length} members`);
   }
@@ -340,6 +359,7 @@ async function processScoreReminders(currentDayName: string, currentHour: number
     .collection("leagues")
     .where("status", "==", "active")
     .where("playDay", "==", currentDayName)
+    .limit(100)
     .get();
 
   for (const leagueDoc of leaguesSnap.docs) {
@@ -382,13 +402,13 @@ async function processScoreReminders(currentDayName: string, currentHour: number
 
     const scoredUserIds = new Set(scoresSnap.docs.map((doc) => doc.data().userId));
 
-    let reminderCount = 0;
-    for (const memberDoc of activeMembers) {
-      const memberId = memberDoc.id;
-      if (scoredUserIds.has(memberId)) continue;
+    const membersToNotify = activeMembers.filter((memberDoc) =>
+      !scoredUserIds.has(memberDoc.id)
+    );
 
-      await createNotificationDocument({
-        userId: memberId,
+    await Promise.all(membersToNotify.map((memberDoc) =>
+      createNotificationDocument({
+        userId: memberDoc.id,
         type: "league_score_reminder",
         actorAvatar: leagueAvatar,
         leagueId,
@@ -399,9 +419,10 @@ async function processScoreReminders(currentDayName: string, currentHour: number
           weekNumber: currentWeek,
           isElevated: elevated,
         }),
-      });
-      reminderCount++;
-    }
+      })
+    ));
+
+    const reminderCount = membersToNotify.length;
 
     // Mark reminders as sent
     await db.collection("leagues").doc(leagueId).update({
@@ -423,6 +444,7 @@ async function processWeekCompletion(yesterdayDayName: string): Promise<void> {
     .collection("leagues")
     .where("status", "==", "active")
     .where("playDay", "==", yesterdayDayName)
+    .limit(100)
     .get();
 
   for (const leagueDoc of leaguesSnap.docs) {
@@ -553,10 +575,9 @@ async function processWeekCompleteStroke(
   // Notify all active members with personalized message for winner
   const activeMembers = await getActiveMembers(leagueId);
 
-  for (const memberDoc of activeMembers) {
+  await Promise.all(activeMembers.map((memberDoc) => {
     const isWinner = memberDoc.id === winner.odtsuserId;
-
-    await createNotificationDocument({
+    return createNotificationDocument({
       userId: memberDoc.id,
       type: "league_week_complete",
       actorId: winner.odtsuserId,
@@ -575,7 +596,7 @@ async function processWeekCompleteStroke(
         isWinner,
       }),
     });
-  }
+  }));
 
   console.log(`✅ Week ${currentWeek} winner: ${winner.displayName} (${winner.netScore} net)${isElevated ? " 🏅" : ""}${weekPrize > 0 ? ` 💰 ${formatPrize(weekPrize, purse?.currency)}` : ""}`);
 }
@@ -734,10 +755,9 @@ async function processWeekComplete2v2(
 
   const activeMembers = await getActiveMembers(leagueId);
 
-  for (const memberDoc of activeMembers) {
+  await Promise.all(activeMembers.map((memberDoc) => {
     const isWinner = winningTeamMemberIds.has(memberDoc.id);
-
-    await createNotificationDocument({
+    return createNotificationDocument({
       userId: memberDoc.id,
       type: "league_week_complete",
       actorName: weekWinner?.teamName || "A team",
@@ -756,7 +776,7 @@ async function processWeekComplete2v2(
         isWinner,
       }),
     });
-  }
+  }));
 
   console.log(`✅ Week ${currentWeek} 2v2 results processed${isElevated ? " 🏅" : ""}${weekPrize > 0 ? ` 💰 ${formatPrize(weekPrize, purse?.currency)}` : ""}`);
 }
@@ -868,8 +888,8 @@ async function advanceToNextWeek(
 
   const activeMembers = await getActiveMembers(leagueId);
 
-  for (const memberDoc of activeMembers) {
-    await createNotificationDocument({
+  await Promise.all(activeMembers.map((memberDoc) =>
+    createNotificationDocument({
       userId: memberDoc.id,
       type: "league_week_start",
       actorAvatar: leagueAvatar,
@@ -884,8 +904,8 @@ async function advanceToNextWeek(
         currency: purse?.currency,
         teamName: multiplierStr,
       }),
-    });
-  }
+    })
+  ));
 
   if (format === "2v2" && league.weeklyMatchups) {
     const currentMatchups = league.weeklyMatchups[nextWeek];
@@ -897,41 +917,43 @@ async function advanceToNextWeek(
         teamsMap[doc.id] = { name: data.name, memberIds: data.memberIds || [] };
       });
 
-      for (const matchup of currentMatchups) {
-        const team1 = teamsMap[matchup.team1Id];
-        const team2 = teamsMap[matchup.team2Id];
+      await Promise.all(
+        currentMatchups.flatMap((matchup) => {
+          const team1 = teamsMap[matchup.team1Id];
+          const team2 = teamsMap[matchup.team2Id];
+          if (!team1 || !team2) return [];
 
-        if (team1 && team2) {
           const elevatedTag = nextElevated ? "🏅 " : "";
           const matchupMessage = `${elevatedTag}${team1.name} vs ${team2.name} — Week ${nextWeek} matchup is set! ⚔️`;
 
-          for (const memberId of team1.memberIds) {
-            await createNotificationDocument({
-              userId: memberId,
-              type: "league_matchup",
-              actorAvatar: leagueAvatar,
-              leagueId,
-              leagueName,
-              teamName: team1.name,
-              weekNumber: nextWeek,
-              message: matchupMessage,
-            });
-          }
-
-          for (const memberId of team2.memberIds) {
-            await createNotificationDocument({
-              userId: memberId,
-              type: "league_matchup",
-              actorAvatar: leagueAvatar,
-              leagueId,
-              leagueName,
-              teamName: team2.name,
-              weekNumber: nextWeek,
-              message: matchupMessage,
-            });
-          }
-        }
-      }
+          return [
+            ...team1.memberIds.map((memberId: string) =>
+              createNotificationDocument({
+                userId: memberId,
+                type: "league_matchup",
+                actorAvatar: leagueAvatar,
+                leagueId,
+                leagueName,
+                teamName: team1.name,
+                weekNumber: nextWeek,
+                message: matchupMessage,
+              })
+            ),
+            ...team2.memberIds.map((memberId: string) =>
+              createNotificationDocument({
+                userId: memberId,
+                type: "league_matchup",
+                actorAvatar: leagueAvatar,
+                leagueId,
+                leagueName,
+                teamName: team2.name,
+                weekNumber: nextWeek,
+                message: matchupMessage,
+              })
+            ),
+          ];
+        })
+      );
     }
   }
 
@@ -1004,10 +1026,9 @@ async function completeLeagueSeason(
     championMemberIds.add(champion.id);
   }
 
-  for (const memberDoc of activeMembers) {
+  await Promise.all(activeMembers.map((memberDoc) => {
     const isChampion = championMemberIds.has(memberDoc.id);
-
-    await createNotificationDocument({
+    return createNotificationDocument({
       userId: memberDoc.id,
       type: "league_season_complete",
       actorId: champion?.id,
@@ -1023,7 +1044,7 @@ async function completeLeagueSeason(
         isWinner: isChampion,
       }),
     });
-  }
+  }));
 
   console.log(`✅ Season complete! Champion: ${champion?.name || "Unknown"}${championshipPurse > 0 ? ` 💰 ${formatPrize(championshipPurse, purse?.currency)}` : ""}`);
 }

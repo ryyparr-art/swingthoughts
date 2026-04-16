@@ -17,6 +17,7 @@ import {
   collection,
   doc,
   getDocs,
+  limit,
   orderBy,
   query,
   serverTimestamp,
@@ -137,7 +138,8 @@ export default function ScoresTab({
       const scoresQuery = query(
         collection(db, "leagues", leagueId, "scores"),
         where("week", "==", selectedWeek),
-        orderBy("createdAt", "desc")
+        orderBy("createdAt", "desc"),
+        limit(100)
       );
 
       const snapshot = await getDocs(scoresQuery);
